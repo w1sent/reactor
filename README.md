@@ -1,0 +1,86 @@
+# REactor
+
+A reverse-engineering agent harness built on [pi](https://pi.dev). REactor is a
+pi package: it contributes extensions, skills, prompt templates and themes, plus
+a `reactor` CLI, that together turn a stock pi install into an RE workstation the
+agent actually understands.
+
+REactor does **not** document the tools it exposes. `<tool> --help` and
+`man <tool>` are the documentation, and where a tool's author ships their own
+Agent Skill, REactor fetches theirs rather than writing a worse one. What an
+agent genuinely cannot discover on its own is *which tools exist on this machine,
+whether they are installed, and whether the ones that are services are actually
+running* — that gap is what REactor fills.
+
+See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
+full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
+
+> **Status: design complete, no implementation.** Every file here is
+> documentation or skeleton. Nothing below is built yet.
+
+## The idea in one screen
+
+```
+                    ~/.pi/reactor/tools.toml         (the catalogue)
+                              │
+              ┌───────────────┼────────────────┐
+              ▼               ▼                ▼
+        reactor CLI     tool-registry ext   selector ext
+      doctor / tools      probes, injects    search / inspect
+      skills / install    into system prompt   toggle toolsets
+              │               │
+              │               ▼
+              │      ## Available RE tools (this machine)
+              │      bn     Binary Ninja RE framework  [BN running]
+              │      frida  dynamic instrumentation    17.2
+              │      jadx   Android/Java decompiler
+              │      adb    Android device bridge      [2 devices]
+              │
+              │      Use `<tool> --help`. `reactor tools` for detail.
+              ▼
+        $ reactor doctor
+          ✗ yara   not found
+              arch:  pacman -S yara
+              macos: brew install yara
+```
+
+The agent is told what is *here*, in one compact block, and nothing more. It
+reads `--help` when it needs to know how something works.
+
+## Layout
+
+```
+tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
+toolsets.toml    Shipped toolset definitions — seeds the user's copy
+bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
+extensions/      pi extensions (TypeScript): tool-registry, selector, status
+skills/          Skills REactor authors itself — only where --help is insufficient
+prompts/         Prompt templates, including multi-step analysis scenarios
+themes/          pi themes
+scripts/         install.py and repo-management scripts
+docs/            Concept, ADRs, HOWTOs, reference notes
+```
+
+Standalone tools REactor builds are **not** in this repo. They are sibling
+repositories with their own release cycles, referenced by the catalogue. See
+[ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md).
+
+## Install (planned)
+
+```bash
+pi install git:github.com/<you>/reactor   # assets: extensions, skills, prompts
+python3 scripts/install.py                # CLI onto PATH, seed ~/.pi/reactor/
+reactor doctor                            # what is missing, and how to get it
+reactor install yara ipsw                 # opt-in, does it for you
+```
+
+`pi install` never builds anything and never initialises submodules — see
+[ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md) for
+what that constrains.
+
+## Scope
+
+REactor targets pi and only pi. It is not a portable skill collection; if
+another harness becomes interesting, the tool repositories are reused and a new
+flavor of REactor is built for it. See
+[ADR-0001](docs/adr/0001-pi-is-the-only-target-harness.md).

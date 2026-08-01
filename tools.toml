@@ -1,0 +1,342 @@
+# REactor tool catalogue — SHIPPED COPY / SEED
+#
+# This file is copied to ~/.pi/reactor/tools.toml at install time and the
+# installed copy is what everything reads at runtime. Do not edit this one on a
+# user machine: pi's package update path runs `git clean -fdx` and will destroy
+# your changes. See docs/adr/0003-tools-toml-single-source-of-truth.md.
+#
+# When this file changes upstream, `reactor diff-config` shows the difference
+# against your installed copy; merge by hand.
+# See docs/adr/0004-config-updates-via-plain-diff.md.
+#
+# STATUS: starter set. Deliberately covers every schema path — a service tool, a
+# python library, a plain binary, tools with and without upstream skills, and
+# tools that are absent from most machines — so both the present and
+# missing code paths get exercised. The full target surface is listed in
+# docs/concept.md; filling it in is Milestone 1 in TODO.md.
+#
+# INSTALL RECIPES ARE UNVERIFIED. Every `[tool.*.install]` entry below is a
+# best guess and must be checked on a real machine before v1.
+
+version = 1
+
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+#
+# [tool.<id>]
+#   name    Human-readable name.
+#   desc    ONE LINE, written for a model deciding whether to reach for this
+#           tool. Appears in every system prompt for as long as the tool is
+#           installed and active — the highest-leverage text in the project.
+#           Keep it short; describe capability, not usage.
+#   invoke  What the agent types to use it. Shown in the registry.
+#   detect  How to tell whether it is here. One of:
+#             binary        = "rg"          → shutil.which
+#             python_module = "lief"        → importable in the active env
+#   version Optional argv whose stdout carries a version string.
+#   tags    Free-form; toolsets select on these as well as on ids.
+#   service Optional. The tool talks to something that may or may not be
+#           running: { probe = [argv], label = "…" }. Service probes are the
+#           only ones re-run on a timer.
+#   skill   Optional upstream Agent Skill to fetch at install time:
+#             { source = "git+URL", path = "subdir", ref = "main" }
+#           A configured-but-unfetchable skill warns. No skill is normal.
+#
+# [tool.<id>.install]
+#   Keys are install methods; `reactor doctor` picks one for the running
+#   platform. Method-key granularity is an open question (TODO.md).
+
+
+# ---------------------------------------------------------------------------
+# Static analysis — native
+# ---------------------------------------------------------------------------
+
+[tool.bn]
+name   = "Binary Ninja"
+desc   = "reverse engineering framework; drives a live BN session"
+invoke = "bn"
+detect = { binary = "bn" }
+tags   = ["static", "native", "disassembler", "decompiler"]
+service = { probe = ["bn", "health"], label = "BN session" }
+skill = { source = "git+https://github.com/w1sent/plugins", path = "skills/binja-cli", ref = "main" }
+# TODO: confirm the source URL and ref against the plugins repo (TODO.md).
+
+[tool.bn.install]
+manual = "install the binja-mcp plugin from the plugins repo, then run its install_mcp_clients.py"
+
+[tool.lief]
+name   = "LIEF"
+desc   = "parse and modify ELF/PE/Mach-O from python"
+invoke = "python3 -c 'import lief'"
+detect = { python_module = "lief" }
+tags   = ["static", "native", "parsing", "python"]
+
+[tool.lief.install]
+pip = "pip install lief"
+uv  = "uv pip install lief"
+
+[tool.joern]
+name   = "Joern"
+desc   = "code property graph; dataflow and reachability queries over source"
+invoke = "joern"
+detect = { binary = "joern" }
+tags   = ["static", "source", "dataflow"]
+
+[tool.joern.install]
+manual = "https://joern.io/ — download and add to PATH"
+
+[tool.angr]
+name   = "angr"
+desc   = "binary analysis and symbolic execution from python"
+invoke = "python3 -c 'import angr'"
+detect = { python_module = "angr" }
+tags   = ["static", "native", "symbolic", "solving", "python"]
+
+[tool.angr.install]
+pip = "pip install angr"
+uv  = "uv pip install angr"
+
+
+# ---------------------------------------------------------------------------
+# Static analysis — managed runtimes
+# ---------------------------------------------------------------------------
+
+[tool.jadx]
+name    = "jadx"
+desc    = "decompile Android DEX/APK to Java"
+invoke  = "jadx"
+detect  = { binary = "jadx" }
+version = ["jadx", "--version"]
+tags    = ["static", "managed", "android", "decompiler"]
+
+[tool.jadx.install]
+arch   = "pacman -S jadx"
+debian = "apt install jadx"
+macos  = "brew install jadx"
+
+
+# ---------------------------------------------------------------------------
+# Dynamic instrumentation
+# ---------------------------------------------------------------------------
+
+[tool.frida]
+name    = "frida"
+desc    = "dynamic instrumentation; hook and trace running processes"
+invoke  = "frida"
+detect  = { binary = "frida" }
+version = ["frida", "--version"]
+tags    = ["dynamic", "instrumentation", "mobile"]
+
+[tool.frida.install]
+pipx = "pipx install frida-tools"
+uv   = "uv tool install frida-tools"
+brew = "brew install frida"
+
+[tool.objection]
+name   = "objection"
+desc   = "runtime mobile exploration built on frida"
+invoke = "objection"
+detect = { binary = "objection" }
+tags   = ["dynamic", "mobile", "android", "ios"]
+
+[tool.objection.install]
+pipx = "pipx install objection"
+uv   = "uv tool install objection"
+
+
+# ---------------------------------------------------------------------------
+# Debugging
+# ---------------------------------------------------------------------------
+
+[tool.gdb]
+name    = "GDB"
+desc    = "native debugger"
+invoke  = "gdb"
+detect  = { binary = "gdb" }
+version = ["gdb", "--version"]
+tags    = ["dynamic", "debugger"]
+
+[tool.gdb.install]
+arch   = "pacman -S gdb"
+debian = "apt install gdb"
+
+[tool.rr]
+name   = "rr"
+desc   = "record and deterministically replay execution; reverse debugging"
+invoke = "rr"
+detect = { binary = "rr" }
+tags   = ["dynamic", "debugger", "record-replay"]
+
+[tool.rr.install]
+arch   = "pacman -S rr"
+debian = "apt install rr"
+
+
+# ---------------------------------------------------------------------------
+# Mobile
+# ---------------------------------------------------------------------------
+
+[tool.adb]
+name    = "adb"
+desc    = "Android device bridge; shell, install, pull, forward"
+invoke  = "adb"
+detect  = { binary = "adb" }
+tags    = ["mobile", "android", "device"]
+service = { probe = ["adb", "devices"], label = "devices" }
+
+[tool.adb.install]
+arch   = "pacman -S android-tools"
+debian = "apt install adb"
+macos  = "brew install android-platform-tools"
+
+[tool.apktool]
+name   = "apktool"
+desc   = "unpack and repack APK resources and smali"
+invoke = "apktool"
+detect = { binary = "apktool" }
+tags   = ["mobile", "android", "unpacking"]
+
+[tool.apktool.install]
+arch   = "pacman -S apktool"
+debian = "apt install apktool"
+macos  = "brew install apktool"
+
+[tool.ipsw]
+name   = "ipsw"
+desc   = "iOS/macOS firmware and dyld_shared_cache tooling"
+invoke = "ipsw"
+detect = { binary = "ipsw" }
+tags   = ["mobile", "ios", "firmware", "macho"]
+skill = { source = "git+https://github.com/blacktop/ipsw-skill", ref = "main" }
+
+[tool.ipsw.install]
+macos = "brew install blacktop/tap/ipsw"
+linux = "https://github.com/blacktop/ipsw/releases"
+
+[tool.mobilecli]
+name   = "mobilecli"
+desc   = "drive Android and iOS devices; screenshot, tap, launch"
+invoke = "mobilecli"
+detect = { binary = "mobilecli" }
+tags   = ["mobile", "android", "ios", "device"]
+
+[tool.mobilecli.install]
+npm = "npm install -g mobilecli"
+
+
+# ---------------------------------------------------------------------------
+# Firmware, carving, pattern matching
+# ---------------------------------------------------------------------------
+
+[tool.binwalk]
+name   = "binwalk"
+desc   = "identify and carve embedded files from firmware images"
+invoke = "binwalk"
+detect = { binary = "binwalk" }
+tags   = ["firmware", "carving", "triage"]
+
+[tool.binwalk.install]
+arch   = "pacman -S binwalk"
+debian = "apt install binwalk"
+macos  = "brew install binwalk"
+
+[tool.yara]
+name    = "YARA"
+desc    = "pattern matching over files and process memory"
+invoke  = "yara"
+detect  = { binary = "yara" }
+version = ["yara", "--version"]
+tags    = ["triage", "pattern-matching"]
+
+[tool.yara.install]
+arch   = "pacman -S yara"
+debian = "apt install yara"
+macos  = "brew install yara"
+
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+[tool.tshark]
+name   = "tshark"
+desc   = "capture and dissect network traffic; Wireshark's CLI"
+invoke = "tshark"
+detect = { binary = "tshark" }
+tags   = ["network", "pcap"]
+
+[tool.tshark.install]
+arch   = "pacman -S wireshark-cli"
+debian = "apt install tshark"
+macos  = "brew install wireshark"
+
+[tool.scapy]
+name   = "scapy"
+desc   = "craft, send and dissect packets from python"
+invoke = "python3 -c 'import scapy'"
+detect = { python_module = "scapy" }
+tags   = ["network", "python"]
+
+[tool.scapy.install]
+pip = "pip install scapy"
+uv  = "uv pip install scapy"
+
+
+# ---------------------------------------------------------------------------
+# Solving and parsing
+# ---------------------------------------------------------------------------
+
+[tool.z3]
+name   = "z3"
+desc   = "SMT solver; constraint solving from python"
+invoke = "python3 -c 'import z3'"
+detect = { python_module = "z3" }
+tags   = ["solving", "python"]
+
+[tool.z3.install]
+pip = "pip install z3-solver"
+uv  = "uv pip install z3-solver"
+
+[tool.tree-sitter]
+name   = "tree-sitter"
+desc   = "parse and transform source text via concrete syntax trees"
+invoke = "python3 -c 'import tree_sitter'"
+detect = { python_module = "tree_sitter" }
+tags   = ["parsing", "source", "python"]
+
+[tool.tree-sitter.install]
+pip = "pip install tree-sitter"
+uv  = "uv pip install tree-sitter"
+
+
+# ---------------------------------------------------------------------------
+# General-purpose dependencies
+# ---------------------------------------------------------------------------
+
+[tool.ripgrep]
+name    = "ripgrep"
+desc    = "fast recursive search; the default grep for large trees"
+invoke  = "rg"
+detect  = { binary = "rg" }
+version = ["rg", "--version"]
+tags    = ["general"]
+
+[tool.ripgrep.install]
+arch   = "pacman -S ripgrep"
+debian = "apt install ripgrep"
+macos  = "brew install ripgrep"
+cargo  = "cargo install ripgrep"
+
+[tool.jq]
+name   = "jq"
+desc   = "filter JSON on the command line"
+invoke = "jq"
+detect = { binary = "jq" }
+tags   = ["general"]
+
+[tool.jq.install]
+arch   = "pacman -S jq"
+debian = "apt install jq"
+macos  = "brew install jq"

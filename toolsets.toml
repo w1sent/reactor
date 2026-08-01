@@ -1,0 +1,49 @@
+# REactor toolsets — SHIPPED COPY / SEED
+#
+# Copied to ~/.pi/reactor/toolsets.toml at install time; the installed copy is
+# what is read at runtime and is where user-defined toolsets go. Same update
+# rules as tools.toml: `reactor diff-config`, merge by hand.
+# See docs/adr/0004-config-updates-via-plain-diff.md.
+#
+# A toolset is a named group of tools the user activates or deactivates as a
+# unit. Activation shapes only what the agent is TOLD about — it never blocks
+# anything. See docs/adr/0007-deactivation-is-soft.md.
+#
+# STATUS: placeholder. A real predefined set depends on the catalogue being
+# filled in first (Milestone 2 in TODO.md).
+
+version = 1
+
+# [toolset.<id>]
+#   desc   One line, shown in the selector. Not injected into the prompt.
+#   tools  Explicit tool ids.
+#   tags   Tags from tools.toml; every tool carrying one is included.
+#          `tools` and `tags` union.
+
+[toolset.all]
+desc = "everything in the catalogue that is installed"
+tags = ["static", "dynamic", "mobile", "network", "firmware", "solving", "parsing", "general"]
+
+[toolset.triage]
+desc  = "first look: identify, unpack, scan"
+tools = ["binwalk", "yara", "lief", "ripgrep", "jq"]
+
+[toolset.native]
+desc = "static analysis of compiled binaries"
+tags = ["static", "native"]
+
+[toolset.android]
+desc  = "Android application analysis"
+tools = ["adb", "apktool", "jadx", "frida", "objection", "mobilecli"]
+
+[toolset.ios]
+desc  = "iOS application and firmware analysis"
+tools = ["ipsw", "frida", "objection", "mobilecli"]
+
+[toolset.dynamic]
+desc = "running-process instrumentation and debugging"
+tags = ["dynamic"]
+
+[toolset.network]
+desc = "traffic capture and packet work"
+tags = ["network"]

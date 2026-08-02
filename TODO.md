@@ -27,16 +27,11 @@ machine. No custom TUI components.
 
 ### Still open in Milestone 1
 
-**Every `[tool.*.install]` recipe is an unverified guess.** They were written
-from memory and only the `pacman` ones could plausibly be checked on this
-machine — and none has been. A wrong recipe is worse than an absent one, because
-`reactor install` will run it. Verify per manager on a real machine before v1,
-or demote the unverified ones to `manual` notes so nothing auto-runs.
-
 **The catalogue is a starter set, not the target surface.** 21 entries against
 the list in `docs/concept.md`. Missing at least: ImHex, blutter, lldb, qbdi,
 aapt2, otool, ilspy, binja headless. Each new entry's `desc` lands in every
-system prompt, so adding them is editorial work, not data entry.
+system prompt, so adding them is editorial work, not data entry. Entries with an install to check against can be catalogued from a
+real binary rather than from memory.
 
 **No REactor-authored skills yet**, which is the expected state
 ([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they are only worth
@@ -56,9 +51,13 @@ today. Fixing it means serving `skills/` from `resources_discover` too, which
 means moving it out of the conventional layout. Costs nothing while the
 directory is empty; decide before the first skill lands in it.
 
-**Probe cost at session start is unmeasured.** See the open question below — it
-is now measurable rather than hypothetical, which is the point at which it
-should be measured.
+**REactor is not actually installed on a development host.**
+`~/.pi/reactor/` does not exist, so every `reactor` invocation here reads the
+shipped catalogue through the fallback path and writes no cache. Everything has
+been verified against scratch config directories via `REACTOR_CONFIG_DIR`, which
+is a faithful but not identical arrangement. Running `scripts/install.py` for
+real is the obvious next validation, and a prerequisite for using REactor in
+anger.
 
 ## Milestone 2 — Selector and status
 
@@ -123,17 +122,6 @@ Point the diff at `vimdiff`/`delta` rather than plain `diff(1)`. Convenience onl
 
 ## Open questions
 
-### Probe cost at session start
-Now measurable rather than hypothetical, and unmeasured. Detection is one
-`shutil.which` per binary (free) plus **one** subprocess for all Python modules
-(`find_spec`, so importing angr is not paid for) plus one `--version` call per
-present tool that declares one, in a thread pool. Service probes are the real
-cost — `bn health` is an HTTP round trip, `adb devices` may start a daemon — and
-they run in the same pool. The `--refresh` at `session_start` pays for all of it
-at once; every later turn should hit `cache.json`. Measure the cold and warm
-paths before tuning `detect_ttl`/`service_ttl`, and decide then whether session
-start should render without service probes and refresh shortly after.
-
 ### Shared probe cache across extensions
 The registry and status extensions both want current probe results. `cache.json`
 in `~/.pi/reactor/` already gives them a shared store, and it is TTL-keyed so two
@@ -156,6 +144,20 @@ with Milestone 3, but the answer shapes whether `resources_discover` is enough.
 
 ## Resolved
 
+- **Install recipes** → all 49 package references now check out against their
+  managers' real indexes, and `scripts/verify-recipes.py` keeps them honest.
+  Five were wrong: `pacman -S rr` and `pacman -S apktool` (both AUR-only on
+  Arch, and `apktool` is `android-apktool` there), `brew install frida` (no such
+  formula or cask), `brew install blacktop/tap/ipsw` (promoted to core), and
+  `brew install android-platform-tools` (a cask). Fixing the Arch pair meant
+  declaring `paru` and `yay` as managers, which ADR-0010's model already covers
+  — an AUR helper is a package manager and its binary is a testable predicate.
+- **Probe cost at session start** → measured; there was no problem. 79 ms warm
+  (the per-turn path, ~90% of it Python startup), 520 ms cold, once. Service
+  probes are cheap; *version* probes on JVM and interpreter-backed tools
+  dominate the cold path. `detect_ttl`/`service_ttl` left alone, and session
+  start still probes services. Numbers and consequences in
+  [ADR-0006](docs/adr/0006-registry-injected-into-system-prompt.md).
 - **Platform detection granularity** → package-manager keys, ranked by a
   user-editable preference list, free text never executed
   ([ADR-0010](docs/adr/0010-install-recipes-keyed-by-package-manager.md)). No

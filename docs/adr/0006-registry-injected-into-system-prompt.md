@@ -52,6 +52,41 @@ Probe scheduling follows from the same constraint:
   fluctuation does not produce new text.
 - **`/reactor refresh`** and any toolset toggle force a full re-probe.
 
+## What the probes actually cost
+
+Measured after implementation on one Linux host (12 of 22
+catalogue entries present, warm page cache, medians of 5–9 runs). The scheduling
+above was designed against a guess; these are the numbers.
+
+| path | cost | what it is |
+|---|---|---|
+| warm — every user turn | **79 ms** | 70 ms process startup, ~10 ms work |
+| cold — `--refresh` at session start | **520 ms** | paid once |
+
+The warm path is almost entirely the cost of *starting a Python process*, not of
+probing: the cache is hit and the work is under 10 ms. Thirty of those
+milliseconds were `urllib.request` and `concurrent.futures` being imported on
+every invocation to be used on neither; they are now imported at their use
+sites.
+
+Two assumptions turned out to be wrong, and both were wrong in the reassuring
+direction:
+
+- **Service probes were expected to dominate. They do not.** `bn health` is
+  83 ms and `adb devices` is 7 ms — 38 ms when it has to start its daemon, not
+  the seconds that were feared. Nothing here justifies dropping service probes
+  from session start and refreshing afterwards, which had been the contingency.
+- **The cold path is dominated by *version* probes**, because the tools that
+  have them are the ones with expensive startup: `jadx --version` is 277 ms and
+  `frida --version` is 174 ms, against 2 ms for `yara` and `rg`. The cost of
+  asking a tool its version is the cost of that tool booting a JVM or a Python
+  interpreter, and it scales with how many such tools are installed.
+
+So `detect_ttl` and `service_ttl` are left alone; there was no problem for
+tuning them to solve. The number to watch as the catalogue grows is the count of
+*present* tools declaring a `version` command, which is what the cold path is
+linear in.
+
 ## Skill and prompt visibility ride along
 
 The same extension answers pi's `resources_discover` event, returning the skill

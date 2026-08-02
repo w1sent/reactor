@@ -15,8 +15,9 @@
 # missing code paths get exercised. The full target surface is listed in
 # docs/concept.md; filling it in is Milestone 1 in TODO.md.
 #
-# INSTALL RECIPES ARE UNVERIFIED. Every `[tool.*.install]` entry below is a
-# best guess and must be checked on a real machine before v1.
+# Every `[tool.*.install]` recipe below has been checked against its manager's
+# package index — `scripts/verify-recipes.py`, which fails if a recipe names a
+# package that does not exist. Re-run it when you touch an install table.
 
 version = 1
 
@@ -69,6 +70,7 @@ version = 1
 # the one place a machine owner says "uv, never pip".
 prefer = [
   "pacman", "apt", "dnf", "zypper", "apk", "brew", "port",
+  "paru", "yay",
   "uv", "pipx", "cargo", "go", "npm", "gem", "pip",
 ]
 
@@ -83,6 +85,10 @@ zypper = { binary = "zypper", os = "linux",  sudo = true }
 apk    = { binary = "apk",    os = "linux",  sudo = true }
 brew   = { binary = "brew",   os = "darwin" }
 port   = { binary = "port",   os = "darwin", sudo = true }
+# AUR helpers. Ranked below pacman so an official-repo recipe always wins, and
+# never given sudo — both refuse to run as root and escalate themselves.
+paru   = { binary = "paru",   os = "linux" }
+yay    = { binary = "yay",    os = "linux" }
 uv     = { binary = "uv" }
 pipx   = { binary = "pipx" }
 pip    = { binary = "pip3" }
@@ -191,9 +197,10 @@ version = ["frida", "--version"]
 tags    = ["dynamic", "instrumentation", "mobile"]
 
 [tool.frida.install]
+# No homebrew-core formula or cask exists; pip is the upstream-supported route
+# on macOS as well.
 uv   = "uv tool install frida-tools"
 pipx = "pipx install frida-tools"
-brew = "brew install frida"
 
 [tool.objection]
 name   = "objection"
@@ -232,8 +239,10 @@ detect = { binary = "rr" }
 tags   = ["dynamic", "debugger", "record-replay"]
 
 [tool.rr.install]
-pacman = "pacman -S rr"
-apt    = "apt install rr"
+apt  = "apt install rr"
+# Not in the official Arch repos; AUR only.
+paru = "paru -S rr"
+yay  = "yay -S rr"
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +260,9 @@ service = { probe = ["adb", "devices"], label = "adb", count = { pattern = '\sde
 [tool.adb.install]
 pacman = "pacman -S android-tools"
 apt    = "apt install adb"
-brew   = "brew install android-platform-tools"
+# A cask, not a formula. `brew install` would dispatch to it anyway; explicit
+# so the recipe cannot be misread as a formula that went missing.
+brew   = "brew install --cask android-platform-tools"
 
 [tool.apktool]
 name   = "apktool"
@@ -261,9 +272,11 @@ detect = { binary = "apktool" }
 tags   = ["mobile", "android", "unpacking"]
 
 [tool.apktool.install]
-pacman = "pacman -S apktool"
-apt    = "apt install apktool"
-brew   = "brew install apktool"
+apt  = "apt install apktool"
+brew = "brew install apktool"
+# AUR only, and named android-apktool there rather than apktool.
+paru = "paru -S android-apktool"
+yay  = "yay -S android-apktool"
 
 [tool.ipsw]
 name   = "ipsw"
@@ -274,7 +287,9 @@ tags   = ["mobile", "ios", "firmware", "macho"]
 skill = { source = "git+https://github.com/blacktop/ipsw-skill", path = "ipsw", ref = "main" }
 
 [tool.ipsw.install]
-brew   = "brew install blacktop/tap/ipsw"
+# Promoted into homebrew-core, so no tap to add. blacktop/tap/ipsw still exists
+# and tracks upstream more closely if core lags.
+brew   = "brew install ipsw"
 manual = "https://github.com/blacktop/ipsw/releases"
 
 [tool.mobilecli]

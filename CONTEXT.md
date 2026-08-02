@@ -48,6 +48,20 @@ live Binary Ninja session). Probes are cached; only service probes are re-run on
 a timer.
 _Avoid_: check, health check, test, ping.
 
+**Manager**:
+A package manager declared in `[platform.manager]` — `pacman`, `brew`, `uv`,
+`cargo`. Install recipes are keyed by manager, never by distribution, so that a
+recipe key is a testable predicate: the manager's binary is on `PATH` or it is
+not. Ranked by `[platform].prefer`, which the machine's owner edits.
+_Avoid_: platform, distro, backend, provider.
+
+**Recipe** / **note**:
+A *recipe* is an install command whose manager REactor has verified is present —
+the only kind `reactor install` will ever run. A *note* is any other value in an
+`[tool.*.install]` table: `manual`, a release URL, a command for a manager this
+machine does not have. Notes are always shown and never executed.
+_Avoid_: instruction, hint, fallback (for either).
+
 **Upstream skill**:
 An Agent Skill written by a tool's own author (`bn`'s skill in the plugins repo,
 `ipsw-skill`) that REactor fetches at install time into

@@ -59,6 +59,29 @@ export interface ResourcesDiscoverResult {
 Only fires on `"startup"` and `"reload"`. `ctx.reload()` (command context) is
 what makes a toolset toggle take effect without restarting pi.
 
+**[verified]** `dist/core/skills.js` — what a returned `skillPaths` entry may
+be. `loadSkills` stats each path:
+
+- a **directory containing `SKILL.md`** is one skill root, and is not recursed
+  into;
+- a directory *without* one is scanned for direct `.md` children and recursed
+  into looking for `SKILL.md`;
+- a path to a single `.md` file is loaded as that skill.
+
+So `~/.pi/reactor/skills/<tool>/` — one fetched skill per directory — is handled
+exactly as intended, and the fetched tree's own subdirectories (`references/`,
+`scripts/`) are not mistaken for further skills. A path that does not exist
+produces a warning diagnostic, not a crash.
+
+**[verified]** `dist/core/agent-session.js` `extendResourcesFromExtensions`
+returns early when every returned array is empty, and
+`resource-loader.js extendResources` *merges* rather than replaces
+(`mergePaths(this.lastSkillPaths, …)`). Within one `extendResources` call the
+paths accumulate. Removal on toggle-off works because the surrounding reload
+rebuilds `lastSkillPaths` from settings first — it is the reload that drops the
+path, not the extension returning a shorter list. Worth re-checking if
+deactivation ever appears not to take effect.
+
 ### Tool results carry an out-of-context `details` field
 
 **[docs]** A tool's return is `{ content, details }`; `details` persists as
@@ -221,6 +244,26 @@ changes, never exceed the width passed to `render`.
 `ctx.mode` is `"tui" | "rpc" | "json" | "print"`; `ctx.hasUI` is true for TUI and
 RPC. Everything the selector and status extensions do must degrade cleanly when
 `hasUI` is false.
+
+## `pi.exec` never rejects
+
+**[verified]** `dist/core/exec.js`. `execCommand` wraps `spawn` in a promise
+that only ever **resolves**:
+
+```js
+waitForChildProcess(proc)
+  .then((code) => resolve({ stdout, stderr, code: code ?? 0, killed }))
+  .catch((_err) => resolve({ stdout, stderr, code: 1, killed }));
+```
+
+A binary that is not on `PATH` therefore arrives as `{ code: 1, stdout: "",
+killed: false }` — indistinguishable from a command that ran and failed
+silently. `try`/`catch` around `pi.exec` is dead code; branch on `killed` (the
+timeout or abort case, which also `SIGTERM`s then `SIGKILL`s after 5s) and on
+empty stdout instead.
+
+`ExecOptions` is `{ signal?, timeout?, cwd? }`; `shell: false`, so no shell
+quoting is involved and no shell is available.
 
 ## Imports available to an extension
 

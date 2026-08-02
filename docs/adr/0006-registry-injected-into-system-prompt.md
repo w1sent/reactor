@@ -60,6 +60,22 @@ toolset therefore removes both its registry lines and its skills' descriptions
 from the system prompt, and `ctx.reload()` makes a toggle take effect
 immediately.
 
+## Where the block is rendered
+
+In the CLI, not in the extension: `reactor registry --format json` returns the
+finished string alongside the structured data, and the extension concatenates it
+onto `event.systemPrompt` without inspecting it.
+
+Decided during implementation. The alternative — the extension formatting the
+entries itself — puts the byte-stability requirement in TypeScript while the
+probe results, the ordering and the coarsening rules all live in Python, so the
+property would have to be defended in two languages and could only be tested in
+the one that does not own the data. Rendering here makes determinism a single
+Python function with a single test, and leaves the extension a pure transport.
+The cost is that a future non-pi front end inherits this block's formatting
+rather than choosing its own; that is acceptable while pi is the only target
+([ADR-0001](0001-pi-is-the-only-target-harness.md)).
+
 ## Consequences
 
 - The registry's size is bounded by the number of *installed and active* tools,

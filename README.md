@@ -15,8 +15,12 @@ running* — that gap is what REactor fills.
 See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
 full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 
-> **Status: design complete, no implementation.** Every file here is
-> documentation or skeleton. Nothing below is built yet.
+> **Status: Milestone 1 (the spine) is built.** The `reactor` CLI, the
+> installer, the catalogue and the `tool-registry` extension work end to end;
+> `python3 tests/test_reactor.py` covers them. The selector and status panels
+> (Milestone 2) and scenarios (Milestone 3) are not started, and every
+> `[tool.*.install]` recipe in `tools.toml` is still an unverified guess. See
+> `TODO.md`.
 
 ## The idea in one screen
 
@@ -31,17 +35,17 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
               │               │
               │               ▼
               │      ## Available RE tools (this machine)
-              │      bn     Binary Ninja RE framework  [BN running]
-              │      frida  dynamic instrumentation    17.2
-              │      jadx   Android/Java decompiler
-              │      adb    Android device bridge      [2 devices]
+              │      bn         reverse engineering framework  [BN session: up]
+              │      frida      dynamic instrumentation        17.9.7
+              │      jadx       decompile Android DEX/APK      1.5.6
+              │      adb        Android device bridge          [adb: 2 devices]
               │
-              │      Use `<tool> --help`. `reactor tools` for detail.
+              │      `<tool> --help` is the documentation.
               ▼
         $ reactor doctor
-          ✗ yara   not found
-              arch:  pacman -S yara
-              macos: brew install yara
+          missing (10)
+            yara         sudo pacman -S yara
+            ipsw         (manual) https://github.com/blacktop/ipsw/releases
 ```
 
 The agent is told what is *here*, in one compact block, and nothing more. It
@@ -58,6 +62,7 @@ skills/          Skills REactor authors itself — only where --help is insuffic
 prompts/         Prompt templates, including multi-step analysis scenarios
 themes/          pi themes
 scripts/         install.py and repo-management scripts
+tests/           stdlib unittest suite for the CLI
 docs/            Concept, ADRs, HOWTOs, reference notes
 ```
 
@@ -65,18 +70,27 @@ Standalone tools REactor builds are **not** in this repo. They are sibling
 repositories with their own release cycles, referenced by the catalogue. See
 [ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md).
 
-## Install (planned)
+## Install
 
 ```bash
 pi install git:github.com/<you>/reactor   # assets: extensions, skills, prompts
 python3 scripts/install.py                # CLI onto PATH, seed ~/.pi/reactor/
 reactor doctor                            # what is missing, and how to get it
-reactor install yara ipsw                 # opt-in, does it for you
+reactor install yara                      # opt-in, does it for you
 ```
 
-`pi install` never builds anything and never initialises submodules — see
-[ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md) for
-what that constrains.
+Two steps because `pi install` never builds anything, never initialises
+submodules, and runs `git clean -fdx` inside the package on every update — so
+the CLI symlink, the seeded config and the fetched upstream skills have to live
+outside pi's package tree. See
+[ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md).
+
+Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
+third-party package by design.
+
+```bash
+python3 tests/test_reactor.py             # 44 tests, no dependencies
+```
 
 ## Scope
 

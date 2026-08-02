@@ -12,12 +12,31 @@ run in that directory.
 parses `tools.toml`, and none reimplements catalogue semantics —
 [ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md).
 
+## Built
+
+| Extension | Does |
+|---|---|
+| `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`. |
+
+It renders nothing itself: the block arrives pre-rendered in
+`reactor registry --format json`, so the byte-stability the prompt cache depends
+on is tested once, in Python
+([ADR-0006](../docs/adr/0006-registry-injected-into-system-prompt.md)).
+
+Two behaviours worth knowing before editing it:
+
+- **A failed probe keeps the last good block.** An unreachable CLI is not
+  evidence the tools vanished, and an emptied registry would tell the agent
+  something false.
+- **`pi.exec` resolves rather than throwing**, including on ENOENT — a missing
+  `reactor` looks exactly like a crashed one (code 1, empty stdout). Both are
+  handled as "unavailable", warned once, then silent.
+
 ## Planned
 
 | Extension | Milestone | Does |
 |---|---|---|
-| `tool-registry/` | 1 | Probes, caches, renders the registry into the system prompt via `before_agent_start`; answers `resources_discover` to gate skills and prompts on activation state; one-line `ctx.ui.setStatus`. |
-| `selector/` | 2 | Search, inspect and toggle tools and toolsets. `ctx.ui.custom` + `SelectList`, `ctx.reload()` after a toggle. |
+| `selector/` | 2 | Search, inspect and toggle tools and toolsets. `ctx.ui.custom` + `SelectList`, `ctx.reload()` after a toggle. The CLI side already exists: `reactor tools enable/disable`, `reactor toolsets enable/disable`, `reactor state`. |
 | `status/` | 2 | Live service, device and connectivity state in the footer and a panel. |
 | `scenario/` | 3 | Registers `reactor_step_complete`; its result is the next step's briefing. |
 

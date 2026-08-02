@@ -19,10 +19,13 @@ version = 1
 #   tools  Explicit tool ids.
 #   tags   Tags from tools.toml; every tool carrying one is included.
 #          `tools` and `tags` union.
+#   all    Every catalogue entry, whatever its tags. Only `all` uses this —
+#          spelling "everything" as a tag union silently drops any tool whose
+#          tags nobody remembered to add to the list.
 
 [toolset.all]
-desc = "everything in the catalogue that is installed"
-tags = ["static", "dynamic", "mobile", "network", "firmware", "solving", "parsing", "general"]
+desc = "everything in the catalogue"
+all  = true
 
 [toolset.triage]
 desc  = "first look: identify, unpack, scan"

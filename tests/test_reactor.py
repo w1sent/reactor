@@ -427,6 +427,32 @@ class TestShippedConfig(unittest.TestCase):
         for ts in R.load_toolsets().values():
             self.assertTrue(R.toolset_members(ts, cat), f"toolset {ts.id} selects nothing")
 
+    def test_a_toolset_named_after_a_tag_selects_only_that_tag(self):
+        # Tag selection is a *union*, which has now quietly broken two toolsets:
+        # [toolset.all] built from a tag list dropped whatever nobody tagged,
+        # and [toolset.native] declaring ["static", "native"] collected every
+        # static tool there is -- a Java decompiler and a source-level dataflow
+        # engine among them.
+        #
+        # Where a toolset's name is also a tag, that name is a claim about what
+        # is inside it, and this checks the claim. It does not stop anyone
+        # writing an incoherent toolset under some other name; it stops the
+        # union silently widening one that reads as if it were narrow.
+        cat = R.load_catalogue()
+        tags = {tag for t in cat.tools.values() for tag in t.tags}
+        for ts in R.load_toolsets().values():
+            # Only tag-selected sets. An explicit `tools` list is a deliberate
+            # choice per entry, and `triage` is legitimately a hand-picked set
+            # that happens to share a name with a tag.
+            if ts.everything or ts.tools or ts.id not in tags:
+                continue
+            for tid in R.toolset_members(ts, cat):
+                with self.subTest(toolset=ts.id, tool=tid):
+                    self.assertIn(
+                        ts.id, cat.tools[tid].tags,
+                        f"toolset {ts.id!r} includes {tid!r}, which is not tagged {ts.id!r}",
+                    )
+
 
 def setattr_pair(module, saved):
     module.CONFIG_DIR, module.PACKAGE_ROOT = saved

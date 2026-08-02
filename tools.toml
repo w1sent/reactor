@@ -71,7 +71,7 @@ version = 1
 prefer = [
   "pacman", "apt", "dnf", "zypper", "apk", "brew", "port",
   "paru", "yay",
-  "uv", "pipx", "cargo", "go", "npm", "gem", "pip",
+  "uv", "pipx", "cargo", "go", "npm", "gem", "dotnet", "pip",
 ]
 
 # binary  what must be on PATH for this manager to be usable
@@ -91,6 +91,10 @@ paru   = { binary = "paru",   os = "linux" }
 yay    = { binary = "yay",    os = "linux" }
 uv     = { binary = "uv" }
 pipx   = { binary = "pipx" }
+# `dotnet tool install --global` drops binaries in ~/.dotnet/tools, which is not
+# on PATH by default. A tool installed this way can therefore still probe as
+# absent -- that is the shell's business, not a failed recipe.
+dotnet = { binary = "dotnet" }
 pip    = { binary = "pip3" }
 cargo  = { binary = "cargo" }
 go     = { binary = "go" }
@@ -182,6 +186,17 @@ pacman = "pacman -S jadx"
 apt    = "apt install jadx"
 brew   = "brew install jadx"
 manual = "https://github.com/skylot/jadx/releases"
+
+[tool.ilspycmd]
+name    = "ilspycmd"
+desc    = "decompile .NET assemblies to C#; ILSpy's command-line form"
+invoke  = "ilspycmd"
+detect  = { binary = "ilspycmd" }
+version = ["ilspycmd", "--version"]
+tags    = ["static", "managed", "dotnet", "decompiler"]
+
+[tool.ilspycmd.install]
+dotnet = "dotnet tool install --global ilspycmd"
 
 
 # ---------------------------------------------------------------------------

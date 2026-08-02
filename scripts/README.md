@@ -1,26 +1,38 @@
 # scripts/
 
-Repo-management scripts. Not implemented yet.
+Repo-management scripts.
 
-## `install.py` (planned)
+## `install.py`
 
 The second half of installing REactor. `pi install git:…/reactor` gets the
 assets; this gets everything that is not a pi resource.
 
-1. Symlink `bin/reactor` onto `PATH` (`--cli-dest`, default
-   `~/.local/bin/reactor`).
+```bash
+python3 scripts/install.py                 # symlink the CLI, seed config, fetch skills
+python3 scripts/install.py --copy          # copy the CLI instead of symlinking
+python3 scripts/install.py --cli-dest PATH # somewhere other than ~/.local/bin/reactor
+python3 scripts/install.py --no-skills     # skip the network step
+python3 scripts/install.py --dry-run       # say what would happen and stop
+```
+
+What it does:
+
+1. Symlink (or copy) `bin/reactor` onto `PATH`. Warns if the destination
+   directory is not actually on `PATH`.
 2. Seed `~/.pi/reactor/tools.toml` and `toolsets.toml` from the shipped copies —
-   **only if absent**. Never clobber; if they exist and differ, report it and
-   point at `reactor diff-config`
+   **only if absent**. Never clobbers; if they exist and differ, it says so and
+   points at `reactor diff-config`
    ([ADR-0004](../docs/adr/0004-config-updates-via-plain-diff.md)).
 3. Create `~/.pi/reactor/state.json` if absent.
 4. Fetch configured upstream skills into `~/.pi/reactor/skills/<tool>/`, pinned
-   to the ref in the catalogue, recording source/ref/fetch-time
-   ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)).
+   to the ref in the catalogue, recording source, ref, resolved commit and fetch
+   time in `.reactor-skill.json`
+   ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)). This step is
+   `reactor skills fetch` in a subprocess rather than a second implementation.
 5. Report. Warn **only** where a configured skill could not be fetched — a tool
    with no configured skill is the normal case and gets no warning.
 
-`--link` and `--copy` modes mirroring the plugins repo installer.
+Idempotent; re-running is the supported way to update.
 
 ## Why installation is two steps
 

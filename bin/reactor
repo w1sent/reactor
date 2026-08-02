@@ -1,0 +1,1550 @@
+#!/usr/bin/env python3
+"""reactor -- describe the reverse-engineering toolbox on this machine.
+
+REactor's one command. It reads the tool catalogue at ~/.pi/reactor/tools.toml,
+probes which entries are actually here, and reports that -- to the user at a
+prompt, to a skill as a shell command, and to pi's extensions as JSON.
+
+stdlib-only by design (ADR-0005): the program whose job is to tell you what is
+missing must never itself be missing. Python 3.11+ for tomllib.
+
+Every subcommand supports --format json. That output shape is REactor's
+contract with the pi extensions -- they shell out to this and parse it, and
+never read the catalogue themselves. Human output carries no such guarantee.
+
+  reactor doctor              what is present, what is not, how to get it
+  reactor registry            the block injected into the agent's system prompt
+  reactor tools ...           catalogue queries and activation
+  reactor toolsets ...        the same for named groups
+  reactor skills ...          upstream skills REactor has fetched
+  reactor install <id>...     install a missing tool, platform-appropriate
+  reactor refresh             drop the probe cache
+  reactor diff-config         diff shipped config against yours
+  reactor overwrite-config    force-replace yours with the shipped copy
+"""
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+
+SCHEMA = 1
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_DIR = Path(
+    os.environ.get("REACTOR_CONFIG_DIR") or (Path.home() / ".pi" / "reactor")
+)
+CONFIG_FILES = ("tools.toml", "toolsets.toml")
+
+DEFAULT_TIMEOUT = 5.0
+DEFAULT_DETECT_TTL = 300
+DEFAULT_SERVICE_TTL = 30
+DEFAULT_PYTHON = "python3"
+
+PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
+UP, DOWN = "up", "down"
+
+# One subprocess answers every python_module probe at once, and find_spec is
+# used rather than import so that probing angr does not pay for loading angr.
+_FIND_SPEC = (
+    "import importlib.util as u, json, sys\n"
+    "out = {}\n"
+    "for m in sys.argv[1:]:\n"
+    "    try:\n"
+    "        out[m] = u.find_spec(m) is not None\n"
+    "    except Exception:\n"
+    "        out[m] = False\n"
+    "print(json.dumps(out))\n"
+)
+
+
+class ReactorError(Exception):
+    """A clean, user-facing failure -- printed without a traceback."""
+
+
+# ---------------------------------------------------------------------------
+# Catalogue
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Tool:
+    id: str
+    name: str
+    desc: str
+    invoke: str
+    detect_kind: str  # "binary" | "python_module"
+    detect_value: str
+    tags: list[str] = field(default_factory=list)
+    version_argv: list[str] | None = None
+    service_probe: list[str] | None = None
+    service_label: str | None = None
+    service_count: dict | None = None
+    skill: dict | None = None
+    install: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Toolset:
+    id: str
+    desc: str
+    tools: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    everything: bool = False
+
+
+@dataclass
+class Manager:
+    id: str
+    binary: str
+    os: str | None = None
+    sudo: bool = False
+
+
+@dataclass
+class Catalogue:
+    path: Path
+    shipped: bool  # True when falling back to the in-package copy
+    tools: dict[str, Tool]
+    managers: dict[str, Manager]
+    prefer: list[str]
+    timeout: float
+    detect_ttl: int
+    service_ttl: int
+    python: str
+    stamp: str  # changes when the file changes; invalidates the probe cache
+
+
+def _read_toml(path: Path) -> dict:
+    try:
+        with path.open("rb") as fh:
+            return tomllib.load(fh)
+    except FileNotFoundError:
+        raise ReactorError(f"{path}: not found -- run scripts/install.py first")
+    except tomllib.TOMLDecodeError as exc:
+        raise ReactorError(f"{path}: {exc}")
+    except OSError as exc:
+        raise ReactorError(f"{path}: {exc}")
+
+
+def _config_path(name: str) -> tuple[Path, bool]:
+    """Installed copy if present, else the shipped one. → (path, is_shipped)."""
+    live = CONFIG_DIR / name
+    if live.exists():
+        return live, False
+    return PACKAGE_ROOT / name, True
+
+
+def _stamp(path: Path) -> str:
+    try:
+        st = path.stat()
+        return f"{int(st.st_mtime_ns)}:{st.st_size}"
+    except OSError:
+        return "0:0"
+
+
+def _str_list(raw, where: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ReactorError(f"{where}: expected a list of strings")
+    return list(raw)
+
+
+def load_catalogue() -> Catalogue:
+    path, shipped = _config_path("tools.toml")
+    doc = _read_toml(path)
+    if doc.get("version") != 1:
+        raise ReactorError(f"{path}: unsupported version {doc.get('version')!r} (expected 1)")
+
+    platform = doc.get("platform") or {}
+    managers = {}
+    for mid, spec in (platform.get("manager") or {}).items():
+        if not isinstance(spec, dict):
+            raise ReactorError(f"{path}: [platform.manager.{mid}] must be a table")
+        managers[mid] = Manager(
+            id=mid,
+            binary=spec.get("binary") or mid,
+            os=spec.get("os"),
+            sudo=bool(spec.get("sudo", False)),
+        )
+    prefer = _str_list(platform.get("prefer"), f"{path}: [platform].prefer")
+
+    probe = doc.get("probe") or {}
+    tools: dict[str, Tool] = {}
+    for tid, spec in (doc.get("tool") or {}).items():
+        where = f"{path}: [tool.{tid}]"
+        if not isinstance(spec, dict):
+            raise ReactorError(f"{where} must be a table")
+        detect = spec.get("detect")
+        if not isinstance(detect, dict) or len(detect) != 1:
+            raise ReactorError(f"{where}.detect: expected exactly one of binary, python_module")
+        kind, value = next(iter(detect.items()))
+        if kind not in ("binary", "python_module"):
+            raise ReactorError(f"{where}.detect: unknown kind {kind!r}")
+        for required in ("name", "desc", "invoke"):
+            if not isinstance(spec.get(required), str):
+                raise ReactorError(f"{where}.{required}: required, must be a string")
+        service = spec.get("service") or {}
+        install = spec.get("install") or {}
+        if not all(isinstance(v, str) for v in install.values()):
+            raise ReactorError(f"{where}.install: every recipe must be a string")
+        tools[tid] = Tool(
+            id=tid,
+            name=spec["name"],
+            desc=spec["desc"],
+            invoke=spec["invoke"],
+            detect_kind=kind,
+            detect_value=value,
+            tags=_str_list(spec.get("tags"), f"{where}.tags"),
+            version_argv=_str_list(spec.get("version"), f"{where}.version") or None,
+            service_probe=_str_list(service.get("probe"), f"{where}.service.probe") or None,
+            service_label=service.get("label"),
+            service_count=service.get("count"),
+            skill=spec.get("skill"),
+            install=dict(install),
+        )
+
+    return Catalogue(
+        path=path,
+        shipped=shipped,
+        tools=tools,
+        managers=managers,
+        prefer=prefer,
+        timeout=float(probe.get("timeout", DEFAULT_TIMEOUT)),
+        detect_ttl=int(probe.get("detect_ttl", DEFAULT_DETECT_TTL)),
+        service_ttl=int(probe.get("service_ttl", DEFAULT_SERVICE_TTL)),
+        python=probe.get("python", DEFAULT_PYTHON),
+        stamp=_stamp(path),
+    )
+
+
+def load_toolsets() -> dict[str, Toolset]:
+    path, _ = _config_path("toolsets.toml")
+    doc = _read_toml(path)
+    if doc.get("version") != 1:
+        raise ReactorError(f"{path}: unsupported version {doc.get('version')!r} (expected 1)")
+    out = {}
+    for sid, spec in (doc.get("toolset") or {}).items():
+        where = f"{path}: [toolset.{sid}]"
+        if not isinstance(spec, dict):
+            raise ReactorError(f"{where} must be a table")
+        out[sid] = Toolset(
+            id=sid,
+            desc=spec.get("desc", ""),
+            tools=_str_list(spec.get("tools"), f"{where}.tools"),
+            tags=_str_list(spec.get("tags"), f"{where}.tags"),
+            everything=bool(spec.get("all", False)),
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Activation state
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class State:
+    path: Path
+    scope: str  # "machine" | "project" | "default"
+    toolsets: list[str] = field(default_factory=list)
+    enabled: list[str] = field(default_factory=list)
+    disabled: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "version": 1,
+            "toolsets": sorted(set(self.toolsets)),
+            "tools": {
+                "enabled": sorted(set(self.enabled)),
+                "disabled": sorted(set(self.disabled)),
+            },
+        }
+
+
+def _project_state_path() -> Path | None:
+    """Nearest ./.reactor/state.json at or above cwd (ADR-0003)."""
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        return None
+    for d in (here, *here.parents):
+        candidate = d / ".reactor" / "state.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_state() -> State:
+    project = _project_state_path()
+    path = project or (CONFIG_DIR / "state.json")
+    scope = "project" if project else "machine"
+    if not path.is_file():
+        return State(path=CONFIG_DIR / "state.json", scope="default")
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ReactorError(f"{path}: {exc}")
+    tools = doc.get("tools") or {}
+    return State(
+        path=path,
+        scope=scope,
+        toolsets=_str_list(doc.get("toolsets"), f"{path}: toolsets"),
+        enabled=_str_list(tools.get("enabled"), f"{path}: tools.enabled"),
+        disabled=_str_list(tools.get("disabled"), f"{path}: tools.disabled"),
+    )
+
+
+def save_state(state: State) -> None:
+    _write_json(state.path, state.as_dict())
+
+
+def toolset_members(ts: Toolset, cat: Catalogue) -> list[str]:
+    if ts.everything:
+        return catalogue_order(cat)
+    members = {t for t in ts.tools if t in cat.tools}
+    if ts.tags:
+        wanted = set(ts.tags)
+        members |= {t.id for t in cat.tools.values() if wanted & set(t.tags)}
+    return sorted(members)
+
+
+def active_ids(cat: Catalogue, toolsets: dict[str, Toolset], state: State) -> set[str]:
+    """Which tools the agent is told about. Never blocks anything (ADR-0007)."""
+    if state.toolsets:
+        base: set[str] = set()
+        for sid in state.toolsets:
+            ts = toolsets.get(sid)
+            if ts is not None:
+                base |= set(toolset_members(ts, cat))
+    else:
+        base = set(cat.tools)
+    base |= {t for t in state.enabled if t in cat.tools}
+    return base - set(state.disabled)
+
+
+# ---------------------------------------------------------------------------
+# Platform and install recipes
+# ---------------------------------------------------------------------------
+
+
+def available_managers(cat: Catalogue) -> dict[str, str]:
+    """Declared managers whose binary is here and whose os matches. → id → path."""
+    out = {}
+    for mid, m in cat.managers.items():
+        if m.os and not sys.platform.startswith(m.os):
+            continue
+        found = shutil.which(m.binary)
+        if found:
+            out[mid] = found
+    return out
+
+
+def rank_recipes(tool: Tool, cat: Catalogue, present_managers: dict[str, str]) -> tuple[list[dict], dict[str, str]]:
+    """→ (ranked runnable candidates, free-text notes). See ADR-0010."""
+    candidates, notes = [], {}
+    for key, command in tool.install.items():
+        if key in present_managers:
+            m = cat.managers[key]
+            candidates.append({"method": key, "command": command, "sudo": m.sudo})
+        elif key in cat.managers:
+            # A known manager that is simply not on this machine: still a note,
+            # so `reactor tools show` can say what would work elsewhere.
+            notes[key] = command
+        else:
+            notes[key] = command
+
+    order = {mid: i for i, mid in enumerate(cat.prefer)}
+    declared = list(tool.install)
+    candidates.sort(
+        key=lambda c: (order.get(c["method"], len(order)), declared.index(c["method"]))
+    )
+    return candidates, notes
+
+
+# ---------------------------------------------------------------------------
+# Probing
+# ---------------------------------------------------------------------------
+
+
+def _run(argv: list[str], timeout: float) -> tuple[bool, int | None, str]:
+    """→ (completed, returncode, combined output). Never raises."""
+    try:
+        proc = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            text=True,
+            errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        return False, None, ""
+    except (OSError, ValueError):
+        return True, 127, ""
+    return True, proc.returncode, proc.stdout or ""
+
+
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""
+
+
+class Cache:
+    """Probe results on disk. Best-effort: an unwritable cache is not an error."""
+
+    def __init__(self, cat: Catalogue):
+        self.path = CONFIG_DIR / "cache.json"
+        self.cat = cat
+        self.data = {"version": 1, "stamp": cat.stamp, "detect": {}, "service": {}}
+        try:
+            doc = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return
+        if doc.get("version") == 1 and doc.get("stamp") == cat.stamp:
+            self.data = doc
+            self.data.setdefault("detect", {})
+            self.data.setdefault("service", {})
+
+    def get(self, bucket: str, key: str, ttl: int, now: float) -> dict | None:
+        entry = self.data[bucket].get(key)
+        if not entry:
+            return None
+        if ttl >= 0 and now - entry.get("ts", 0) > ttl:
+            return None
+        return entry
+
+    def stale(self, bucket: str, key: str) -> dict | None:
+        return self.data[bucket].get(key)
+
+    def put(self, bucket: str, key: str, value: dict, now: float) -> None:
+        self.data[bucket][key] = {**value, "ts": now}
+
+    def save(self) -> None:
+        # Not before install: reading the shipped fallback should not conjure
+        # ~/.pi/reactor/ out of a plain `reactor doctor`.
+        if not CONFIG_DIR.is_dir():
+            return
+        try:
+            _write_json(self.path, self.data)
+        except ReactorError:
+            pass
+
+    def clear(self) -> None:
+        self.data["detect"] = {}
+        self.data["service"] = {}
+
+
+def probe(
+    cat: Catalogue,
+    ids: list[str],
+    *,
+    refresh: bool = False,
+    cached_only: bool = False,
+    services: bool = True,
+) -> dict[str, dict]:
+    """Detection (+ version, + service) for `ids`, cache-aware.
+
+    Results are keyed by tool id and carry no timing information: rendering must
+    be byte-stable across turns when nothing about the machine changed
+    (ADR-0006).
+    """
+    now = time.time()
+    cache = Cache(cat)
+    if refresh:
+        cache.clear()
+
+    tools = [cat.tools[i] for i in ids]
+    results: dict[str, dict] = {}
+    detect_todo: list[Tool] = []
+
+    for t in tools:
+        hit = None if refresh else cache.get("detect", t.id, cat.detect_ttl, now)
+        if hit is None and cached_only:
+            hit = cache.stale("detect", t.id)
+        if hit is not None:
+            results[t.id] = {
+                "status": hit.get("status", UNKNOWN),
+                "path": hit.get("path"),
+                "version": hit.get("version"),
+            }
+        elif cached_only:
+            results[t.id] = {"status": UNKNOWN, "path": None, "version": None}
+        else:
+            detect_todo.append(t)
+
+    if detect_todo:
+        _probe_detect(cat, detect_todo, results, cache, now)
+
+    for t in tools:
+        if not (services and t.service_probe):
+            continue
+        if results[t.id]["status"] != PRESENT:
+            results[t.id]["service"] = {"label": t.service_label, "state": UNKNOWN, "detail": None}
+            continue
+        hit = None if refresh else cache.get("service", t.id, cat.service_ttl, now)
+        if hit is None and cached_only:
+            hit = cache.stale("service", t.id)
+        if hit is not None:
+            results[t.id]["service"] = {
+                "label": t.service_label,
+                "state": hit.get("state", UNKNOWN),
+                "detail": hit.get("detail"),
+            }
+        elif cached_only:
+            results[t.id]["service"] = {"label": t.service_label, "state": UNKNOWN, "detail": None}
+        else:
+            results[t.id]["service"] = None  # marker: needs probing
+
+    todo = [t for t in tools if results[t.id].get("service", "x") is None]
+    if todo:
+        _probe_services(cat, todo, results, cache, now)
+
+    cache.save()
+    return results
+
+
+def _probe_detect(cat, tools, results, cache, now) -> None:
+    modules = [t for t in tools if t.detect_kind == "python_module"]
+    found: dict[str, bool] = {}
+    if modules:
+        ok, rc, out = _run(
+            [cat.python, "-c", _FIND_SPEC, *[t.detect_value for t in modules]],
+            cat.timeout,
+        )
+        if ok and rc == 0:
+            try:
+                found = json.loads(_first_line(out) or "{}")
+            except ValueError:
+                found = {}
+        elif not ok:
+            found = {}  # timeout → unknown below
+
+    module_probe_failed = bool(modules) and not found
+
+    for t in tools:
+        if t.detect_kind == "binary":
+            where = shutil.which(t.detect_value)
+            entry = {"status": PRESENT if where else ABSENT, "path": where, "version": None}
+        else:
+            if module_probe_failed:
+                entry = {"status": UNKNOWN, "path": None, "version": None}
+            else:
+                here = bool(found.get(t.detect_value))
+                entry = {"status": PRESENT if here else ABSENT, "path": None, "version": None}
+        results[t.id] = entry
+
+    # Versions only for what is actually here, in parallel: a dozen `--version`
+    # calls in series is a visible pause at session start.
+    versioned = [t for t in tools if t.version_argv and results[t.id]["status"] == PRESENT]
+    if versioned:
+        with ThreadPoolExecutor(max_workers=min(8, len(versioned))) as pool:
+            outs = list(pool.map(lambda t: _run(t.version_argv, cat.timeout), versioned))
+        for t, (ok, rc, out) in zip(versioned, outs):
+            if ok and rc == 0:
+                results[t.id]["version"] = _version_of(_first_line(out))
+
+    for t in tools:
+        cache.put("detect", t.id, results[t.id], now)
+
+
+_VERSION_RE = re.compile(r"\b\d+(?:\.\d+)+(?:[-+.\w]*)?")
+
+
+def _version_of(line: str) -> str | None:
+    """Pull a version number out of a --version line, so the registry stays
+    short and, more importantly, stable: full banners carry build dates."""
+    if not line:
+        return None
+    m = _VERSION_RE.search(line)
+    return m.group(0) if m else line[:32]
+
+
+def _probe_services(cat, tools, results, cache, now) -> None:
+    with ThreadPoolExecutor(max_workers=min(8, len(tools))) as pool:
+        outs = list(pool.map(lambda t: _run(t.service_probe, cat.timeout), tools))
+    for t, (ok, rc, out) in zip(tools, outs):
+        if not ok:
+            entry = {"state": UNKNOWN, "detail": None}
+        elif rc == 0:
+            entry = {"state": UP, "detail": _service_detail(t, out)}
+        else:
+            entry = {"state": DOWN, "detail": None}
+        cache.put("service", t.id, entry, now)
+        results[t.id]["service"] = {"label": t.service_label, **entry}
+
+
+def _service_detail(tool: Tool, out: str) -> str | None:
+    """Deliberately coarse: a count, or nothing. Anything finer would rewrite
+    the system prompt every time a service's output jittered (ADR-0006)."""
+    spec = tool.service_count
+    if not isinstance(spec, dict):
+        return None
+    pattern = spec.get("pattern")
+    if not isinstance(pattern, str):
+        return None
+    try:
+        rx = re.compile(pattern)
+    except re.error:
+        return None
+    n = sum(1 for line in out.splitlines() if rx.search(line))
+    noun = spec.get("noun") or "item"
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+# ---------------------------------------------------------------------------
+# Model assembly
+# ---------------------------------------------------------------------------
+
+
+def describe(
+    cat: Catalogue,
+    toolsets: dict[str, Toolset],
+    state: State,
+    ids: list[str],
+    results: dict[str, dict],
+    *,
+    with_install: bool = False,
+) -> list[dict]:
+    active = active_ids(cat, toolsets, state)
+    managers = available_managers(cat) if with_install else {}
+    out = []
+    for tid in ids:
+        t = cat.tools[tid]
+        r = results.get(tid, {"status": UNKNOWN, "path": None, "version": None})
+        entry = {
+            "id": t.id,
+            "name": t.name,
+            "desc": t.desc,
+            "invoke": t.invoke,
+            "tags": t.tags,
+            "detect": {"kind": t.detect_kind, "value": t.detect_value},
+            "status": r["status"],
+            "path": r.get("path"),
+            "version": r.get("version"),
+            "active": t.id in active,
+            "service": r.get("service"),
+            "skill": skill_status(t),
+        }
+        if with_install:
+            candidates, notes = rank_recipes(t, cat, managers)
+            entry["install"] = {
+                "recommended": candidates[0] if candidates else None,
+                "candidates": candidates,
+                "notes": notes,
+            }
+        out.append(entry)
+    return out
+
+
+def catalogue_order(cat: Catalogue) -> list[str]:
+    """Declaration order. Fixed, so the registry never reorders (ADR-0006)."""
+    return list(cat.tools)
+
+
+# ---------------------------------------------------------------------------
+# Skills
+# ---------------------------------------------------------------------------
+
+
+def skills_dir() -> Path:
+    return CONFIG_DIR / "skills"
+
+
+def skill_status(tool: Tool) -> dict | None:
+    if not tool.skill:
+        return None
+    d = skills_dir() / tool.id
+    meta_path = d / ".reactor-skill.json"
+    meta = {}
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, ValueError):
+            meta = {}
+    return {
+        "source": tool.skill.get("source"),
+        "path": tool.skill.get("path"),
+        "ref": tool.skill.get("ref"),
+        "fetched": (d / "SKILL.md").is_file(),
+        "dir": str(d),
+        "commit": meta.get("commit"),
+        "fetched_at": meta.get("fetched_at"),
+    }
+
+
+def fetch_skill(tool: Tool, *, quiet: bool = False) -> dict:
+    """→ {ok, tool, message}. Never raises; a failed fetch is a warning."""
+    spec = tool.skill or {}
+    source = spec.get("source") or ""
+    dest = skills_dir() / tool.id
+    try:
+        if source.startswith("git+"):
+            info = _fetch_skill_git(source[4:], spec, dest)
+        elif source.startswith(("http://", "https://")):
+            info = _fetch_skill_url(source, dest)
+        else:
+            return {"ok": False, "tool": tool.id, "message": f"unsupported skill source {source!r}"}
+    except ReactorError as exc:
+        return {"ok": False, "tool": tool.id, "message": str(exc)}
+
+    meta = {
+        "source": source,
+        "path": spec.get("path"),
+        "ref": spec.get("ref"),
+        "commit": info.get("commit"),
+        "fetched_at": int(time.time()),
+    }
+    _write_json(dest / ".reactor-skill.json", meta)
+    if not quiet:
+        print(f"fetched {tool.id} skill → {dest}")
+    return {"ok": True, "tool": tool.id, "message": str(dest), "commit": info.get("commit")}
+
+
+def _fetch_skill_git(url: str, spec: dict, dest: Path) -> dict:
+    if not shutil.which("git"):
+        raise ReactorError("git is not on PATH")
+    ref = spec.get("ref") or "HEAD"
+    with tempfile.TemporaryDirectory(prefix="reactor-skill-") as tmp:
+        clone = Path(tmp) / "repo"
+        argv = ["git", "clone", "--quiet", "--depth", "1"]
+        if spec.get("ref"):
+            argv += ["--branch", ref]
+        argv += [url, str(clone)]
+        ok, rc, out = _run(argv, 120.0)
+        if not ok or rc != 0:
+            raise ReactorError(f"clone failed: {_first_line(out) or 'timeout'}")
+        _, _, head = _run(["git", "-C", str(clone), "rev-parse", "HEAD"], 20.0)
+        src = clone / spec["path"] if spec.get("path") else clone
+        if not src.is_dir():
+            raise ReactorError(f"path {spec.get('path')!r} not found in {url}")
+        if not (src / "SKILL.md").is_file():
+            raise ReactorError(f"no SKILL.md at {spec.get('path') or '<repo root>'} in {url}")
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
+    return {"commit": _first_line(head) or None}
+
+
+def _fetch_skill_url(url: str, dest: Path) -> dict:
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - user-configured
+            body = resp.read().decode("utf-8", "replace")
+    except Exception as exc:  # urllib raises a wide family
+        raise ReactorError(f"download failed: {exc}")
+    if not body.lstrip().startswith("---"):
+        raise ReactorError("downloaded file has no YAML frontmatter; not a SKILL.md")
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "SKILL.md").write_text(body)
+    return {"commit": None}
+
+
+def skill_remote_head(tool: Tool) -> str | None:
+    spec = tool.skill or {}
+    source = spec.get("source") or ""
+    if not source.startswith("git+") or not shutil.which("git"):
+        return None
+    ok, rc, out = _run(["git", "ls-remote", source[4:], spec.get("ref") or "HEAD"], 30.0)
+    if not ok or rc != 0:
+        return None
+    line = _first_line(out)
+    return line.split()[0] if line else None
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+GLYPH = {PRESENT: "[+]", ABSENT: "[-]", UNKNOWN: "[?]"}
+
+REGISTRY_HEADING = "## Available RE tools (this machine)"
+REGISTRY_FOOTER = (
+    "`<tool> --help` or `man <tool>` is the documentation -- read it rather than "
+    "guessing flags.\n"
+    "`reactor tools show <id>` for detail, `reactor doctor` for what else exists "
+    "and how to install it.\n"
+    "Anything not listed here is either absent or deactivated; prefer these over "
+    "writing a parser by hand."
+)
+
+
+def render_registry(entries: list[dict]) -> str:
+    """The block injected into the system prompt.
+
+    Rendered here rather than in the extension so the determinism this depends
+    on is testable in one language: same machine state → byte-identical string.
+    Nothing time-derived may enter this function's output.
+    """
+    listed = [e for e in entries if e["active"] and e["status"] == PRESENT]
+    if not listed:
+        return (
+            f"{REGISTRY_HEADING}\n\n"
+            "None. No catalogued RE tool was detected on this machine -- run "
+            "`reactor doctor` to see what is missing and how to install it."
+        )
+
+    rows = [(_label(e), e["desc"], _annotation(e)) for e in listed]
+    w_label = max(len(r[0]) for r in rows)
+    w_desc = max((len(r[1]) for r in rows if r[2]), default=0)
+
+    lines = []
+    for label, desc, ann in rows:
+        line = f"{label:<{w_label}}  {desc}"
+        if ann:
+            line = f"{line:<{w_label + 2 + w_desc}}  {ann}"
+        lines.append(line.rstrip())
+
+    return f"{REGISTRY_HEADING}\n\n" + "\n".join(lines) + "\n\n" + REGISTRY_FOOTER
+
+
+def _label(entry: dict) -> str:
+    """The first column: what you type. A multi-word `invoke` is a usage
+    example, not a command name, so python libraries show their module."""
+    invoke = entry["invoke"]
+    if len(invoke.split()) == 1:
+        return invoke
+    return entry["detect"]["value"]
+
+
+def _annotation(entry: dict) -> str:
+    svc = entry.get("service")
+    if svc:
+        state = svc.get("state")
+        label = svc.get("label") or "service"
+        if state == UP:
+            detail = svc.get("detail")
+            return f"[{label}: {detail}]" if detail else f"[{label}: up]"
+        if state == DOWN:
+            return f"[{label}: down]"
+        return f"[{label}: unknown]"
+    if entry.get("version"):
+        return entry["version"]
+    if entry["detect"]["kind"] == "python_module":
+        return "(python module)"
+    return ""
+
+
+def _table(rows: list[tuple[str, ...]]) -> str:
+    if not rows:
+        return ""
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    return "\n".join(
+        "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip()
+        for row in rows
+    )
+
+
+def render_tool_list(entries: list[dict]) -> str:
+    rows = [
+        (
+            GLYPH.get(e["status"], "[?]"),
+            e["id"],
+            e["version"] or "",
+            "" if e["active"] else "(off)",
+            e["desc"],
+        )
+        for e in entries
+    ]
+    return _table(rows)
+
+
+def render_tool_show(entry: dict) -> str:
+    title = entry["id"] if entry["name"] == entry["id"] else f"{entry['id']} -- {entry['name']}"
+    out = [title, ""]
+    out.append(f"  {entry['desc']}")
+    out.append("")
+    out.append(f"  status    {entry['status']}" + (f" ({entry['path']})" if entry.get("path") else ""))
+    out.append(f"  invoke    {entry['invoke']}")
+    if entry.get("version"):
+        out.append(f"  version   {entry['version']}")
+    out.append(f"  active    {'yes' if entry['active'] else 'no'}")
+    out.append(f"  tags      {', '.join(entry['tags']) or '-'}")
+    d = entry["detect"]
+    out.append(f"  detect    {d['kind']} = {d['value']}")
+    svc = entry.get("service")
+    if svc:
+        detail = f" ({svc['detail']})" if svc.get("detail") else ""
+        out.append(f"  service   {svc.get('label') or 'service'}: {svc['state']}{detail}")
+    sk = entry.get("skill")
+    if sk:
+        where = "fetched" if sk["fetched"] else "NOT FETCHED"
+        out.append(f"  skill     {where} -- {sk['source']} @ {sk.get('ref') or 'HEAD'}")
+    inst = entry.get("install")
+    if inst:
+        out.append("")
+        if inst["recommended"]:
+            out.append(f"  install   {_recipe_text(inst['recommended'])}")
+            for c in inst["candidates"][1:]:
+                out.append(f"            {_recipe_text(c)}")
+        for key, text in inst["notes"].items():
+            out.append(f"  {key:<9} {text}")
+    return "\n".join(out)
+
+
+def _recipe_text(recipe: dict) -> str:
+    return ("sudo " if recipe.get("sudo") else "") + recipe["command"]
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+
+def emit(args, payload: dict, human: str) -> None:
+    if args.format == "json":
+        json.dump({"schema": SCHEMA, **payload}, sys.stdout, indent=2, sort_keys=False)
+        sys.stdout.write("\n")
+    elif human:
+        print(human)
+
+
+def _write_json(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp.replace(path)
+    except OSError as exc:
+        raise ReactorError(f"{path}: {exc}")
+
+
+def _confirm(prompt: str, args) -> bool:
+    if getattr(args, "yes", False):
+        return True
+    if args.format == "json" or not sys.stdin.isatty():
+        return False
+    try:
+        return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def _select(cat: Catalogue, ids: list[str] | None) -> list[str]:
+    if not ids:
+        return catalogue_order(cat)
+    unknown = [i for i in ids if i not in cat.tools]
+    if unknown:
+        raise ReactorError(f"unknown tool(s): {', '.join(unknown)}")
+    return [i for i in catalogue_order(cat) if i in set(ids)]
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_registry(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ids = sorted(active_ids(cat, toolsets, state), key=catalogue_order(cat).index)
+    results = probe(cat, ids, refresh=args.refresh, cached_only=args.cached)
+    entries = describe(cat, toolsets, state, ids, results)
+    block = render_registry(entries)
+    summary = {
+        "present": sum(1 for e in entries if e["status"] == PRESENT),
+        "absent": sum(1 for e in entries if e["status"] == ABSENT),
+        "unknown": sum(1 for e in entries if e["status"] == UNKNOWN),
+        "catalogued": len(cat.tools),
+    }
+    skill_paths = sorted(
+        str(skills_dir() / e["id"])
+        for e in entries
+        if e["active"] and e["status"] == PRESENT and (e["skill"] or {}).get("fetched")
+    )
+    emit(
+        args,
+        {"block": block, "tools": entries, "summary": summary, "skillPaths": skill_paths},
+        block,
+    )
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ids = catalogue_order(cat)
+    results = probe(cat, ids, refresh=not args.cached, cached_only=args.cached)
+    entries = describe(cat, toolsets, state, ids, results, with_install=True)
+    managers = available_managers(cat)
+
+    problems: list[dict] = []
+    if cat.shipped:
+        problems.append(
+            {
+                "kind": "not-installed",
+                "message": f"reading the shipped catalogue at {cat.path}; "
+                f"run scripts/install.py to seed {CONFIG_DIR}",
+            }
+        )
+    for name in CONFIG_FILES:
+        drift = _config_drift(name)
+        if drift == "differs":
+            problems.append(
+                {"kind": "config-drift", "file": name,
+                 "message": f"{name} differs from the shipped copy -- `reactor diff-config`"}
+            )
+    for e in entries:
+        sk = e["skill"]
+        if sk and not sk["fetched"]:
+            problems.append(
+                {"kind": "skill-missing", "tool": e["id"],
+                 "message": f"{e['id']}: configured skill not fetched -- `reactor skills fetch {e['id']}`"}
+            )
+
+    stale: list[dict] = []
+    if args.check_skills:
+        for e in entries:
+            sk = e["skill"]
+            if not (sk and sk["fetched"] and sk.get("commit")):
+                continue
+            head = skill_remote_head(cat.tools[e["id"]])
+            if head and head != sk["commit"]:
+                stale.append({"tool": e["id"], "have": sk["commit"][:12], "remote": head[:12]})
+                problems.append(
+                    {"kind": "skill-stale", "tool": e["id"],
+                     "message": f"{e['id']}: fetched skill is behind {sk.get('ref') or 'HEAD'}"}
+                )
+
+    payload = {
+        "platform": {
+            "sys_platform": sys.platform,
+            "python": sys.version.split()[0],
+            "managers": sorted(managers),
+        },
+        "config": {
+            "dir": str(CONFIG_DIR),
+            "catalogue": str(cat.path),
+            "shipped_fallback": cat.shipped,
+            "state_scope": state.scope,
+            "active_toolsets": state.toolsets or ["(all)"],
+        },
+        "tools": entries,
+        "skills_stale": stale,
+        "problems": problems,
+    }
+    emit(args, payload, _render_doctor(payload, entries))
+    return 0
+
+
+def _render_doctor(payload: dict, entries: list[dict]) -> str:
+    p = payload["platform"]
+    c = payload["config"]
+    out = [
+        f"platform   {p['sys_platform']}, python {p['python']}",
+        f"managers   {', '.join(p['managers']) or 'none detected'}",
+        f"config     {c['catalogue']}" + ("  (SHIPPED FALLBACK)" if c["shipped_fallback"] else ""),
+        f"toolsets   {', '.join(c['active_toolsets'])}  [{c['state_scope']}]",
+        "",
+    ]
+    present = [e for e in entries if e["status"] == PRESENT]
+    absent = [e for e in entries if e["status"] == ABSENT]
+    unknown = [e for e in entries if e["status"] == UNKNOWN]
+
+    out.append(f"present ({len(present)})")
+    out.append(_table([("  " + e["id"], e["version"] or "", e["desc"]) for e in present]) or "  none")
+    if unknown:
+        out += ["", f"unknown ({len(unknown)}) -- probe timed out; not reported as absent"]
+        out.append(_table([("  " + e["id"], e["desc"]) for e in unknown]))
+    if absent:
+        out += ["", f"missing ({len(absent)})"]
+        rows = []
+        for e in absent:
+            rec = e["install"]["recommended"]
+            if rec:
+                hint = _recipe_text(rec)
+            else:
+                # No runnable recipe here. Show a note, keyed, so it reads as
+                # "this is what works elsewhere" rather than as a command to run.
+                note = next(iter(e["install"]["notes"].items()), None)
+                hint = f"({note[0]}) {note[1]}" if note else "no recipe for this machine"
+            rows.append(("  " + e["id"], hint))
+        out.append(_table(rows))
+    if payload["problems"]:
+        out += ["", "problems"]
+        out += [f"  ! {pr['message']}" for pr in payload["problems"]]
+    return "\n".join(out)
+
+
+def cmd_tools_list(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ids = catalogue_order(cat)
+    if args.tag:
+        wanted = set(args.tag)
+        ids = [i for i in ids if wanted & set(cat.tools[i].tags)]
+    if args.active:
+        active = active_ids(cat, toolsets, state)
+        ids = [i for i in ids if i in active]
+    results = probe(cat, ids, refresh=args.refresh, cached_only=args.cached, services=False)
+    entries = describe(cat, toolsets, state, ids, results)
+    if args.present:
+        entries = [e for e in entries if e["status"] == PRESENT]
+    elif args.missing:
+        entries = [e for e in entries if e["status"] == ABSENT]
+    emit(args, {"tools": entries}, render_tool_list(entries))
+    return 0
+
+
+def cmd_tools_show(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ids = _select(cat, [args.id])
+    results = probe(cat, ids, refresh=args.refresh, cached_only=args.cached)
+    entry = describe(cat, toolsets, state, ids, results, with_install=True)[0]
+    emit(args, {"tool": entry}, render_tool_show(entry))
+    return 0
+
+
+def _toggle(args, *, tools: bool, on: bool) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    known = cat.tools if tools else toolsets
+    unknown = [i for i in args.id if i not in known]
+    if unknown:
+        raise ReactorError(f"unknown {'tool' if tools else 'toolset'}(s): {', '.join(unknown)}")
+
+    if tools:
+        for i in args.id:
+            if on:
+                state.disabled = [x for x in state.disabled if x != i]
+                if i not in state.enabled:
+                    state.enabled.append(i)
+            else:
+                state.enabled = [x for x in state.enabled if x != i]
+                if i not in state.disabled:
+                    state.disabled.append(i)
+    else:
+        for i in args.id:
+            if on and i not in state.toolsets:
+                state.toolsets.append(i)
+            elif not on:
+                state.toolsets = [x for x in state.toolsets if x != i]
+
+    if state.scope == "default":
+        state.path = CONFIG_DIR / "state.json"
+    save_state(state)
+    active = sorted(active_ids(cat, toolsets, state))
+    emit(
+        args,
+        {"state": state.as_dict(), "active": active, "path": str(state.path)},
+        f"{'enabled' if on else 'disabled'}: {', '.join(args.id)}\n"
+        f"{len(active)} tool(s) active -- {state.path}",
+    )
+    return 0
+
+
+def cmd_toolsets_list(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    rows, payload = [], []
+    for sid, ts in toolsets.items():
+        members = toolset_members(ts, cat)
+        on = sid in state.toolsets
+        payload.append({"id": sid, "desc": ts.desc, "active": on, "tools": members})
+        rows.append(("[x]" if on else "[ ]", sid, str(len(members)), ts.desc))
+    emit(args, {"toolsets": payload}, _table(rows))
+    return 0
+
+
+def cmd_toolsets_show(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ts = toolsets.get(args.id)
+    if ts is None:
+        raise ReactorError(f"unknown toolset: {args.id}")
+    members = toolset_members(ts, cat)
+    results = probe(cat, members, cached_only=True, services=False)
+    entries = describe(cat, toolsets, state, members, results)
+    payload = {
+        "toolset": {
+            "id": ts.id, "desc": ts.desc, "tools": ts.tools, "tags": ts.tags,
+            "active": ts.id in state.toolsets, "members": entries,
+        }
+    }
+    human = f"{ts.id} -- {ts.desc}\n\n" + render_tool_list(entries)
+    emit(args, payload, human)
+    return 0
+
+
+def cmd_state(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    active = sorted(active_ids(cat, toolsets, state))
+    payload = {"state": state.as_dict(), "scope": state.scope, "path": str(state.path), "active": active}
+    human = (
+        f"scope      {state.scope} ({state.path})\n"
+        f"toolsets   {', '.join(state.toolsets) or '(none -- everything is active)'}\n"
+        f"enabled    {', '.join(state.enabled) or '-'}\n"
+        f"disabled   {', '.join(state.disabled) or '-'}\n"
+        f"active     {len(active)} tool(s)"
+    )
+    emit(args, payload, human)
+    return 0
+
+
+def cmd_skills_list(args) -> int:
+    cat = load_catalogue()
+    rows, payload = [], []
+    for tid in catalogue_order(cat):
+        sk = skill_status(cat.tools[tid])
+        if sk is None:
+            continue
+        payload.append({"tool": tid, **sk})
+        rows.append((
+            "[+]" if sk["fetched"] else "[-]",
+            tid,
+            (sk.get("commit") or "")[:12],
+            sk["source"] or "",
+        ))
+    emit(args, {"skills": payload}, _table(rows) or "no upstream skills configured")
+    return 0
+
+
+def cmd_skills_show(args) -> int:
+    cat = load_catalogue()
+    if args.id not in cat.tools:
+        raise ReactorError(f"unknown tool: {args.id}")
+    path = skills_dir() / args.id / "SKILL.md"
+    if not path.is_file():
+        raise ReactorError(f"{args.id}: no fetched skill -- `reactor skills fetch {args.id}`")
+    body = path.read_text(errors="replace")
+    emit(args, {"skill": {"tool": args.id, "path": str(path), "content": body}}, body)
+    return 0
+
+
+def cmd_skills_fetch(args) -> int:
+    cat = load_catalogue()
+    ids = _select(cat, args.id or None)
+    targets = [cat.tools[i] for i in ids if cat.tools[i].skill]
+    if not targets:
+        raise ReactorError("no configured upstream skills among the selected tools")
+    quiet = args.format == "json"
+    results = [fetch_skill(t, quiet=quiet) for t in targets]
+    failures = [r for r in results if not r["ok"]]
+    human = "\n".join(
+        ("  " if r["ok"] else "! ") + f"{r['tool']}: {r['message']}" for r in results
+    )
+    emit(args, {"fetched": results, "failed": len(failures)}, human)
+    return 1 if failures else 0
+
+
+def cmd_install(args) -> int:
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ids = _select(cat, args.id)
+    results = probe(cat, ids, refresh=True, services=False)
+    entries = describe(cat, toolsets, state, ids, results, with_install=True)
+
+    plan, skipped = [], []
+    for e in entries:
+        if e["status"] == PRESENT:
+            skipped.append({"tool": e["id"], "reason": "already present"})
+            continue
+        inst = e["install"]
+        recipe = None
+        if args.method:
+            recipe = next((c for c in inst["candidates"] if c["method"] == args.method), None)
+            if recipe is None:
+                skipped.append({"tool": e["id"], "reason": f"no runnable {args.method} recipe"})
+                continue
+        else:
+            recipe = inst["recommended"]
+        if recipe is None:
+            note = next(iter(inst["notes"].items()), None)
+            skipped.append({
+                "tool": e["id"],
+                "reason": f"no recipe for this machine; ({note[0]}) {note[1]}" if note
+                else "no recipe for this machine",
+            })
+            continue
+        plan.append({"tool": e["id"], **recipe, "argv": _recipe_argv(recipe)})
+
+    if args.dry_run or not plan:
+        human = "\n".join(
+            [f"would run  {p['tool']:<12} {_recipe_text(p)}" for p in plan]
+            + [f"skip       {s['tool']:<12} {s['reason']}" for s in skipped]
+        )
+        emit(args, {"plan": plan, "skipped": skipped, "ran": []}, human or "nothing to do")
+        return 0
+
+    if args.format != "json":
+        # Never to stdout in json mode: that stream is the extensions' input.
+        print("\n".join(f"  {p['tool']:<12} {_recipe_text(p)}" for p in plan))
+    if not _confirm(f"run {len(plan)} install command(s)?", args):
+        emit(args, {"plan": plan, "skipped": skipped, "ran": [],
+                    "message": "not confirmed; re-run with --yes or --dry-run"},
+             "aborted -- re-run with --yes to execute, or --dry-run to see the plan")
+        return 1
+
+    ran = []
+    for p in plan:
+        if args.format == "json":
+            # An installer writing to the inherited stdout would corrupt the
+            # payload, so capture it and hand back the tail instead.
+            proc = subprocess.run(p["argv"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, errors="replace")
+            output = "\n".join((proc.stdout or "").splitlines()[-20:])
+        else:
+            proc = subprocess.run(p["argv"])
+            output = None
+        ran.append({"tool": p["tool"], "command": _recipe_text(p),
+                    "returncode": proc.returncode, "output": output})
+        if proc.returncode == 0 and cat.tools[p["tool"]].skill:
+            fetch_skill(cat.tools[p["tool"]], quiet=args.format == "json")
+    Cache(cat).clear()
+    failed = [r for r in ran if r["returncode"] != 0]
+    human = "\n".join(
+        ("ok   " if r["returncode"] == 0 else "FAIL ") + f"{r['tool']:<12} {r['command']}" for r in ran
+    )
+    emit(args, {"plan": plan, "skipped": skipped, "ran": ran}, human)
+    return 1 if failed else 0
+
+
+def _recipe_argv(recipe: dict) -> list[str]:
+    argv = shlex.split(recipe["command"])
+    if recipe.get("sudo") and os.geteuid() != 0:
+        argv = ["sudo", *argv]
+    return argv
+
+
+def _config_drift(name: str) -> str:
+    """→ 'same' | 'differs' | 'absent'."""
+    shipped = PACKAGE_ROOT / name
+    live = CONFIG_DIR / name
+    if not live.is_file():
+        return "absent"
+    if not shipped.is_file():
+        return "same"
+    try:
+        return "same" if shipped.read_bytes() == live.read_bytes() else "differs"
+    except OSError:
+        return "differs"
+
+
+def cmd_diff_config(args) -> int:
+    names = [args.file + ".toml"] if args.file else list(CONFIG_FILES)
+    if not shutil.which("diff"):
+        raise ReactorError("diff(1) is not on PATH")
+    files, differ = [], False
+    chunks = []
+    for name in names:
+        shipped, live = PACKAGE_ROOT / name, CONFIG_DIR / name
+        state = _config_drift(name)
+        files.append({"file": name, "shipped": str(shipped), "installed": str(live), "state": state})
+        if state == "absent":
+            chunks.append(f"--- {name}: not installed; run scripts/install.py")
+            continue
+        proc = subprocess.run(
+            ["diff", "-u", "--label", f"shipped/{name}", "--label", f"installed/{name}",
+             str(shipped), str(live)],
+            stdout=subprocess.PIPE, text=True, errors="replace",
+        )
+        if proc.returncode != 0:
+            differ = True
+            chunks.append(proc.stdout.rstrip())
+    payload = {"files": files, "differ": differ, "diff": "\n".join(chunks)}
+    emit(args, payload, "\n".join(chunks) or "no differences")
+    return 1 if differ else 0
+
+
+def cmd_overwrite_config(args) -> int:
+    names = [args.file + ".toml"] if args.file else list(CONFIG_FILES)
+    plan = [n for n in names if _config_drift(n) != "same"]
+    if not plan:
+        emit(args, {"replaced": [], "backups": []}, "already identical to the shipped copies")
+        return 0
+    if not _confirm(f"replace {', '.join(plan)} in {CONFIG_DIR} with the shipped copies?", args):
+        emit(args, {"replaced": [], "backups": [], "message": "not confirmed"},
+             "aborted -- re-run with --yes")
+        return 1
+    replaced, backups = [], []
+    for name in plan:
+        live = CONFIG_DIR / name
+        if live.is_file():
+            backup = live.with_name(f"{name}.{time.strftime('%Y%m%d-%H%M%S')}.bak")
+            shutil.copy2(live, backup)
+            backups.append(str(backup))
+        live.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PACKAGE_ROOT / name, live)
+        replaced.append(name)
+    emit(args, {"replaced": replaced, "backups": backups},
+         "replaced: " + ", ".join(replaced) + ("\nbackups: " + ", ".join(backups) if backups else ""))
+    return 0
+
+
+def cmd_refresh(args) -> int:
+    cat = load_catalogue()
+    cache = Cache(cat)
+    cache.clear()
+    cache.save()
+    ids = catalogue_order(cat)
+    results = probe(cat, ids, refresh=True)
+    n = sum(1 for r in results.values() if r["status"] == PRESENT)
+    emit(args, {"probed": len(ids), "present": n}, f"probed {len(ids)} tool(s); {n} present")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def _group_help(parser: argparse.ArgumentParser):
+    """`reactor tools` with no subcommand shows that group's help, not the top."""
+
+    def show(_args) -> int:
+        parser.print_help()
+        return 2
+
+    return show
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--format", choices=("text", "json"), default="text",
+        help="json is the extensions' interface and is stable; text is not",
+    )
+    probing = argparse.ArgumentParser(add_help=False)
+    probing.add_argument("--refresh", action="store_true", help="ignore the probe cache")
+    probing.add_argument("--cached", action="store_true",
+                         help="never probe; report cached values, unknown where absent")
+
+    p = argparse.ArgumentParser(
+        prog="reactor",
+        description="Describe the reverse-engineering toolbox on this machine.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = p.add_subparsers(dest="command", metavar="<command>")
+
+    d = sub.add_parser("doctor", parents=[common], help="what is present, what is missing, how to get it")
+    d.add_argument("--cached", action="store_true", help="use cached probes instead of re-probing")
+    d.add_argument("--check-skills", action="store_true",
+                   help="also check fetched skills against their remote ref (network)")
+    d.set_defaults(func=cmd_doctor)
+
+    r = sub.add_parser("registry", parents=[common, probing],
+                       help="the block injected into the agent's system prompt")
+    r.set_defaults(func=cmd_registry)
+
+    t = sub.add_parser("tools", help="catalogue queries and activation")
+    t.set_defaults(func=_group_help(t))
+    tsub = t.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    tl = tsub.add_parser("list", parents=[common, probing], help="list catalogue entries")
+    tl.add_argument("--tag", action="append", help="only tools carrying this tag (repeatable)")
+    tl.add_argument("--active", action="store_true", help="only currently active tools")
+    tl.add_argument("--present", action="store_true", help="only tools detected on this machine")
+    tl.add_argument("--missing", action="store_true", help="only tools that are absent")
+    tl.set_defaults(func=cmd_tools_list)
+    ts_ = tsub.add_parser("show", parents=[common, probing], help="one entry in full")
+    ts_.add_argument("id")
+    ts_.set_defaults(func=cmd_tools_show)
+    te = tsub.add_parser("enable", parents=[common], help="activate tools (hint only; never blocks)")
+    te.add_argument("id", nargs="+")
+    te.set_defaults(func=lambda a: _toggle(a, tools=True, on=True))
+    td = tsub.add_parser("disable", parents=[common], help="deactivate tools (hint only; never blocks)")
+    td.add_argument("id", nargs="+")
+    td.set_defaults(func=lambda a: _toggle(a, tools=True, on=False))
+
+    s = sub.add_parser("toolsets", help="named groups of tools")
+    s.set_defaults(func=_group_help(s))
+    ssub = s.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    sl = ssub.add_parser("list", parents=[common], help="list toolsets")
+    sl.set_defaults(func=cmd_toolsets_list)
+    sh = ssub.add_parser("show", parents=[common], help="one toolset and its members")
+    sh.add_argument("id")
+    sh.set_defaults(func=cmd_toolsets_show)
+    se = ssub.add_parser("enable", parents=[common], help="activate a toolset")
+    se.add_argument("id", nargs="+")
+    se.set_defaults(func=lambda a: _toggle(a, tools=False, on=True))
+    sd = ssub.add_parser("disable", parents=[common], help="deactivate a toolset")
+    sd.add_argument("id", nargs="+")
+    sd.set_defaults(func=lambda a: _toggle(a, tools=False, on=False))
+
+    st = sub.add_parser("state", parents=[common], help="current activation state")
+    st.set_defaults(func=cmd_state)
+
+    k = sub.add_parser("skills", help="upstream skills REactor has fetched")
+    k.set_defaults(func=_group_help(k))
+    ksub = k.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    kl = ksub.add_parser("list", parents=[common], help="configured skills and whether they are here")
+    kl.set_defaults(func=cmd_skills_list)
+    ks = ksub.add_parser("show", parents=[common], help="print a skill for review before trusting it")
+    ks.add_argument("id")
+    ks.set_defaults(func=cmd_skills_show)
+    kf = ksub.add_parser("fetch", parents=[common], help="fetch configured upstream skills")
+    kf.add_argument("id", nargs="*", help="tools to fetch for; default is every configured one")
+    kf.set_defaults(func=cmd_skills_fetch)
+
+    i = sub.add_parser("install", parents=[common], help="install a missing tool")
+    i.add_argument("id", nargs="+")
+    i.add_argument("--method", help="force a specific install method (see `reactor tools show`)")
+    i.add_argument("--dry-run", action="store_true", help="print the plan and stop")
+    i.add_argument("--yes", "-y", action="store_true", help="do not ask before running")
+    i.set_defaults(func=cmd_install)
+
+    f = sub.add_parser("refresh", parents=[common], help="drop the probe cache and re-probe")
+    f.set_defaults(func=cmd_refresh)
+
+    dc = sub.add_parser("diff-config", parents=[common], help="diff(1) shipped config against yours")
+    dc.add_argument("--file", choices=("tools", "toolsets"), help="just one of the two")
+    dc.set_defaults(func=cmd_diff_config)
+
+    oc = sub.add_parser("overwrite-config", parents=[common],
+                        help="force-replace your config with the shipped copy (backs up first)")
+    oc.add_argument("--file", choices=("tools", "toolsets"), help="just one of the two")
+    oc.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    oc.set_defaults(func=cmd_overwrite_config)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        parser.print_help()
+        return 2
+    # Subcommand groups with no subcommand chosen land here with func unset.
+    try:
+        return args.func(args)
+    except ReactorError as exc:
+        if getattr(args, "format", "text") == "json":
+            json.dump({"schema": SCHEMA, "error": str(exc)}, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            print(f"reactor: {exc}", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
+        return 0
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

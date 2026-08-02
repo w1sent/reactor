@@ -37,5 +37,18 @@ requires: [frida, adb]        # REActor-specific; inert to pi
 ```
 
 pi's loader reads only `name`, `description` and `disable-model-invocation`
-(verified — `docs/pi-api-notes.md`). `requires` lists catalogue ids and is what
-binds a skill to activation state.
+(verified — `docs/pi-api-notes.md`). `requires` lists catalogue ids and is
+intended to bind a skill to activation state.
+
+> **`requires` is not enforced yet.** Skills in this directory are discovered by
+> pi's *package* loader because `skills/` is a conventional directory at the
+> package root — which happens before, and independently of, the tool-registry
+> extension's `resources_discover`. So a skill here loads whether or not its
+> tools are present or active, and `requires` is currently documentation.
+>
+> Only *fetched upstream* skills in `~/.pi/reactor/skills/<tool>/` are gated
+> today, because those are handed to pi by the extension. Gating this directory
+> too would mean moving these skills out of the package's conventional layout
+> and serving them from `resources_discover` as well. That is a real change and
+> it is not made yet — see `TODO.md`. Since the expected count here is near
+> zero, it has cost nothing so far.

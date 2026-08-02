@@ -34,19 +34,80 @@ version = 1
 #   invoke  What the agent types to use it. Shown in the registry.
 #   detect  How to tell whether it is here. One of:
 #             binary        = "rg"          → shutil.which
-#             python_module = "lief"        → importable in the active env
+#             python_module = "lief"        → importlib.util.find_spec, in the
+#                                             interpreter named by [probe].python
 #   version Optional argv whose stdout carries a version string.
 #   tags    Free-form; toolsets select on these as well as on ids.
 #   service Optional. The tool talks to something that may or may not be
-#           running: { probe = [argv], label = "…" }. Service probes are the
-#           only ones re-run on a timer.
+#           running: { probe = [argv], label = "…" }. Exit 0 is up, anything
+#           else is down, a timeout is unknown. Service probes are the only
+#           ones re-run on a timer.
+#           An optional { count = { pattern = 'regex', noun = "device" } }
+#           reports how many probe output lines match. That is the ONLY detail
+#           the registry ever carries, because a count changes when the count
+#           changes — free-text output would rewrite the system prompt every
+#           time a service jittered. See ADR-0006.
 #   skill   Optional upstream Agent Skill to fetch at install time:
 #             { source = "git+URL", path = "subdir", ref = "main" }
 #           A configured-but-unfetchable skill warns. No skill is normal.
 #
 # [tool.<id>.install]
-#   Keys are install methods; `reactor doctor` picks one for the running
-#   platform. Method-key granularity is an open question (TODO.md).
+#   Keys name PACKAGE MANAGERS, not distributions. A key declared in
+#   [platform.manager] below whose binary is on PATH is a candidate; candidates
+#   are ranked by [platform].prefer. Any other key — `manual`, a bare URL — is a
+#   note: always shown, never selected, never executed.
+#   See docs/adr/0010-install-recipes-keyed-by-package-manager.md.
+
+
+# ---------------------------------------------------------------------------
+# Platform
+# ---------------------------------------------------------------------------
+
+[platform]
+# Ranked preference across install methods. Managers declared below but absent
+# here rank last, in catalogue declaration order. Reorder this to taste — it is
+# the one place a machine owner says "uv, never pip".
+prefer = [
+  "pacman", "apt", "dnf", "zypper", "apk", "brew", "port",
+  "uv", "pipx", "cargo", "go", "npm", "gem", "pip",
+]
+
+# binary  what must be on PATH for this manager to be usable
+# os      optional constraint; matches sys.platform ("linux", "darwin", "win32")
+# sudo    recipe needs root; `reactor install` prefixes it
+[platform.manager]
+pacman = { binary = "pacman", os = "linux",  sudo = true }
+apt    = { binary = "apt",    os = "linux",  sudo = true }
+dnf    = { binary = "dnf",    os = "linux",  sudo = true }
+zypper = { binary = "zypper", os = "linux",  sudo = true }
+apk    = { binary = "apk",    os = "linux",  sudo = true }
+brew   = { binary = "brew",   os = "darwin" }
+port   = { binary = "port",   os = "darwin", sudo = true }
+uv     = { binary = "uv" }
+pipx   = { binary = "pipx" }
+pip    = { binary = "pip3" }
+cargo  = { binary = "cargo" }
+go     = { binary = "go" }
+npm    = { binary = "npm" }
+gem    = { binary = "gem" }
+
+
+# ---------------------------------------------------------------------------
+# Probing
+# ---------------------------------------------------------------------------
+
+[probe]
+# Seconds before a probe is abandoned. A timed-out probe reports UNKNOWN, never
+# absent — see docs/adr/0006-registry-injected-into-system-prompt.md.
+timeout = 5.0
+# Detection results (is the binary here at all) are cached this long. Installing
+# a tool mid-session is rare; `reactor refresh` forces a re-probe.
+detect_ttl = 300
+# Service results (is it running, what is attached) change during a session, so
+# they expire fast.
+service_ttl = 30
+# Interpreter used for python_module detection.
+python = "python3"
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +121,10 @@ invoke = "bn"
 detect = { binary = "bn" }
 tags   = ["static", "native", "disassembler", "decompiler"]
 service = { probe = ["bn", "health"], label = "BN session" }
-skill = { source = "git+https://github.com/w1sent/plugins", path = "skills/binja-cli", ref = "main" }
-# TODO: confirm the source URL and ref against the plugins repo (TODO.md).
+skill = { source = "git+https://github.com/w1sent/bn-plugins", path = "ai/mcp-server/skills/binja-cli", ref = "main" }
 
 [tool.bn.install]
-manual = "install the binja-mcp plugin from the plugins repo, then run its install_mcp_clients.py"
+manual = "install the binja-mcp plugin from the bn-plugins repo, then run its scripts/install.py"
 
 [tool.lief]
 name   = "LIEF"
@@ -74,8 +134,8 @@ detect = { python_module = "lief" }
 tags   = ["static", "native", "parsing", "python"]
 
 [tool.lief.install]
-pip = "pip install lief"
 uv  = "uv pip install lief"
+pip = "pip install lief"
 
 [tool.joern]
 name   = "Joern"
@@ -95,8 +155,8 @@ detect = { python_module = "angr" }
 tags   = ["static", "native", "symbolic", "solving", "python"]
 
 [tool.angr.install]
-pip = "pip install angr"
 uv  = "uv pip install angr"
+pip = "pip install angr"
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +172,10 @@ version = ["jadx", "--version"]
 tags    = ["static", "managed", "android", "decompiler"]
 
 [tool.jadx.install]
-arch   = "pacman -S jadx"
-debian = "apt install jadx"
-macos  = "brew install jadx"
+pacman = "pacman -S jadx"
+apt    = "apt install jadx"
+brew   = "brew install jadx"
+manual = "https://github.com/skylot/jadx/releases"
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +191,8 @@ version = ["frida", "--version"]
 tags    = ["dynamic", "instrumentation", "mobile"]
 
 [tool.frida.install]
-pipx = "pipx install frida-tools"
 uv   = "uv tool install frida-tools"
+pipx = "pipx install frida-tools"
 brew = "brew install frida"
 
 [tool.objection]
@@ -142,8 +203,8 @@ detect = { binary = "objection" }
 tags   = ["dynamic", "mobile", "android", "ios"]
 
 [tool.objection.install]
-pipx = "pipx install objection"
 uv   = "uv tool install objection"
+pipx = "pipx install objection"
 
 
 # ---------------------------------------------------------------------------
@@ -159,8 +220,9 @@ version = ["gdb", "--version"]
 tags    = ["dynamic", "debugger"]
 
 [tool.gdb.install]
-arch   = "pacman -S gdb"
-debian = "apt install gdb"
+pacman = "pacman -S gdb"
+apt    = "apt install gdb"
+dnf    = "dnf install gdb"
 
 [tool.rr]
 name   = "rr"
@@ -170,8 +232,8 @@ detect = { binary = "rr" }
 tags   = ["dynamic", "debugger", "record-replay"]
 
 [tool.rr.install]
-arch   = "pacman -S rr"
-debian = "apt install rr"
+pacman = "pacman -S rr"
+apt    = "apt install rr"
 
 
 # ---------------------------------------------------------------------------
@@ -184,12 +246,12 @@ desc    = "Android device bridge; shell, install, pull, forward"
 invoke  = "adb"
 detect  = { binary = "adb" }
 tags    = ["mobile", "android", "device"]
-service = { probe = ["adb", "devices"], label = "devices" }
+service = { probe = ["adb", "devices"], label = "adb", count = { pattern = '\sdevice$', noun = "device" } }
 
 [tool.adb.install]
-arch   = "pacman -S android-tools"
-debian = "apt install adb"
-macos  = "brew install android-platform-tools"
+pacman = "pacman -S android-tools"
+apt    = "apt install adb"
+brew   = "brew install android-platform-tools"
 
 [tool.apktool]
 name   = "apktool"
@@ -199,9 +261,9 @@ detect = { binary = "apktool" }
 tags   = ["mobile", "android", "unpacking"]
 
 [tool.apktool.install]
-arch   = "pacman -S apktool"
-debian = "apt install apktool"
-macos  = "brew install apktool"
+pacman = "pacman -S apktool"
+apt    = "apt install apktool"
+brew   = "brew install apktool"
 
 [tool.ipsw]
 name   = "ipsw"
@@ -209,11 +271,11 @@ desc   = "iOS/macOS firmware and dyld_shared_cache tooling"
 invoke = "ipsw"
 detect = { binary = "ipsw" }
 tags   = ["mobile", "ios", "firmware", "macho"]
-skill = { source = "git+https://github.com/blacktop/ipsw-skill", ref = "main" }
+skill = { source = "git+https://github.com/blacktop/ipsw-skill", path = "ipsw", ref = "main" }
 
 [tool.ipsw.install]
-macos = "brew install blacktop/tap/ipsw"
-linux = "https://github.com/blacktop/ipsw/releases"
+brew   = "brew install blacktop/tap/ipsw"
+manual = "https://github.com/blacktop/ipsw/releases"
 
 [tool.mobilecli]
 name   = "mobilecli"
@@ -238,9 +300,10 @@ detect = { binary = "binwalk" }
 tags   = ["firmware", "carving", "triage"]
 
 [tool.binwalk.install]
-arch   = "pacman -S binwalk"
-debian = "apt install binwalk"
-macos  = "brew install binwalk"
+pacman = "pacman -S binwalk"
+apt    = "apt install binwalk"
+brew   = "brew install binwalk"
+cargo  = "cargo install binwalk"
 
 [tool.yara]
 name    = "YARA"
@@ -251,9 +314,9 @@ version = ["yara", "--version"]
 tags    = ["triage", "pattern-matching"]
 
 [tool.yara.install]
-arch   = "pacman -S yara"
-debian = "apt install yara"
-macos  = "brew install yara"
+pacman = "pacman -S yara"
+apt    = "apt install yara"
+brew   = "brew install yara"
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +331,9 @@ detect = { binary = "tshark" }
 tags   = ["network", "pcap"]
 
 [tool.tshark.install]
-arch   = "pacman -S wireshark-cli"
-debian = "apt install tshark"
-macos  = "brew install wireshark"
+pacman = "pacman -S wireshark-cli"
+apt    = "apt install tshark"
+brew   = "brew install wireshark"
 
 [tool.scapy]
 name   = "scapy"
@@ -280,8 +343,8 @@ detect = { python_module = "scapy" }
 tags   = ["network", "python"]
 
 [tool.scapy.install]
-pip = "pip install scapy"
 uv  = "uv pip install scapy"
+pip = "pip install scapy"
 
 
 # ---------------------------------------------------------------------------
@@ -296,8 +359,8 @@ detect = { python_module = "z3" }
 tags   = ["solving", "python"]
 
 [tool.z3.install]
-pip = "pip install z3-solver"
 uv  = "uv pip install z3-solver"
+pip = "pip install z3-solver"
 
 [tool.tree-sitter]
 name   = "tree-sitter"
@@ -307,8 +370,8 @@ detect = { python_module = "tree_sitter" }
 tags   = ["parsing", "source", "python"]
 
 [tool.tree-sitter.install]
-pip = "pip install tree-sitter"
 uv  = "uv pip install tree-sitter"
+pip = "pip install tree-sitter"
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +387,9 @@ version = ["rg", "--version"]
 tags    = ["general"]
 
 [tool.ripgrep.install]
-arch   = "pacman -S ripgrep"
-debian = "apt install ripgrep"
-macos  = "brew install ripgrep"
+pacman = "pacman -S ripgrep"
+apt    = "apt install ripgrep"
+brew   = "brew install ripgrep"
 cargo  = "cargo install ripgrep"
 
 [tool.jq]
@@ -337,6 +400,6 @@ detect = { binary = "jq" }
 tags   = ["general"]
 
 [tool.jq.install]
-arch   = "pacman -S jq"
-debian = "apt install jq"
-macos  = "brew install jq"
+pacman = "pacman -S jq"
+apt    = "apt install jq"
+brew   = "brew install jq"

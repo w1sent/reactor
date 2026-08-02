@@ -1,60 +1,64 @@
 # TODO
 
-Design is settled (`docs/adr/`); nothing is implemented. Milestones below are
-ordered by dependency — the spine is a chain where each link needs the one
-before it.
+Design is settled (`docs/adr/`). Milestone 1 is built and tested; Milestones 2
+and 3 are not started. The milestones are ordered by dependency — the spine is a
+chain where each link needs the one before it.
 
-## Milestone 1 — Spine
+## Milestone 1 — Spine — **done, with the gaps listed below**
 
 The smallest thing that delivers the core value: the agent knows what is on this
 machine. No custom TUI components.
 
-### Catalogue schema and starter contents
-`tools.toml` currently holds a starter set covering the tools verified present on
-this workstation plus a few known-absent ones, to exercise both paths. Needs:
-finalising the schema (probe shapes, service definitions, install-recipe keys,
-skill sources), then filling in the target surface listed in `docs/concept.md`.
-Every entry's `desc` is written for a model choosing a tool, not for a human
-browsing — it lands in every system prompt, so it gets a soft length budget and
-review. Platform keys need deciding: distro-level (`arch`, `debian`, `fedora`)
-versus manager-level (`pacman`, `apt`, `brew`, `cargo`, `pipx`, `uv`), and how
-detection picks between them on a machine with several.
+- **Catalogue schema** — settled. Install keys are package managers, ranked by a
+  user-editable `[platform].prefer`
+  ([ADR-0010](docs/adr/0010-install-recipes-keyed-by-package-manager.md));
+  detection is `binary` or `python_module`; service probes report state plus an
+  optional regex line count and nothing else.
+- **`reactor` CLI** — `bin/reactor`, one stdlib-only file. Surface in
+  `bin/README.md`; `--format json` everywhere and pinned by test.
+- **`scripts/install.py`** — symlink, seed without clobbering, `state.json`,
+  fetch upstream skills. Verified end to end against the real `bn-plugins` and
+  `ipsw-skill` repositories.
+- **`extensions/tool-registry/`** — block into the system prompt on
+  `before_agent_start`, `skillPaths` on `resources_discover`, status line,
+  `/reactor`. Exercised through `jiti` with a stubbed API.
+- **Determinism** — a test, not an intention: `TestRegistryDeterminism` and
+  `TestJsonContract.test_registry_block_is_stable_across_processes`.
 
-### `reactor` CLI
-Stdlib-only Python, 3.11+ floor for `tomllib`, symlinked to `~/.local/bin/reactor`
-([ADR-0005](docs/adr/0005-reactor-cli-stdlib-python.md)). Subcommands:
-`doctor`, `tools list|show`, `skills list|show`, `install`, `diff-config`,
-`overwrite-config`. `--format json` on every one — that output shape is the
-extensions' only interface and is part of the contract, so pin it early and
-treat changes to it as breaking.
+### Still open in Milestone 1
 
-Probe execution needs timeouts and a cached-value fallback from day one; a
-hanging probe stalls an agent turn once the extension is wired up.
+**Every `[tool.*.install]` recipe is an unverified guess.** They were written
+from memory and only the `pacman` ones could plausibly be checked on this
+machine — and none has been. A wrong recipe is worse than an absent one, because
+`reactor install` will run it. Verify per manager on a real machine before v1,
+or demote the unverified ones to `manual` notes so nothing auto-runs.
 
-### `scripts/install.py`
-Symlinks the CLI, seeds `~/.pi/reactor/{tools,toolsets}.toml` without clobbering
-existing files, creates `state.json`, fetches configured upstream skills into
-`~/.pi/reactor/skills/<tool>/`, and reports which are missing. `--link` and
-`--copy` modes mirroring the plugins repo installer. Warns only when a
-*configured* skill could not be fetched
-([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)).
+**The catalogue is a starter set, not the target surface.** 21 entries against
+the list in `docs/concept.md`. Missing at least: ImHex, blutter, lldb, qbdi,
+aapt2, otool, ilspy, binja headless. Each new entry's `desc` lands in every
+system prompt, so adding them is editorial work, not data entry.
 
-### `extensions/tool-registry/`
-Probe → cache → render → return from `before_agent_start`
-([ADR-0006](docs/adr/0006-registry-injected-into-system-prompt.md)). Answers
-`resources_discover` with the skill and prompt paths of active tools. One-line
-status via `ctx.ui.setStatus`. Shells out to `reactor … --format json`; parses no
-TOML.
+**No REactor-authored skills yet**, which is the expected state
+([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they are only worth
+writing where `--help` and upstream skills genuinely do not suffice, meaning
+cross-tool workflow knowledge. Deciding *which* should follow real sessions
+rather than precede them.
 
-The determinism requirement is a real test target: same machine state must
-produce byte-identical output across turns. Worth an actual test rather than an
-intention.
+**The extension has no automated test.** It was driven by hand through `jiti`
+with a stubbed `ExtensionAPI`. There is no TypeScript test runner in the
+package; adding one is more justifiable once the selector exists too.
 
-### First REactor-authored skills
-Only where `--help` and upstream skills genuinely do not suffice
-([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — which means
-cross-tool workflow knowledge, not tool usage. Expect very few. Deciding *which*
-is a task in itself and should follow real sessions, not precede them.
+**`requires:` in REactor-authored skills is inert.** `skills/` is a conventional
+directory at the package root, so pi's *package* loader discovers everything in
+it before the extension's `resources_discover` runs — those skills load whether
+or not their tools are present or active. Only fetched upstream skills are gated
+today. Fixing it means serving `skills/` from `resources_discover` too, which
+means moving it out of the conventional layout. Costs nothing while the
+directory is empty; decide before the first skill lands in it.
+
+**Probe cost at session start is unmeasured.** See the open question below — it
+is now measurable rather than hypothetical, which is the point at which it
+should be measured.
 
 ## Milestone 2 — Selector and status
 
@@ -119,32 +123,47 @@ Point the diff at `vimdiff`/`delta` rather than plain `diff(1)`. Convenience onl
 
 ## Open questions
 
-### Platform detection granularity
-`reactor doctor` must map "this machine" to an install recipe. Distro detection
-(`/etc/os-release`), package-manager detection, or both with a precedence rule —
-and what happens on a machine with `pacman`, `cargo`, `uv` and `brew` all
-present. Affects the catalogue's schema, so it wants settling in Milestone 1.
-
 ### Probe cost at session start
-Detecting ~25 tools is ~25 `which` calls (cheap) plus service probes (not cheap —
-`bn health` is an HTTP round trip, `adb devices` may start a daemon). Whether
-session start blocks on service probes or renders without them and refreshes
-shortly after is unresolved, and it is user-visible latency either way.
+Now measurable rather than hypothetical, and unmeasured. Detection is one
+`shutil.which` per binary (free) plus **one** subprocess for all Python modules
+(`find_spec`, so importing angr is not paid for) plus one `--version` call per
+present tool that declares one, in a thread pool. Service probes are the real
+cost — `bn health` is an HTTP round trip, `adb devices` may start a daemon — and
+they run in the same pool. The `--refresh` at `session_start` pays for all of it
+at once; every later turn should hit `cache.json`. Measure the cold and warm
+paths before tuning `detect_ttl`/`service_ttl`, and decide then whether session
+start should render without service probes and refresh shortly after.
 
 ### Shared probe cache across extensions
-The registry and status extensions both want current probe results. Two
-independent probe loops would double the cost and could disagree. Needs a
-decision on where that state lives.
+The registry and status extensions both want current probe results. `cache.json`
+in `~/.pi/reactor/` already gives them a shared store, and it is TTL-keyed so two
+readers cannot disagree for longer than `service_ttl` — but there is no locking,
+and two processes probing concurrently will both write. Last-writer-wins is
+probably fine for this data; confirm that before the status extension makes it
+a real concurrency, and note that a corrupt cache degrades to a re-probe rather
+than an error.
 
-### Version-drift reporting for fetched skills
-`reactor doctor` should report a fetched skill as stale against its pinned ref.
-Cheaply, without a network round trip per skill on every doctor run.
-
-### Relationship to the plugins repo
-`bn` ships from `plugins/skills/binja-cli/scripts/bn` and REactor's catalogue
-merely references it. Confirm that stays true — that no part of `bn` migrates
-here — and that the skill source in `tools.toml` points at the right ref.
+### Cache invalidation on activation change
+`cache.json` is keyed on a stamp of `tools.toml` (mtime + size), so editing the
+catalogue drops stale probe results. `state.json` changes do **not** invalidate
+it, which is correct — activation does not change what is installed — but it
+means `reactor tools enable X` shows `X` from cache, possibly minutes stale.
+Acceptable now; revisit if the selector makes toggling frequent.
 
 ### Where scenario definitions live
 Prompt templates in `prompts/`, or a richer format the extension reads? Deferred
 with Milestone 3, but the answer shapes whether `resources_discover` is enough.
+
+## Resolved
+
+- **Platform detection granularity** → package-manager keys, ranked by a
+  user-editable preference list, free text never executed
+  ([ADR-0010](docs/adr/0010-install-recipes-keyed-by-package-manager.md)). No
+  `/etc/os-release` parsing anywhere.
+- **Version-drift reporting for fetched skills** → `reactor doctor
+  --check-skills` compares the recorded commit against `git ls-remote`. Opt-in,
+  so the default `doctor` stays offline and fast.
+- **Relationship to the plugins repo** → confirmed. The repo is
+  `github.com/w1sent/bn-plugins`; `bn` ships from
+  `ai/mcp-server/skills/binja-cli/scripts/bn` and REactor fetches that skill
+  directory by URL. Nothing migrates here.

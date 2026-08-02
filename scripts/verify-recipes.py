@@ -12,6 +12,14 @@ Exits 1 if any recipe is unresolved, so it can gate a release. Needs network for
 every manager except pacman, which uses the local sync database. Read-only GETs
 against public indexes; nothing is installed and nothing is written.
 
+What this does NOT check: that the package actually provides the binary the
+tool's `detect` looks for. Package and binary names diverge often enough to
+matter -- Debian's `aapt` ships /usr/bin/aapt2, Arch's `android-tools` ships
+adb, `wireshark-cli` ships tshark -- and a recipe can name a real package that
+installs the wrong thing. Verifying that needs a per-manager file listing, which
+only some indexes expose. So a clean run means "this package exists", not "this
+recipe works"; the second still wants a human who knows the tool.
+
 This is deliberately *not* part of the test suite: the tests are offline and
 fast, and this is neither. Run it when the catalogue's install recipes change.
 """

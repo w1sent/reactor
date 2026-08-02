@@ -27,16 +27,13 @@ machine. No custom TUI components.
 
 ### Still open in Milestone 1
 
-**The catalogue is a starter set, not the target surface.** 22 entries against
-the list in `docs/concept.md`. Missing: ImHex, lldb, aapt2, QBDI, otool, binja
-headless. Each new entry's `desc` lands in every system prompt, so adding them is
-editorial work, not data entry.
+**The catalogue is a starter set, not the target surface.** 25 entries against
+the list in `docs/concept.md`. Missing: QBDI, otool, binja headless — each is
+guesswork until someone has one to check it against. otool is macOS-only,
+which anywhere else makes it the honest test of the absent-tool path.
 
-Entries with an install to check against can be catalogued from a
-real binary rather than from memory — do those three first.
-ImHex is the awkward one: it is a GUI, so what an agent actually invokes needs
-deciding before it gets an entry, and its pattern language may be the useful
-part rather than the program. otool is macOS-only, which anywhere else makes it the honest test of the absent-tool path.
+Each new entry's `desc` lands in every system prompt, so adding them is
+editorial work, not data entry.
 
 **No REactor-authored skills yet**, which is the expected state
 ([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they are only worth

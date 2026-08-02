@@ -44,7 +44,7 @@ tags = ["managed"]
 
 [toolset.android]
 desc  = "Android application analysis"
-tools = ["adb", "apktool", "jadx", "frida", "objection", "mobilecli"]
+tools = ["adb", "apktool", "aapt2", "jadx", "frida", "objection", "mobilecli"]
 
 [toolset.ios]
 desc  = "iOS application and firmware analysis"

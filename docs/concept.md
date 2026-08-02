@@ -223,3 +223,18 @@ scoped to a machine that has Binary Ninja.
 The general rule: REactor catalogues things with an interface of their own. A
 thing that only exists inside another tool is that tool's business
 ([ADR-0002](adr/0002-package-ships-assets-tools-are-sibling-repos.md)).
+
+**GUI programs are a different case, and ImHex is the example.** It has a
+binary, so it can be detected, and its presence is a real fact about the machine
+— but `imhex --version` prints nothing, `--help` prints a screen of blank lines,
+and passing it an argument makes it try to open a dialog. It cannot be scripted.
+
+It is still catalogued, because "this machine has ImHex" is worth knowing and
+the line is cheap. What makes that safe is the `desc` saying plainly that it
+opens a window and is not scriptable: the registry's job is to tell the model
+what is here, and *how* a tool is usable is part of what is here. A description
+that oversold it would be worse than the entry's absence, because the model
+would reach for it and get a GUI.
+
+So: no binary at all means no entry; a binary that answers only to a human means
+an entry that says so.

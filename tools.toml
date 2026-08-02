@@ -246,6 +246,26 @@ pacman = "pacman -S gdb"
 apt    = "apt install gdb"
 dnf    = "dnf install gdb"
 
+[tool.lldb]
+name    = "LLDB"
+desc    = "native debugger; scriptable with `lldb --batch -o <command>`"
+invoke  = "lldb"
+detect  = { binary = "lldb" }
+# Tagged exactly as gdb is. "native" would be true but it is a *static*
+# analysis tag here -- [toolset.native] means compiled-binary static analysis,
+# and a debugger in that set is the union bug wearing a different hat.
+version = ["lldb", "--version"]
+tags    = ["dynamic", "debugger"]
+
+[tool.lldb.install]
+pacman = "pacman -S lldb"
+apt    = "apt install lldb"
+dnf    = "dnf install lldb"
+# macOS: ships with the Xcode command line tools; the llvm formula is a
+# second copy and usually the wrong one to reach for.
+brew   = "brew install llvm"
+manual = "macOS: xcode-select --install"
+
 [tool.rr]
 name   = "rr"
 desc   = "record and deterministically replay execution; reverse debugging"
@@ -293,6 +313,24 @@ brew = "brew install apktool"
 paru = "paru -S android-apktool"
 yay  = "yay -S android-apktool"
 
+[tool.aapt2]
+name    = "aapt2"
+desc    = "inspect APK manifests, resources and the resource table"
+invoke  = "aapt2"
+detect  = { binary = "aapt2" }
+# `aapt2 version`, not `--version`: the flag form prints "unknown option" and
+# still exits 0, so it would put that string in the registry as the version.
+version = ["aapt2", "version"]
+tags    = ["mobile", "android", "parsing"]
+
+[tool.aapt2.install]
+# Not a typo: Debian's `aapt` package ships /usr/bin/aapt2 alongside /usr/bin/
+# aapt, and unlike the separate `aapt2` package it also exists on Ubuntu.
+apt    = "apt install aapt"
+paru   = "paru -S android-sdk-build-tools"
+yay    = "yay -S android-sdk-build-tools"
+manual = "part of the Android SDK build-tools; `sdkmanager 'build-tools;35.0.0'`"
+
 [tool.ipsw]
 name   = "ipsw"
 desc   = "iOS/macOS firmware and dyld_shared_cache tooling"
@@ -321,6 +359,21 @@ npm = "npm install -g mobilecli"
 # ---------------------------------------------------------------------------
 # Firmware, carving, pattern matching
 # ---------------------------------------------------------------------------
+
+[tool.imhex]
+name   = "ImHex"
+desc   = "GUI hex editor and .hexpat pattern language; opens a window, not scriptable"
+invoke = "imhex"
+detect = { binary = "imhex" }
+# No version probe: `imhex --version` prints nothing at all and exits 0, and
+# `--help` prints a screen of blank lines. Verified against 1.38.1 -- this is a
+# GUI binary that does not answer questions on stdout.
+tags   = ["static", "parsing", "pattern-matching", "gui"]
+
+[tool.imhex.install]
+paru   = "paru -S imhex-bin"
+yay    = "yay -S imhex-bin"
+manual = "https://github.com/WerWolv/ImHex/releases"
 
 [tool.binwalk]
 name   = "binwalk"

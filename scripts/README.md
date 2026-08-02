@@ -34,6 +34,38 @@ What it does:
 
 Idempotent; re-running is the supported way to update.
 
+## `verify-recipes.py`
+
+Checks every `[tool.*.install]` recipe in the catalogue against its package
+manager's real index, and exits non-zero if any recipe names a package that does
+not exist.
+
+```bash
+scripts/verify-recipes.py                # the shipped tools.toml
+scripts/verify-recipes.py ~/.pi/reactor/tools.toml
+```
+
+A wrong recipe is worse than an absent one, because `reactor install` will run
+it — and recipes are the one part of the catalogue that cannot be checked by
+reading it. So they are checked against PyPI, crates.io, the npm registry,
+formulae.brew.sh, packages.debian.org, Launchpad, Fedora's mdapi, the AUR RPC,
+and the local pacman sync database.
+
+Keys that name no declared manager are notes and are skipped: they are never
+executed, so there is nothing to verify
+([ADR-0010](../docs/adr/0010-install-recipes-keyed-by-package-manager.md)).
+A declared manager with no checker in this script is itself reported, so adding
+a manager cannot silently opt out of verification.
+
+Deliberately **not** part of `tests/`: the test suite is offline and runs in
+about a second, and this is neither. Run it when you touch an install table.
+
+This is authoring-time verification, which is a different thing from the
+runtime package-availability probing ADR-0010 rejects. The cost that made
+probing wrong — a network round trip per candidate per tool, on a user's
+machine, to refine a recommendation they are about to read — is not a cost here,
+because it is paid once by whoever edits the catalogue.
+
 ## Why installation is two steps
 
 pi never builds anything, never initialises submodules, and runs

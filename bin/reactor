@@ -34,10 +34,15 @@ import sys
 import tempfile
 import time
 import tomllib
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# `urllib.request` and `concurrent.futures` are imported where they are used,
+# not here. Between them they cost ~30ms of interpreter startup, and both are
+# only reachable on paths that already cost hundreds of milliseconds -- probing
+# and fetching. The warm path, which the tool-registry extension runs on every
+# single user turn, is ~95ms of which ~90ms is process startup; a third of that
+# was these two imports being paid to not be used. Measured, not guessed.
 
 SCHEMA = 1
 
@@ -553,6 +558,8 @@ def _probe_detect(cat, tools, results, cache, now) -> None:
     # calls in series is a visible pause at session start.
     versioned = [t for t in tools if t.version_argv and results[t.id]["status"] == PRESENT]
     if versioned:
+        from concurrent.futures import ThreadPoolExecutor
+
         with ThreadPoolExecutor(max_workers=min(8, len(versioned))) as pool:
             outs = list(pool.map(lambda t: _run(t.version_argv, cat.timeout), versioned))
         for t, (ok, rc, out) in zip(versioned, outs):
@@ -576,6 +583,8 @@ def _version_of(line: str) -> str | None:
 
 
 def _probe_services(cat, tools, results, cache, now) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
     with ThreadPoolExecutor(max_workers=min(8, len(tools))) as pool:
         outs = list(pool.map(lambda t: _run(t.service_probe, cat.timeout), tools))
     for t, (ok, rc, out) in zip(tools, outs):
@@ -742,6 +751,8 @@ def _fetch_skill_git(url: str, spec: dict, dest: Path) -> dict:
 
 
 def _fetch_skill_url(url: str, dest: Path) -> dict:
+    import urllib.request
+
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - user-configured
             body = resp.read().decode("utf-8", "replace")

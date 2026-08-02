@@ -189,7 +189,7 @@ to grow to cover at least:
 | Area | Tools |
 |---|---|
 | Static, native | Binary Ninja (`bn`), angr, joern, LIEF, otool (macOS) |
-| Static, managed | jadx, ILSpy, blutter |
+| Static, managed | jadx, ilspycmd |
 | Dynamic | frida, QBDI, objection |
 | Debugging | lldb, gdb, rr |
 | Mobile | adb, apktool, aapt2, ipsw, objection, mobilecli |
@@ -201,3 +201,25 @@ to grow to cover at least:
 
 Some of these get nothing but a catalogue entry — a name, a line of description,
 and `--help`. That is the expected outcome for most of them, and it is not a gap.
+
+Where a decompiler has both a GUI and a CLI, the CLI is the entry: `ilspycmd`
+rather than ILSpy. The agent invokes commands, so a tool it cannot invoke is not
+a tool as far as the catalogue is concerned.
+
+### What is not a catalogue entry
+
+**Binary Ninja plugins.** blutter is the example: it is a plugin, so it has no
+binary to detect, no `--help` to read and no install recipe that means anything
+outside a BN installation. Cataloguing it would put an entry in every system
+prompt for something the agent cannot invoke.
+
+Plugins reach the agent through `bn` instead — they are shipped from the
+`bn-plugins` repository, which is also where REactor fetches the `bn` skill from
+([ADR-0008](adr/0008-aggregate-upstream-skills.md)). Knowledge about what a
+plugin does and when to reach for it belongs in that skill or in a reference
+beside it, written by the people who ship the plugin, and it arrives already
+scoped to a machine that has Binary Ninja.
+
+The general rule: REactor catalogues things with an interface of their own. A
+thing that only exists inside another tool is that tool's business
+([ADR-0002](adr/0002-package-ships-assets-tools-are-sibling-repos.md)).

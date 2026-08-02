@@ -56,6 +56,7 @@ NOISE = {
     "sudo", "install", "add", "tool",
     "pacman", "paru", "yay", "apt", "apt-get", "dnf", "zypper", "apk",
     "brew", "port", "uv", "pip", "pip3", "pipx", "cargo", "go", "npm", "gem",
+    "dotnet",
 }
 
 
@@ -192,6 +193,19 @@ def check_cargo(cmd: str, pkg: str) -> tuple[str, str]:
     return "MISSING", "not on crates.io"
 
 
+def check_dotnet(cmd: str, pkg: str) -> tuple[str, str]:
+    # NuGet ids are case-insensitive; the flat container is lowercase-only.
+    status, body = get(
+        f"https://api.nuget.org/v3-flatcontainer/{pkg.lower()}/index.json"
+    )
+    if status != 200:
+        return "MISSING", "not on nuget.org"
+    versions = json.loads(body).get("versions") or []
+    if "--global" not in cmd and "-g" not in cmd.split():
+        return "NOT-GLOBAL", "`dotnet tool install` without --global is project-scoped"
+    return OK, f"nuget {versions[-1] if versions else '?'}"
+
+
 def check_npm(cmd: str, pkg: str) -> tuple[str, str]:
     status, body = get(f"https://registry.npmjs.org/{pkg}")
     if status == 200:
@@ -211,6 +225,7 @@ CHECKS = {
     "pipx": check_pypi,
     "cargo": check_cargo,
     "npm": check_npm,
+    "dotnet": check_dotnet,
 }
 
 

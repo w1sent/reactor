@@ -27,11 +27,16 @@ machine. No custom TUI components.
 
 ### Still open in Milestone 1
 
-**The catalogue is a starter set, not the target surface.** 21 entries against
-the list in `docs/concept.md`. Missing at least: ImHex, blutter, lldb, qbdi,
-aapt2, otool, ilspy, binja headless. Each new entry's `desc` lands in every
-system prompt, so adding them is editorial work, not data entry. Entries with an install to check against can be catalogued from a
-real binary rather than from memory.
+**The catalogue is a starter set, not the target surface.** 22 entries against
+the list in `docs/concept.md`. Missing: ImHex, lldb, aapt2, QBDI, otool, binja
+headless. Each new entry's `desc` lands in every system prompt, so adding them is
+editorial work, not data entry.
+
+Entries with an install to check against can be catalogued from a
+real binary rather than from memory — do those three first.
+ImHex is the awkward one: it is a GUI, so what an agent actually invokes needs
+deciding before it gets an entry, and its pattern language may be the useful
+part rather than the program. otool is macOS-only, which anywhere else makes it the honest test of the absent-tool path.
 
 **No REactor-authored skills yet**, which is the expected state
 ([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they are only worth
@@ -80,6 +85,16 @@ state the other reads).
 ### Toolset definitions
 `toolsets.toml` needs a real predefined set, which depends on the catalogue being
 filled in. User-defined toolsets live in the same file after seeding.
+
+Tag selection is a **union**, and that has now silently broken two shipped
+toolsets — `all` built from a tag list dropped whatever nobody had tagged, and
+`native` declaring `["static", "native"]` collected every static tool including
+a Java decompiler. Both are fixed and
+`test_a_toolset_named_after_a_tag_selects_only_that_tag` guards the second, but
+the sharp edge is the semantics, not those two entries. If intersection turns
+out to be what people reach for when writing their own, that is a schema
+question (`tags` vs `all_tags`) to settle while the selector is being built and
+toolset authoring becomes something users actually do.
 
 ## Milestone 3 — Scenarios
 
@@ -144,7 +159,14 @@ with Milestone 3, but the answer shapes whether `resources_discover` is enough.
 
 ## Resolved
 
-- **Install recipes** → all 49 package references now check out against their
+- **ILSpy → `ilspycmd`** → catalogued as the CLI, installed with
+  `dotnet tool install --global ilspycmd`, which added `dotnet` as a manager.
+  The GUI is not a thing the agent can invoke, so it is not the entry.
+- **blutter is not a catalogue entry** → it is a Binary Ninja plugin, with no
+  binary to detect and no install recipe meaningful outside a BN installation.
+  It ships from `bn-plugins`, and knowledge about it belongs in the `bn` skill
+  fetched from that repo. Reasoning in `docs/concept.md`.
+- **Install recipes** → all 50 package references now check out against their
   managers' real indexes, and `scripts/verify-recipes.py` keeps them honest.
   Five were wrong: `pacman -S rr` and `pacman -S apktool` (both AUR-only on
   Arch, and `apktool` is `android-apktool` there), `brew install frida` (no such

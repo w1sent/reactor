@@ -33,7 +33,14 @@ tools = ["binwalk", "yara", "lief", "ripgrep", "jq"]
 
 [toolset.native]
 desc = "static analysis of compiled binaries"
-tags = ["static", "native"]
+# Just "native", not ["static", "native"]. Tag selection is a union, so adding
+# "static" pulled in every static tool there is -- a Java decompiler and a
+# source-level dataflow engine included.
+tags = ["native"]
+
+[toolset.managed]
+desc = "decompilation of managed bytecode"
+tags = ["managed"]
 
 [toolset.android]
 desc  = "Android application analysis"

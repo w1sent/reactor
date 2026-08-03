@@ -119,11 +119,18 @@ def check_aur_helper(cmd: str, pkg: str) -> tuple[str, str]:
     return "MISSING", "in neither the AUR nor the official repos"
 
 
+def _in_debian(suite: str, pkg: str) -> bool:
+    # packages.debian.org serves its "No such package" page with status 200, so
+    # the status line proves only that the site is up. The body has to be read.
+    status, body = get(f"https://packages.debian.org/{suite}/{pkg}")
+    return status == 200 and f"Package: {pkg}".encode() in body
+
+
 def check_apt(cmd: str, pkg: str) -> tuple[str, str]:
     found = [
         f"debian:{suite}"
         for suite in ("stable", "sid")
-        if get(f"https://packages.debian.org/{suite}/{pkg}")[0] == 200
+        if _in_debian(suite, pkg)
     ]
     status, body = get(
         "https://api.launchpad.net/1.0/ubuntu/+archive/primary"

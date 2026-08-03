@@ -1,0 +1,3 @@
+# Keeps the directory in git; pi discovers it by name.
+# Documentation lives in docs/package-resources.md, not here: pi registers
+# every .md file in prompts/ as a slash command, README.md included.

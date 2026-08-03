@@ -61,6 +61,9 @@ extensions/      pi extensions (TypeScript): tool-registry, selector, status
 skills/          Skills REactor authors itself — only where --help is insufficient
 prompts/         Prompt templates, including multi-step analysis scenarios
 themes/          pi themes
+                 ^ all three are discovered by pi from their directory name;
+                   docs/package-resources.md covers them, and no doc may live
+                   inside them (pi would register it as a resource)
 scripts/         install.py and repo-management scripts
 tests/           stdlib unittest suite for the CLI
 docs/            Concept, ADRs, HOWTOs, reference notes

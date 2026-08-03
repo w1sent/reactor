@@ -60,7 +60,10 @@ a manager cannot silently opt out of verification.
 Deliberately **not** part of `tests/`: the test suite is offline and runs in
 about a second, and this is neither. Run it when you touch an install table.
 
-It checks that the package **exists**, not that it provides the binary the
+Two failure modes to keep in mind when adding a checker. It must be able to say
+no — `packages.debian.org` returns **200 with a "No such package" page**, so the
+Debian check reads the body, and for a while it did not and passed everything.
+And it checks that the package **exists**, not that it provides the binary the
 tool's `detect` looks for. Those names diverge often — Debian's `aapt` ships
 `aapt2`, Arch's `android-tools` ships `adb`, `wireshark-cli` ships `tshark` — so
 a recipe can name a real package that installs the wrong thing. A clean run is

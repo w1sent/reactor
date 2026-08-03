@@ -27,7 +27,7 @@ machine. No custom TUI components.
 
 ### Still open in Milestone 1
 
-**The catalogue is a starter set, not the target surface.** 25 entries against
+**The catalogue is a starter set, not the target surface.** 24 entries against
 the list in `docs/concept.md`. Missing: QBDI, otool, binja headless — each is
 guesswork until someone has one to check it against. otool is macOS-only,
 which anywhere else makes it the honest test of the absent-tool path.
@@ -163,14 +163,28 @@ with Milestone 3, but the answer shapes whether `resources_discover` is enough.
   binary to detect and no install recipe meaningful outside a BN installation.
   It ships from `bn-plugins`, and knowledge about it belongs in the `bn` skill
   fetched from that repo. Reasoning in `docs/concept.md`.
-- **Install recipes** → all 50 package references now check out against their
+- **ImHex is not a catalogue entry** → it has a binary, so it passed the test
+  that rules out Binary Ninja plugins, but it cannot be scripted. The registry
+  exists so the *agent* reaches for the right tool; an entry it can never invoke
+  costs a line in every system prompt and buys nothing, because the only reader
+  it serves is the human, who already knows what they installed. Reasoning in
+  `docs/concept.md`.
+- **Install recipes** → all 56 package references now check out against their
   managers' real indexes, and `scripts/verify-recipes.py` keeps them honest.
-  Five were wrong: `pacman -S rr` and `pacman -S apktool` (both AUR-only on
+  Six were wrong: `pacman -S rr` and `pacman -S apktool` (both AUR-only on
   Arch, and `apktool` is `android-apktool` there), `brew install frida` (no such
-  formula or cask), `brew install blacktop/tap/ipsw` (promoted to core), and
-  `brew install android-platform-tools` (a cask). Fixing the Arch pair meant
-  declaring `paru` and `yay` as managers, which ADR-0010's model already covers
-  — an AUR helper is a package manager and its binary is a testable predicate.
+  formula or cask), `brew install blacktop/tap/ipsw` (promoted to core),
+  `brew install android-platform-tools` (a cask), and `apt install jadx` (in
+  neither Debian nor Ubuntu, at any suite). Fixing the Arch pair meant declaring
+  `paru` and `yay` as managers, which ADR-0010's model already covers — an AUR
+  helper is a package manager and its binary is a testable predicate.
+
+  The jadx one only surfaced after the verifier itself was fixed:
+  `packages.debian.org` serves its "No such package" page with **status 200**,
+  so checking the status code passed every string ever handed to it, and the
+  Launchpad half never got to matter because Debian had already "found" it. The
+  check now reads the body. A verifier that cannot fail is worse than no
+  verifier, because it is quoted as evidence.
 - **Probe cost at session start** → measured; there was no problem. 79 ms warm
   (the per-turn path, ~90% of it Python startup), 520 ms cold, once. Service
   probes are cheap; *version* probes on JVM and interpreter-backed tools

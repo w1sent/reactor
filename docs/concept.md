@@ -193,8 +193,8 @@ to grow to cover at least:
 | Dynamic | frida, QBDI, objection |
 | Debugging | lldb, gdb, rr |
 | Mobile | adb, apktool, aapt2, ipsw, objection, mobilecli |
-| Firmware / carving | binwalk, LIEF, ImHex patterns |
-| Pattern matching | YARA, ImHex |
+| Firmware / carving | binwalk, LIEF |
+| Pattern matching | YARA |
 | Network | tshark/Wireshark, scapy |
 | Solving | z3, angr |
 | Parsing / transformation | tree-sitter |
@@ -224,17 +224,18 @@ The general rule: REactor catalogues things with an interface of their own. A
 thing that only exists inside another tool is that tool's business
 ([ADR-0002](adr/0002-package-ships-assets-tools-are-sibling-repos.md)).
 
-**GUI programs are a different case, and ImHex is the example.** It has a
-binary, so it can be detected, and its presence is a real fact about the machine
-— but `imhex --version` prints nothing, `--help` prints a screen of blank lines,
-and passing it an argument makes it try to open a dialog. It cannot be scripted.
+**GUI-only programs.** ImHex is the example. It has a binary, so unlike a plugin
+it *can* be detected — but `imhex --version` prints nothing, `--help` prints a
+screen of blank lines, and passing it an argument makes it try to open a dialog.
+It cannot be scripted.
 
-It is still catalogued, because "this machine has ImHex" is worth knowing and
-the line is cheap. What makes that safe is the `desc` saying plainly that it
-opens a window and is not scriptable: the registry's job is to tell the model
-what is here, and *how* a tool is usable is part of what is here. A description
-that oversold it would be worse than the entry's absence, because the model
-would reach for it and get a GUI.
+It was catalogued briefly, on the theory that "this machine has ImHex" is worth
+knowing and one honest line is cheap. That was wrong, and the test that shows
+why is the one at the top of this document: the registry exists so the agent
+reaches for the right tool instead of `objdump`. A tool the agent cannot invoke
+can never be the thing it reaches for, so the line buys nothing and costs a line
+in every system prompt. Its real audience is the human sitting in front of the
+machine, and they already know what they installed.
 
-So: no binary at all means no entry; a binary that answers only to a human means
-an entry that says so.
+So: having a binary is necessary but not sufficient. The entry has to be
+something the agent can *run*.

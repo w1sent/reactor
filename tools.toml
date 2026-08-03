@@ -183,8 +183,9 @@ tags    = ["static", "managed", "android", "decompiler"]
 
 [tool.jadx.install]
 pacman = "pacman -S jadx"
-apt    = "apt install jadx"
 brew   = "brew install jadx"
+# No apt recipe: jadx is in neither Debian nor Ubuntu, at any suite. Debian
+# users take the release zip.
 manual = "https://github.com/skylot/jadx/releases"
 
 [tool.ilspycmd]
@@ -359,21 +360,6 @@ npm = "npm install -g mobilecli"
 # ---------------------------------------------------------------------------
 # Firmware, carving, pattern matching
 # ---------------------------------------------------------------------------
-
-[tool.imhex]
-name   = "ImHex"
-desc   = "GUI hex editor and .hexpat pattern language; opens a window, not scriptable"
-invoke = "imhex"
-detect = { binary = "imhex" }
-# No version probe: `imhex --version` prints nothing at all and exits 0, and
-# `--help` prints a screen of blank lines. Verified against 1.38.1 -- this is a
-# GUI binary that does not answer questions on stdout.
-tags   = ["static", "parsing", "pattern-matching", "gui"]
-
-[tool.imhex.install]
-paru   = "paru -S imhex-bin"
-yay    = "yay -S imhex-bin"
-manual = "https://github.com/WerWolv/ImHex/releases"
 
 [tool.binwalk]
 name   = "binwalk"

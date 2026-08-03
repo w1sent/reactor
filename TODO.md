@@ -53,13 +53,33 @@ today. Fixing it means serving `skills/` from `resources_discover` too, which
 means moving it out of the conventional layout. Costs nothing while the
 directory is empty; decide before the first skill lands in it.
 
-**REactor is not actually installed on a development host.**
-`~/.pi/reactor/` does not exist, so every `reactor` invocation here reads the
-shipped catalogue through the fallback path and writes no cache. Everything has
-been verified against scratch config directories via `REACTOR_CONFIG_DIR`, which
-is a faithful but not identical arrangement. Running `scripts/install.py` for
-real is the obvious next validation, and a prerequisite for using REactor in
-anger.
+**A fetched skill can lose a name collision to a directory REactor does not
+control, and then gating it does nothing.** pi discovers `~/.agents/skills/` and
+`<project>/.agents/skills/` on its own (`package-manager.js:279,1941`) — an
+ecosystem-wide convention shared with other agent tools, nothing to do with
+REactor. Anyone who has installed a tool's skill that way already has a copy of
+what REactor fetches, usually at a different revision.
+
+pi's `loadSkills` keys skills by their declared `name:`, adds the default
+directories *before* extension-contributed paths, and on a duplicate name keeps
+the first and records a collision diagnostic. The independently installed copy
+therefore wins and REactor's pinned copy is discarded. Reproduced on a real
+install.
+
+Two things break. The pin in `.reactor-skill.json` becomes fiction — REactor
+reports a commit for a file nobody loaded. And gating is defeated: deactivating
+the tool removes REactor's path from `resources_discover`, and the other copy
+stays, because REactor never contributed it and cannot retract it. The CLI's
+`skillPaths` is correct in both directions, so this is entirely about what pi
+does downstream of it.
+
+`resources_discover` is additive by construction — `extendResources` *merges*
+into `lastSkillPaths` and treats an empty array as a no-op
+(`resource-loader.js:242`) — so no extension can remove a skill it did not add.
+That is pi's design, not a bug to route around. The options are to detect the
+collision and say so (`reactor doctor` can read both copies' `name:` and compare),
+or to stop fetching a skill the user already has. Detection first: the failure
+is silent today, and that is the worse half.
 
 ## Milestone 2 — Selector and status
 

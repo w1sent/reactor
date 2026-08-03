@@ -158,6 +158,28 @@ Omit the key entirely to get auto-discovery.
 Project-scoped resources require project trust. Prompt discovery is
 non-recursive.
 
+**[verified]** ⚠ **Every `.md` file in a prompts directory becomes a command.**
+`loadTemplatesFromDir` (`dist/core/prompt-templates.js`) takes each entry whose
+name ends in `.md` and names the template `basename(filePath).replace(/\.md$/,
+"")`. There is no frontmatter requirement, no filename convention, and — unlike
+the skill loader, which builds an `ignore` matcher from `.gitignore`/`.ignore`/
+`.fdignore` — no ignore-file support at all. A `README.md` in `prompts/` is a
+`/README` command. This is why the package's resource directories are documented
+in `package-resources.md` instead of by a `README.md` in each.
+
+The other two loaders reject a stray `README.md`, but incidentally rather than
+by design: themes are filtered to `.json`
+(`dist/modes/interactive/theme/theme.js`), and `loadSkillFromFile` returns
+`{ skill: null }` when frontmatter has no non-empty `description`
+(`dist/core/skills.js`) — after emitting warning diagnostics for it.
+
+**[verified]** Skills are keyed by their declared `name:`, and on a duplicate
+pi keeps the **first** loaded and records a collision diagnostic
+(`loadSkills`, `dist/core/skills.js`). Defaults — including `~/.agents/skills/`
+— are added before extension-contributed paths, so an independently installed
+copy of a skill beats the one REactor fetches and pins. Consequences in
+`TODO.md`.
+
 **[verified]** `dist/config.js` — path helpers and their defaults:
 
 ```

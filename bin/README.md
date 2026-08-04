@@ -19,6 +19,7 @@ reactor registry                  the block injected into the agent's system pro
 reactor tools list                catalogue listing  [--tag T] [--active] [--present|--missing]
 reactor tools show <id>           one entry in full, including install candidates
 reactor tools enable|disable <id> activation state (a hint; never blocks — ADR-0007)
+reactor tools reset <id>          drop the override; go back to what the toolsets say
 reactor toolsets list|show <id>   named groups
 reactor toolsets enable|disable   activate a group
 reactor state                     what is active right now, and from which file
@@ -60,6 +61,12 @@ leaves the extension a pure transport.
   ([ADR-0010](../docs/adr/0010-install-recipes-keyed-by-package-manager.md)).
 - Nothing time-derived may reach `render_registry`. That is enforced by a test,
   not by care.
+- Activation edits are **minimal**: `enable`/`disable` store an override only
+  where the active toolsets do not already produce that answer, so toggling a
+  tool off and on again leaves `state.json` byte-identical
+  ([ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md)). Each
+  entry in `tools list` carries `override` (`"on"`, `"off"`, `null`) alongside
+  `active` so a client can say which of the two it is looking at.
 
 ## Environment
 

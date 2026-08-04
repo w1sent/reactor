@@ -326,18 +326,32 @@ def toolset_members(ts: Toolset, cat: Catalogue) -> list[str]:
     return sorted(members)
 
 
+def base_ids(cat: Catalogue, toolsets: dict[str, Toolset], state: State) -> set[str]:
+    """What the active toolsets alone say, before any per-tool override."""
+    if not state.toolsets:
+        return set(cat.tools)
+    base: set[str] = set()
+    for sid in state.toolsets:
+        ts = toolsets.get(sid)
+        if ts is not None:
+            base |= set(toolset_members(ts, cat))
+    return base
+
+
 def active_ids(cat: Catalogue, toolsets: dict[str, Toolset], state: State) -> set[str]:
     """Which tools the agent is told about. Never blocks anything (ADR-0007)."""
-    if state.toolsets:
-        base: set[str] = set()
-        for sid in state.toolsets:
-            ts = toolsets.get(sid)
-            if ts is not None:
-                base |= set(toolset_members(ts, cat))
-    else:
-        base = set(cat.tools)
+    base = base_ids(cat, toolsets, state)
     base |= {t for t in state.enabled if t in cat.tools}
     return base - set(state.disabled)
+
+
+def override_of(state: State, tid: str) -> str | None:
+    """What state.json says about one tool on its own: "on", "off", or nothing."""
+    if tid in state.disabled:
+        return "off"
+    if tid in state.enabled:
+        return "on"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +661,10 @@ def describe(
             "path": r.get("path"),
             "version": r.get("version"),
             "active": t.id in active,
+            # What state.json says about this tool alone. `active` is derived
+            # from the toolsets too, so the two together are what a UI needs to
+            # explain itself (ADR-0011).
+            "override": override_of(state, t.id),
             "service": r.get("service"),
             "skill": skill_status(t),
         }
@@ -1126,7 +1144,13 @@ def cmd_tools_show(args) -> int:
     return 0
 
 
-def _toggle(args, *, tools: bool, on: bool) -> int:
+def _toggle(args, *, tools: bool, on: bool | None) -> int:
+    """Activation edits. `on=None` means "reset": drop the override, assert nothing.
+
+    Per-tool edits are *minimal* — an override is stored only where the toolsets
+    do not already produce the requested answer, so toggling a tool off and back
+    on leaves state.json exactly as it was (ADR-0011).
+    """
     cat = load_catalogue()
     toolsets = load_toolsets()
     state = load_state()
@@ -1136,30 +1160,29 @@ def _toggle(args, *, tools: bool, on: bool) -> int:
         raise ReactorError(f"unknown {'tool' if tools else 'toolset'}(s): {', '.join(unknown)}")
 
     if tools:
+        base = base_ids(cat, toolsets, state)
         for i in args.id:
-            if on:
-                state.disabled = [x for x in state.disabled if x != i]
-                if i not in state.enabled:
-                    state.enabled.append(i)
-            else:
-                state.enabled = [x for x in state.enabled if x != i]
-                if i not in state.disabled:
-                    state.disabled.append(i)
+            state.enabled = [x for x in state.enabled if x != i]
+            state.disabled = [x for x in state.disabled if x != i]
+            if on is True and i not in base:
+                state.enabled.append(i)
+            elif on is False and i in base:
+                state.disabled.append(i)
     else:
         for i in args.id:
-            if on and i not in state.toolsets:
+            state.toolsets = [x for x in state.toolsets if x != i]
+            if on:
                 state.toolsets.append(i)
-            elif not on:
-                state.toolsets = [x for x in state.toolsets if x != i]
 
     if state.scope == "default":
         state.path = CONFIG_DIR / "state.json"
     save_state(state)
     active = sorted(active_ids(cat, toolsets, state))
+    verb = {True: "enabled", False: "disabled", None: "reset"}[on]
     emit(
         args,
         {"state": state.as_dict(), "active": active, "path": str(state.path)},
-        f"{'enabled' if on else 'disabled'}: {', '.join(args.id)}\n"
+        f"{verb}: {', '.join(args.id)}\n"
         f"{len(active)} tool(s) active -- {state.path}",
     )
     return 0
@@ -1481,6 +1504,10 @@ def build_parser() -> argparse.ArgumentParser:
     td = tsub.add_parser("disable", parents=[common], help="deactivate tools (hint only; never blocks)")
     td.add_argument("id", nargs="+")
     td.set_defaults(func=lambda a: _toggle(a, tools=True, on=False))
+    tr = tsub.add_parser("reset", parents=[common],
+                         help="drop the override and go back to what the toolsets say")
+    tr.add_argument("id", nargs="+")
+    tr.set_defaults(func=lambda a: _toggle(a, tools=True, on=None))
 
     s = sub.add_parser("toolsets", help="named groups of tools")
     s.set_defaults(func=_group_help(s))

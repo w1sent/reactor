@@ -55,8 +55,12 @@ interface StatePayload {
 
 const EXEC_TIMEOUT_MS = 20_000;
 
-/** Enough rows to see a toolset whole without swallowing the transcript. */
-const MAX_VISIBLE = 14;
+/** Rows the list gives up to the header, the hint line and breathing room. */
+const CHROME_LINES = 8;
+
+/** Bounds on the visible rows when the terminal height is unknown or extreme. */
+const MIN_VISIBLE = 5;
+const MAX_VISIBLE = 30;
 
 /** How much of a skill body a collapsed session entry shows. */
 const COLLAPSED_LINES = 12;
@@ -160,7 +164,11 @@ export default function selector(pi: ExtensionAPI) {
 						mutate: (args) => reactor<StatePayload>(ctx, args),
 						detail: (id) => reactorText(ctx, ["tools", "show", id]),
 					}),
-				{ overlay: true },
+				// Without this an overlay is capped at 80 columns
+				// (`resolveOverlayLayout`: `Math.min(80, availWidth)`), which
+				// truncates the description column on any real terminal. The
+				// list is a table, so it wants the whole width.
+				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } },
 			)) ?? { changed: false };
 
 			if (outcome.changed) {
@@ -346,6 +354,18 @@ class SelectorOverlay implements Component {
 
 	invalidate(): void {}
 
+	/**
+	 * render() is handed a width but never a height, so the terminal is asked
+	 * directly. The overlay is sized to the screen in both directions -- a
+	 * fixed row count leaves half a tall terminal empty and overflows a short
+	 * one, and 24 catalogue entries are worth seeing at once when they fit.
+	 */
+	private visibleRows(): number {
+		const rows = this.tui.terminal?.rows ?? 0;
+		if (!rows) return MIN_VISIBLE * 2;
+		return Math.max(MIN_VISIBLE, Math.min(MAX_VISIBLE, rows - CHROME_LINES));
+	}
+
 	render(width: number): string[] {
 		const t = this.theme;
 		if (this.detailFor !== undefined) {
@@ -368,17 +388,17 @@ class SelectorOverlay implements Component {
 		if (rows.length === 0) {
 			lines.push(t.fg("muted", `  nothing matches "${this.query}"`));
 		} else {
-			const start = Math.max(
-				0,
-				Math.min(this.index - Math.floor(MAX_VISIBLE / 2), rows.length - MAX_VISIBLE),
-			);
-			const end = Math.min(start + MAX_VISIBLE, rows.length);
-			const idWidth = Math.min(
-				16,
-				Math.max(...rows.map((r) => visibleWidth(r.id))),
-			);
+			const visible = this.visibleRows();
+			const start = Math.max(0, Math.min(this.index - Math.floor(visible / 2), rows.length - visible));
+			const end = Math.min(start + visible, rows.length);
+			// Both columns are sized to the rows on screen. The right one has to
+			// be: a version cut to fit reads as a *different* version.
+			const idWidth = Math.min(16, Math.max(...rows.map((r) => visibleWidth(r.id))));
+			const rightWidth = Math.min(20, Math.max(...rows.map((r) => visibleWidth(this.rightText(r)))));
 			for (let i = start; i < end; i++) {
-				lines.push(truncateToWidth(this.row(rows[i], i === this.index, idWidth, width), width));
+				lines.push(
+					truncateToWidth(this.row(rows[i], i === this.index, idWidth, rightWidth, width), width),
+				);
 			}
 			if (start > 0 || end < rows.length) {
 				lines.push(t.fg("dim", `  (${this.index + 1}/${rows.length})`));
@@ -401,23 +421,32 @@ class SelectorOverlay implements Component {
 		return truncateToWidth(`  ${t.bold(left)}${" ".repeat(gap)}${query}`, width);
 	}
 
-	private row(item: ToolRow | ToolsetRow, selected: boolean, idWidth: number, width: number): string {
+	/**
+	 * The right-hand column. A tool can be active and absent -- activation says
+	 * what to mention, detection says what is here, and this is the second one.
+	 */
+	private rightText(item: ToolRow | ToolsetRow): string {
+		if (!("tags" in item)) return `${item.tools.length} tools`;
+		return item.status === "present" ? (item.version ?? "present") : item.status;
+	}
+
+	private row(
+		item: ToolRow | ToolsetRow,
+		selected: boolean,
+		idWidth: number,
+		rightWidth: number,
+		width: number,
+	): string {
 		const t = this.theme;
 		const prefix = selected ? t.fg("accent", "→ ") : "  ";
 		const id = item.id.padEnd(idWidth);
 		const label = selected ? t.fg("accent", id) : id;
 
-		// A tool can be active and absent -- activation says what to mention,
-		// detection says what is here. The right-hand column is the second one.
-		const right =
-			"tags" in item
-				? item.status === "present"
-					? (item.version ?? "present")
-					: item.status
-				: `${item.tools.length} tools`;
-		const rightWidth = 10;
+		const right = this.rightText(item);
 		const state = truncateToWidth(right, rightWidth, "");
-		const descWidth = Math.max(8, width - visibleWidth(prefix) - 4 - idWidth - 4 - rightWidth);
+		// One column short of the full width on purpose: writing the last cell
+		// of a line makes some terminals wrap it.
+		const descWidth = Math.max(8, width - visibleWidth(prefix) - 4 - idWidth - 5 - rightWidth);
 		const desc = truncateToWidth(item.desc, descWidth, "…", true);
 		const box = "tags" in item ? this.box(item.active, item.override) : this.box(item.active, null);
 		const dim = "tags" in item && !item.active;

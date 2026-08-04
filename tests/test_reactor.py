@@ -13,12 +13,15 @@ byte-identical across turns when nothing about the machine changed
 (docs/adr/0006). That is a property, not an intention, so it gets a test.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -204,6 +207,74 @@ class TestActivation(CatalogueFixture):
         # not make every command fail.
         active = R.active_ids(self.cat, self.sets, self.state(toolsets=["static", "ghost"]))
         self.assertEqual(active, {"alpha"})
+
+
+class TestOverrideEditing(CatalogueFixture):
+    """`enable`/`disable`/`reset` write the smallest override that works (ADR-0011).
+
+    The property that matters is the round trip: toggling a tool off and back on
+    must leave state.json exactly as it was, or a selector accrues a pin per
+    idle keystroke and the toolsets stop meaning anything.
+    """
+
+    def toggle(self, verb, *ids):
+        args = types.SimpleNamespace(id=list(ids), format="text")
+        on = {"enable": True, "disable": False, "reset": None}[verb]
+        with contextlib.redirect_stdout(io.StringIO()):
+            R._toggle(args, tools=True, on=on)
+        return R.load_state()
+
+    def written(self):
+        path = self.dir / "state.json"
+        return json.loads(path.read_text()) if path.is_file() else None
+
+    def test_enabling_what_the_base_already_gives_writes_nothing(self):
+        state = self.toggle("enable", "beta")
+        self.assertEqual(state.enabled, [])
+        self.assertIn("beta", R.active_ids(self.cat(), self.sets(), state))
+
+    def test_disabling_what_the_base_does_not_give_writes_nothing(self):
+        # Base is {alpha} here, so "off" for beta is already true.
+        R.save_state(self.state(toolsets=["static"]))
+        state = self.toggle("disable", "beta")
+        self.assertEqual(state.disabled, [])
+        self.assertNotIn("beta", R.active_ids(self.cat(), self.sets(), state))
+
+    def test_off_then_on_is_a_round_trip(self):
+        before = self.written()
+        self.toggle("disable", "alpha")
+        self.assertEqual(self.written()["tools"]["disabled"], ["alpha"])
+        self.toggle("enable", "alpha")
+        after = self.written()
+        self.assertEqual(after["tools"], {"enabled": [], "disabled": []})
+        if before is not None:
+            self.assertEqual(before, after)
+
+    def test_an_override_is_only_stored_against_the_toolsets(self):
+        # With `static` active the base is {alpha}. Turning beta on is a real
+        # deviation and is stored; turning alpha on is not.
+        R.save_state(self.state(toolsets=["static"]))
+        state = self.toggle("enable", "beta")
+        self.assertEqual(state.enabled, ["beta"])
+        state = self.toggle("enable", "alpha")
+        self.assertEqual(state.enabled, ["beta"])
+
+    def test_reset_drops_an_override_without_asserting_anything(self):
+        R.save_state(self.state(toolsets=["static"], enabled=["beta"], disabled=["gamma"]))
+        state = self.toggle("reset", "beta", "gamma")
+        self.assertEqual((state.enabled, state.disabled), ([], []))
+        self.assertEqual(R.active_ids(self.cat(), self.sets(), state), {"alpha"})
+
+    def test_unknown_tool_is_refused_before_anything_is_written(self):
+        with self.assertRaises(R.ReactorError):
+            self.toggle("disable", "alpha", "ghost")
+        self.assertIsNone(self.written())
+
+    def cat(self):
+        return R.load_catalogue()
+
+    def sets(self):
+        return R.load_toolsets()
 
 
 class TestRecipeRanking(CatalogueFixture):

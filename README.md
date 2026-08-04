@@ -15,12 +15,11 @@ running* — that gap is what REactor fills.
 See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
 full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 
-> **Status: Milestone 1 (the spine) is built.** The `reactor` CLI, the
-> installer, the catalogue and the `tool-registry` extension work end to end;
-> `python3 tests/test_reactor.py` covers them. The selector and status panels
-> (Milestone 2) and scenarios (Milestone 3) are not started, and every
-> `[tool.*.install]` recipe in `tools.toml` is still an unverified guess. See
-> `TODO.md`.
+> **Status: Milestone 1 (the spine) is built, and the selector with it.** The
+> `reactor` CLI, the installer, the catalogue, the `tool-registry` extension and
+> `/reactor-tools` work end to end; `python3 tests/test_reactor.py` covers the
+> CLI. The status panel (the rest of Milestone 2) and scenarios (Milestone 3)
+> are not started, and neither extension has an automated test. See `TODO.md`.
 
 ## The idea in one screen
 
@@ -92,7 +91,7 @@ Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
 third-party package by design.
 
 ```bash
-python3 tests/test_reactor.py             # 44 tests, no dependencies
+python3 tests/test_reactor.py             # 51 tests, no dependencies
 ```
 
 ## Scope

@@ -83,14 +83,35 @@ is silent today, and that is the worse half.
 
 ## Milestone 2 — Selector and status
 
-Both are pure TUI over the CLI's JSON; no new backend.
+### `extensions/selector/` — **built**
 
-### `extensions/selector/`
-Search the catalogue, inspect an entry, read a fetched skill, toggle individual
-tools and toolsets. `ctx.ui.custom` with `SelectList`; `ctx.reload()` after a
-toggle so `resources_discover` re-runs. Persists to `~/.pi/reactor/state.json`,
-with `./.reactor/state.json` overriding per project. Must degrade cleanly when
-`ctx.hasUI` is false.
+`/reactor-tools`: one overlay, two panes switched with Tab, fuzzy search over
+id, name, description and tags, space to toggle, Enter to inspect, Ctrl+R to
+drop an override, Esc to close. `ctx.reload()` fires once on close if anything
+was written. Inspected detail and skill bodies go in as out-of-context session
+entries, because they are for the human and the model already has the block.
+
+It turned out not to be "pure TUI over the CLI's JSON" after all. A selector
+invites toggling, and `enable`/`disable` used to pin unconditionally, so idle
+keystrokes would accrue overrides that quietly outrank every later toolset
+change. Activation edits are now minimal and `reactor tools reset` exists
+([ADR-0011](docs/adr/0011-selector-edits-overrides-not-outcomes.md)); `tools
+list` gained an `override` field so a client can tell "on because of a toolset"
+from "on because you said so".
+
+Open against it:
+
+- **No automated test**, same as `tool-registry`. It was driven through `jiti`
+  with a stubbed pi API against the real CLI, which exercised every key path
+  including the writes — but by hand, from a scratch harness that was not kept.
+  Two untested extensions is now the argument for a TypeScript test runner that
+  was deferred when there was one.
+- **Opening it costs a live probe** rather than reading the cache, so the first
+  screen is honest rather than a wall of `unknown`. Warm that is imperceptible;
+  cold it is the ~520 ms path, with no spinner in front of it.
+- **`SettingsList` was rejected for reasons that may not survive pi upgrades**
+  — if its search ever covers descriptions and Enter stops being overloaded,
+  most of the custom rendering could go.
 
 ### `extensions/status/`
 Live service and device state — which services are up, what is attached, network
@@ -167,8 +188,10 @@ than an error.
 `cache.json` is keyed on a stamp of `tools.toml` (mtime + size), so editing the
 catalogue drops stale probe results. `state.json` changes do **not** invalidate
 it, which is correct — activation does not change what is installed — but it
-means `reactor tools enable X` shows `X` from cache, possibly minutes stale.
-Acceptable now; revisit if the selector makes toggling frequent.
+means `reactor tools enable X` shows `X` from cache, possibly minutes stale. The
+selector sidesteps this by probing live when it opens and never re-probing
+while it is up, so a session's worth of toggling reads one snapshot. Fine while
+the snapshot is seconds old; wrong if the overlay is ever left open.
 
 ### Where scenario definitions live
 Prompt templates in `prompts/`, or a richer format the extension reads? Deferred
@@ -176,6 +199,12 @@ with Milestone 3, but the answer shapes whether `resources_discover` is enough.
 
 ## Resolved
 
+- **`enable` after `disable` left a pin, and there was no way back** → activation
+  edits are minimal and `reactor tools reset <id>` drops an override outright
+  ([ADR-0011](docs/adr/0011-selector-edits-overrides-not-outcomes.md)). The wart
+  was tolerable through a CLI and would not have been through a selector, which
+  is what forced the decision. The cost is recorded in the ADR: an override is
+  forgotten when the base catches up with it.
 - **ILSpy → `ilspycmd`** → catalogued as the CLI, installed with
   `dotnet tool install --global ilspycmd`, which added `dotnet` as a manager.
   The GUI is not a thing the agent can invoke, so it is not the entry.

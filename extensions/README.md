@@ -17,6 +17,7 @@ parses `tools.toml`, and none reimplements catalogue semantics —
 | Extension | Does |
 |---|---|
 | `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`. |
+| `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. |
 
 It renders nothing itself: the block arrives pre-rendered in
 `reactor registry --format json`, so the byte-stability the prompt cache depends
@@ -32,11 +33,21 @@ Two behaviours worth knowing before editing it:
   `reactor` looks exactly like a crashed one (code 1, empty stdout). Both are
   handled as "unavailable", warned once, then silent.
 
+And two for the selector:
+
+- **It renders its own list rather than using `SettingsList`.** The reasons are
+  specific and are recorded in
+  [ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md) — search
+  over descriptions, a key for inspect that is not Enter, and a column for
+  presence.
+- **A toggle's response is the new state.** `reactor tools enable …` returns the
+  recomputed `active` list and the whole `state`, so the overlay applies that
+  rather than re-deriving anything or re-listing the catalogue.
+
 ## Planned
 
 | Extension | Milestone | Does |
 |---|---|---|
-| `selector/` | 2 | Search, inspect and toggle tools and toolsets. `ctx.ui.custom` + `SelectList`, `ctx.reload()` after a toggle. The CLI side already exists: `reactor tools enable/disable`, `reactor toolsets enable/disable`, `reactor state`. |
 | `status/` | 2 | Live service, device and connectivity state in the footer and a panel. |
 | `scenario/` | 3 | Registers `reactor_step_complete`; its result is the next step's briefing. |
 
@@ -45,7 +56,9 @@ Two behaviours worth knowing before editing it:
 - Take `theme` from the render callback; never import it globally.
 - Call `tui.requestRender()` after state changes in input handlers.
 - Never emit a line wider than the `width` passed to `render`.
-- Degrade cleanly when `ctx.hasUI` is false — the registry matters in `print`
-  and `json` modes, only the TUI surfaces need a terminal.
+- Degrade cleanly when there is no terminal — the registry matters in `print`
+  and `json` modes, only the TUI surfaces need one. Gate an overlay on
+  `ctx.mode === "tui"`, not on `ctx.hasUI`: `hasUI` is also true for RPC, where
+  `ctx.ui.custom` has nothing to mount into.
 - Use `StringEnum` from `@earendil-works/pi-ai` for enum tool parameters;
   `Type.Union` breaks on Google's APIs.

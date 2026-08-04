@@ -264,8 +264,34 @@ callback rather than importing it, call `tui.requestRender()` after state
 changes, never exceed the width passed to `render`.
 
 `ctx.mode` is `"tui" | "rpc" | "json" | "print"`; `ctx.hasUI` is true for TUI and
-RPC. Everything the selector and status extensions do must degrade cleanly when
-`hasUI` is false.
+RPC. An overlay must therefore be gated on `ctx.mode === "tui"` — `hasUI` is the
+wrong test, because RPC has dialogs but no terminal to mount a component into.
+
+**[verified]** `ctx.ui.custom<T>(factory, options)` returns a `Promise<T>` that
+settles when the factory's `done(result)` callback is called. The factory is
+`(tui, theme, keybindings, done) => Component`, and `options.overlay` floats it
+above the transcript. The component's own `handleInput(data)` receives raw key
+data while it holds focus.
+
+**[verified]** The two list primitives are narrower than they look
+(`node_modules/@earendil-works/pi-tui/dist/components/`):
+
+- `SelectList` has **no filter input of its own** — `setFilter` must be driven
+  from outside, and it is a `startsWith` test on `item.value`, not a fuzzy one.
+- `SettingsList` does have `enableSearch`, but its `fuzzyFilter` runs over
+  `item.label` only, and an item may carry `values` (cycled on Enter/Space) *or*
+  a `submenu`, never both.
+
+`fuzzyFilter`, `truncateToWidth`, `visibleWidth` and `getKeybindings` are all
+exported from the package root, so rendering a list by hand is a small job when
+neither primitive fits.
+
+**[verified]** `pi.sendMessage` is **not** free of context. `convertToLlm`
+(`dist/core/messages.js`) maps a `role: "custom"` message to a **user** message,
+content unchanged. To show something to the person without showing it to the
+model, use `pi.appendEntry(customType, data)` — documented as "not sent to
+LLM" — with a `pi.registerEntryRenderer(customType, renderer)` to draw it. The
+renderer receives `{ expanded }`, so a long body should render short by default.
 
 ## `pi.exec` never rejects
 
@@ -292,6 +318,15 @@ quoting is involved and no shell is available.
 **[docs]** `@earendil-works/pi-coding-agent`, `typebox`, `@earendil-works/pi-ai`,
 `@earendil-works/pi-tui`, Node built-ins, and any dependency declared in a
 `package.json` adjacent to the extension (run `npm install` in that directory).
+
+**[verified]** Those are not ordinary resolutions. `dist/core/extensions/loader.js`
+builds the jiti instance with an `alias` map (or `virtualModules` in the Bun
+binary) pointing each of those specifiers at pi's own copy, so a runtime import
+of `@earendil-works/pi-tui` works from a package that has no `node_modules` of
+its own and gets **the same module instance pi is using** — which is why
+`getKeybindings()` inside an extension sees the user's keybindings and not a
+fresh default set. Anything not in that map resolves by normal Node rules from
+the extension's own directory.
 
 Use `StringEnum` from `@earendil-works/pi-ai` for enum parameters — plain
 `Type.Union` does not work with Google's APIs.

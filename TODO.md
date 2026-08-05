@@ -89,15 +89,13 @@ state the other reads).
 `toolsets.toml` needs a real predefined set, which depends on the catalogue being
 filled in. User-defined toolsets live in the same file after seeding.
 
-Tag selection is a **union**, and that has now silently broken two shipped
-toolsets — `all` built from a tag list dropped whatever nobody had tagged, and
-`native` declaring `["static", "native"]` collected every static tool including
-a Java decompiler. Both are fixed and
-`test_a_toolset_named_after_a_tag_selects_only_that_tag` guards the second, but
-the sharp edge is the semantics, not those two entries. If intersection turns
-out to be what people reach for when writing their own, that is a schema
-question (`tags` vs `all_tags`) to settle while the selector is being built and
-toolset authoring becomes something users actually do.
+The semantics are settled — tags intersect
+([ADR-0013](docs/adr/0013-toolset-tags-intersect.md)) — so the remaining work is
+editorial: which groups are worth shipping, and whether the tag vocabulary in
+`tools.toml` supports them. Three of the eight shipped toolsets are still
+explicit `tools` lists (`triage`, `android`, `ios`), and at least the first two
+of those are lists that should be tag expressions once the tagging is good
+enough to carry them.
 
 ## Milestone 3 — Scenarios
 

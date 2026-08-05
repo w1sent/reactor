@@ -67,6 +67,12 @@ leaves the extension a pure transport.
   ([ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md)). Each
   entry in `tools list` carries `override` (`"on"`, `"off"`, `null`) alongside
   `active` so a client can say which of the two it is looking at.
+- A toolset's `tags` **intersect**: a tool is a member when it carries every tag
+  listed, not any of them
+  ([ADR-0013](../docs/adr/0013-toolset-tags-intersect.md)). Union between groups
+  is what activating two toolsets already does. `tools` and `tags` still union
+  with each other, and `doctor` reports any toolset that ends up selecting
+  nothing.
 
 ## Environment
 

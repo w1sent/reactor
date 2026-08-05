@@ -317,12 +317,20 @@ def save_state(state: State) -> None:
 
 
 def toolset_members(ts: Toolset, cat: Catalogue) -> list[str]:
+    """Explicit `tools`, plus everything carrying *every* tag in `tags`.
+
+    Tags intersect (ADR-0013): the axes they name are independent, so listing
+    two of them is how you say "static *and* native". Union across groups is
+    already what activating two toolsets does; intersection has nowhere else to
+    live. An empty `tags` selects nothing -- vacuously true is the correct
+    reading and a useless one.
+    """
     if ts.everything:
         return catalogue_order(cat)
     members = {t for t in ts.tools if t in cat.tools}
     if ts.tags:
         wanted = set(ts.tags)
-        members |= {t.id for t in cat.tools.values() if wanted & set(t.tags)}
+        members |= {t.id for t in cat.tools.values() if wanted <= set(t.tags)}
     return sorted(members)
 
 
@@ -1037,6 +1045,16 @@ def cmd_doctor(args) -> int:
                 {"kind": "skill-missing", "tool": e["id"],
                  "message": f"{e['id']}: configured skill not fetched -- `reactor skills fetch {e['id']}`"}
             )
+    # Tags intersect (ADR-0013), so an over-specified list selects nothing at
+    # all. Activating such a toolset looks like activating nothing, which is a
+    # confusing way to find out you have a typo.
+    for ts in toolsets.values():
+        if not toolset_members(ts, cat):
+            problems.append(
+                {"kind": "toolset-empty", "toolset": ts.id,
+                 "message": f"toolset {ts.id}: selects no tool -- "
+                 f"`reactor toolsets show {ts.id}`"}
+            )
 
     stale: list[dict] = []
     if args.check_skills:
@@ -1118,8 +1136,10 @@ def cmd_tools_list(args) -> int:
     state = load_state()
     ids = catalogue_order(cat)
     if args.tag:
+        # Repeating --tag narrows, the same way a toolset's tag list does
+        # (ADR-0013). One spelling of "a list of tags", one meaning.
         wanted = set(args.tag)
-        ids = [i for i in ids if wanted & set(cat.tools[i].tags)]
+        ids = [i for i in ids if wanted <= set(cat.tools[i].tags)]
     if args.active:
         active = active_ids(cat, toolsets, state)
         ids = [i for i in ids if i in active]
@@ -1490,7 +1510,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.set_defaults(func=_group_help(t))
     tsub = t.add_subparsers(dest="subcommand", metavar="<subcommand>")
     tl = tsub.add_parser("list", parents=[common, probing], help="list catalogue entries")
-    tl.add_argument("--tag", action="append", help="only tools carrying this tag (repeatable)")
+    tl.add_argument("--tag", action="append",
+                    help="only tools carrying this tag (repeatable; repeats narrow)")
     tl.add_argument("--active", action="store_true", help="only currently active tools")
     tl.add_argument("--present", action="store_true", help="only tools detected on this machine")
     tl.add_argument("--missing", action="store_true", help="only tools that are absent")

@@ -568,17 +568,36 @@ class TestShippedConfig(unittest.TestCase):
         cat = R.load_catalogue()
         tags = {tag for t in cat.tools.values() for tag in t.tags}
         for ts in R.load_toolsets().values():
-            # Only tag-selected sets. An explicit `tools` list is a deliberate
-            # choice per entry, and `triage` is legitimately a hand-picked set
-            # that happens to share a name with a tag.
-            if ts.everything or ts.tools or ts.id not in tags:
+            if ts.everything or ts.id not in tags:
                 continue
             for tid in R.toolset_members(ts, cat):
+                # A tool named in `tools` is a deliberate exception -- frida is
+                # in [toolset.android] precisely because it is not tagged
+                # `android`. Writing the name is what makes that a decision
+                # rather than an accident, so it is allowed and the tag rule
+                # still binds everything else.
+                if tid in ts.tools:
+                    continue
                 with self.subTest(toolset=ts.id, tool=tid):
                     self.assertIn(
                         ts.id, cat.tools[tid].tags,
-                        f"toolset {ts.id!r} includes {tid!r}, which is not tagged {ts.id!r}",
+                        f"toolset {ts.id!r} includes {tid!r}, which is not tagged {ts.id!r} "
+                        f"and is not named in its `tools` list",
                     )
+
+    def test_every_tool_belongs_to_a_toolset_other_than_all(self):
+        # `all` is a catch-all, not a home. A tool reachable only through it is
+        # one nobody decided where to put, which is a real state to be in
+        # mid-edit but not one to ship: narrowing to any working set would hide
+        # a tool the user has installed.
+        cat = R.load_catalogue()
+        placed = set()
+        for ts in R.load_toolsets().values():
+            if not ts.everything:
+                placed.update(R.toolset_members(ts, cat))
+        for tid in cat.tools:
+            with self.subTest(tool=tid):
+                self.assertIn(tid, placed, f"{tid} is in no toolset but `all`")
 
 
 def setattr_pair(module, saved):

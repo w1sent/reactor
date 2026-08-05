@@ -85,17 +85,19 @@ extension's probe cache rather than probing independently; how that sharing work
 across two extensions needs designing (shared module, or one extension exposing
 state the other reads).
 
-### Toolset definitions
-`toolsets.toml` needs a real predefined set, which depends on the catalogue being
-filled in. User-defined toolsets live in the same file after seeding.
+### Toolset definitions — **done**
 
-The semantics are settled — tags intersect
-([ADR-0013](docs/adr/0013-toolset-tags-intersect.md)) — so the remaining work is
-editorial: which groups are worth shipping, and whether the tag vocabulary in
-`tools.toml` supports them. Three of the eight shipped toolsets are still
-explicit `tools` lists (`triage`, `android`, `ios`), and at least the first two
-of those are lists that should be tag expressions once the tagging is good
-enough to carry them.
+Thirteen sets, every one of them a task rather than an axis, and every tool in
+at least one besides `all` — asserted, so a new catalogue entry cannot be
+shipped without someone deciding where it lives.
+
+Open against them: the sets are **tight on purpose** and meant to be combined,
+which is only ergonomic because the selector makes activating two of them two
+keystrokes. Whether that holds up is a question for real sessions, and the
+answer might be that a handful of sets should absorb `general` rather than
+leaving it to be added back. The other unknown is `debugging` ⊂ `dynamic` —
+two sets differing by `frida` and `objection`, which is either a useful
+distinction or one row of noise.
 
 ## Milestone 3 — Scenarios
 

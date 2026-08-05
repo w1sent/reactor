@@ -17,7 +17,7 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 
 > **Status: Milestone 1 (the spine) is built, and the selector with it.** The
 > `reactor` CLI, the installer, the catalogue, the `tool-registry` extension and
-> `/reactor-tools` work end to end, and `npm test` covers all of it — 55 tests
+> `/reactor-tools` work end to end, and `npm test` covers all of it — 56 tests
 > on the CLI, 42 driving the extensions against it. The status panel (the rest
 > of Milestone 2) and scenarios (Milestone 3) are not started. See `TODO.md`.
 
@@ -91,8 +91,8 @@ Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
 third-party package by design.
 
 ```bash
-npm test                                  # 97 tests, nothing to install
-python3 tests/test_reactor.py             # the CLI alone, 55 tests
+npm test                                  # 98 tests, nothing to install
+python3 tests/test_reactor.py             # the CLI alone, 56 tests
 ```
 
 The extension half needs pi on `PATH` and skips without it: it loads each

@@ -44,6 +44,25 @@ And two for the selector:
   recomputed `active` list and the whole `state`, so the overlay applies that
   rather than re-deriving anything or re-listing the catalogue.
 
+## Tests
+
+```bash
+node --test "tests/extensions/*.test.mjs"
+```
+
+Both extensions are driven through **pi's own loader** against the **real** CLI
+— `pi.exec` is pi's, and the `reactor` it finds on `PATH` is a shim over
+`bin/reactor` pointed at a fixture catalogue
+([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
+Only the host is faked: the context, its `ui`, and the TUI/theme/`done` triple
+that `ctx.ui.custom` hands a component.
+
+Two consequences for anyone adding a test. The theme is identity rather than
+ANSI, because width is most of what is worth asserting about a list that must
+not overflow. And `handleInput` launches its work with `void`, so a keystroke is
+awaited via `press()`, which waits for the overlay to stop being busy rather
+than guessing at a delay.
+
 ## Planned
 
 | Extension | Milestone | Does |

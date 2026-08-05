@@ -1,19 +1,31 @@
 # tests/
 
 ```bash
-python3 tests/test_reactor.py          # all of it, verbose
+npm test                                       # both suites
+
+python3 tests/test_reactor.py                  # the CLI, verbose
 python3 tests/test_reactor.py TestRegistryDeterminism
+
+node --test "tests/extensions/*.test.mjs"      # the extensions
+node --test tests/extensions/selector.test.mjs
 ```
 
-stdlib `unittest`, no dependencies and no runner to install — the same reasoning
-that keeps the CLI stdlib-only
-([ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md)). `bin/reactor` has
-no `.py` extension, so the suite imports it through `SourceFileLoader`.
+Two suites, no runner to install in either language. The CLI's is stdlib
+`unittest` — the same reasoning that keeps the CLI stdlib-only
+([ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md)). The extensions' is
+`node --test`, loading each extension through pi's own loader
+([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 
-Nothing here touches `~/.pi/reactor/`: fixtures point `REACTOR_CONFIG_DIR` and
-the module's `CONFIG_DIR`/`PACKAGE_ROOT` globals at a temporary directory.
+`bin/reactor` has no `.py` extension, so the Python suite imports it through
+`SourceFileLoader`. Nothing anywhere touches `~/.pi/reactor/`: the Python
+fixtures point the module's `CONFIG_DIR`/`PACKAGE_ROOT` globals at a temporary
+directory, and the extension fixtures do the same through
+`REACTOR_CONFIG_DIR` — which is also how the real CLI, spawned for real, ends up
+reading the fixture catalogue.
 
 ## What is actually being defended
+
+### `test_reactor.py` — the CLI
 
 - **`TestRegistryDeterminism`** — the load-bearing one. Replacing the system
   prompt invalidates the provider's cached prefix, so the rendered block must be
@@ -36,12 +48,47 @@ the module's `CONFIG_DIR`/`PACKAGE_ROOT` globals at a temporary directory.
 - **`TestRecipeRanking`** — that an install key naming no known manager can
   never become a command REactor runs
   ([ADR-0010](../docs/adr/0010-install-recipes-keyed-by-package-manager.md)).
+- **`TestOverrideEditing`** — that an activation edit is the *smallest* edit
+  that produces the requested outcome, so toggling is not a way to accumulate
+  pins ([ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md)).
+
+### `extensions/` — the extensions
+
+Both files drive the extension against the real CLI, so they fail when the JSON
+contract moves underneath them rather than agreeing with a stale transcription
+of it. `harness.mjs` holds the fixture catalogue, the `reactor` shim and the
+fake host; neither test file stubs `reactor` itself.
+
+- **`tool-registry.test.mjs`** — that the block is *appended* to the system
+  prompt rather than replacing it, that absent and deactivated tools are not
+  advertised, and that skills are withdrawn when their tool is. Then the failure
+  modes, which are most of the extension: a failed probe keeps the last good
+  block, a missing CLI is announced once rather than every turn, non-JSON output
+  and error payloads become a status line instead of an exception.
+- **`selector.test.mjs`** — that keystrokes produce the writes they claim to.
+  The round trip is the one to keep: toggling a tool off and back on leaves
+  `state.json` byte-identical, which is what makes the selector safe to browse
+  in. Also the two display bugs that were real — the overlay asking for the full
+  terminal width, and a version column wide enough that `10.1.1.8388` is never
+  cut into a different version — plus the invariant behind them, that no
+  rendered line exceeds the width it was given.
+
+## Keeping the suites honest
+
+Both are checked by mutation, not just by running green: break the behaviour in
+`bin/reactor` or in an extension, confirm the intended test is the one that
+fails, revert. `scripts/verify-recipes.py` is the reason this is a habit here —
+it passed everything it was ever given until someone noticed
+`packages.debian.org` serves "No such package" with status 200. A test that
+cannot fail is worse than no test, because it gets quoted as evidence.
 
 ## Not covered
 
-The extension. `extensions/tool-registry/index.ts` was exercised by hand through
-`jiti` with a stubbed `ExtensionAPI` — enough to confirm it loads, registers the
-right events and produces the right `systemPrompt` and `skillPaths` — but there
-is no automated TypeScript test and no test runner in the package. Worth adding
-when the selector arrives and there is more than one extension to justify the
-setup.
+- **The exec-timeout branch** in `tool-registry`. Reaching it costs the
+  extension's own 20 s budget, which is longer than both suites together
+  ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
+- **Types.** The extension tests are JavaScript and there is no `tsconfig.json`
+  or `typescript` dependency in the package, so nothing here catches a wrong
+  field name that an editor would.
+- **`scripts/install.py`**, which is verified by running it against the real
+  upstream repositories rather than by test.

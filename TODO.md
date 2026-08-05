@@ -1,8 +1,9 @@
 # TODO
 
-Design is settled (`docs/adr/`). Milestone 1 is built and tested; Milestones 2
-and 3 are not started. The milestones are ordered by dependency — the spine is a
-chain where each link needs the one before it.
+Design is settled (`docs/adr/`). Milestone 1 is built and tested, and so is the
+selector, which is half of Milestone 2; the status extension, the real toolset
+definitions and Milestone 3 are not started. The milestones are ordered by
+dependency — the spine is a chain where each link needs the one before it.
 
 ## Milestone 1 — Spine — **done, with the gaps listed below**
 
@@ -21,7 +22,8 @@ machine. No custom TUI components.
   `ipsw-skill` repositories.
 - **`extensions/tool-registry/`** — block into the system prompt on
   `before_agent_start`, `skillPaths` on `resources_discover`, status line,
-  `/reactor`. Exercised through `jiti` with a stubbed API.
+  `/reactor`. Tested through pi's own loader against the real CLI
+  ([ADR-0012](docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 - **Determinism** — a test, not an intention: `TestRegistryDeterminism` and
   `TestJsonContract.test_registry_block_is_stable_across_processes`.
 
@@ -41,10 +43,6 @@ writing where `--help` and upstream skills genuinely do not suffice, meaning
 cross-tool workflow knowledge. Deciding *which* should follow real sessions
 rather than precede them.
 
-**The extension has no automated test.** It was driven by hand through `jiti`
-with a stubbed `ExtensionAPI`. There is no TypeScript test runner in the
-package; adding one is more justifiable once the selector exists too.
-
 **`requires:` in REactor-authored skills is inert.** `skills/` is a conventional
 directory at the package root, so pi's *package* loader discovers everything in
 it before the extension's `resources_discover` runs — those skills load whether
@@ -52,34 +50,6 @@ or not their tools are present or active. Only fetched upstream skills are gated
 today. Fixing it means serving `skills/` from `resources_discover` too, which
 means moving it out of the conventional layout. Costs nothing while the
 directory is empty; decide before the first skill lands in it.
-
-**A fetched skill can lose a name collision to a directory REactor does not
-control, and then gating it does nothing.** pi discovers `~/.agents/skills/` and
-`<project>/.agents/skills/` on its own (`package-manager.js:279,1941`) — an
-ecosystem-wide convention shared with other agent tools, nothing to do with
-REactor. Anyone who has installed a tool's skill that way already has a copy of
-what REactor fetches, usually at a different revision.
-
-pi's `loadSkills` keys skills by their declared `name:`, adds the default
-directories *before* extension-contributed paths, and on a duplicate name keeps
-the first and records a collision diagnostic. The independently installed copy
-therefore wins and REactor's pinned copy is discarded. Reproduced on a real
-install.
-
-Two things break. The pin in `.reactor-skill.json` becomes fiction — REactor
-reports a commit for a file nobody loaded. And gating is defeated: deactivating
-the tool removes REactor's path from `resources_discover`, and the other copy
-stays, because REactor never contributed it and cannot retract it. The CLI's
-`skillPaths` is correct in both directions, so this is entirely about what pi
-does downstream of it.
-
-`resources_discover` is additive by construction — `extendResources` *merges*
-into `lastSkillPaths` and treats an empty array as a no-op
-(`resource-loader.js:242`) — so no extension can remove a skill it did not add.
-That is pi's design, not a bug to route around. The options are to detect the
-collision and say so (`reactor doctor` can read both copies' `name:` and compare),
-or to stop fetching a skill the user already has. Detection first: the failure
-is silent today, and that is the worse half.
 
 ## Milestone 2 — Selector and status
 
@@ -101,11 +71,6 @@ from "on because you said so".
 
 Open against it:
 
-- **No automated test**, same as `tool-registry`. It was driven through `jiti`
-  with a stubbed pi API against the real CLI, which exercised every key path
-  including the writes — but by hand, from a scratch harness that was not kept.
-  Two untested extensions is now the argument for a TypeScript test runner that
-  was deferred when there was one.
 - **Opening it costs a live probe** rather than reading the cache, so the first
   screen is honest rather than a wall of `unknown`. Warm that is imperceptible;
   cold it is the ~520 ms path, with no spinner in front of it.
@@ -199,6 +164,32 @@ with Milestone 3, but the answer shapes whether `resources_discover` is enough.
 
 ## Resolved
 
+- **Skill name collisions with `~/.agents/skills/` are out of scope** → decided,
+  not fixed. pi discovers `~/.agents/skills/` and `<project>/.agents/skills/` on
+  its own (`package-manager.js:279,1941`) — an ecosystem-wide convention shared
+  with other agent tools. `loadSkills` keys skills by their declared `name:`,
+  adds those directories *before* extension-contributed paths, and on a
+  duplicate keeps the first. So an independently installed copy wins and
+  REactor's pinned one is discarded, which makes the commit in
+  `.reactor-skill.json` fiction and defeats gating: `resources_discover` is
+  additive by construction (`extendResources` merges into `lastSkillPaths` and
+  treats an empty array as a no-op, `resource-loader.js:242`), so no extension
+  can retract a skill it did not add. Reproduced on a real install.
+
+  REactor's own `skillPaths` is correct in both directions; everything that goes
+  wrong goes wrong downstream, inside pi's loader, over directories REactor
+  neither writes nor owns. Detecting and reporting the clash would be REactor
+  taking responsibility for another tool's installation, and the fix belongs in
+  pi. Left as a known interaction rather than a REactor defect.
+- **The extensions had no automated test** → `node --test`, loading each one
+  through pi's own loader against the real CLI
+  ([ADR-0012](docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)). 42
+  tests: the registry's failure modes (missing CLI, garbage, error payload,
+  last-good-block), skill gating, and the selector driven by keystroke —
+  including the off-then-on round trip that leaves `state.json` byte-identical,
+  and the two display bugs that were real. Checked by mutation rather than
+  trusted for being green; one mutation showed a wrongly-opened overlay *hung*
+  the suite instead of failing it, which the fake host now prevents.
 - **`enable` after `disable` left a pin, and there was no way back** → activation
   edits are minimal and `reactor tools reset <id>` drops an override outright
   ([ADR-0011](docs/adr/0011-selector-edits-overrides-not-outcomes.md)). The wart

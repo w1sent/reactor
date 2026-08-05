@@ -2,6 +2,9 @@
   "name": "reactor",
   "version": "0.0.0",
   "private": true,
+  "scripts": {
+    "test": "python3 tests/test_reactor.py && node --test \"tests/extensions/*.test.mjs\""
+  },
   "description": "A reverse-engineering agent harness built on pi: tells the agent what RE tooling exists on this machine.",
   "keywords": ["pi-package"],
   "license": "UNLICENSED"

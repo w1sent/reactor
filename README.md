@@ -17,9 +17,9 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 
 > **Status: Milestone 1 (the spine) is built, and the selector with it.** The
 > `reactor` CLI, the installer, the catalogue, the `tool-registry` extension and
-> `/reactor-tools` work end to end; `python3 tests/test_reactor.py` covers the
-> CLI. The status panel (the rest of Milestone 2) and scenarios (Milestone 3)
-> are not started, and neither extension has an automated test. See `TODO.md`.
+> `/reactor-tools` work end to end, and `npm test` covers all of it — 51 tests
+> on the CLI, 42 driving the extensions against it. The status panel (the rest
+> of Milestone 2) and scenarios (Milestone 3) are not started. See `TODO.md`.
 
 ## The idea in one screen
 
@@ -64,7 +64,7 @@ themes/          pi themes
                    docs/package-resources.md covers them, and no doc may live
                    inside them (pi would register it as a resource)
 scripts/         install.py and repo-management scripts
-tests/           stdlib unittest suite for the CLI
+tests/           stdlib unittest for the CLI, node --test for the extensions
 docs/            Concept, ADRs, HOWTOs, reference notes
 ```
 
@@ -91,8 +91,13 @@ Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
 third-party package by design.
 
 ```bash
-python3 tests/test_reactor.py             # 51 tests, no dependencies
+npm test                                  # 93 tests, nothing to install
+python3 tests/test_reactor.py             # the CLI alone, 51 tests
 ```
+
+The extension half needs pi on `PATH` and skips without it: it loads each
+extension through pi's own loader, so the module graph under test is the one pi
+runs ([ADR-0012](docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 
 ## Scope
 

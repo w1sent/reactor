@@ -19,3 +19,4 @@ Write the ADR before implementing, not after.
 | [0009](0009-scenarios-advance-by-tool-result.md) | Scenarios advance by tool result, not by marker or heuristic |
 | [0010](0010-install-recipes-keyed-by-package-manager.md) | Install recipes are keyed by package manager, not by distro |
 | [0011](0011-selector-edits-overrides-not-outcomes.md) | The selector edits overrides, not activation outcomes |
+| [0012](0012-extensions-tested-through-pi-s-own-loader.md) | Extensions are tested through pi's own loader |

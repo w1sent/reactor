@@ -9,11 +9,6 @@
 # unit. Activation shapes only what the agent is TOLD about — it never blocks
 # anything. See docs/adr/0007-deactivation-is-soft.md.
 #
-# STATUS: placeholder. A real predefined set depends on the catalogue being
-# filled in first (Milestone 2 in TODO.md).
-
-version = 1
-
 # [toolset.<id>]
 #   desc   One line, shown in the selector. Not injected into the prompt.
 #   tools  Explicit tool ids.
@@ -26,15 +21,24 @@ version = 1
 #          members share, so an untagged tool still belongs to it.
 #
 # For "either of these", activate two toolsets: activation unions them, which is
-# why the tag list does not.
+# why the tag list does not. These sets are deliberately tight for that reason —
+# they are meant to be combined, not to each be self-sufficient.
+#
+# Prefer `tags` over `tools`. A tag list keeps working when the catalogue grows;
+# a name list has to be remembered in two files. Where both appear below, the
+# named tool is one that genuinely does not carry the tag — frida is not an
+# Android tool, it is an everything tool that Android work happens to need.
+
+version = 1
 
 [toolset.all]
 desc = "everything in the catalogue"
 all  = true
 
 [toolset.triage]
-desc  = "first look: identify, unpack, scan"
-tools = ["binwalk", "yara", "lief", "ripgrep", "jq"]
+desc  = "first look: what is this file, and what is inside it"
+tags  = ["triage"]
+tools = ["lief", "ripgrep", "jq"]
 
 [toolset.native]
 desc = "static analysis of compiled binaries"
@@ -44,21 +48,47 @@ desc = "static analysis of compiled binaries"
 tags = ["native"]
 
 [toolset.managed]
-desc = "decompilation of managed bytecode"
+desc = "decompilation of managed bytecode: JVM/DEX and .NET"
 tags = ["managed"]
 
-[toolset.android]
-desc  = "Android application analysis"
-tools = ["adb", "apktool", "aapt2", "jadx", "frida", "objection", "mobilecli"]
+[toolset.source]
+desc  = "source-level analysis: query, parse, search"
+tags  = ["source"]
+tools = ["ripgrep"]
 
-[toolset.ios]
-desc  = "iOS application and firmware analysis"
-tools = ["ipsw", "frida", "objection", "mobilecli"]
+[toolset.solving]
+desc = "symbolic execution and constraint solving"
+tags = ["solving"]
 
 [toolset.dynamic]
 desc = "running-process instrumentation and debugging"
 tags = ["dynamic"]
 
+[toolset.debugging]
+desc = "debuggers only — no instrumentation frameworks"
+tags = ["debugger"]
+
+[toolset.android]
+desc  = "Android application analysis"
+# frida is tagged `mobile`, not `android`: it is not an Android tool, it is a
+# general one that Android work reaches for. Naming it here says exactly that.
+tags  = ["android"]
+tools = ["frida"]
+
+[toolset.ios]
+desc  = "iOS application and firmware analysis"
+tags  = ["ios"]
+tools = ["frida"]
+
+[toolset.firmware]
+desc  = "firmware and embedded images: identify, carve, inspect"
+tags  = ["firmware"]
+tools = ["lief", "yara"]
+
 [toolset.network]
 desc = "traffic capture and packet work"
 tags = ["network"]
+
+[toolset.general]
+desc = "search and JSON — worth adding back to any narrow set"
+tags = ["general"]

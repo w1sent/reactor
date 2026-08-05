@@ -62,7 +62,7 @@ name   = "Alpha"
 desc   = "does alpha things"
 invoke = "alpha"
 detect = { binary = "alpha" }
-tags   = ["static"]
+tags   = ["static", "python"]
 
 [tool.alpha.install]
 pacman = "pacman -S alpha"
@@ -99,6 +99,21 @@ tags = ["static"]
 [toolset.pair]
 desc  = "explicit"
 tools = ["alpha", "gamma"]
+
+# Both tags are carried by something, so a union would widen these and an
+# intersection narrows them -- which is what makes them worth asserting.
+[toolset.narrow]
+desc = "two tags, one tool"
+tags = ["static", "python"]
+
+[toolset.miss]
+desc = "nothing carries both"
+tags = ["static", "dynamic"]
+
+[toolset.plus]
+desc  = "a tag, and one more by name"
+tags  = ["dynamic", "python"]
+tools = ["gamma"]
 """
 
 
@@ -161,8 +176,8 @@ class TestCatalogue(CatalogueFixture):
 
 class TestToolsets(CatalogueFixture):
     def test_all_covers_every_tool_whatever_its_tags(self):
-        # gamma's only tag is "odd", which no toolset names. A tag-union "all"
-        # would silently drop it; `all = true` must not.
+        # gamma's only tag is "odd", which no toolset names. A group built from
+        # tags would drop it either way; `all = true` must not.
         cat = R.load_catalogue()
         sets = R.load_toolsets()
         self.assertEqual(R.toolset_members(sets["all"], cat), ["alpha", "beta", "gamma"])
@@ -176,6 +191,49 @@ class TestToolsets(CatalogueFixture):
         cat = R.load_catalogue()
         sets = R.load_toolsets()
         self.assertEqual(R.toolset_members(sets["pair"], cat), ["alpha", "gamma"])
+
+    def test_tags_intersect_rather_than_union(self):
+        # ADR-0013. beta is the only "python" tool that is also "dynamic";
+        # alpha is python but static. A union would return both, which is how
+        # [toolset.native] once collected every static tool there is.
+        cat = R.load_catalogue()
+        sets = R.load_toolsets()
+        self.assertEqual(R.toolset_members(sets["narrow"], cat), ["alpha"])
+        self.assertEqual(R.toolset_members(sets["plus"], cat), ["beta", "gamma"])
+
+    def test_tags_nothing_carries_together_select_nothing(self):
+        # An over-specified list is now empty rather than over-wide. That is the
+        # better failure -- visibly nothing beats quietly everything -- but it
+        # is a failure, so `reactor doctor` reports it.
+        cat = R.load_catalogue()
+        sets = R.load_toolsets()
+        self.assertEqual(R.toolset_members(sets["miss"], cat), [])
+
+    def tools_list(self, *tags):
+        args = types.SimpleNamespace(
+            tag=list(tags) or None, active=False, present=False, missing=False,
+            refresh=False, cached=True, format="json",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.cmd_tools_list(args)
+        return [t["id"] for t in json.loads(out.getvalue())["tools"]]
+
+    def test_repeating_the_tag_filter_narrows(self):
+        # `--tag` is action="append", so it was the other place a list of tags
+        # had a meaning -- and it had the other one (ADR-0013).
+        self.assertEqual(self.tools_list("python"), ["alpha", "beta"])
+        self.assertEqual(self.tools_list("python", "static"), ["alpha"])
+        self.assertEqual(self.tools_list("python", "odd"), [])
+
+    def test_doctor_reports_a_toolset_that_selects_nothing(self):
+        args = types.SimpleNamespace(format="json", cached=True, check_skills=False)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.cmd_doctor(args)
+        problems = json.loads(out.getvalue())["problems"]
+        empty = [p["toolset"] for p in problems if p["kind"] == "toolset-empty"]
+        self.assertEqual(empty, ["miss"])
 
 
 class TestActivation(CatalogueFixture):
@@ -499,16 +557,14 @@ class TestShippedConfig(unittest.TestCase):
             self.assertTrue(R.toolset_members(ts, cat), f"toolset {ts.id} selects nothing")
 
     def test_a_toolset_named_after_a_tag_selects_only_that_tag(self):
-        # Tag selection is a *union*, which has now quietly broken two toolsets:
-        # [toolset.all] built from a tag list dropped whatever nobody tagged,
-        # and [toolset.native] declaring ["static", "native"] collected every
-        # static tool there is -- a Java decompiler and a source-level dataflow
-        # engine among them.
-        #
         # Where a toolset's name is also a tag, that name is a claim about what
-        # is inside it, and this checks the claim. It does not stop anyone
-        # writing an incoherent toolset under some other name; it stops the
-        # union silently widening one that reads as if it were narrow.
+        # is inside it, and this checks the claim -- catching the toolset that
+        # reads as narrow but is selected on some other tag entirely.
+        #
+        # It used to guard against the union widening such a set, which was how
+        # [toolset.native] declaring ["static", "native"] came to hold every
+        # static tool there is. Tags intersect now (ADR-0013), so widening is no
+        # longer the way to get this wrong; naming the wrong tag still is.
         cat = R.load_catalogue()
         tags = {tag for t in cat.tools.values() for tag in t.tags}
         for ts in R.load_toolsets().values():

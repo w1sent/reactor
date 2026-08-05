@@ -17,11 +17,16 @@ version = 1
 # [toolset.<id>]
 #   desc   One line, shown in the selector. Not injected into the prompt.
 #   tools  Explicit tool ids.
-#   tags   Tags from tools.toml; every tool carrying one is included.
-#          `tools` and `tags` union.
+#   tags   Tags from tools.toml. A tool is included when it carries *every* tag
+#          listed — ["static", "native"] is "static AND native", not either.
+#          See docs/adr/0013-toolset-tags-intersect.md. Members are the explicit
+#          `tools` plus everything matching the whole tag list.
 #   all    Every catalogue entry, whatever its tags. Only `all` uses this —
-#          spelling "everything" as a tag union silently drops any tool whose
-#          tags nobody remembered to add to the list.
+#          the catalogue is what defines this group, not any property its
+#          members share, so an untagged tool still belongs to it.
+#
+# For "either of these", activate two toolsets: activation unions them, which is
+# why the tag list does not.
 
 [toolset.all]
 desc = "everything in the catalogue"
@@ -33,9 +38,9 @@ tools = ["binwalk", "yara", "lief", "ripgrep", "jq"]
 
 [toolset.native]
 desc = "static analysis of compiled binaries"
-# Just "native", not ["static", "native"]. Tag selection is a union, so adding
-# "static" pulled in every static tool there is -- a Java decompiler and a
-# source-level dataflow engine included.
+# Every native tool here is also a static one, so "static" would narrow nothing
+# and is left off. It would be correct now — tags intersect — but a tag that
+# changes no member is a claim nobody checks.
 tags = ["native"]
 
 [toolset.managed]

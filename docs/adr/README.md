@@ -21,3 +21,4 @@ Write the ADR before implementing, not after.
 | [0011](0011-selector-edits-overrides-not-outcomes.md) | The selector edits overrides, not activation outcomes |
 | [0012](0012-extensions-tested-through-pi-s-own-loader.md) | Extensions are tested through pi's own loader |
 | [0013](0013-toolset-tags-intersect.md) | Toolset tags intersect |
+| [0014](0014-extensions-share-the-cache-not-each-other.md) | Extensions share probe results through the cache, never through each other |

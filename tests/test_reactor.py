@@ -236,6 +236,125 @@ class TestToolsets(CatalogueFixture):
         self.assertEqual(empty, ["miss"])
 
 
+SERVICE_TOOLS = """
+version = 1
+
+[probe]
+timeout = 5.0
+
+[tool.answering]
+name    = "Answering"
+desc    = "a service that answers"
+invoke  = "sh"
+detect  = { binary = "sh" }
+service = { probe = ["sh", "-c", "echo 'a device'; echo 'b device'"], label = "answering", count = { pattern = 'device$', noun = "device" } }
+
+[tool.refusing]
+name    = "Refusing"
+desc    = "a service that is not running"
+invoke  = "sh"
+detect  = { binary = "sh" }
+service = { probe = ["sh", "-c", "exit 3"], label = "refusing" }
+
+[tool.uninstalled]
+name    = "Uninstalled"
+desc    = "declares a service but is not here"
+invoke  = "reactor-absent-by-design"
+detect  = { binary = "reactor-absent-by-design" }
+service = { probe = ["sh", "-c", "exit 0"], label = "uninstalled" }
+
+[tool.plain]
+name   = "Plain"
+desc   = "no service at all"
+invoke = "sh"
+detect = { binary = "sh" }
+"""
+
+
+class TestServices(CatalogueFixture):
+    """`reactor services` -- what is up, for a status line to ask every turn."""
+
+    def setUp(self):
+        super().setUp()
+        (self.dir / "tools.toml").write_text(SERVICE_TOOLS)
+
+    def services(self, **flags):
+        args = types.SimpleNamespace(**{"format": "json", "refresh": False, "cached": False, **flags})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.cmd_services(args)
+        return json.loads(out.getvalue())
+
+    def test_only_tools_with_a_service_probe_are_reported(self):
+        # `plain` is installed and irrelevant here. Listing it would make the
+        # status line a second, worse copy of the registry.
+        ids = [s["id"] for s in self.services()["services"]]
+        self.assertEqual(ids, ["answering", "refusing", "uninstalled"])
+
+    def test_a_running_service_carries_its_count(self):
+        by_id = {s["id"]: s for s in self.services()["services"]}
+        self.assertEqual(by_id["answering"]["state"], R.UP)
+        self.assertEqual(by_id["answering"]["detail"], "2 devices")
+        self.assertEqual(by_id["answering"]["label"], "answering")
+
+    def test_a_refused_probe_is_down_with_no_detail(self):
+        by_id = {s["id"]: s for s in self.services()["services"]}
+        self.assertEqual(by_id["refusing"]["state"], R.DOWN)
+        self.assertIsNone(by_id["refusing"]["detail"])
+
+    def test_an_uninstalled_tool_is_unknown_not_down(self):
+        # "down" is a claim that something exists and is not running. For a
+        # tool that is not installed, that claim is false and misleading -- it
+        # would send the agent looking for a service to start.
+        by_id = {s["id"]: s for s in self.services()["services"]}
+        self.assertEqual(by_id["uninstalled"]["state"], R.UNKNOWN)
+        self.assertEqual(by_id["uninstalled"]["status"], R.ABSENT)
+
+    def test_the_summary_counts_every_reported_service(self):
+        payload = self.services()
+        self.assertEqual(payload["summary"], {R.UP: 1, R.DOWN: 1, R.UNKNOWN: 1})
+        self.assertEqual(sum(payload["summary"].values()), len(payload["services"]))
+
+    def test_cached_never_probes_and_says_unknown_instead(self):
+        # The cache is the whole sharing mechanism between extensions
+        # (ADR-0014), so `--cached` has to be honest about a cold one rather
+        # than reporting a state nobody measured.
+        states = {s["id"]: s["state"] for s in self.services(cached=True)["services"]}
+        self.assertEqual(set(states.values()), {R.UNKNOWN})
+
+    def test_text_output_names_every_service(self):
+        args = types.SimpleNamespace(format="text", refresh=False, cached=False)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.cmd_services(args)
+        text = out.getvalue()
+        for tid in ("answering", "refusing", "uninstalled"):
+            self.assertIn(tid, text)
+        self.assertNotIn("plain", text)
+
+
+class TestAtomicWrites(CatalogueFixture):
+    """Two processes can be writing the cache at once, so the write is atomic
+    and the temp file is per-process (ADR-0014)."""
+
+    def test_the_temp_file_is_not_shared_between_processes(self):
+        path = self.dir / "thing.json"
+        R._write_json(path, {"a": 1})
+        self.assertEqual(json.loads(path.read_text()), {"a": 1})
+        # A fixed `thing.json.tmp` is what lets two writers interleave into one
+        # buffer and then rename the mixture into place.
+        self.assertNotIn(f"{path.name}.tmp", [p.name for p in self.dir.iterdir()])
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self):
+        locked = self.dir / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        self.addCleanup(locked.chmod, 0o700)
+        with self.assertRaises(R.ReactorError):
+            R._write_json(locked / "thing.json", {"a": 1})
+        self.assertEqual(list(locked.iterdir()), [])
+
+
 class TestActivation(CatalogueFixture):
     def setUp(self):
         super().setUp()

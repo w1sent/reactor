@@ -14,6 +14,7 @@ never read the catalogue themselves. Human output carries no such guarantee.
 
   reactor doctor              what is present, what is not, how to get it
   reactor registry            the block injected into the agent's system prompt
+  reactor services            what is running right now, of the tools that have one
   reactor tools ...           catalogue queries and activation
   reactor toolsets ...        the same for named groups
   reactor skills ...          upstream skills REactor has fetched
@@ -951,12 +952,18 @@ def emit(args, payload: dict, human: str) -> None:
 
 
 def _write_json(path: Path, data: dict) -> None:
+    # The temp name carries the pid because two processes can be here at once:
+    # every extension shells out on its own and shares nothing but this cache
+    # (ADR-0014). The rename is atomic, so a reader never sees half a file --
+    # but a *shared* temp name lets two writers interleave into it and then
+    # rename the mixture, publishing a state that was never anyone's.
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
         tmp.replace(path)
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         raise ReactorError(f"{path}: {exc}")
 
 
@@ -1451,6 +1458,60 @@ def cmd_overwrite_config(args) -> int:
     return 0
 
 
+SERVICE_GLYPH = {UP: "[^]", DOWN: "[v]", UNKNOWN: "[?]"}
+
+
+def cmd_services(args) -> int:
+    """State of the catalogue entries that are backed by something running.
+
+    A separate command rather than a filter over `tools list` because the
+    question is different: not "what is installed" but "what is up right now".
+    Probing only the service-capable entries is also what makes it cheap enough
+    for a status line to ask on every turn (ADR-0014).
+    """
+    cat = load_catalogue()
+    toolsets = load_toolsets()
+    state = load_state()
+    ids = [t for t in catalogue_order(cat) if cat.tools[t].service_probe]
+    results = probe(cat, ids, refresh=args.refresh, cached_only=args.cached)
+    entries = describe(cat, toolsets, state, ids, results)
+
+    services, rows = [], []
+    counts = {UP: 0, DOWN: 0, UNKNOWN: 0}
+    for e in entries:
+        svc = e["service"] or {}
+        # A tool that is not installed has no service state to report, and
+        # "down" would be a claim about something that does not exist here.
+        st = svc.get("state", UNKNOWN) if e["status"] == PRESENT else UNKNOWN
+        counts[st] = counts.get(st, 0) + 1
+        services.append(
+            {
+                "id": e["id"],
+                "name": e["name"],
+                "label": svc.get("label") or e["id"],
+                "state": st,
+                "detail": svc.get("detail") if st == UP else None,
+                "status": e["status"],
+                "active": e["active"],
+            }
+        )
+        rows.append(
+            (
+                SERVICE_GLYPH.get(st, "[?]"),
+                e["id"],
+                svc.get("label") or "",
+                svc.get("detail") or st,
+            )
+        )
+
+    emit(
+        args,
+        {"services": services, "summary": counts},
+        _table(rows) or "no catalogued tool declares a service probe",
+    )
+    return 0
+
+
 def cmd_refresh(args) -> int:
     cat = load_catalogue()
     cache = Cache(cat)
@@ -1505,6 +1566,10 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("registry", parents=[common, probing],
                        help="the block injected into the agent's system prompt")
     r.set_defaults(func=cmd_registry)
+
+    sv = sub.add_parser("services", parents=[common, probing],
+                        help="what is running: service state for the tools that have one")
+    sv.set_defaults(func=cmd_services)
 
     t = sub.add_parser("tools", help="catalogue queries and activation")
     t.set_defaults(func=_group_help(t))

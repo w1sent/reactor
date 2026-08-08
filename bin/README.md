@@ -16,6 +16,7 @@ missing. One file rather than a package for the same reason — a symlink with n
 reactor doctor                    what is present, what is not, how to get it
   --check-skills                  also compare fetched skills against their remote ref
 reactor registry                  the block injected into the agent's system prompt
+reactor services                  what is running, of the tools that declare a probe
 reactor tools list                catalogue listing  [--tag T] [--active] [--present|--missing]
 reactor tools show <id>           one entry in full, including install candidates
 reactor tools enable|disable <id> activation state (a hint; never blocks — ADR-0007)
@@ -67,6 +68,13 @@ leaves the extension a pure transport.
   ([ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md)). Each
   entry in `tools list` carries `override` (`"on"`, `"off"`, `null`) alongside
   `active` so a client can say which of the two it is looking at.
+- **A tool that is not installed has no service state.** `services` reports it
+  as `unknown`, never `down` — "down" is a claim that something exists and is
+  not running, and it would send the agent looking for a thing to start.
+- **Every JSON document is written through a per-process temp file**, then
+  renamed. Two `reactor` processes can be writing `cache.json` at the same
+  moment, because every extension shells out on its own and they share nothing
+  else ([ADR-0014](../docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
 - A toolset's `tags` **intersect**: a tool is a member when it carries every tag
   listed, not any of them
   ([ADR-0013](../docs/adr/0013-toolset-tags-intersect.md)). Union between groups

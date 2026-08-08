@@ -116,6 +116,46 @@ tags    = ["static"]
 /** What `version` above resolves to, once the CLI has parsed the line. */
 export const GAMMA_VERSION = "10.1.1.8388";
 
+/**
+ * A catalogue whose point is its service probes: one answering with a count,
+ * one refusing, one declaring a service on a tool that is not installed, and
+ * one with no service at all. Every probe is a `sh -c`, so the states are the
+ * same on every machine.
+ */
+export const SERVICE_TOOLS = `
+version = 1
+
+[probe]
+timeout = 5.0
+
+[tool.answering]
+name    = "Answering"
+desc    = "a service that answers"
+invoke  = "sh"
+detect  = { binary = "sh" }
+service = { probe = ["sh", "-c", "echo 'a device'; echo 'b device'"], label = "answering", count = { pattern = 'device$', noun = "device" } }
+
+[tool.refusing]
+name    = "Refusing"
+desc    = "a service that is not running"
+invoke  = "sh"
+detect  = { binary = "sh" }
+service = { probe = ["sh", "-c", "exit 3"], label = "refusing" }
+
+[tool.uninstalled]
+name    = "Uninstalled"
+desc    = "declares a service but is not here"
+invoke  = "reactor-absent-by-design"
+detect  = { binary = "reactor-absent-by-design" }
+service = { probe = ["sh", "-c", "exit 0"], label = "uninstalled" }
+
+[tool.plain]
+name   = "Plain"
+desc   = "no service at all"
+invoke = "sh"
+detect = { binary = "sh" }
+`;
+
 export const FIXTURE_TOOLSETS = `
 version = 1
 
@@ -308,7 +348,7 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * can reach in, drive `handleInput`, and then await the handler.
  */
 export function makeContext(fixture, { mode = "tui", tui = makeTui() } = {}) {
-	const calls = { status: [], notify: [], reloads: 0, custom: [], overlay: undefined };
+	const calls = { status: [], notify: [], reloads: 0, custom: [], overlay: undefined, widgets: [] };
 	const ctx = {
 		cwd: fixture.dir,
 		mode,
@@ -317,6 +357,17 @@ export function makeContext(fixture, { mode = "tui", tui = makeTui() } = {}) {
 			setStatus: (key, value) => calls.status.push({ key, value }),
 			clearStatus: (key) => calls.status.push({ key, value: undefined }),
 			notify: (message, level) => calls.notify.push({ message, level }),
+			// Widgets take either a string array or a component factory, so the
+			// fake normalises both into lines a test can read.
+			setWidget: (key, content, options) => {
+				const lines =
+					typeof content === "function"
+						? (width = 100) => content(tui, plainTheme).render(width)
+						: content === undefined
+							? undefined
+							: () => content;
+				calls.widgets.push({ key, options, lines, cleared: content === undefined });
+			},
 			custom: (factory, options) => {
 				calls.custom.push(options);
 				if (mode !== "tui") {

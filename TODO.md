@@ -1,9 +1,8 @@
 # TODO
 
-Design is settled (`docs/adr/`). Milestone 1 is built and tested; Milestone 2 is
-built except for `extensions/status/`; Milestone 3 is not started. The
-milestones are ordered by dependency — the spine is a chain where each link
-needs the one before it.
+Design is settled (`docs/adr/`). Milestones 1 and 2 are built and tested;
+Milestone 3 is not started. The milestones are ordered by dependency — the
+spine is a chain where each link needs the one before it.
 
 Most of what is left is now gated on **using** REactor rather than on building
 it. That is deliberate for the scenario work ([ADR-0009](docs/adr/0009-scenarios-advance-by-tool-result.md))
@@ -120,12 +119,27 @@ Open against it:
   — if its search ever covers descriptions and Enter stops being overloaded,
   most of the custom rendering could go.
 
-### `extensions/status/`
-Live service and device state — which services are up, what is attached, network
-reachability. Footer entry plus an expandable panel. Shares the registry
-extension's probe cache rather than probing independently; how that sharing works
-across two extensions needs designing (shared module, or one extension exposing
-state the other reads).
+### `extensions/status/` — **built**
+
+`/reactor-status`: a footer entry, and a panel above the editor that toggles.
+Both come from `reactor services`, a command added for it — the question a
+status line asks is "what is up", not "what is installed", and probing only the
+service-capable entries is what makes it cheap enough to ask every turn.
+
+The sharing question is settled and turned out to have a forced answer
+([ADR-0014](docs/adr/0014-extensions-share-the-cache-not-each-other.md)): pi
+loads every extension with its own jiti instance, so a shared module holds
+shared *code* and two copies of its state. Extensions share `cache.json`
+through the CLI and nothing else.
+
+Open against it:
+
+- **Network reachability is not in it**, though the original sketch said so.
+  Nothing in the catalogue schema describes a reachability probe, and inventing
+  one to fill a bullet is how a schema gets a feature nobody asked for. It
+  wants a real need first.
+- **Only two catalogued tools declare a service probe** (`bn`, `adb`), so the
+  footer's collapse-to-counts path is exercised by tests and by nothing else.
 
 ### Toolset definitions — **done**
 
@@ -182,15 +196,6 @@ Point the diff at `vimdiff`/`delta` rather than plain `diff(1)`. Convenience onl
 
 ## Open questions
 
-### Shared probe cache across extensions
-The registry and status extensions both want current probe results. `cache.json`
-in `~/.pi/reactor/` already gives them a shared store, and it is TTL-keyed so two
-readers cannot disagree for longer than `service_ttl` — but there is no locking,
-and two processes probing concurrently will both write. Last-writer-wins is
-probably fine for this data; confirm that before the status extension makes it
-a real concurrency, and note that a corrupt cache degrades to a re-probe rather
-than an error.
-
 ### Cache invalidation on activation change
 `cache.json` is keyed on a stamp of `tools.toml` (mtime + size), so editing the
 catalogue drops stale probe results. `state.json` changes do **not** invalidate
@@ -206,6 +211,22 @@ with Milestone 3, but the answer shapes whether `resources_discover` is enough.
 
 ## Resolved
 
+- **Shared probe cache across extensions** → the cache *is* the sharing, and
+  nothing else is ([ADR-0014](docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
+  The obvious design — a module both extensions import — does not work at all:
+  pi loads each extension through its own `createJiti(..., {moduleCache: false})`,
+  so the import is instantiated twice and the two caches drift while appearing
+  to work. `pi.events` would work and was rejected for coupling.
+
+  Last-writer-wins confirmed safe: every writer loads the file, replaces only
+  the keys it probed, and writes it back, so a lost update costs a re-probe and
+  never a wrong answer. One real hole was found and closed — `_write_json` used
+  a fixed `<name>.tmp`, and two processes could interleave into it and rename
+  the mixture into place. The temp name now carries the pid.
+
+  Cost of not sharing: one extra process spawn per turn, measured at ~70 ms of
+  Python startup with everything cached. If a third extension arrives that
+  stops being free and the answer changes.
 - **Skill name collisions with `~/.agents/skills/` are out of scope** → decided,
   not fixed. pi discovers `~/.agents/skills/` and `<project>/.agents/skills/` on
   its own (`package-manager.js:279,1941`) — an ecosystem-wide convention shared

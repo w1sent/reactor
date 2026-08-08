@@ -51,13 +51,18 @@ reading the fixture catalogue.
 - **`TestOverrideEditing`** — that an activation edit is the *smallest* edit
   that produces the requested outcome, so toggling is not a way to accumulate
   pins ([ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md)).
+- **`TestServices`** — that a tool which is not installed reports `unknown`
+  rather than `down`, which is the one way this command can lie.
+- **`TestAtomicWrites`** — that the temp file a JSON write goes through is
+  per-process, since two `reactor` processes can be writing the cache at once
+  ([ADR-0014](../docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
 
 ### `extensions/` — the extensions
 
-Both files drive the extension against the real CLI, so they fail when the JSON
-contract moves underneath them rather than agreeing with a stale transcription
-of it. `harness.mjs` holds the fixture catalogue, the `reactor` shim and the
-fake host; neither test file stubs `reactor` itself.
+All three files drive their extension against the real CLI, so they fail when
+the JSON contract moves underneath them rather than agreeing with a stale
+transcription of it. `harness.mjs` holds the fixture catalogues, the `reactor`
+shim and the fake host; no test file stubs `reactor` itself.
 
 - **`tool-registry.test.mjs`** — that the block is *appended* to the system
   prompt rather than replacing it, that absent and deactivated tools are not
@@ -65,6 +70,10 @@ fake host; neither test file stubs `reactor` itself.
   modes, which are most of the extension: a failed probe keeps the last good
   block, a missing CLI is announced once rather than every turn, non-JSON output
   and error payloads become a status line instead of an exception.
+- **`status.test.mjs`** — that the footer says what is running and nothing
+  else: down services first, uninstalled ones left out, and counts instead of a
+  truncated number when the line will not fit. Plus the panel's lifecycle —
+  toggled, repainted on a turn while up, not drawn while hidden.
 - **`selector.test.mjs`** — that keystrokes produce the writes they claim to.
   The round trip is the one to keep: toggling a tool off and back on leaves
   `state.json` byte-identical, which is what makes the selector safe to browse

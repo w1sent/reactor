@@ -15,24 +15,24 @@ running* — that gap is what REactor fills.
 See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
 full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 
-> **Status: Milestone 1 (the spine) is built, and the selector with it.** The
-> `reactor` CLI, the installer, the catalogue, the `tool-registry` extension and
-> `/reactor-tools` work end to end, and `npm test` covers all of it — 56 tests
-> on the CLI, 42 driving the extensions against it. The status panel (the rest
-> of Milestone 2) and scenarios (Milestone 3) are not started. See `TODO.md`.
+> **Status: Milestones 1 and 2 are built.** The `reactor` CLI, the installer,
+> the catalogue, the toolsets and all three extensions — registry, selector,
+> status — work end to end, and `npm test` covers them: 65 tests on the CLI, 60
+> driving the extensions against it. Scenarios (Milestone 3) are deliberately
+> not started until the registry has been used in anger. See `TODO.md`.
 
 ## The idea in one screen
 
 ```
                     ~/.pi/reactor/tools.toml         (the catalogue)
                               │
-              ┌───────────────┼────────────────┐
-              ▼               ▼                ▼
-        reactor CLI     tool-registry ext   selector ext
-      doctor / tools      probes, injects    search / inspect
-      skills / install    into system prompt   toggle toolsets
-              │               │
-              │               ▼
+              ┌───────────┬───┴───────┬───────────┐
+              ▼           ▼           ▼           ▼
+        reactor CLI  tool-registry  selector    status
+       doctor/tools   probes and    search and  what is up
+       services       injects       toggles     right now
+              │           │
+              │           ▼
               │      ## Available RE tools (this machine)
               │      bn         reverse engineering framework  [BN session: up]
               │      frida      dynamic instrumentation        17.9.7
@@ -91,8 +91,8 @@ Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
 third-party package by design.
 
 ```bash
-npm test                                  # 98 tests, nothing to install
-python3 tests/test_reactor.py             # the CLI alone, 56 tests
+npm test                                  # 125 tests, nothing to install
+python3 tests/test_reactor.py             # the CLI alone, 65 tests
 ```
 
 The extension half needs pi on `PATH` and skips without it: it loads each

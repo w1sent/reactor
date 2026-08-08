@@ -286,6 +286,15 @@ data while it holds focus.
 exported from the package root, so rendering a list by hand is a small job when
 neither primitive fits.
 
+**[verified]** `ctx.ui.setWidget(key, content, options)` puts persistent lines
+next to the editor — `WidgetPlacement` is `"aboveEditor" | "belowEditor"`,
+defaulting to the former. `content` is either a `string[]` or a
+`(tui, theme) => Component` factory; take the factory form to get the theme.
+Calling it again with the same key replaces the widget, and `undefined` clears
+it, so "repaint" is just another call with fresh data — a widget needs no
+setter and no mutable state of its own. Like `custom`, it needs a real terminal:
+gate it on `ctx.mode === "tui"`.
+
 **[verified]** `pi.sendMessage` is **not** free of context. `convertToLlm`
 (`dist/core/messages.js`) maps a `role: "custom"` message to a **user** message,
 content unchanged. To show something to the person without showing it to the
@@ -333,6 +342,15 @@ Use `StringEnum` from `@earendil-works/pi-ai` for enum parameters — plain
 
 Extensions ship as `.ts` and are loaded directly; pi depends on `jiti`, so there
 is no build step for extension code.
+
+**[verified]** Each extension gets **its own jiti instance**: `loadExtensionModule`
+calls `createJiti(import.meta.url, { moduleCache: false })` per extension path.
+So a module imported by two extensions is *instantiated twice*, and two
+extensions cannot share state through a common import — they get shared code and
+separate state, which looks like it works and then drifts. Cross-extension state
+has to go through something outside the process
+([ADR-0014](adr/0014-extensions-share-the-cache-not-each-other.md)) or through
+`pi.events`.
 
 ## Testing
 

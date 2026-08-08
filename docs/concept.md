@@ -188,7 +188,7 @@ to grow to cover at least:
 
 | Area | Tools |
 |---|---|
-| Static, native | Binary Ninja (`bn`), angr, joern, LIEF, otool (macOS) |
+| Static, native | Binary Ninja (`bn`), angr, joern, LIEF, otool (macOS) / llvm-otool (elsewhere) |
 | Static, managed | jadx, ilspycmd |
 | Dynamic | frida, QBDI, objection |
 | Debugging | lldb, gdb, rr |

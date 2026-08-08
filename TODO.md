@@ -36,12 +36,48 @@ machine. No custom TUI components.
 ### Still open in Milestone 1
 
 **The catalogue is a starter set, not the target surface.** 24 entries against
-the list in `docs/concept.md`. Missing: QBDI, otool, binja headless — each is
-guesswork until someone has one to check it against. otool is macOS-only,
-which anywhere else makes it the honest test of the absent-tool path.
+the list in `docs/concept.md`. Each new entry's `desc` lands in every system
+prompt, so adding them is editorial work, not data entry. Three are outstanding:
 
-Each new entry's `desc` lands in every system prompt, so adding them is
-editorial work, not data entry.
+- **QBDI** — still guesswork until someone has one to check against.
+- **otool** — macOS-only, with `llvm-otool` as the Linux stand-in: it covers
+  most of the same ground behind a similar interface. *Similar*, not identical,
+  which is the whole design constraint. Ship them as **two catalogue entries**
+  rather than one entry detecting either binary: the agent has to know which
+  one it is invoking, because the flags diverge at the edges, and a single
+  entry would have to lie in its `invoke` column about one platform or the
+  other. Two entries also needs no schema change — `detect` takes exactly one
+  binary today, and widening it to an ordered list would mean `invoke` has to
+  follow the match, which is a real change to the narrowest part of the schema
+  for a case that does not need it. Absent tools are not listed, so at most one
+  of the two ever reaches the prompt on a given machine.
+
+  This is also the honest test of the absent-tool path, which is currently
+  untested against reality: this machine reports 24 present, 0 absent.
+
+- **Binary Ninja headless** — not a separate entry. Headless is the Python API,
+  and using it means the agent runs a Python script directly instead of putting
+  it through `binja-cli`. Same scripts either way; only the invocation differs.
+
+  So what the agent needs is not a catalogue row but a **capability flag on the
+  existing `bn` entry**: headless available, or route through `binja-cli`.
+  Guessing wrong wastes a turn in each direction. It gates on a commercial
+  licence, so it is a per-machine fact REactor cannot infer — and one this
+  machine cannot exercise, since there is no commercial licence here.
+
+  Two pieces, in order:
+
+  1. **Upstream, in `binja-cli`: a command that reports headless support**,
+     most likely folded into `health`, which `bn`'s service probe already runs.
+     Nothing on the REactor side can start before this exists.
+  2. **Here: surface it in the registry annotation.** The channel exists but is
+     count-shaped — `service.count` is a regex over the probe output yielding a
+     number and a noun. A capability is a boolean, so this wants either a small
+     schema addition (a pattern whose *match* is the annotation) or an
+     abuse of the count that would read as "1 headless". Prefer the former, and
+     note that a licence flag is about as stable as an annotation gets, which
+     is what [ADR-0006](docs/adr/0006-registry-injected-into-system-prompt.md)
+     requires of anything entering the block.
 
 **No REactor-authored skills yet**, which is the expected state
 ([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they are only worth

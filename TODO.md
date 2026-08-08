@@ -1,9 +1,15 @@
 # TODO
 
-Design is settled (`docs/adr/`). Milestone 1 is built and tested, and so is the
-selector, which is half of Milestone 2; the status extension, the real toolset
-definitions and Milestone 3 are not started. The milestones are ordered by
-dependency — the spine is a chain where each link needs the one before it.
+Design is settled (`docs/adr/`). Milestone 1 is built and tested; Milestone 2 is
+built except for `extensions/status/`; Milestone 3 is not started. The
+milestones are ordered by dependency — the spine is a chain where each link
+needs the one before it.
+
+Most of what is left is now gated on **using** REactor rather than on building
+it. That is deliberate for the scenario work ([ADR-0009](docs/adr/0009-scenarios-advance-by-tool-result.md))
+and true by accident for the rest: the catalogue's remaining entries, the first
+REactor-authored skill, and two of the toolset questions all want evidence from
+real sessions more than they want another decision.
 
 ## Milestone 1 — Spine — **done, with the gaps listed below**
 

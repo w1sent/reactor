@@ -161,16 +161,31 @@ Both are pure TUI over `reactor --format json`. Neither owns any logic.
 
 ### 4. Scenarios
 
-A scenario is a chain of prompt templates. The agent advances by calling
-`reactor_step_complete(summary)`, and the tool's *return content is the next
-step's briefing* — what to do now, what not to do yet, which tools just became
-relevant. State rides in the tool result's `details` field, which pi persists in
-the session without ever sending it to the model.
+A scenario is a chain of steps — Markdown files under `prompts/scenarios/<id>/`,
+one per step, ordered by filename, read directly by `extensions/scenario/`
+rather than through pi's own prompt-command machinery
+([ADR-0017](adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)). The
+agent advances by calling `reactor_step_complete(summary)`, and the tool's
+*return content is the next step's briefing* — what to do now, what not to do
+yet, which tools just became relevant. State rides in the tool result's
+`details` field and in a `pi.appendEntry` record, both of which pi persists in
+the session without ever sending them to the model, and both are restored on
+`session_start` ([ADR-0009](adr/0009-scenarios-advance-by-tool-result.md)).
+
+`/reactor-scenario list|start <id>|status|next [summary]|stop` is the human's
+window onto the same state — `list` and `start` before the agent has anything
+to advance, `next` as the manual override when the human, not the model, is
+the better judge that a step is done.
 
 Scenarios exist because an eager model finishes triage and immediately starts
 patching. A briefing that says "do not start dynamic analysis yet" costs one
 tool result and redirects it. Like the rest of REactor it persuades; it does not
-enforce.
+enforce — a step may activate a toolset as it advances, but never deactivates
+the one before it.
+
+The first scenario ships with the package: `triage` — triage, static, dynamic,
+report — the same four phases used as the illustrative example throughout this
+document and in ADR-0009.
 
 ## What REactor deliberately does not do
 

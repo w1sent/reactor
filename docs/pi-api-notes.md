@@ -85,6 +85,41 @@ rebuilds `lastSkillPaths` from settings first — it is the reload that drops th
 path, not the extension returning a shorter list. Worth re-checking if
 deactivation ever appears not to take effect.
 
+### `await ctx.reload()` invalidates the ctx (and `pi`) that called it
+
+**[verified]** `dist/core/extensions/loader.js` — `invalidate(message)` sets a
+`staleMessage` on the extension's runtime state; `assertActive()`, called from
+inside every `pi.*`/`ctx.*` action implementation, throws that message the
+moment it is set:
+
+> This extension ctx is stale after session replacement or reload. Do not use
+> a captured pi or command ctx after `ctx.newSession()`, `ctx.fork()`,
+> `ctx.switchSession()`, or `ctx.reload()`. For newSession, fork, and
+> switchSession, move post-replacement work into `withSession` and use the
+> ctx passed to `withSession`. For reload, do not use the old ctx after
+> `await ctx.reload()`.
+
+Hit for real: `/reactor-toolbox off`'s handler wrote settings, `await
+ctx.reload()`d, and then called `ctx.ui.notify(...)` — which now throws,
+because `runner.js` calls `invalidate()` the moment `reload()` resolves. The
+fix is ordering, not a workaround: do every `ctx`/`pi` action a handler needs
+*before* `await ctx.reload()`, and make the reload the literal last statement.
+Same constraint applies to `ctx.newSession()`, `ctx.fork()`,
+`ctx.switchSession()` — this file only had reload to worry about so far.
+
+`tests/extensions/harness.mjs`'s `makeContext`/`loadExtension` share an
+optional `guard` object for exactly this: pass the same `guard` to both and
+`ctx.reload()` poisons the whole fake `ctx` (via a `Proxy`) and the `pi.sendMessage`/
+`pi.appendEntry` spies, throwing `STALE_CTX_MESSAGE` on anything used
+afterward — reproduced against the real bug before the fix landed, confirming
+the mock now catches this class of error rather than silently accepting it.
+
+`scripts/check-in-pi.mjs` checks the same thing with no mock at all: a real
+`pi --mode rpc` process, real extension files, real `extension_error` events
+on the wire. Reproduced the exact crash byte-for-byte (`"extensionPath":
+"command:reactor-toolbox"`, the same message above) before the fix, clean
+after.
+
 ### Tool results carry an out-of-context `details` field
 
 **[verified]** (upgraded from [docs]; confirmed against pi 0.84.2 —

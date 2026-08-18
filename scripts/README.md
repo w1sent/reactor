@@ -83,6 +83,42 @@ probing wrong — a network round trip per candidate per tool, on a user's
 machine, to refine a recommendation they are about to read — is not a cost here,
 because it is paid once by whoever edits the catalogue.
 
+## `check-in-pi.mjs`
+
+Drives a **real** `pi --mode rpc` process, with every REactor extension loaded
+the way pi actually loads them, over the documented RPC protocol
+(`docs/rpc.md`), and watches for `extension_error` events.
+
+```bash
+scripts/check-in-pi.mjs                                   # the default smoke set
+scripts/check-in-pi.mjs "/reactor-status mute adb" "/reactor-status"
+```
+
+Exists because `tests/extensions/*.test.mjs` — for all that it runs through
+pi's own *loader* against the real CLI
+([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)) —
+is still a mock host underneath: `ctx` and `pi` are fakes this repo
+maintains. `/reactor-toolbox off` shipped with a real bug the mocked `ctx`
+could not have caught until `harness.mjs` grew a `guard` simulating it after
+the fact — pi invalidates a captured `ctx`/`pi` the instant `await
+ctx.reload()` resolves, and the handler used `ctx` again right after
+(`docs/pi-api-notes.md`). This script is the check that needs no simulation:
+a `/name` prompt over RPC runs the real extension command directly (no LLM
+call, no API key needed), and a thrown error surfaces as `extension_error` on
+stdout instead of being caught by an assertion that has to already know to
+look for it.
+
+Every run gets a fresh, throwaway `PI_CODING_AGENT_DIR`, `REACTOR_CONFIG_DIR`
+(empty, so `reactor` falls back to this checkout's own shipped
+`tools.toml`/`toolsets.toml`) and cwd — isolated from whatever is on the
+machine actually running it, and cleaned up after.
+
+Deliberately **not** part of `tests/`, for the same reason as
+`verify-recipes.py`: it spawns a real process (~2–3 s for the default set)
+and needs `pi` on `PATH`, not stdlib-offline-in-a-second. Run it after
+touching anything that calls `ctx.reload()`, `ctx.newSession()`,
+`ctx.fork()`, or `ctx.switchSession()` — the class of bug it exists to catch.
+
 ## Why installation is two steps
 
 pi never builds anything, never initialises submodules, and runs

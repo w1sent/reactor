@@ -321,17 +321,76 @@ test("a turn outside a TUI touches no UI at all", needsPi, () =>
 		assert.deepEqual([calls.status.length, calls.widgets.length, calls.notify.length], [0, 0, 0]);
 	}));
 
-test("argument completion offers both subcommands and filters by prefix", needsPi, () =>
+test("argument completion offers every subcommand and filters by prefix", needsPi, () =>
 	withFixture(opts, async (fixture) => {
 		const { extension } = await loadExtension(EXT, fixture);
 		const complete = extension.commands.get("reactor-status").getArgumentCompletions;
 
 		assert.deepEqual(
 			complete("").map((c) => c.value),
-			["refresh", "hide"],
+			["refresh", "hide", "mute", "unmute"],
 		);
 		assert.deepEqual(
 			complete("h").map((c) => c.value),
 			["hide"],
 		);
+	}));
+
+// ---------------------------------------------------------------------------
+// mute / unmute (ADR-0016)
+// ---------------------------------------------------------------------------
+
+test("mute writes hiddenServices and the next refresh drops the row", needsPi, () =>
+	withFixture(opts, async (fixture) => {
+		const { extension, ctx, calls } = await start(fixture);
+
+		await extension.commands.get("reactor-status").handler("mute answering", ctx);
+
+		assert.deepEqual(fixture.readAgentSettings(), { hiddenServices: ["answering"] });
+		assert.match(calls.notify.at(-1).message, /answering muted/);
+
+		await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
+		assert.doesNotMatch(lastStatus(calls), /answering/);
+	}));
+
+test("unmute reverses it", needsPi, () =>
+	withFixture({ ...opts, agentSettings: { hiddenServices: ["answering"] } }, async (fixture) => {
+		const { extension, ctx, calls } = await start(fixture);
+		assert.doesNotMatch(lastStatus(calls), /answering/);
+
+		await extension.commands.get("reactor-status").handler("unmute answering", ctx);
+
+		assert.deepEqual(fixture.readAgentSettings(), { hiddenServices: [] });
+		await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
+		assert.match(lastStatus(calls), /answering:2 devices/);
+	}));
+
+test("mute repaints an already-open panel immediately", needsPi, () =>
+	withFixture(opts, async (fixture) => {
+		const { extension, ctx, calls } = await start(fixture);
+		await extension.commands.get("reactor-status").handler("", ctx);
+		assert.match(lastWidget(calls).lines(80).join("\n"), /answering/);
+
+		await extension.commands.get("reactor-status").handler("mute answering", ctx);
+
+		assert.doesNotMatch(lastWidget(calls).lines(80).join("\n"), /answering/);
+	}));
+
+test("mute with no id is refused", needsPi, () =>
+	withFixture(opts, async (fixture) => {
+		const { extension, ctx, calls } = await start(fixture);
+
+		await extension.commands.get("reactor-status").handler("mute", ctx);
+
+		assert.equal(calls.notify.at(-1).level, "error");
+		assert.equal(fixture.readAgentSettings(), undefined);
+	}));
+
+test("mute and unmute work outside a TUI too, since it is a preference edit", needsPi, () =>
+	withFixture(opts, async (fixture) => {
+		const { extension, ctx } = await start(fixture, { mode: "print" });
+
+		await extension.commands.get("reactor-status").handler("mute answering", ctx);
+
+		assert.deepEqual(fixture.readAgentSettings(), { hiddenServices: ["answering"] });
 	}));

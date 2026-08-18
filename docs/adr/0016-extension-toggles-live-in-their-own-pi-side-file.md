@@ -23,7 +23,13 @@ directory (`getAgentDir()`, normally `~/.pi/agent/`) — next to `settings.json`
 
 Absent file, unreadable JSON, or a field of the wrong shape all mean "use the
 default" (`toolbox: true`, `hiddenServices: []`) — this is a preference a
-person sets by hand once, not a contract to fail loudly over.
+person sets, not a contract to fail loudly over.
+
+Both are also reachable without opening the file: `/reactor-toolbox
+[on|off]` (registered in `tool-registry/`, unconditionally — see below) and
+`/reactor-status mute|unmute <id>` (in `status/`) write the field and take
+effect immediately in the running session. A hand-edit of the file still
+works and still needs a manual `/reload` to be picked up by `toolbox`.
 
 ## Why
 
@@ -63,6 +69,26 @@ once each in `tool-registry/` and `selector/`, and a different dozen in
 self-contained file by house style, and a third small module for a three-line
 function is not worth breaking that.
 
+**pi's `/settings` cannot be extended, so a slash command is the closest
+equivalent it has.** `SettingsSelectorComponent`'s `SettingsConfig` and
+`SettingsCallbacks` are closed interfaces enumerating pi's own fields one by
+one, wired up entirely inside `interactive-mode.js` — there is no hook for an
+extension to add a row. A `registerCommand` that reads and writes
+`reactor.json` is the only in-session control surface pi actually offers, so
+`/reactor-toolbox` and `/reactor-status mute|unmute` fill the role a
+`/settings` entry would have.
+
+**`/reactor-toolbox` has to be registered outside the gate it controls.**
+`toolboxEnabled()` decides whether `tool-registry/` and `selector/` register
+anything at all, `/reactor` included — so if the on/off command lived behind
+that same gate, switching the toolbox off would remove the only command able
+to switch it back on. It is registered first, unconditionally, in
+`tool-registry/`'s factory, and calls `ctx.reload()` after writing so the new
+value takes effect in the same session rather than waiting for the next
+`/reload`. `selector/` does not need its own copy: one command toggling one
+shared field is enough, and duplicating it would mean two commands racing to
+write the same file.
+
 **`hiddenServices` is a list of catalogue ids, not a boolean per known tool.**
 Only `bn` and `adb` declare a service probe today, and a `hideAdb` /
 `hideBn`-shaped schema would need a code change here *and* in `tools.toml`
@@ -74,15 +100,18 @@ third service-probed tool arrives.
 
 ## Consequences
 
-- **`toolbox: false` takes effect on the next load, not mid-session.**
-  Registration happens once, at the top of each extension's factory function,
-  before any event handler exists to react to a file changing under it. `/reload`
-  re-invokes the factory and picks up a new value; a running session does not.
-- **No CLI surface for this file.** `reactor` stays ignorant of pi
+- **`toolbox: false` takes effect at once through `/reactor-toolbox`, but only
+  on the next `/reload` through a hand edit.** Registration happens once, at
+  the top of each extension's factory function, so nothing reacts to the file
+  changing under it by itself; `/reactor-toolbox` closes that gap itself by
+  calling `ctx.reload()` right after it writes.
+- **No *Python* CLI surface for this file.** `reactor` stays ignorant of pi
   ([ADR-0005](0005-reactor-cli-stdlib-python.md)) — this file's location and
   format are pi's convention, not the catalogue's, so teaching the Python CLI
-  to write it would be teaching the wrong tool about the wrong platform. A
-  person edits two JSON fields by hand.
+  to write it would be teaching the wrong tool about the wrong platform. The
+  write path that does exist is a pi *extension* command, which is a different
+  thing: it is TypeScript already inside pi's process, not a new capability
+  asked of the CLI.
 - **No `"version"` field.** Every other file `reactor` persists carries one
   because each has a real migration story (`state.json`'s toolset/tool shape
   has already changed once). `toolbox` and `hiddenServices` are two
@@ -106,9 +135,19 @@ third service-probed tool arrives.
   ([ADR-0003](0003-tools-toml-single-source-of-truth.md)). Rejected because it
   is not reachable: the registration decision runs before any `ctx` exists, so
   there is no `cwd` to look a project override up against, trusted or not.
-- **A `reactor settings` subcommand to write this file.** Rejected with the
-  no-CLI-surface point above — and because two fields set once do not need a
-  writer at all, only documentation of where the file is.
+- **A `reactor settings` subcommand (in the Python CLI) to write this file.**
+  Rejected with the no-CLI-surface point above: the file belongs to pi's side
+  of the fence, and a Python writer for it would need to know pi's directory
+  layout for no reason the catalogue has. The actual writer that exists —
+  `/reactor-toolbox`, `/reactor-status mute|unmute` — is a pi extension
+  command instead, which does not have that problem.
+- **Folding the toggle into the existing `/reactor` and `/reactor-status`
+  commands as a subcommand of each.** Works for `hiddenServices` (`status/`
+  is never gated, so `/reactor-status mute` was free to add) but not for
+  `toolbox`: `/reactor` is itself one of the commands `toolbox: false`
+  removes, so `/reactor toolbox off` would delete the only way to type
+  `/reactor toolbox on` again. `/reactor-toolbox` has to be its own command,
+  registered outside the gate, for exactly this reason.
 - **One boolean per catalogued service** (`hideAdb`, `hideBn`, …). Rejected as
   the same hardcoding [ADR-0010](0010-install-recipes-keyed-by-package-manager.md)
   already ruled out for install recipes: a fixed enum of today's two

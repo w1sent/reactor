@@ -145,7 +145,9 @@ immediately.
 Together with the selector, this pair is "the toolbox" — a `toolbox: false` in
 pi's own agent directory (`reactor.json`, next to `settings.json`) removes both
 from a session as if neither were loaded: no commands, no status line, nothing
-injected ([ADR-0016](adr/0016-extension-toggles-live-in-their-own-pi-side-file.md)).
+injected. `/reactor-toolbox [on|off]` flips it from inside pi itself, since
+pi's own `/settings` has no extension point for a third party's fields to
+appear in ([ADR-0016](adr/0016-extension-toggles-live-in-their-own-pi-side-file.md)).
 
 ### 3. The selector and status extensions
 

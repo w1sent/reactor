@@ -114,6 +114,12 @@ optional `guard` object for exactly this: pass the same `guard` to both and
 afterward — reproduced against the real bug before the fix landed, confirming
 the mock now catches this class of error rather than silently accepting it.
 
+`scripts/check-in-pi.mjs` checks the same thing with no mock at all: a real
+`pi --mode rpc` process, real extension files, real `extension_error` events
+on the wire. Reproduced the exact crash byte-for-byte (`"extensionPath":
+"command:reactor-toolbox"`, the same message above) before the fix, clean
+after.
+
 ### Tool results carry an out-of-context `details` field
 
 **[verified]** (upgraded from [docs]; confirmed against pi 0.84.2 —

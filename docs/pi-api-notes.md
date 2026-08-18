@@ -120,6 +120,25 @@ on the wire. Reproduced the exact crash byte-for-byte (`"extensionPath":
 "command:reactor-toolbox"`, the same message above) before the fix, clean
 after.
 
+**A second, wider form of the same invalidation exists across commands, not
+just within one.** `invalidate()` marks the whole extension instance stale,
+not just the handler that called `reload()` — so a *different* command from
+the same extension, still suspended on an `await` when someone else's reload
+resolves, goes stale too, however carefully its own code is ordered. Found
+by accident: `scripts/check-in-pi.mjs` originally paced commands with a fixed
+delay rather than waiting for each one's own RPC `response`, and `/reactor`
+(no reload of its own) followed quickly by `/reactor-toolbox off`/`on`
+(which does) reproduced `"extensionPath": "command:reactor"` — a false
+positive from the script sending faster than a real caller would, not a
+defect in `/reactor`'s own ordering. Fixed in the script by waiting for each
+command's `response` (by `id`) before sending the next, which is what real
+usage — a person, or an agent working through one result before issuing the
+next — already does by construction. Recorded here because the underlying
+fact is real even though this particular repro wasn't: two extension
+commands from the *same* extension file, genuinely in flight at once, with
+one of them reloading, is a real way to hit `assertActive()` that no amount
+of intra-handler reordering fixes.
+
 ### Tool results carry an out-of-context `details` field
 
 **[verified]** (upgraded from [docs]; confirmed against pi 0.84.2 —

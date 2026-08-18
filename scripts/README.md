@@ -113,6 +113,16 @@ Every run gets a fresh, throwaway `PI_CODING_AGENT_DIR`, `REACTOR_CONFIG_DIR`
 `tools.toml`/`toolsets.toml`) and cwd — isolated from whatever is on the
 machine actually running it, and cleaned up after.
 
+Each command is sent and its own RPC `response` awaited (matched by `id`)
+before the next one goes out — not a fixed delay. This matters beyond
+pacing: `ctx.reload()` invalidates a whole extension instance, not just the
+handler that called it, so two commands from the *same* extension file
+genuinely in flight at once can race a reload from one against the other's
+still-suspended `await` — a real way to hit the same `extension_error`, but a
+different bug from the ordering-within-one-handler kind this script was
+written for (`docs/pi-api-notes.md`). Waiting for each response is what real
+usage already does by construction, so it is what this script does too.
+
 Deliberately **not** part of `tests/`, for the same reason as
 `verify-recipes.py`: it spawns a real process (~2–3 s for the default set)
 and needs `pi` on `PATH`, not stdlib-offline-in-a-second. Run it after

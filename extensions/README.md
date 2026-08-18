@@ -8,9 +8,12 @@ Single-file extensions are `<name>.ts`; extensions needing npm dependencies are
 `<name>/` with their own `package.json` and `src/index.ts`, and `npm install`
 run in that directory.
 
-**Every extension here shells out to `reactor … --format json`.** None of them
-parses `tools.toml`, and none reimplements catalogue semantics —
-[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md).
+**Every RE-tool extension here shells out to `reactor … --format json`.** None
+of them parses `tools.toml`, and none reimplements catalogue semantics —
+[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). `rolling-context/`
+is the one exception: it is a general-purpose context-management extension,
+unrelated to the catalogue and switched independently of everything else here
+([ADR-0019](../docs/adr/0019-rolling-context-ships-here-general-purpose.md)).
 
 ## Built
 
@@ -20,6 +23,7 @@ parses `tools.toml`, and none reimplements catalogue semantics —
 | `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
 | `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
 | `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
+| `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. Instead of pi's summarization compaction, keeps a small manifest (goal + agent-maintained steps) at the front of every prompt and fades everything else out of the *next* `context` call once it stops fitting a configurable budget — the session file itself is untouched. `/goal`, `/guidelines`, `/frame`; `update_steps`, `history_index`/`_search`/`_read` tools. General-purpose, not catalogue-aware (ADR-0019). |
 
 ## The toolbox toggle and hidden services (ADR-0016)
 
@@ -124,18 +128,32 @@ And three for scenarios:
   narrowing what is advertised mid-scenario is not this extension's call to
   make.
 
+And two for rolling-context:
+
+- **The manifest is the only permanent memory.** Everything else the fade
+  drops is still in the session file, never in the model's next prompt,
+  unless the agent copies it into the steps via `update_steps` first —
+  recovery via the history tools is one-shot, since a tool result fades like
+  any other recent message.
+- **`GLOBAL_CONFIG_PATH` reads through `getAgentDir()`, not a hand-rolled
+  `homedir() + ".pi/agent"`.** The one behaviour change this port makes: the
+  standalone draft ignored `PI_CODING_AGENT_DIR` when set, silently reading
+  the wrong file. Same default path either way.
+
 ## Tests
 
 ```bash
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All four are driven through **pi's own loader** against the **real** CLI
-— `pi.exec` is pi's, and the `reactor` it finds on `PATH` is a shim over
-`bin/reactor` pointed at a fixture catalogue
+All five are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
-Only the host is faked: the context, its `ui`, and the TUI/theme/`done` triple
-that `ctx.ui.custom` hands a component.
+For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
+is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
+pointed at a fixture catalogue; `rolling-context/` never calls `reactor` at
+all, so its tests exercise pi's own history/context APIs instead. Only the
+host is faked: the context, its `ui`, and the TUI/theme/`done` triple that
+`ctx.ui.custom` hands a component.
 
 Two consequences for anyone adding a test. The theme is identity rather than
 ANSI, because width is most of what is worth asserting about a list that must
@@ -150,6 +168,12 @@ the same way `REACTOR_CONFIG_DIR` isolates everything else from
 checks its *shape* — four steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.
+
+`rolling-context.test.mjs` needs `ctx.sessionManager.getBranch()` to return
+actual conversation messages, not just custom entries — the first extension
+here that does. `makeContext`'s `branch` option seeds it; `model` and
+`getSystemPrompt()` were added alongside it, both otherwise unused by
+anything else in this repo.
 
 `ctx`/`pi` here are still mocks, though — `harness.mjs`'s optional `guard`
 (see the Rules below) only catches a stale-ctx-after-`reload()` bug once a

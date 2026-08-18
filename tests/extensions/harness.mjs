@@ -427,11 +427,22 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * and parks the returned promise until the component calls `done`, so a test
  * can reach in, drive `handleInput`, and then await the handler.
  *
- * `entries` wires `ctx.sessionManager.getEntries()` to the *same* array
- * `loadExtension()` hands back -- pass it through so a test can call
- * `pi.appendEntry` (via the extension) and then simulate a reload by reading
- * it back through `sessionManager`, the way `scenario/` restores state on
- * `session_start`. Defaults to empty, since most extensions never read it.
+ * `entries` wires `ctx.sessionManager.getEntries()`/`getBranch()` to the
+ * *same* array `loadExtension()` hands back -- pass it through so a test can
+ * call `pi.appendEntry` (via the extension) and then simulate a reload by
+ * reading it back through `sessionManager`, the way `scenario/` restores
+ * state on `session_start`. Defaults to empty, since most extensions never
+ * read it.
+ *
+ * `branch` -- raw `SessionEntry`-shaped fixtures (e.g. `{type: "message",
+ * message: {...}}`) representing prior *conversation*, prepended ahead of
+ * `entries` in both getters. For `rolling-context/`, which needs real
+ * message history to fade, not just its own custom state.
+ *
+ * `model`/`systemPrompt` -- `ctx.model.contextWindow` and
+ * `ctx.getSystemPrompt()`, both otherwise absent from this fake (most
+ * extensions never read either). `model` stays undefined by default, the
+ * same as a context with no model selected yet.
  *
  * `guard` -- pass `loadExtension()`'s returned `guard` here too, and
  * `ctx.reload()` poisons the *whole* `ctx`, the same way pi's own runtime
@@ -442,14 +453,24 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * only reason `reactor-toolbox off`'s stale-ctx crash didn't show up here
  * first. Omit `guard` for a test that doesn't touch reload at all.
  */
-export function makeContext(fixture, { mode = "tui", tui = makeTui(), entries = [], guard = { stale: false } } = {}) {
+export function makeContext(
+	fixture,
+	{ mode = "tui", tui = makeTui(), entries = [], branch = [], model, systemPrompt = "", guard = { stale: false } } = {},
+) {
 	const calls = { status: [], notify: [], reloads: 0, custom: [], overlay: undefined, widgets: [] };
+	const wholeBranch = () => [
+		...branch,
+		...entries.map((e) => ({ type: "custom", customType: e.customType, data: e.data })),
+	];
 	const raw = {
 		cwd: fixture.dir,
 		mode,
 		hasUI: mode === "tui" || mode === "rpc",
+		model,
+		getSystemPrompt: () => systemPrompt,
 		sessionManager: {
-			getEntries: () => entries.map((e) => ({ type: "custom", customType: e.customType, data: e.data })),
+			getEntries: wholeBranch,
+			getBranch: wholeBranch,
 		},
 		ui: {
 			setStatus: (key, value) => calls.status.push({ key, value }),

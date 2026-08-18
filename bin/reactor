@@ -19,6 +19,7 @@ never read the catalogue themselves. Human output carries no such guarantee.
   reactor toolsets ...        the same for named groups
   reactor skills ...          upstream skills REactor has fetched
   reactor install <id>...     install a missing tool, platform-appropriate
+                               ('all' installs every catalogued tool)
   reactor refresh             drop the probe cache
   reactor diff-config         diff shipped config against yours
   reactor overwrite-config    force-replace yours with the shipped copy
@@ -1317,7 +1318,12 @@ def cmd_install(args) -> int:
     cat = load_catalogue()
     toolsets = load_toolsets()
     state = load_state()
-    ids = _select(cat, args.id)
+    # `all` is the one reserved id: every catalogue entry, mirroring the `all`
+    # toolset (toolsets.toml) so the same word means the same thing in both
+    # places. It cannot be mixed with real ids -- there is nothing left for a
+    # second id to narrow, so `install all jq` is rejected as an unknown tool
+    # rather than silently doing what `install all` alone already does.
+    ids = catalogue_order(cat) if args.id == ["all"] else _select(cat, args.id)
     results = probe(cat, ids, refresh=True, services=False)
     entries = describe(cat, toolsets, state, ids, results, with_install=True)
 
@@ -1626,7 +1632,7 @@ def build_parser() -> argparse.ArgumentParser:
     kf.set_defaults(func=cmd_skills_fetch)
 
     i = sub.add_parser("install", parents=[common], help="install a missing tool")
-    i.add_argument("id", nargs="+")
+    i.add_argument("id", nargs="+", help="tool id(s) to install, or 'all' for the whole catalogue")
     i.add_argument("--method", help="force a specific install method (see `reactor tools show`)")
     i.add_argument("--dry-run", action="store_true", help="print the plan and stop")
     i.add_argument("--yes", "-y", action="store_true", help="do not ask before running")

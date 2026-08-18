@@ -30,9 +30,15 @@ reactor skills fetch [<id>...]    fetch configured upstream skills
 reactor install <id>...           opt-in install  [--method M] [--dry-run] [--yes]
   reactor install all             every catalogued tool
 reactor refresh                   drop the probe cache and re-probe
+reactor completion <shell>        print a completion script (bash, zsh, fish -- ADR-0015)
 reactor diff-config               diff(1) shipped vs installed config  [--file tools|toolsets]
 reactor overwrite-config          force-replace installed config (backs up first)
 ```
+
+`reactor __complete tools|toolsets` also exists — bare, unprobed ids that the
+completion scripts above shell back into. It is left out of `--help`
+deliberately (ADR-0015): it is not a documented interface, only something the
+scripts that ship alongside it depend on.
 
 `--format json` is supported on every subcommand and is **not optional**: it is
 the only interface the pi extensions have, so its shape is part of REactor's

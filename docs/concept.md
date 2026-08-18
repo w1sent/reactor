@@ -142,12 +142,18 @@ The same extension gates skill and prompt-template visibility through pi's
 from the system prompt, and `ctx.reload()` makes a toggle take effect
 immediately.
 
+Together with the selector, this pair is "the toolbox" — a `toolbox: false` in
+pi's own agent directory (`reactor.json`, next to `settings.json`) removes both
+from a session as if neither were loaded: no commands, no status line, nothing
+injected ([ADR-0016](adr/0016-extension-toggles-live-in-their-own-pi-side-file.md)).
+
 ### 3. The selector and status extensions
 
 The selector is the user's view of the same data: search the catalogue, inspect
 an entry, read its skill if it has one, toggle individual tools and toolsets.
 The status extension surfaces live state — which services are up, which devices
-are attached — in the footer and a panel.
+are attached — in the footer and a panel; individual services can be hidden
+from it the same way, via `hiddenServices` in the same file.
 
 Both are pure TUI over `reactor --format json`. Neither owns any logic.
 

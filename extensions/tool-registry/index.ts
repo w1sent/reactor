@@ -15,6 +15,7 @@
  * the design depends on is tested in one language (ADR-0006).
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -24,6 +25,8 @@ import type {
 	ResourcesDiscoverResult,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Shape of `reactor registry --format json`. Part of REactor's contract. */
 interface RegistryPayload {
@@ -43,7 +46,24 @@ const EXEC_TIMEOUT_MS = 20_000;
 
 const STATUS_KEY = "reactor";
 
+/**
+ * `false` in `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`)
+ * hides this whole extension, as if it were never loaded (ADR-0016). Read
+ * once at registration -- there is no `ctx` yet to react to the file
+ * changing later, so a flip takes effect on the next `/reload`.
+ */
+function toolboxEnabled(): boolean {
+	try {
+		const doc = JSON.parse(readFileSync(join(getAgentDir(), "reactor.json"), "utf8"));
+		return doc.toolbox !== false;
+	} catch {
+		return true;
+	}
+}
+
 export default function toolRegistry(pi: ExtensionAPI) {
+	if (!toolboxEnabled()) return;
+
 	/**
 	 * Last good payload. The registry is a statement about the machine, and a
 	 * momentarily unavailable CLI is not evidence the tools vanished -- so a

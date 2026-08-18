@@ -17,6 +17,7 @@
  * instance, so a shared module would be instantiated twice and quietly diverge.
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	BeforeAgentStartEvent,
 	ExtensionAPI,
@@ -26,6 +27,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Shape of `reactor services --format json`. Part of REactor's contract. */
 interface ServiceRow {
@@ -58,6 +61,27 @@ const WIDGET_KEY = "reactor-status";
  * this is a guest in someone else's space.
  */
 const MAX_STATUS_WIDTH = 44;
+
+/**
+ * Catalogue ids to omit from the footer and the panel -- `hiddenServices` in
+ * `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`), the same
+ * file `tool-registry/` and `selector/` check for `toolbox` (ADR-0016). A
+ * list of ids rather than a bespoke flag per known service, so a future
+ * service-backed tool needs no code change here to be hideable.
+ *
+ * Unlike `toolbox`, this is read fresh on every refresh rather than once at
+ * registration: nothing here decides whether to register at all, so there is
+ * no reason to make a live edit wait for `/reload`.
+ */
+function hiddenServices(): Set<string> {
+	try {
+		const doc = JSON.parse(readFileSync(join(getAgentDir(), "reactor.json"), "utf8"));
+		const ids = doc.hiddenServices;
+		return Array.isArray(ids) ? new Set(ids.filter((id): id is string => typeof id === "string")) : new Set();
+	} catch {
+		return new Set();
+	}
+}
 
 export default function status(pi: ExtensionAPI) {
 	/**
@@ -96,6 +120,9 @@ export default function status(pi: ExtensionAPI) {
 			return undefined;
 		}
 		if (payload.error) return undefined;
+
+		const hidden = hiddenServices();
+		if (hidden.size) payload = { ...payload, services: payload.services.filter((s) => !hidden.has(s.id)) };
 
 		last = payload;
 		return payload;

@@ -276,3 +276,24 @@ test("argument completion offers both subcommands and filters by prefix", needsP
 			["refresh"],
 		);
 	}));
+
+// ---------------------------------------------------------------------------
+// The toolbox toggle (ADR-0016)
+// ---------------------------------------------------------------------------
+
+test("toolbox: false in reactor.json registers no command or handler at all", needsPi, () =>
+	withFixture({ agentSettings: { toolbox: false } }, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+
+		assert.equal(extension.commands.size, 0);
+		assert.equal(extension.handlers.size, 0);
+	}));
+
+test("an unreadable reactor.json is treated as toolbox: true", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		// No agentSettings written -- the fixture's agent dir carries no
+		// reactor.json at all, the same as a machine that never set one.
+		const { extension } = await loadExtension(EXT, fixture);
+
+		assert.ok(extension.commands.has("reactor"));
+	}));

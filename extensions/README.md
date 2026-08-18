@@ -151,6 +151,13 @@ checks its *shape* — four steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.
 
+`ctx`/`pi` here are still mocks, though — `harness.mjs`'s optional `guard`
+(see the Rules below) only catches a stale-ctx-after-`reload()` bug once a
+test knows to wire it in. `scripts/check-in-pi.mjs` is the check that needs
+no simulation: it drives a **real** `pi --mode rpc` process with these same
+extension files loaded for real, and watches for `extension_error`. Run it
+after touching anything that calls `ctx.reload()` and its siblings.
+
 ## Rules
 
 - Take `theme` from the render callback; never import it globally.

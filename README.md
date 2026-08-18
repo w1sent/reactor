@@ -15,11 +15,14 @@ running* — that gap is what REactor fills.
 See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
 full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 
-> **Status: Milestones 1 and 2 are built.** The `reactor` CLI, the installer,
-> the catalogue, the toolsets and all three extensions — registry, selector,
-> status — work end to end, and `npm test` covers them: 65 tests on the CLI, 60
-> driving the extensions against it. Scenarios (Milestone 3) are deliberately
-> not started until the registry has been used in anger. See `TODO.md`.
+> **Status: Milestones 1, 2 and 3 are built.** The `reactor` CLI, the
+> installer, the catalogue, the toolsets, scenarios, and the four RE-focused
+> extensions — tool-registry, selector, status, scenario — work end to end.
+> A fifth, `rolling-context`, is a general-purpose alternative to pi's own
+> compaction, unrelated to the catalogue and switched independently
+> ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md)).
+> `npm test` covers all of it: 73 tests on the CLI, 123 driving the extensions
+> against pi's own loader. See `TODO.md`.
 
 ## The idea in one screen
 
@@ -56,7 +59,8 @@ reads `--help` when it needs to know how something works.
 tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
 toolsets.toml    Shipped toolset definitions — seeds the user's copy
 bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
-extensions/      pi extensions (TypeScript): tool-registry, selector, status
+extensions/      pi extensions (TypeScript): tool-registry, selector, status,
+                 scenario, rolling-context
 skills/          Skills REactor authors itself — only where --help is insufficient
 prompts/         Prompt templates, including multi-step analysis scenarios
 themes/          pi themes
@@ -91,8 +95,9 @@ Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
 third-party package by design.
 
 ```bash
-npm test                                  # 125 tests, nothing to install
-python3 tests/test_reactor.py             # the CLI alone, 65 tests
+npm test                                  # both suites, nothing to install
+python3 tests/test_reactor.py             # the CLI alone, 73 tests
+node --test "tests/extensions/*.test.mjs" # the extensions alone, 123 tests
 ```
 
 The extension half needs pi on `PATH` and skips without it: it loads each

@@ -104,7 +104,10 @@ third service-probed tool arrives.
   on the next `/reload` through a hand edit.** Registration happens once, at
   the top of each extension's factory function, so nothing reacts to the file
   changing under it by itself; `/reactor-toolbox` closes that gap itself by
-  calling `ctx.reload()` right after it writes.
+  calling `ctx.reload()` as the *last* thing its handler does — pi invalidates
+  a captured `ctx`/`pi` the moment `reload()` resolves, so anything the
+  handler still needs from either (here, the confirmation notify) has to run
+  before it, not after (`docs/pi-api-notes.md`, hit for real once and fixed).
 - **No *Python* CLI surface for this file.** `reactor` stays ignorant of pi
   ([ADR-0005](0005-reactor-cli-stdlib-python.md)) — this file's location and
   format are pi's convention, not the catalogue's, so teaching the Python CLI

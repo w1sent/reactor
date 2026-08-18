@@ -165,3 +165,9 @@ suite.
   a shared TypeScript module gives shared *code* and two copies of its state.
 - Use `StringEnum` from `@earendil-works/pi-ai` for enum tool parameters;
   `Type.Union` breaks on Google's APIs.
+- `await ctx.reload()` (also `newSession`/`fork`/`switchSession`) invalidates
+  the `ctx` — and the closed-over `pi` — that called it: pi throws on any
+  further use of either. Make the reload the *last* line of a handler; do
+  every `ctx`/`pi` action first (`docs/pi-api-notes.md`). Pass the same
+  `guard` to `loadExtension()` and `makeContext()` in a test that exercises
+  reload, so a reordering mistake fails the test instead of passing silently.

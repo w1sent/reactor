@@ -194,17 +194,20 @@ export default function selector(pi: ExtensionAPI) {
 				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } },
 			)) ?? { changed: false };
 
-			if (outcome.changed) {
-				// Skills are gated on the same activation state, so a write has
-				// to re-run resources_discover. The registry block needs no
-				// invalidation: it is recomputed from state.json every turn.
-				await ctx.reload();
-			}
 			if (outcome.skill) {
 				pi.appendEntry("reactor-detail", {
 					title: `skill: ${outcome.skill}`,
 					body: await reactorText(ctx, ["skills", "show", outcome.skill]),
 				});
+			}
+			if (outcome.changed) {
+				// Skills are gated on the same activation state, so a write has
+				// to re-run resources_discover. The registry block needs no
+				// invalidation: it is recomputed from state.json every turn.
+				// Last: pi invalidates this ctx (and the closed-over `pi`) the
+				// moment this resolves, so nothing may follow it -- see the
+				// skill branch above, not below.
+				await ctx.reload();
 			}
 		},
 	});

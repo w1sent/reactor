@@ -99,11 +99,13 @@ export default function toolRegistry(pi: ExtensionAPI) {
 				return;
 			}
 			writeReactorJson({ toolbox: sub === "on" });
+			ctx.ui.notify(`reactor: toolbox is now ${sub}`, "info");
 			// Re-runs every extension's factory, so tool-registry and selector
 			// pick up the new value immediately instead of waiting for the next
-			// pi restart or a manual /reload.
+			// pi restart or a manual /reload. Last: pi invalidates this ctx (and
+			// the closed-over `pi`) the moment this resolves, so nothing below
+			// may touch either -- see the notify above, not below.
 			await ctx.reload();
-			ctx.ui.notify(`reactor: toolbox is now ${sub}`, "info");
 		},
 	});
 
@@ -218,16 +220,18 @@ export default function toolRegistry(pi: ExtensionAPI) {
 				ctx.ui.notify("reactor: could not reach the CLI -- try `reactor doctor`", "error");
 				return;
 			}
-			if (sub === "refresh") {
-				// Skills are gated on the same probe, so a refresh that changed
-				// what is present must re-run resources_discover too.
-				await ctx.reload();
-			}
 			pi.sendMessage({
 				customType: "reactor-registry",
 				content: payload.block,
 				display: true,
 			});
+			if (sub === "refresh") {
+				// Skills are gated on the same probe, so a refresh that changed
+				// what is present must re-run resources_discover too. Last: pi
+				// invalidates this ctx (and the closed-over `pi`) the moment this
+				// resolves, so nothing may follow it.
+				await ctx.reload();
+			}
 		},
 	});
 }

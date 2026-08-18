@@ -344,20 +344,35 @@ export async function withFixture(options, body) {
 // ---------------------------------------------------------------------------
 
 /**
+ * pi's own wording (`loader.js`'s `invalidate`), reused here so a test
+ * failure reads exactly like the crash a user actually hits, not a
+ * paraphrase of it.
+ */
+export const STALE_CTX_MESSAGE =
+	"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.reload().";
+
+/**
  * Load one extension the way pi does. Returns pi's own Extension record --
  * `handlers`, `commands`, `entryRenderers` -- plus the runtime side-effects the
  * extension produced, which are the only things it can do that a test cannot
- * see by calling it.
+ * see by calling it, plus a `guard` a paired `makeContext()` can share so
+ * `ctx.reload()` poisons both at once (see `makeContext`).
  */
-export async function loadExtension(relativePath, fixture) {
+export async function loadExtension(relativePath, fixture, { guard = { stale: false } } = {}) {
 	const loader = await import(
 		pathToFileURL(path.join(PI_DIST, "core/extensions/loader.js")).href
 	);
 	const runtime = loader.createExtensionRuntime();
 	const sent = [];
 	const entries = [];
-	runtime.sendMessage = (message) => sent.push(message);
-	runtime.appendEntry = (customType, data) => entries.push({ customType, data });
+	runtime.sendMessage = (message) => {
+		if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
+		sent.push(message);
+	};
+	runtime.appendEntry = (customType, data) => {
+		if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
+		entries.push({ customType, data });
+	};
 
 	// Cleared because pi memoises by path, and two tests loading the same file
 	// must not share one extension's closed-over `last` payload.
@@ -371,7 +386,7 @@ export async function loadExtension(relativePath, fixture) {
 		runtime,
 	);
 	if (errors.length) throw new Error(errors.map((e) => e.error ?? e).join("; "));
-	return { extension: extensions[0], sent, entries };
+	return { extension: extensions[0], sent, entries, guard };
 }
 
 // ---------------------------------------------------------------------------
@@ -417,10 +432,19 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * `pi.appendEntry` (via the extension) and then simulate a reload by reading
  * it back through `sessionManager`, the way `scenario/` restores state on
  * `session_start`. Defaults to empty, since most extensions never read it.
+ *
+ * `guard` -- pass `loadExtension()`'s returned `guard` here too, and
+ * `ctx.reload()` poisons the *whole* `ctx`, the same way pi's own runtime
+ * invalidates a captured ctx/pi after `await ctx.reload()`: any further
+ * property access throws `STALE_CTX_MESSAGE`. A handler that reads or calls
+ * anything on `ctx` after reloading fails the test instead of quietly
+ * "working" against a mock that never actually goes stale -- this is the
+ * only reason `reactor-toolbox off`'s stale-ctx crash didn't show up here
+ * first. Omit `guard` for a test that doesn't touch reload at all.
  */
-export function makeContext(fixture, { mode = "tui", tui = makeTui(), entries = [] } = {}) {
+export function makeContext(fixture, { mode = "tui", tui = makeTui(), entries = [], guard = { stale: false } } = {}) {
 	const calls = { status: [], notify: [], reloads: 0, custom: [], overlay: undefined, widgets: [] };
-	const ctx = {
+	const raw = {
 		cwd: fixture.dir,
 		mode,
 		hasUI: mode === "tui" || mode === "rpc",
@@ -459,8 +483,15 @@ export function makeContext(fixture, { mode = "tui", tui = makeTui(), entries = 
 		},
 		reload: async () => {
 			calls.reloads++;
+			guard.stale = true;
 		},
 	};
+	const ctx = new Proxy(raw, {
+		get(target, prop, receiver) {
+			if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
+			return Reflect.get(target, prop, receiver);
+		},
+	});
 	return { ctx, calls };
 }
 

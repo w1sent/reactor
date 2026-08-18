@@ -34,10 +34,19 @@ const TAB = "\t";
 const SPACE = " ";
 const CTRL_R = "\x12";
 
-/** Open the overlay and hand it to `body`, then make sure it is closed. */
+/**
+ * Open the overlay and hand it to `body`, then make sure it is closed.
+ *
+ * `guard` is shared between the two mocks: closing the overlay can both
+ * `ctx.reload()` (a toggle changed) and touch `ctx`/`pi` again afterward (a
+ * skill was read) in the same handler run, and pi's own runtime refuses any
+ * `ctx`/`pi` use after `await ctx.reload()` resolves. If `index.ts` ever
+ * reorders those two branches back to the wrong way round, this throws
+ * `STALE_CTX_MESSAGE` instead of quietly passing.
+ */
 async function withOverlay(fixture, body, { mode = "tui", tui = makeTui() } = {}) {
-	const { extension, entries } = await loadExtension(EXT, fixture);
-	const { ctx, calls } = makeContext(fixture, { mode, tui });
+	const { extension, entries, guard } = await loadExtension(EXT, fixture);
+	const { ctx, calls } = makeContext(fixture, { mode, tui, guard });
 	const running = extension.commands.get("reactor-tools").handler("", ctx);
 	const overlay = await waitFor(() => calls.overlay, "the overlay to mount");
 	const view = {

@@ -19,6 +19,7 @@ parses `tools.toml`, and none reimplements catalogue semantics —
 | `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`; `/reactor-toolbox [on\|off]`. Registers nothing else when `toolbox: false` (ADR-0016). |
 | `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
 | `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
+| `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
 
 ## The toolbox toggle and hidden services (ADR-0016)
 
@@ -105,13 +106,31 @@ And two for the status panel:
   state at the moment the agent acts, which is turn time; a background probe
   would cost a process spawn per tick to be wrong slightly less often.
 
+And three for scenarios:
+
+- **`reactor_step_complete` is always registered**, whether or not a scenario
+  is running — calling it with none active is an answered case ("start one
+  with `/reactor-scenario start <id>`"), not an error. `pi.setActiveTools()`
+  could hide it between scenarios; rejected as touching a shared,
+  extension-wide list for one line in the system prompt
+  ([ADR-0017](../docs/adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)).
+- **Steps are read with `node:fs`, not through `resources_discover`.** A raw
+  step file is not a useful thing to invoke on its own — advancing is
+  stateful, and a bare pi prompt command has no memory of which step came
+  before it. `REACTOR_SCENARIOS_DIR` overrides where they are read from,
+  mirroring `REACTOR_CONFIG_DIR`.
+- **Activating a step's toolset never deactivates the previous one.** Steers,
+  does not restrict ([ADR-0007](../docs/adr/0007-deactivation-is-soft.md)) —
+  narrowing what is advertised mid-scenario is not this extension's call to
+  make.
+
 ## Tests
 
 ```bash
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All three are driven through **pi's own loader** against the **real** CLI
+All four are driven through **pi's own loader** against the **real** CLI
 — `pi.exec` is pi's, and the `reactor` it finds on `PATH` is a shim over
 `bin/reactor` pointed at a fixture catalogue
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
@@ -124,11 +143,13 @@ not overflow. And `handleInput` launches its work with `void`, so a keystroke is
 awaited via `press()`, which waits for the overlay to stop being busy rather
 than guessing at a delay.
 
-## Planned
-
-| Extension | Milestone | Does |
-|---|---|---|
-| `scenario/` | 3 | Registers `reactor_step_complete`; its result is the next step's briefing. |
+`scenario.test.mjs` adds one more: `REACTOR_SCENARIOS_DIR` isolates the state
+machine's tests from this package's own shipped `prompts/scenarios/triage/`,
+the same way `REACTOR_CONFIG_DIR` isolates everything else from
+`~/.pi/reactor/`. One test runs that real shipped scenario end to end and
+checks its *shape* — four steps, each with its own title — rather than its
+exact prose, the way `TestShippedConfig` does for the catalogue in the Python
+suite.
 
 ## Rules
 

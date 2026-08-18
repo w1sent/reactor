@@ -723,6 +723,24 @@ def setattr_pair(module, saved):
     module.CONFIG_DIR, module.PACKAGE_ROOT = saved
 
 
+@contextlib.contextmanager
+def loading_from(cfg_dir):
+    """Point R.load_catalogue()/load_toolsets() at `cfg_dir` for the
+    duration of the block, so a direct Python-level read agrees with a
+    subprocess CLI call pointed at the same fixture via REACTOR_CONFIG_DIR --
+    both must read the *test's* copy, not whatever this machine's real
+    ~/.pi/reactor/ happens to hold. Without this, a test comparing the two
+    is only checking itself against itself when the ambient install is
+    current, and silently wrong the moment it drifts -- which a real dev
+    machine's did, mid-session, the day tools.toml grew a `pi` entry."""
+    saved = R.CONFIG_DIR
+    R.CONFIG_DIR = cfg_dir
+    try:
+        yield
+    finally:
+        R.CONFIG_DIR = saved
+
+
 class TestJsonContract(unittest.TestCase):
     """`--format json` is the extensions' only interface; its shape is pinned."""
 
@@ -785,7 +803,8 @@ class TestJsonContract(unittest.TestCase):
         self.assertEqual(payload.get("ran", []), [])
 
     def test_install_all_targets_the_whole_catalogue(self):
-        cat = R.load_catalogue()
+        with loading_from(self.cfg):
+            cat = R.load_catalogue()
         payload, proc = self.run_cli("install", "all", "--dry-run")
         self.assertEqual(proc.returncode, 0)
         covered = {p["tool"] for p in payload["plan"]} | {s["tool"] for s in payload["skipped"]}
@@ -826,13 +845,15 @@ class TestCompletion(unittest.TestCase):
         )
 
     def test_complete_ids_lists_every_catalogued_tool_in_declaration_order(self):
-        cat = R.load_catalogue()
+        with loading_from(self.cfg):
+            cat = R.load_catalogue()
         proc = self.run_raw("__complete", "tools")
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout.splitlines(), list(cat.tools))
 
     def test_complete_ids_lists_every_toolset(self):
-        toolsets = R.load_toolsets()
+        with loading_from(self.cfg):
+            toolsets = R.load_toolsets()
         proc = self.run_raw("__complete", "toolsets")
         self.assertEqual(set(proc.stdout.splitlines()), set(toolsets))
 

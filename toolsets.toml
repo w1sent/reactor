@@ -92,3 +92,7 @@ tags = ["network"]
 [toolset.general]
 desc = "search and JSON — worth adding back to any narrow set"
 tags = ["general"]
+
+[toolset.agent]
+desc = "delegate work to another agent — subagents, one-shot tasks"
+tags = ["agent"]

@@ -221,9 +221,18 @@ to grow to cover at least:
 | Network | tshark/Wireshark, scapy |
 | Solving | z3, angr |
 | Parsing / transformation | tree-sitter |
+| Agent delegation | pi itself, non-interactive only (`-p`) |
 
 Some of these get nothing but a catalogue entry — a name, a line of description,
 and `--help`. That is the expected outcome for most of them, and it is not a gap.
+
+The last row is not an RE tool at all: `pi` — the harness this agent is
+already running inside — is catalogued the same way angr or joern are, for
+delegating a self-contained subtask to a fresh agent. Recursive, and not
+treated specially for it; withholding a real capability because it happens to
+point back at the harness would be inconsistent with cataloguing everything
+else worth reaching for
+([ADR-0018](adr/0018-pi-itself-is-a-catalogue-entry-non-interactive-only.md)).
 
 Where a decompiler has both a GUI and a CLI, the CLI is the entry: `ilspycmd`
 rather than ILSpy. The agent invokes commands, so a tool it cannot invoke is not

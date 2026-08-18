@@ -132,7 +132,7 @@ catalogue in the Python suite rather than pinning its exact text.
 ## Later — not scheduled
 
 ### Catalogue gaps
-24 entries against the list in `docs/concept.md`. Each new entry's `desc`
+25 entries against the list in `docs/concept.md`. Each new entry's `desc`
 lands in every system prompt, so adding them is editorial work, not data
 entry. Three outstanding:
 
@@ -150,7 +150,7 @@ entry. Three outstanding:
   of the two ever reaches the prompt on a given machine.
 
   This is also the honest test of the absent-tool path, which is currently
-  untested against reality: this machine reports 24 present, 0 absent.
+  untested against reality: this machine reports 25 present, 0 absent.
 
 - **Binary Ninja headless** — not a separate entry. Headless is the Python API,
   and using it means the agent runs a Python script directly instead of putting

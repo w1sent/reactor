@@ -799,5 +799,63 @@ class TestJsonContract(unittest.TestCase):
         self.assertIn("all", payload.get("error", ""))
 
 
+class TestCompletion(unittest.TestCase):
+    """Shell completion (ADR-0015): `reactor completion <shell>` and the
+    internal `reactor __complete <kind>` the scripts shell back into.
+
+    Neither carries a `--format`, so this runs the CLI directly rather than
+    through `TestJsonContract.run_cli`.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="reactor-completion-")
+        cls.cfg = Path(cls._tmp.name)
+        for name in R.CONFIG_FILES:
+            (cls.cfg / name).write_text((REPO_ROOT / name).read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def run_raw(self, *args):
+        env = {**os.environ, "REACTOR_CONFIG_DIR": str(self.cfg)}
+        return subprocess.run(
+            [sys.executable, str(CLI_PATH), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=60,
+        )
+
+    def test_complete_ids_lists_every_catalogued_tool_in_declaration_order(self):
+        cat = R.load_catalogue()
+        proc = self.run_raw("__complete", "tools")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.splitlines(), list(cat.tools))
+
+    def test_complete_ids_lists_every_toolset(self):
+        toolsets = R.load_toolsets()
+        proc = self.run_raw("__complete", "toolsets")
+        self.assertEqual(set(proc.stdout.splitlines()), set(toolsets))
+
+    def test_complete_ids_does_not_probe(self):
+        # The whole point (ADR-0015): a <TAB> press must cost a catalogue
+        # load, not a detection sweep. No probe means no cache is written.
+        self.run_raw("__complete", "tools")
+        self.assertFalse((self.cfg / "cache.json").exists())
+
+    def test_complete_is_hidden_from_help(self):
+        proc = self.run_raw("--help")
+        self.assertNotIn("__complete", proc.stdout)
+
+    def test_completion_prints_a_script_per_shell_that_calls_back_in(self):
+        for shell in ("bash", "zsh", "fish"):
+            proc = self.run_raw("completion", shell)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("__complete", proc.stdout)
+
+    def test_completion_rejects_an_unknown_shell(self):
+        proc = self.run_raw("completion", "powershell")
+        self.assertNotEqual(proc.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

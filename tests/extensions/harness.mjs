@@ -182,15 +182,21 @@ export const CLI_GARBAGE = "garbage";
 export const CLI_ERROR = "error";
 
 /**
- * A temporary REACTOR_CONFIG_DIR plus a `reactor` shim on PATH.
+ * A temporary REACTOR_CONFIG_DIR plus a `reactor` shim on PATH, plus a
+ * temporary pi agent dir (`PI_CODING_AGENT_DIR`) for `reactor.json`
+ * (ADR-0016).
  *
- * Both are installed into `process.env`, because the extension calls
- * `pi.exec("reactor", ...)` without an env of its own and so inherits ours.
- * That is also the lever for `mode`: the shim reads REACTOR_TEST_MODE at spawn
- * time, so a test can change the CLI's behaviour between calls.
+ * All three are installed into `process.env`: the extension calls
+ * `pi.exec("reactor", ...)` and `getAgentDir()` without an env of its own, so
+ * it inherits ours. The agent dir is always overridden, even when no test
+ * writes `reactor.json` into it -- otherwise a run on a machine that happens
+ * to have `~/.pi/agent/reactor.json` would read that file instead of getting
+ * defaults, the same isolation `REACTOR_CONFIG_DIR` already gives the
+ * catalogue. `mode` is the other lever: the shim reads REACTOR_TEST_MODE at
+ * spawn time, so a test can change the CLI's behaviour between calls.
  */
 export class Fixture {
-	constructor({ tools = FIXTURE_TOOLS, toolsets = FIXTURE_TOOLSETS, state, skills = [] } = {}) {
+	constructor({ tools = FIXTURE_TOOLS, toolsets = FIXTURE_TOOLSETS, state, skills = [], agentSettings } = {}) {
 		this.dir = fs.mkdtempSync(path.join(os.tmpdir(), "reactor-ext-"));
 		fs.writeFileSync(path.join(this.dir, "tools.toml"), tools);
 		fs.writeFileSync(path.join(this.dir, "toolsets.toml"), toolsets);
@@ -226,15 +232,37 @@ export class Fixture {
 		);
 		fs.chmodSync(shim, 0o755);
 
-		this._saved = { PATH: process.env.PATH, dir: process.env.REACTOR_CONFIG_DIR };
+		this.agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "reactor-agent-"));
+		if (agentSettings !== undefined) this.writeAgentSettings(agentSettings);
+
+		this._saved = {
+			PATH: process.env.PATH,
+			dir: process.env.REACTOR_CONFIG_DIR,
+			agentDir: process.env.PI_CODING_AGENT_DIR,
+		};
 		process.env.PATH = `${this.bin}${path.delimiter}${process.env.PATH}`;
 		process.env.REACTOR_CONFIG_DIR = this.dir;
+		process.env.PI_CODING_AGENT_DIR = this.agentDir;
 		this.mode = CLI_OK;
 	}
 
 	/** Which CLI behaviour the next spawn gets. */
 	set mode(value) {
 		process.env.REACTOR_TEST_MODE = value;
+	}
+
+	/** `<agent dir>/reactor.json` -- `toolbox` and `hiddenServices` (ADR-0016). */
+	writeAgentSettings(settings) {
+		fs.writeFileSync(path.join(this.agentDir, "reactor.json"), JSON.stringify(settings));
+	}
+
+	/** What a command's write left behind, or undefined if it wrote nothing. */
+	readAgentSettings() {
+		try {
+			return JSON.parse(fs.readFileSync(path.join(this.agentDir, "reactor.json"), "utf8"));
+		} catch {
+			return undefined;
+		}
 	}
 
 	writeState(state) {
@@ -259,8 +287,11 @@ export class Fixture {
 		process.env.PATH = this._saved.PATH;
 		if (this._saved.dir === undefined) delete process.env.REACTOR_CONFIG_DIR;
 		else process.env.REACTOR_CONFIG_DIR = this._saved.dir;
+		if (this._saved.agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = this._saved.agentDir;
 		delete process.env.REACTOR_TEST_MODE;
 		fs.rmSync(this.dir, { recursive: true, force: true });
+		fs.rmSync(this.agentDir, { recursive: true, force: true });
 	}
 }
 

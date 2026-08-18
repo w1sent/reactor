@@ -450,3 +450,15 @@ test("a long detail body is collapsed with a count of what is hidden", needsPi, 
 		assert.match(collapsed, /18 more lines/);
 		assert.match(expanded, /line 30/);
 	}));
+
+// ---------------------------------------------------------------------------
+// The toolbox toggle (ADR-0016)
+// ---------------------------------------------------------------------------
+
+test("toolbox: false in reactor.json registers no command at all", needsPi, () =>
+	withFixture({ agentSettings: { toolbox: false } }, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+
+		assert.equal(extension.commands.size, 0);
+		assert.equal(extension.entryRenderers.size, 0);
+	}));

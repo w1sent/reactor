@@ -196,7 +196,14 @@ export const CLI_ERROR = "error";
  * spawn time, so a test can change the CLI's behaviour between calls.
  */
 export class Fixture {
-	constructor({ tools = FIXTURE_TOOLS, toolsets = FIXTURE_TOOLSETS, state, skills = [], agentSettings } = {}) {
+	constructor({
+		tools = FIXTURE_TOOLS,
+		toolsets = FIXTURE_TOOLSETS,
+		state,
+		skills = [],
+		agentSettings,
+		scenarios,
+	} = {}) {
 		this.dir = fs.mkdtempSync(path.join(os.tmpdir(), "reactor-ext-"));
 		fs.writeFileSync(path.join(this.dir, "tools.toml"), tools);
 		fs.writeFileSync(path.join(this.dir, "toolsets.toml"), toolsets);
@@ -235,14 +242,23 @@ export class Fixture {
 		this.agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "reactor-agent-"));
 		if (agentSettings !== undefined) this.writeAgentSettings(agentSettings);
 
+		// Isolates extensions/scenario/ from this package's own shipped
+		// prompts/scenarios/ (ADR-0017) the same way REACTOR_CONFIG_DIR isolates
+		// the CLI from ~/.pi/reactor/ -- a test's assertions should not break
+		// because someone reworded a step's prose.
+		this.scenariosDir = fs.mkdtempSync(path.join(os.tmpdir(), "reactor-scenarios-"));
+		if (scenarios !== undefined) this.writeScenarios(scenarios);
+
 		this._saved = {
 			PATH: process.env.PATH,
 			dir: process.env.REACTOR_CONFIG_DIR,
 			agentDir: process.env.PI_CODING_AGENT_DIR,
+			scenariosDir: process.env.REACTOR_SCENARIOS_DIR,
 		};
 		process.env.PATH = `${this.bin}${path.delimiter}${process.env.PATH}`;
 		process.env.REACTOR_CONFIG_DIR = this.dir;
 		process.env.PI_CODING_AGENT_DIR = this.agentDir;
+		process.env.REACTOR_SCENARIOS_DIR = this.scenariosDir;
 		this.mode = CLI_OK;
 	}
 
@@ -262,6 +278,21 @@ export class Fixture {
 			return JSON.parse(fs.readFileSync(path.join(this.agentDir, "reactor.json"), "utf8"));
 		} catch {
 			return undefined;
+		}
+	}
+
+	/**
+	 * `{ "scenario-id": ["<step 1 file contents>", "<step 2 ...>", ...] }` --
+	 * each string is a whole step file, frontmatter included, written as
+	 * `01.md`, `02.md`, ... so filename order is step order (ADR-0017).
+	 */
+	writeScenarios(scenarios) {
+		for (const [id, steps] of Object.entries(scenarios)) {
+			const dir = path.join(this.scenariosDir, id);
+			fs.mkdirSync(dir, { recursive: true });
+			steps.forEach((content, i) => {
+				fs.writeFileSync(path.join(dir, `${String(i + 1).padStart(2, "0")}.md`), content);
+			});
 		}
 	}
 
@@ -289,9 +320,12 @@ export class Fixture {
 		else process.env.REACTOR_CONFIG_DIR = this._saved.dir;
 		if (this._saved.agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = this._saved.agentDir;
+		if (this._saved.scenariosDir === undefined) delete process.env.REACTOR_SCENARIOS_DIR;
+		else process.env.REACTOR_SCENARIOS_DIR = this._saved.scenariosDir;
 		delete process.env.REACTOR_TEST_MODE;
 		fs.rmSync(this.dir, { recursive: true, force: true });
 		fs.rmSync(this.agentDir, { recursive: true, force: true });
+		fs.rmSync(this.scenariosDir, { recursive: true, force: true });
 	}
 }
 
@@ -377,13 +411,22 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * `ui.custom` is the interesting one: it builds the component the way pi does
  * and parks the returned promise until the component calls `done`, so a test
  * can reach in, drive `handleInput`, and then await the handler.
+ *
+ * `entries` wires `ctx.sessionManager.getEntries()` to the *same* array
+ * `loadExtension()` hands back -- pass it through so a test can call
+ * `pi.appendEntry` (via the extension) and then simulate a reload by reading
+ * it back through `sessionManager`, the way `scenario/` restores state on
+ * `session_start`. Defaults to empty, since most extensions never read it.
  */
-export function makeContext(fixture, { mode = "tui", tui = makeTui() } = {}) {
+export function makeContext(fixture, { mode = "tui", tui = makeTui(), entries = [] } = {}) {
 	const calls = { status: [], notify: [], reloads: 0, custom: [], overlay: undefined, widgets: [] };
 	const ctx = {
 		cwd: fixture.dir,
 		mode,
 		hasUI: mode === "tui" || mode === "rpc",
+		sessionManager: {
+			getEntries: () => entries.map((e) => ({ type: "custom", customType: e.customType, data: e.data })),
+		},
 		ui: {
 			setStatus: (key, value) => calls.status.push({ key, value }),
 			clearStatus: (key) => calls.status.push({ key, value: undefined }),

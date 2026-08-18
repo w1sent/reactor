@@ -4,7 +4,10 @@ Facts about pi that REactor's design depends on, established against **pi
 0.83.0** installed at `~/.local/lib/node_modules/@earendil-works/pi-coding-agent`.
 Items marked **[verified]** were read out of the shipped `dist/` (source or
 `.d.ts`); items marked **[docs]** come from <https://pi.dev/docs/latest> and were
-not independently confirmed against the code.
+not independently confirmed against the code. A handful of items are marked
+**upgraded from [docs] to [verified] against pi 0.84.2** where implementing
+`extensions/scenario/` required actually confirming them — the rest of the
+file has not been re-checked against that version.
 
 Re-check this file when bumping pi. The mechanisms in the "load-bearing" section
 are the ones whose removal would break REactor outright.
@@ -84,12 +87,23 @@ deactivation ever appears not to take effect.
 
 ### Tool results carry an out-of-context `details` field
 
-**[docs]** A tool's return is `{ content, details }`; `details` persists as
-session state without entering the LLM context. `pi.appendEntry(type, data)`
-persists extension state the same way, restorable by walking
-`ctx.sessionManager.getEntries()` on `session_start`.
+**[verified]** (upgraded from [docs]; confirmed against pi 0.84.2 —
+`pi-agent-core/dist/types.d.ts`) `AgentToolResult<T>` is `{ content, details,
+usage?, addedToolNames?, terminate? }`; `content` is what the model sees,
+`details: T` is "arbitrary structured details for logs or UI rendering" and
+does not enter LLM context. `pi.appendEntry(customType, data?)` persists
+extension state the same way as a `CustomEntry` on the session, restorable by
+walking `ctx.sessionManager.getEntries()` — `Pick<SessionManager, … |
+"getEntries" | …>` — typically on `session_start`, taking the *last* entry
+matching your `customType` since state changes over the session's life.
 
-This is what scenario step-state rides on.
+This is what `extensions/scenario/`'s step-state rides on
+([ADR-0009](adr/0009-scenarios-advance-by-tool-result.md),
+[ADR-0017](adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)): both
+mechanisms, together — the tool's own `details` for the result that just
+happened, and an explicit `appendEntry` call for a state pointer that is easy
+to find again without re-scanning the transcript for the last matching tool
+result.
 
 ### `context` — the alternative injection point, rejected
 

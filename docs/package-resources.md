@@ -88,18 +88,32 @@ Substitution: `$1`, `$2`, `$@` / `$ARGUMENTS`, `${1:-default}`, `${@:N}`,
 `${@:N:L}`. Use `<angle brackets>` for required arguments in `argument-hint` and
 `[square brackets]` for optional ones.
 
-Every `.md` here is a command, so nothing else may be one.
+Every top-level `.md` here is a command, so nothing else at this level may be
+one.
 
-### Planned
+### `scenarios/`
 
-Scenario steps (Milestone 3) live here: one template per step of a multi-step
-analysis, with the agent advancing via `reactor_step_complete` —
-[ADR-0009](adr/0009-scenarios-advance-by-tool-result.md). Whether plain templates
-are expressive enough for that, or the scenario extension needs a richer format
-of its own, is an open question in `TODO.md`.
+The one subdirectory, and it is not auto-discovered as commands the way the
+top level is — a bare scenario step is not a useful thing to invoke on its
+own, since advancing is stateful and a raw prompt command has no memory of
+which step came before it. `extensions/scenario/` reads these files directly
+with `node:fs` instead of through `resources_discover`
+([ADR-0017](adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md),
+resolving the question this section used to leave open in `TODO.md`).
 
-Templates are exposed through `resources_discover`, so they are gated by
-activation state like everything else.
+```
+prompts/scenarios/triage/
+  01-triage.md
+  02-static.md
+  03-dynamic.md
+  04-report.md
+```
+
+Two frontmatter fields, hand-parsed rather than a full YAML parser: `title`
+(the briefing's header) and an optional `toolset` (activated, additively, when
+the agent reaches that step). Everything else — which tools just became
+relevant, what not to start yet — is prose the step's author writes directly
+into the body; nothing here parses it out.
 
 ## `themes/`
 

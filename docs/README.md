@@ -8,7 +8,7 @@ notes, and how-to material.
 | [`concept.md`](concept.md) | The idea in full — the problem, the inversion it rests on, the architecture, and what REactor deliberately does not do. Start here. |
 | [`adr/`](adr/) | Architecture decision records, numbered in the order taken. One per significant decision, each closing with the alternatives that were walked and why they lost. |
 | [`pi-api-notes.md`](pi-api-notes.md) | Facts about pi that the design depends on, established against a specific pi version, marked `[verified]` (read from the shipped `dist/`) or `[docs]`. Re-check when bumping pi. |
-| [`package-resources.md`](package-resources.md) | The package's `skills/`, `prompts/` and `themes/` directories — what goes in each and how pi discovers it. Documented here rather than in the directories themselves, because pi registers every `.md` in `prompts/` as a slash command. |
+| [`package-resources.md`](package-resources.md) | The package's `skills/`, `prompts/` and `themes/` directories — what goes in each and how pi discovers it. Documented here rather than in the directories themselves, because pi registers every top-level `.md` in `prompts/` as a slash command. |
 | [`howto/`](howto/) | Task-oriented guides. Empty until there is something to operate. |
 
 Project-level material lives at the repo root rather than here: `README.md`

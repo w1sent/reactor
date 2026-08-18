@@ -1,16 +1,12 @@
 # TODO
 
-Design is settled (`docs/adr/`). Milestones 1 and 2 are built and tested;
-Milestone 3 is not started. The milestones are ordered by dependency — the
-spine is a chain where each link needs the one before it.
+Design is settled (`docs/adr/`). Milestones 1, 2 and 3 are built and tested.
+The milestones were ordered by dependency — the spine is a chain where each
+link needed the one before it — and what is left of each is deferred to real
+use rather than another round of building, recorded under "Later — not
+scheduled" below.
 
-Most of what is left is now gated on **using** REactor rather than on building
-it. That is deliberate for the scenario work ([ADR-0009](docs/adr/0009-scenarios-advance-by-tool-result.md))
-and true by accident for the rest: the catalogue's remaining entries, the first
-REactor-authored skill, and two of the toolset questions all want evidence from
-real sessions more than they want another decision.
-
-## Milestone 1 — Spine — **done, with the gaps listed below**
+## Milestone 1 — Spine — **done**
 
 The smallest thing that delivers the core value: the agent knows what is on this
 machine. No custom TUI components.
@@ -21,7 +17,8 @@ machine. No custom TUI components.
   detection is `binary` or `python_module`; service probes report state plus an
   optional regex line count and nothing else.
 - **`reactor` CLI** — `bin/reactor`, one stdlib-only file. Surface in
-  `bin/README.md`; `--format json` everywhere and pinned by test.
+  `bin/README.md`; `--format json` everywhere and pinned by test. `install all`
+  targets the whole catalogue in one call.
 - **`scripts/install.py`** — symlink, seed without clobbering, `state.json`,
   fetch upstream skills, install bash/zsh/fish completions
   ([ADR-0015](docs/adr/0015-shell-completion-generated-not-hand-written.md)).
@@ -34,11 +31,110 @@ machine. No custom TUI components.
 - **Determinism** — a test, not an intention: `TestRegistryDeterminism` and
   `TestJsonContract.test_registry_block_is_stable_across_processes`.
 
-### Still open in Milestone 1
+The catalogue gaps this milestone originally tracked (QBDI, otool, a Binary
+Ninja headless capability flag), the absence of any REactor-authored skill,
+and `requires:` being inert have all moved to "Later — not scheduled" — none
+of them block the spine being done, and none of them have an answer that
+doesn't want more real usage first.
 
-**The catalogue is a starter set, not the target surface.** 24 entries against
-the list in `docs/concept.md`. Each new entry's `desc` lands in every system
-prompt, so adding them is editorial work, not data entry. Three are outstanding:
+## Milestone 2 — Selector and status — **done**
+
+### `extensions/selector/` — built
+
+`/reactor-tools`: one overlay, two panes switched with Tab, fuzzy search over
+id, name, description and tags, space to toggle, Enter to inspect, Ctrl+R to
+drop an override, Esc to close. `ctx.reload()` fires once on close if anything
+was written. Inspected detail and skill bodies go in as out-of-context session
+entries, because they are for the human and the model already has the block.
+
+It turned out not to be "pure TUI over the CLI's JSON" after all. A selector
+invites toggling, and `enable`/`disable` used to pin unconditionally, so idle
+keystrokes would accrue overrides that quietly outrank every later toolset
+change. Activation edits are now minimal and `reactor tools reset` exists
+([ADR-0011](docs/adr/0011-selector-edits-overrides-not-outcomes.md)); `tools
+list` gained an `override` field so a client can tell "on because of a toolset"
+from "on because you said so".
+
+### `extensions/status/` — built
+
+`/reactor-status`: a footer entry, and a panel above the editor that toggles.
+Both come from `reactor services`, a command added for it — the question a
+status line asks is "what is up", not "what is installed", and probing only the
+service-capable entries is what makes it cheap enough to ask every turn.
+
+The sharing question is settled and turned out to have a forced answer
+([ADR-0014](docs/adr/0014-extensions-share-the-cache-not-each-other.md)): pi
+loads every extension with its own jiti instance, so a shared module holds
+shared *code* and two copies of its state. Extensions share `cache.json`
+through the CLI and nothing else.
+
+### Toolset definitions — done
+
+Thirteen sets, every one of them a task rather than an axis, and every tool in
+at least one besides `all` — asserted, so a new catalogue entry cannot be
+shipped without someone deciding where it lives.
+
+### The toolbox toggle and `hiddenServices` — done
+
+`toolbox: false` in pi's own agent directory (`reactor.json`, next to
+`settings.json` but not inside it) removes `tool-registry/` and `selector/`
+from a session as if neither were loaded; `hiddenServices` does the same for
+individual services in `status/`
+([ADR-0016](docs/adr/0016-extension-toggles-live-in-their-own-pi-side-file.md)).
+Both are reachable from inside pi — `/reactor-toolbox [on|off]`,
+`/reactor-status mute|unmute <id>` — since pi's own `/settings` has no
+extension point to add a row to.
+
+What was left open against the selector, the status panel, and the toolset
+definitions has moved to "Later — not scheduled".
+
+## Milestone 3 — Scenarios — **done**
+
+`extensions/scenario/`: `reactor_step_complete(summary)` is a tool the LLM
+calls, and the tool's own return content is the next step's briefing — no
+extra message, no extra turn boundary
+([ADR-0009](docs/adr/0009-scenarios-advance-by-tool-result.md)). Registered
+once, always, not only while a scenario runs, so it costs one line in
+"Available tools" rather than touching the extension-wide active-tools list;
+calling it with nothing active is an answered case, not an error.
+
+`/reactor-scenario list|start <id>|status|next [summary]|stop` is the human's
+view of the same state and the manual override the ADR calls for — spelled
+`/reactor-scenario next` rather than the ADR's literal `/reactor next`,
+because `/reactor` is one of the commands `toolbox: false` removes and the
+override has to survive that.
+
+Step definitions are Markdown files under `prompts/scenarios/<id>/`, one per
+step, ordered by filename, with a two-field frontmatter (`title`, optional
+`toolset`) hand-parsed rather than pulling in YAML. Read directly with
+`node:fs`, not surfaced as pi prompt commands — resolves the "where do
+scenario definitions live" question this file used to leave open
+([ADR-0017](docs/adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)).
+`REACTOR_SCENARIOS_DIR` overrides the directory, mirroring
+`REACTOR_CONFIG_DIR`.
+
+State — which step, what each completed step reported — persists through
+`pi.appendEntry` and is restored on `session_start` by taking the last
+matching entry, so it survives a `/reload` or a resumed session. A step names
+a toolset to activate as the scenario advances; nothing is ever
+auto-deactivated when it moves on (steers, does not restrict — ADR-0007).
+
+The first scenario ships with the package: `prompts/scenarios/triage/` —
+triage, static, dynamic, report — the four phases used as the running example
+throughout `docs/concept.md` and ADR-0009.
+
+Tested through pi's own loader like every other extension
+(`tests/extensions/scenario.test.mjs`), against a throwaway scenario for the
+state machine and against the real shipped `triage` scenario for shape only
+(four steps, each with its own title), the way `TestShippedConfig` checks the
+catalogue in the Python suite rather than pinning its exact text.
+
+## Later — not scheduled
+
+### Catalogue gaps
+24 entries against the list in `docs/concept.md`. Each new entry's `desc`
+lands in every system prompt, so adding them is editorial work, not data
+entry. Three outstanding:
 
 - **QBDI** — still guesswork until someone has one to check against.
 - **otool** — macOS-only, with `llvm-otool` as the Linux stand-in: it covers
@@ -80,92 +176,45 @@ prompt, so adding them is editorial work, not data entry. Three are outstanding:
      is what [ADR-0006](docs/adr/0006-registry-injected-into-system-prompt.md)
      requires of anything entering the block.
 
-**No REactor-authored skills yet**, which is the expected state
-([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they are only worth
-writing where `--help` and upstream skills genuinely do not suffice, meaning
-cross-tool workflow knowledge. Deciding *which* should follow real sessions
-rather than precede them.
+### No REactor-authored skills yet
+Expected state ([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they
+are only worth writing where `--help` and upstream skills genuinely do not
+suffice, meaning cross-tool workflow knowledge. Deciding *which* should follow
+real sessions rather than precede them.
 
-**`requires:` in REactor-authored skills is inert.** `skills/` is a conventional
-directory at the package root, so pi's *package* loader discovers everything in
-it before the extension's `resources_discover` runs — those skills load whether
-or not their tools are present or active. Only fetched upstream skills are gated
-today. Fixing it means serving `skills/` from `resources_discover` too, which
-means moving it out of the conventional layout. Costs nothing while the
-directory is empty; decide before the first skill lands in it.
+### `requires:` in REactor-authored skills is inert
+`skills/` is a conventional directory at the package root, so pi's *package*
+loader discovers everything in it before the extension's `resources_discover`
+runs — those skills load whether or not their tools are present or active.
+Only fetched upstream skills are gated today. Fixing it means serving
+`skills/` from `resources_discover` too, which means moving it out of the
+conventional layout. Costs nothing while the directory is empty; decide before
+the first skill lands in it.
 
-## Milestone 2 — Selector and status
+### Selector: probe cost and `SettingsList`
+Opening the selector costs a live probe rather than reading the cache, so the
+first screen is honest rather than a wall of `unknown`. Warm that is
+imperceptible; cold it is the ~520 ms path, with no spinner in front of it.
+Separately, `SettingsList` was rejected for reasons that may not survive pi
+upgrades — if its search ever covers descriptions and Enter stops being
+overloaded, most of the custom rendering could go.
 
-### `extensions/selector/` — **built**
+### Status: network reachability and probe coverage
+Network reachability is not modelled, though the original sketch said so.
+Nothing in the catalogue schema describes a reachability probe, and inventing
+one to fill a bullet is how a schema gets a feature nobody asked for — it
+wants a real need first. Separately, only two catalogued tools declare a
+service probe (`bn`, `adb`), so the footer's collapse-to-counts path is
+exercised by tests and by nothing else.
 
-`/reactor-tools`: one overlay, two panes switched with Tab, fuzzy search over
-id, name, description and tags, space to toggle, Enter to inspect, Ctrl+R to
-drop an override, Esc to close. `ctx.reload()` fires once on close if anything
-was written. Inspected detail and skill bodies go in as out-of-context session
-entries, because they are for the human and the model already has the block.
-
-It turned out not to be "pure TUI over the CLI's JSON" after all. A selector
-invites toggling, and `enable`/`disable` used to pin unconditionally, so idle
-keystrokes would accrue overrides that quietly outrank every later toolset
-change. Activation edits are now minimal and `reactor tools reset` exists
-([ADR-0011](docs/adr/0011-selector-edits-overrides-not-outcomes.md)); `tools
-list` gained an `override` field so a client can tell "on because of a toolset"
-from "on because you said so".
-
-Open against it:
-
-- **Opening it costs a live probe** rather than reading the cache, so the first
-  screen is honest rather than a wall of `unknown`. Warm that is imperceptible;
-  cold it is the ~520 ms path, with no spinner in front of it.
-- **`SettingsList` was rejected for reasons that may not survive pi upgrades**
-  — if its search ever covers descriptions and Enter stops being overloaded,
-  most of the custom rendering could go.
-
-### `extensions/status/` — **built**
-
-`/reactor-status`: a footer entry, and a panel above the editor that toggles.
-Both come from `reactor services`, a command added for it — the question a
-status line asks is "what is up", not "what is installed", and probing only the
-service-capable entries is what makes it cheap enough to ask every turn.
-
-The sharing question is settled and turned out to have a forced answer
-([ADR-0014](docs/adr/0014-extensions-share-the-cache-not-each-other.md)): pi
-loads every extension with its own jiti instance, so a shared module holds
-shared *code* and two copies of its state. Extensions share `cache.json`
-through the CLI and nothing else.
-
-Open against it:
-
-- **Network reachability is not in it**, though the original sketch said so.
-  Nothing in the catalogue schema describes a reachability probe, and inventing
-  one to fill a bullet is how a schema gets a feature nobody asked for. It
-  wants a real need first.
-- **Only two catalogued tools declare a service probe** (`bn`, `adb`), so the
-  footer's collapse-to-counts path is exercised by tests and by nothing else.
-
-### Toolset definitions — **done**
-
-Thirteen sets, every one of them a task rather than an axis, and every tool in
-at least one besides `all` — asserted, so a new catalogue entry cannot be
-shipped without someone deciding where it lives.
-
-Open against them: the sets are **tight on purpose** and meant to be combined,
-which is only ergonomic because the selector makes activating two of them two
-keystrokes. Whether that holds up is a question for real sessions, and the
-answer might be that a handful of sets should absorb `general` rather than
-leaving it to be added back. The other unknown is `debugging` ⊂ `dynamic` —
-two sets differing by `frida` and `objection`, which is either a useful
-distinction or one row of noise.
-
-## Milestone 3 — Scenarios
-
-`reactor_step_complete` and the step-briefing mechanism
-([ADR-0009](docs/adr/0009-scenarios-advance-by-tool-result.md)), plus the first
-scenario as prompt templates. Deliberately after the registry has been used in
-anger, because the right step decomposition is not knowable in advance. A manual
-`/reactor next` override ships alongside.
-
-## Later — not scheduled
+### Toolset design questions
+The sets are **tight on purpose** and meant to be combined, which is only
+ergonomic because the selector makes activating two of them two keystrokes.
+Whether that holds up is a question for real sessions, and the answer might be
+that a handful of sets should absorb `general` rather than leaving it to be
+added back. The other unknown is `debugging` ⊂ `dynamic` — two sets differing
+by `frida` and `objection`, which is either a useful distinction or one row of
+noise.
 
 ### Graph visualisation panel
 An infinite explorable plane the agent can present results into — call graphs,
@@ -196,6 +245,14 @@ out to be annoying in practice.
 ### `diff-config --tool`
 Point the diff at `vimdiff`/`delta` rather than plain `diff(1)`. Convenience only.
 
+### More than one scenario, and richer scenario tooling
+Only `triage` exists. Whether more scenarios want `reactor-scenario list` to
+group or tag them, whether a step should be able to name more than one
+toolset, and whether `pi.setActiveTools()`-based dynamic visibility for
+`reactor_step_complete` is worth the shared-state risk
+([ADR-0017](docs/adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md))
+are all questions for after a scenario has been run in anger.
+
 ## Open questions
 
 ### Cache invalidation on activation change
@@ -207,12 +264,22 @@ selector sidesteps this by probing live when it opens and never re-probing
 while it is up, so a session's worth of toggling reads one snapshot. Fine while
 the snapshot is seconds old; wrong if the overlay is ever left open.
 
-### Where scenario definitions live
-Prompt templates in `prompts/`, or a richer format the extension reads? Deferred
-with Milestone 3, but the answer shapes whether `resources_discover` is enough.
-
 ## Resolved
 
+- **Where scenario definitions live** → Markdown files under
+  `prompts/scenarios/<id>/`, read directly by `extensions/scenario/` rather
+  than surfaced as pi prompt commands
+  ([ADR-0017](docs/adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)).
+  A bare step is not a useful thing to invoke on its own — advancing is
+  stateful, and a slash command has no memory of what came before it.
+- **A pi-side toggle to hide the toolbox, and to mute a status service** →
+  `reactor.json` in pi's own agent directory, next to `settings.json` but not
+  inside it, since `Settings` has no extension point for a third party's
+  fields
+  ([ADR-0016](docs/adr/0016-extension-toggles-live-in-their-own-pi-side-file.md)).
+  Reachable from inside pi with `/reactor-toolbox` and `/reactor-status
+  mute|unmute`, since pi's own `/settings` is a closed component with nothing
+  for an extension to add a row to.
 - **Shared probe cache across extensions** → the cache *is* the sharing, and
   nothing else is ([ADR-0014](docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
   The obvious design — a module both extensions import — does not work at all:

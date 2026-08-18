@@ -784,6 +784,20 @@ class TestJsonContract(unittest.TestCase):
         payload, proc = self.run_cli("install", "jq")
         self.assertEqual(payload.get("ran", []), [])
 
+    def test_install_all_targets_the_whole_catalogue(self):
+        cat = R.load_catalogue()
+        payload, proc = self.run_cli("install", "all", "--dry-run")
+        self.assertEqual(proc.returncode, 0)
+        covered = {p["tool"] for p in payload["plan"]} | {s["tool"] for s in payload["skipped"]}
+        self.assertEqual(covered, set(cat.tools))
+
+    def test_install_all_cannot_be_mixed_with_a_real_id(self):
+        # `all` already means everything; a second id has nothing left to
+        # narrow, so it is rejected as an unknown tool rather than ignored.
+        payload, proc = self.run_cli("install", "all", "jq", "--dry-run")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("all", payload.get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

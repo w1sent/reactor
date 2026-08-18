@@ -28,6 +28,7 @@ reactor skills list               configured upstream skills and whether they ar
 reactor skills show <id>          print a skill for review before trusting it
 reactor skills fetch [<id>...]    fetch configured upstream skills
 reactor install <id>...           opt-in install  [--method M] [--dry-run] [--yes]
+  reactor install all             every catalogued tool
 reactor refresh                   drop the probe cache and re-probe
 reactor diff-config               diff(1) shipped vs installed config  [--file tools|toolsets]
 reactor overwrite-config          force-replace installed config (backs up first)

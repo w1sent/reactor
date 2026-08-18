@@ -23,8 +23,10 @@ machine. No custom TUI components.
 - **`reactor` CLI** — `bin/reactor`, one stdlib-only file. Surface in
   `bin/README.md`; `--format json` everywhere and pinned by test.
 - **`scripts/install.py`** — symlink, seed without clobbering, `state.json`,
-  fetch upstream skills. Verified end to end against the real `bn-plugins` and
-  `ipsw-skill` repositories.
+  fetch upstream skills, install bash/zsh/fish completions
+  ([ADR-0015](docs/adr/0015-shell-completion-generated-not-hand-written.md)).
+  Verified end to end against the real `bn-plugins` and `ipsw-skill`
+  repositories.
 - **`extensions/tool-registry/`** — block into the system prompt on
   `before_agent_start`, `skillPaths` on `resources_discover`, status line,
   `/reactor`. Tested through pi's own loader against the real CLI

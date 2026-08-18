@@ -12,6 +12,7 @@ python3 scripts/install.py                 # symlink the CLI, seed config, fetch
 python3 scripts/install.py --copy          # copy the CLI instead of symlinking
 python3 scripts/install.py --cli-dest PATH # somewhere other than ~/.local/bin/reactor
 python3 scripts/install.py --no-skills     # skip the network step
+python3 scripts/install.py --no-completions # skip installing shell completions
 python3 scripts/install.py --dry-run       # say what would happen and stop
 ```
 
@@ -29,7 +30,14 @@ What it does:
    time in `.reactor-skill.json`
    ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)). This step is
    `reactor skills fetch` in a subprocess rather than a second implementation.
-5. Report. Warn **only** where a configured skill could not be fetched — a tool
+5. Write bash, zsh, and fish completion scripts — each is `reactor completion
+   <shell>` in a subprocess, written to that shell's conventional per-user
+   completions directory ([ADR-0015](../docs/adr/0015-shell-completion-generated-not-hand-written.md)).
+   Unlike the config files, these are reactor's own generated output, so they
+   are overwritten unconditionally rather than preserved. zsh needs one manual
+   step it cannot do for you — adding `~/.zfunc` to `fpath` before `compinit` —
+   and it prints a reminder every run.
+6. Report. Warn **only** where a configured skill could not be fetched — a tool
    with no configured skill is the normal case and gets no warning.
 
 Idempotent; re-running is the supported way to update.

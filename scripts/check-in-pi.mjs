@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const EXTENSIONS = ["tool-registry", "selector", "status", "scenario"];
+const EXTENSIONS = ["tool-registry", "selector", "status", "scenario", "rolling-context"];
 
 /**
  * Covers the command each extension registers, including the two ordering
@@ -48,7 +48,10 @@ const EXTENSIONS = ["tool-registry", "selector", "status", "scenario"];
  * crash) and `/reactor refresh` (had the same bug, latent). `/reactor-tools`
  * degrades to "point at the CLI" in RPC mode (`ctx.ui.custom` is `undefined`
  * there per docs/rpc.md) rather than opening -- still worth a line, since
- * that degrade path is itself extension code that can throw.
+ * that degrade path is itself extension code that can throw. The
+ * `rolling-context/` tail turns it on, exercises `/goal`/`/frame` and a real
+ * `context` fade, then off again -- unrelated to the toolbox and worth
+ * checking on its own account (ADR-0019).
  */
 const DEFAULT_COMMANDS = [
 	"/reactor",
@@ -65,6 +68,10 @@ const DEFAULT_COMMANDS = [
 	"/reactor-scenario status",
 	"/reactor-scenario next smoke test",
 	"/reactor-scenario stop",
+	"/rolling on",
+	"/goal check the crash",
+	"/frame",
+	"/rolling off",
 ];
 
 const commands = process.argv.slice(2);
@@ -115,16 +122,39 @@ child.stdout.on("data", (chunk) => {
 	}
 });
 
-function send(message) {
-	child.stdin.write(`${JSON.stringify({ type: "prompt", message })}\n`);
+let nextId = 0;
+
+/**
+ * Send one command and wait for its own `response`, by id, before returning
+ * -- real usage (a person, or an agent working through one command result
+ * before issuing the next) never has two extension commands in flight on the
+ * same extension instance at once. Sending the next command before this one
+ * settles can race a `ctx.reload()` from either command against the other's
+ * still-suspended handler, which pi's own runtime treats as a *different*
+ * bug (an extension instance reloaded out from under a concurrent caller)
+ * from the ordering-within-one-handler bug this script was written for; it
+ * is a real risk on its own, just not the one `-c` overlap testing wants.
+ */
+async function sendAndWait(message, timeoutMs = 15_000) {
+	const id = String(nextId++);
+	const deadline = Date.now() + timeoutMs;
+	child.stdin.write(`${JSON.stringify({ type: "prompt", message, id })}\n`);
+	while (!events.some((e) => e.type === "response" && e.id === id)) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for a response to ${JSON.stringify(message)}`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	// The response confirms accept/dispatch, not necessarily that every
+	// async continuation inside the handler (a reload, a sendMessage) has
+	// settled -- a short grace period catches those without going back to a
+	// blind fixed delay for the whole run.
+	await new Promise((resolve) => setTimeout(resolve, 150));
 }
 
 await new Promise((resolve) => setTimeout(resolve, 800)); // let extension load settle
 
 for (const cmd of toRun) {
 	console.log(`  ${cmd}`);
-	send(cmd);
-	await new Promise((resolve) => setTimeout(resolve, 500));
+	await sendAndWait(cmd);
 }
 await new Promise((resolve) => setTimeout(resolve, 300));
 child.kill();

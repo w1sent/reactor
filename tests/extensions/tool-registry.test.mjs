@@ -213,8 +213,8 @@ test("an unfetched skill contributes no path", needsPi, () =>
 
 test("/reactor show displays the block without reloading resources", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { extension, sent } = await loadExtension(EXT, fixture);
-		const { ctx, calls } = makeContext(fixture);
+		const { extension, sent, guard } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture, { guard });
 
 		await extension.commands.get("reactor").handler("", ctx);
 
@@ -224,10 +224,14 @@ test("/reactor show displays the block without reloading resources", needsPi, ()
 		assert.equal(calls.reloads, 0);
 	}));
 
-test("/reactor refresh re-runs resource discovery", needsPi, () =>
+test("/reactor refresh sends the block, then reloads last", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { extension, sent } = await loadExtension(EXT, fixture);
-		const { ctx, calls } = makeContext(fixture);
+		const { extension, sent, guard } = await loadExtension(EXT, fixture);
+		// Shared `guard`: if the handler touched `ctx` or `pi` after
+		// `await ctx.reload()`, this throws the same error pi's own runtime
+		// does instead of quietly succeeding against a mock that never goes
+		// stale.
+		const { ctx, calls } = makeContext(fixture, { guard });
 
 		await extension.commands.get("reactor").handler("refresh", ctx);
 
@@ -309,10 +313,13 @@ test("reactor-toolbox with no argument reports the current state", needsPi, () =
 		assert.match(calls.notify.at(-1).message, /toolbox is on/);
 	}));
 
-test("reactor-toolbox off writes reactor.json and reloads at once", needsPi, () =>
+test("reactor-toolbox off writes reactor.json and reloads last, not touching ctx after", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { extension } = await loadExtension(EXT, fixture);
-		const { ctx, calls } = makeContext(fixture);
+		const { extension, guard } = await loadExtension(EXT, fixture);
+		// Shared `guard`: catches exactly the crash a real user hit --
+		// `ctx.ui.notify` called after `await ctx.reload()`, which pi's own
+		// runtime refuses with STALE_CTX_MESSAGE.
+		const { ctx, calls } = makeContext(fixture, { guard });
 
 		await extension.commands.get("reactor-toolbox").handler("off", ctx);
 
@@ -323,8 +330,8 @@ test("reactor-toolbox off writes reactor.json and reloads at once", needsPi, () 
 
 test("reactor-toolbox on works from a session where the toolbox is off", needsPi, () =>
 	withFixture({ agentSettings: { toolbox: false } }, async (fixture) => {
-		const { extension } = await loadExtension(EXT, fixture);
-		const { ctx, calls } = makeContext(fixture);
+		const { extension, guard } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture, { guard });
 
 		// The command that lives outside the gate is exactly the one that
 		// needs to work while the gate is shut.
@@ -336,8 +343,8 @@ test("reactor-toolbox on works from a session where the toolbox is off", needsPi
 
 test("reactor-toolbox off does not clobber hiddenServices already on disk", needsPi, () =>
 	withFixture({ agentSettings: { hiddenServices: ["adb"] } }, async (fixture) => {
-		const { extension } = await loadExtension(EXT, fixture);
-		const { ctx } = makeContext(fixture);
+		const { extension, guard } = await loadExtension(EXT, fixture);
+		const { ctx } = makeContext(fixture, { guard });
 
 		await extension.commands.get("reactor-toolbox").handler("off", ctx);
 

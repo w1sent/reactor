@@ -276,3 +276,92 @@ test("argument completion offers both subcommands and filters by prefix", needsP
 			["refresh"],
 		);
 	}));
+
+// ---------------------------------------------------------------------------
+// The toolbox toggle (ADR-0016)
+// ---------------------------------------------------------------------------
+
+test("toolbox: false in reactor.json registers no handler and only the toggle command", needsPi, () =>
+	withFixture({ agentSettings: { toolbox: false } }, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+
+		// reactor-toolbox survives being off -- it is the only way back on.
+		assert.deepEqual([...extension.commands.keys()], ["reactor-toolbox"]);
+		assert.equal(extension.handlers.size, 0);
+	}));
+
+test("an unreadable reactor.json is treated as toolbox: true", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		// No agentSettings written -- the fixture's agent dir carries no
+		// reactor.json at all, the same as a machine that never set one.
+		const { extension } = await loadExtension(EXT, fixture);
+
+		assert.ok(extension.commands.has("reactor"));
+	}));
+
+test("reactor-toolbox with no argument reports the current state", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture);
+
+		await extension.commands.get("reactor-toolbox").handler("", ctx);
+
+		assert.match(calls.notify.at(-1).message, /toolbox is on/);
+	}));
+
+test("reactor-toolbox off writes reactor.json and reloads at once", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture);
+
+		await extension.commands.get("reactor-toolbox").handler("off", ctx);
+
+		assert.deepEqual(fixture.readAgentSettings(), { toolbox: false });
+		assert.equal(calls.reloads, 1);
+		assert.match(calls.notify.at(-1).message, /toolbox is now off/);
+	}));
+
+test("reactor-toolbox on works from a session where the toolbox is off", needsPi, () =>
+	withFixture({ agentSettings: { toolbox: false } }, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture);
+
+		// The command that lives outside the gate is exactly the one that
+		// needs to work while the gate is shut.
+		await extension.commands.get("reactor-toolbox").handler("on", ctx);
+
+		assert.deepEqual(fixture.readAgentSettings(), { toolbox: true });
+		assert.match(calls.notify.at(-1).message, /toolbox is now on/);
+	}));
+
+test("reactor-toolbox off does not clobber hiddenServices already on disk", needsPi, () =>
+	withFixture({ agentSettings: { hiddenServices: ["adb"] } }, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx } = makeContext(fixture);
+
+		await extension.commands.get("reactor-toolbox").handler("off", ctx);
+
+		assert.deepEqual(fixture.readAgentSettings(), { hiddenServices: ["adb"], toolbox: false });
+	}));
+
+test("reactor-toolbox rejects an argument that is not on or off", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture);
+
+		await extension.commands.get("reactor-toolbox").handler("maybe", ctx);
+
+		assert.equal(fixture.readAgentSettings(), undefined);
+		assert.equal(calls.notify.at(-1).level, "error");
+	}));
+
+test("reactor-toolbox argument completion offers on and off", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await loadExtension(EXT, fixture);
+		const complete = extension.commands.get("reactor-toolbox").getArgumentCompletions;
+
+		assert.deepEqual(
+			complete("").map((c) => c.value),
+			["on", "off"],
+		);
+	}));

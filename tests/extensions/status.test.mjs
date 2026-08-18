@@ -131,6 +131,35 @@ test("no installed service means no footer entry at all", needsPi, () =>
 	}));
 
 // ---------------------------------------------------------------------------
+// hiddenServices (ADR-0016)
+// ---------------------------------------------------------------------------
+
+test("a hidden service is left out of the footer, the others are not", needsPi, () =>
+	withFixture({ ...opts, agentSettings: { hiddenServices: ["answering"] } }, async (fixture) => {
+		const { calls } = await start(fixture);
+
+		assert.doesNotMatch(lastStatus(calls), /answering/);
+		assert.match(lastStatus(calls), /refusing:down/);
+	}));
+
+test("a hidden service is left out of the panel too", needsPi, () =>
+	withFixture({ ...opts, agentSettings: { hiddenServices: ["answering"] } }, async (fixture) => {
+		const { extension, ctx, calls } = await start(fixture);
+		await extension.commands.get("reactor-status").handler("", ctx);
+
+		const panel = lastWidget(calls).lines(80).join("\n");
+		assert.doesNotMatch(panel, /answering/);
+		assert.match(panel, /refusing.*down/);
+	}));
+
+test("an empty hiddenServices hides nothing, same as no reactor.json at all", needsPi, () =>
+	withFixture({ ...opts, agentSettings: { hiddenServices: [] } }, async (fixture) => {
+		const { calls } = await start(fixture);
+
+		assert.match(lastStatus(calls), /answering:2 devices/);
+	}));
+
+// ---------------------------------------------------------------------------
 // The panel
 // ---------------------------------------------------------------------------
 

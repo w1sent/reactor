@@ -16,9 +16,36 @@ parses `tools.toml`, and none reimplements catalogue semantics —
 
 | Extension | Does |
 |---|---|
-| `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`. |
-| `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. |
-| `status/` | `/reactor-status` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. |
+| `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`. Registers nothing at all when `toolbox: false` (ADR-0016). |
+| `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
+| `status/` | `/reactor-status` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits chosen catalogue ids from both. |
+
+## The toolbox toggle and hidden services (ADR-0016)
+
+`tool-registry/` and `selector/` are, together, "the toolbox": what the agent
+is told about and the UI for curating it. Both read the same file,
+`<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`, next to pi's
+own `settings.json` — not inside it):
+
+```json
+{
+  "toolbox": false,
+  "hiddenServices": ["adb"]
+}
+```
+
+- **`toolbox: false`** removes `tool-registry/` and `selector/` from the
+  session as if neither were loaded — no commands, no status-line entry, no
+  system-prompt injection, no `resources_discover` answer. Checked once at
+  registration, before any event exists to react to the file changing, so a
+  flip takes effect on the next `/reload`, not mid-session.
+- **`hiddenServices`** (`status/` only, independent of `toolbox`) is a list of
+  catalogue ids to leave out of the footer and the panel — `bn` and `adb` are
+  the two that currently declare a service probe. Read fresh on every refresh,
+  so a live edit shows up on the next turn.
+
+Both default to "everything on" when the file is absent, unreadable, or has a
+field of the wrong shape.
 
 `tool-registry` renders nothing itself: the block arrives pre-rendered in
 `reactor registry --format json`, so the byte-stability the prompt cache depends

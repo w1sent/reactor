@@ -15,6 +15,7 @@
  * and forwards keystrokes.
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -22,6 +23,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { fuzzyFilter, getKeybindings, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Shape of `reactor tools list --format json`. Part of REactor's contract. */
 interface ToolRow {
@@ -75,7 +78,25 @@ interface Outcome {
 	skill?: string;
 }
 
+/**
+ * `false` in `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`)
+ * hides this whole extension, as if it were never loaded (ADR-0016) -- the
+ * same file and the same flag `tool-registry/` checks, since `/reactor-tools`
+ * is the other half of "the toolbox". Read once at registration; a flip takes
+ * effect on the next `/reload`.
+ */
+function toolboxEnabled(): boolean {
+	try {
+		const doc = JSON.parse(readFileSync(join(getAgentDir(), "reactor.json"), "utf8"));
+		return doc.toolbox !== false;
+	} catch {
+		return true;
+	}
+}
+
 export default function selector(pi: ExtensionAPI) {
+	if (!toolboxEnabled()) return;
+
 	async function reactor<T>(ctx: ExtensionCommandContext, args: string[]): Promise<T | undefined> {
 		// pi.exec resolves rather than throwing, including on ENOENT, so a
 		// missing CLI arrives as code 1 with empty stdout. Branch on the output.

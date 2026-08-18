@@ -25,7 +25,7 @@ import type {
 	ResourcesDiscoverResult,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Shape of `reactor registry --format json`. Part of REactor's contract. */
@@ -46,22 +46,67 @@ const EXEC_TIMEOUT_MS = 20_000;
 
 const STATUS_KEY = "reactor";
 
+const REACTOR_JSON = () => join(getAgentDir(), "reactor.json");
+
+/** Whatever is on disk already, so a write can patch one field without
+ * clobbering the other (ADR-0016 covers both `toolbox` and `hiddenServices`
+ * in one file). Unreadable or absent both read as "nothing set yet". */
+function readReactorJson(): Record<string, unknown> {
+	try {
+		return JSON.parse(readFileSync(REACTOR_JSON(), "utf8"));
+	} catch {
+		return {};
+	}
+}
+
+function writeReactorJson(patch: Record<string, unknown>): void {
+	const dir = getAgentDir();
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(REACTOR_JSON(), `${JSON.stringify({ ...readReactorJson(), ...patch }, null, 2)}\n`);
+}
+
 /**
  * `false` in `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`)
  * hides this whole extension, as if it were never loaded (ADR-0016). Read
  * once at registration -- there is no `ctx` yet to react to the file
- * changing later, so a flip takes effect on the next `/reload`.
+ * changing later, so a flip only takes effect immediately when it comes
+ * through `/reactor-toolbox` below, which reloads; a hand-edit of the file
+ * needs a manual `/reload`.
  */
 function toolboxEnabled(): boolean {
-	try {
-		const doc = JSON.parse(readFileSync(join(getAgentDir(), "reactor.json"), "utf8"));
-		return doc.toolbox !== false;
-	} catch {
-		return true;
-	}
+	return readReactorJson().toolbox !== false;
 }
 
 export default function toolRegistry(pi: ExtensionAPI) {
+	/**
+	 * The on/off switch itself, registered unconditionally -- if this lived
+	 * behind the `toolboxEnabled()` gate below, turning the toolbox off would
+	 * remove the only command that can turn it back on. `/reactor` cannot
+	 * carry this either, for the same reason: it is gated too.
+	 */
+	pi.registerCommand("reactor-toolbox", {
+		description: "REactor: turn tool-registry and selector on or off",
+		getArgumentCompletions: (prefix: string) =>
+			["on", "off"].filter((c) => c.startsWith(prefix)).map((c) => ({ value: c, label: c })),
+		handler: async (args, ctx) => {
+			const sub = args.trim();
+			if (!sub) {
+				ctx.ui.notify(`reactor: toolbox is ${toolboxEnabled() ? "on" : "off"}`, "info");
+				return;
+			}
+			if (sub !== "on" && sub !== "off") {
+				ctx.ui.notify(`reactor-toolbox: unknown argument "${sub}" -- try on or off`, "error");
+				return;
+			}
+			writeReactorJson({ toolbox: sub === "on" });
+			// Re-runs every extension's factory, so tool-registry and selector
+			// pick up the new value immediately instead of waiting for the next
+			// pi restart or a manual /reload.
+			await ctx.reload();
+			ctx.ui.notify(`reactor: toolbox is now ${sub}`, "info");
+		},
+	});
+
 	if (!toolboxEnabled()) return;
 
 	/**

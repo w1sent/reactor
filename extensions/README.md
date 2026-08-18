@@ -16,16 +16,17 @@ parses `tools.toml`, and none reimplements catalogue semantics —
 
 | Extension | Does |
 |---|---|
-| `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`. Registers nothing at all when `toolbox: false` (ADR-0016). |
+| `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`; `/reactor-toolbox [on\|off]`. Registers nothing else when `toolbox: false` (ADR-0016). |
 | `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
-| `status/` | `/reactor-status` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits chosen catalogue ids from both. |
+| `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
 
 ## The toolbox toggle and hidden services (ADR-0016)
 
 `tool-registry/` and `selector/` are, together, "the toolbox": what the agent
 is told about and the UI for curating it. Both read the same file,
 `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`, next to pi's
-own `settings.json` — not inside it):
+own `settings.json` — not inside it, since `Settings` has no extension point
+for a third party's fields):
 
 ```json
 {
@@ -35,17 +36,38 @@ own `settings.json` — not inside it):
 ```
 
 - **`toolbox: false`** removes `tool-registry/` and `selector/` from the
-  session as if neither were loaded — no commands, no status-line entry, no
-  system-prompt injection, no `resources_discover` answer. Checked once at
-  registration, before any event exists to react to the file changing, so a
-  flip takes effect on the next `/reload`, not mid-session.
+  session as if neither were loaded — no `/reactor` or `/reactor-tools`
+  command, no status-line entry, no system-prompt injection, no
+  `resources_discover` answer. Checked once at registration, before any event
+  exists to react to the file changing.
 - **`hiddenServices`** (`status/` only, independent of `toolbox`) is a list of
   catalogue ids to leave out of the footer and the panel — `bn` and `adb` are
-  the two that currently declare a service probe. Read fresh on every refresh,
-  so a live edit shows up on the next turn.
+  the two that currently declare a service probe. Read fresh on every refresh.
 
 Both default to "everything on" when the file is absent, unreadable, or has a
 field of the wrong shape.
+
+**Toggle them from inside pi with a command, not by hand-editing the file**
+(pi's own `/settings` is a closed, hardcoded component with no extension
+point to add rows to — this is the closest equivalent):
+
+```
+/reactor-toolbox           # reports on or off
+/reactor-toolbox off       # writes reactor.json, then ctx.reload()s at once
+/reactor-toolbox on
+
+/reactor-status mute adb   # writes reactor.json, repaints an open panel at once
+/reactor-status unmute adb
+```
+
+`/reactor-toolbox` is registered **unconditionally**, in `tool-registry/`,
+before that extension's own `toolbox: false` gate — otherwise turning the
+toolbox off would remove the only command able to turn it back on. It calls
+`ctx.reload()` after writing, which re-runs every extension's factory
+function, so the flip is visible in the same session. `mute`/`unmute` need no
+reload: `status/` already re-reads `hiddenServices` on every refresh, so the
+command just triggers one. Only a *hand* edit of `reactor.json` (outside
+either command) needs a manual `/reload` to be picked up.
 
 `tool-registry` renders nothing itself: the block arrives pre-rendered in
 `reactor registry --format json`, so the byte-stability the prompt cache depends

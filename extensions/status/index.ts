@@ -27,7 +27,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Shape of `reactor services --format json`. Part of REactor's contract. */
@@ -62,6 +62,25 @@ const WIDGET_KEY = "reactor-status";
  */
 const MAX_STATUS_WIDTH = 44;
 
+const REACTOR_JSON = () => join(getAgentDir(), "reactor.json");
+
+/** Whatever is on disk already, so a write can patch one field without
+ * clobbering the other (ADR-0016 covers both `hiddenServices` and `toolbox`
+ * in one file). Unreadable or absent both read as "nothing set yet". */
+function readReactorJson(): Record<string, unknown> {
+	try {
+		return JSON.parse(readFileSync(REACTOR_JSON(), "utf8"));
+	} catch {
+		return {};
+	}
+}
+
+function writeReactorJson(patch: Record<string, unknown>): void {
+	const dir = getAgentDir();
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(REACTOR_JSON(), `${JSON.stringify({ ...readReactorJson(), ...patch }, null, 2)}\n`);
+}
+
 /**
  * Catalogue ids to omit from the footer and the panel -- `hiddenServices` in
  * `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`), the same
@@ -74,13 +93,17 @@ const MAX_STATUS_WIDTH = 44;
  * no reason to make a live edit wait for `/reload`.
  */
 function hiddenServices(): Set<string> {
-	try {
-		const doc = JSON.parse(readFileSync(join(getAgentDir(), "reactor.json"), "utf8"));
-		const ids = doc.hiddenServices;
-		return Array.isArray(ids) ? new Set(ids.filter((id): id is string => typeof id === "string")) : new Set();
-	} catch {
-		return new Set();
-	}
+	const ids = readReactorJson().hiddenServices;
+	return Array.isArray(ids) ? new Set(ids.filter((id): id is string => typeof id === "string")) : new Set();
+}
+
+/** `mute`/`unmute` write this back, letting `hiddenServices()` pick it up on
+ * the very next probe -- no reload needed, unlike the toolbox toggle. */
+function setServiceHidden(id: string, hidden: boolean): void {
+	const ids = hiddenServices();
+	if (hidden) ids.add(id);
+	else ids.delete(id);
+	writeReactorJson({ hiddenServices: [...ids] });
 }
 
 export default function status(pi: ExtensionAPI) {
@@ -164,13 +187,32 @@ export default function status(pi: ExtensionAPI) {
 	pi.registerCommand("reactor-status", {
 		description: "REactor: show what is running -- BN sessions, devices, captures",
 		getArgumentCompletions: (prefix: string) =>
-			["refresh", "hide"]
+			["refresh", "hide", "mute", "unmute"]
 				.filter((c) => c.startsWith(prefix))
 				.map((c) => ({ value: c, label: c })),
 		handler: async (args, ctx) => {
-			const sub = args.trim();
+			const [sub, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+
+			// mute/unmute (ADR-0016) work in every mode, not just tui: muting a
+			// service is a preference edit, not a display concern, so there is
+			// no reason to require a terminal for it.
+			if (sub === "mute" || sub === "unmute") {
+				const id = rest.join(" ");
+				if (!id) {
+					ctx.ui.notify(`reactor-status: ${sub} needs a service id, e.g. \`${sub} adb\``, "error");
+					return;
+				}
+				setServiceHidden(id, sub === "mute");
+				ctx.ui.notify(`reactor: ${id} ${sub === "mute" ? "muted" : "unmuted"}`, "info");
+				if (shown) await refresh(ctx, ["--refresh"]);
+				return;
+			}
+
 			if (sub && sub !== "refresh" && sub !== "hide") {
-				ctx.ui.notify(`reactor-status: unknown subcommand "${sub}" -- try refresh or hide`, "error");
+				ctx.ui.notify(
+					`reactor-status: unknown subcommand "${sub}" -- try refresh, hide, mute <id> or unmute <id>`,
+					"error",
+				);
 				return;
 			}
 

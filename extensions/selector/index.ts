@@ -82,8 +82,10 @@ interface Outcome {
  * `false` in `<agent dir>/reactor.json` (normally `~/.pi/agent/reactor.json`)
  * hides this whole extension, as if it were never loaded (ADR-0016) -- the
  * same file and the same flag `tool-registry/` checks, since `/reactor-tools`
- * is the other half of "the toolbox". Read once at registration; a flip takes
- * effect on the next `/reload`.
+ * is the other half of "the toolbox". Read once at registration; `/reactor-toolbox`
+ * (registered in `tool-registry/`, unconditionally, so it survives being off)
+ * reloads after writing this, so a flip through that command takes effect at
+ * once. A hand-edit of the file still needs a manual `/reload`.
  */
 function toolboxEnabled(): boolean {
 	try {

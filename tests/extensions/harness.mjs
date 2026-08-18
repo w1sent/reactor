@@ -256,6 +256,15 @@ export class Fixture {
 		fs.writeFileSync(path.join(this.agentDir, "reactor.json"), JSON.stringify(settings));
 	}
 
+	/** What a command's write left behind, or undefined if it wrote nothing. */
+	readAgentSettings() {
+		try {
+			return JSON.parse(fs.readFileSync(path.join(this.agentDir, "reactor.json"), "utf8"));
+		} catch {
+			return undefined;
+		}
+	}
+
 	writeState(state) {
 		fs.writeFileSync(path.join(this.dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
 	}

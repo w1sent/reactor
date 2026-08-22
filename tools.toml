@@ -136,6 +136,28 @@ skill = { source = "git+https://github.com/w1sent/bn-plugins", path = "ai/mcp-se
 [tool.bn.install]
 manual = "install the binja-mcp plugin from the bn-plugins repo, then run its scripts/install.py"
 
+[tool.bindiff]
+name    = "BinDiff"
+desc    = "diff two binaries' disassembly headlessly: matched functions, similarity"
+invoke  = "bindiff --primary=a.BinExport --secondary=b.BinExport --output_dir=."
+detect  = { binary = "bindiff" }
+version = ["bindiff", "--version"]
+# No `skill = {...}`: BinDiff's own docs cover its CLI flags and the IDA/GUI
+# workflow, but not this catalogue's actual pipeline -- exporting from `bn`
+# via script rather than IDA, and reading the resulting .BinDiff SQLite file
+# programmatically -- so a REactor-authored skill covers that gap
+# (ADR-0008 case 3). See skills/bindiff/.
+tags    = ["static", "native"]
+
+[tool.bindiff.install]
+# Not in any distro's own repos, official or AUR. Upstream's last prebuilt
+# release (.deb/.dmg/.msi, v8) shipped in 2023 and nothing has followed --
+# building from source is the only currently-maintained path. `bn` is this
+# catalogue's disassembler (ADR: bn over IDA), so -DBINEXPORT_ENABLE_IDAPRO=OFF
+# and skipping the Java GUI (needs the commercial yFiles library, irrelevant
+# to the headless CLI) both apply.
+manual = "build from source -- git clone https://github.com/google/bindiff && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBINEXPORT_ENABLE_IDAPRO=OFF && cmake --build build && cmake --install build (needs CMake 3.14+, Ninja, a C++ compiler, and Git)"
+
 [tool.lief]
 name   = "LIEF"
 desc   = "parse and modify ELF/PE/Mach-O from python"

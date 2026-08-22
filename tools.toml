@@ -680,9 +680,21 @@ pipx   = "pipx install mvt"
 [tool.plaso]
 name    = "plaso"
 desc    = "create and analyze forensic timelines from many log/artifact formats"
-invoke  = "log2timeline.py"
-detect  = { binary = "log2timeline.py" }
-version = ["log2timeline.py", "--version"]
+# plaso is a bundle, not a single binary -- there is no tool actually named
+# "plaso", and the bundled scripts (log2timeline, psort, pinfo, image_export,
+# psteal) are not even named consistently across install methods: pip's
+# console_scripts install them bare, Debian/Ubuntu's python3-plaso package
+# prefixes every one (plaso-log2timeline, plaso-psort, ...). Detecting the
+# python package itself sidesteps having to pick one binary name that would
+# be wrong for the other install method.
+invoke  = "log2timeline (Debian/Ubuntu: plaso-log2timeline)"
+detect  = { python_module = "plaso" }
+# A registry line for a python_module tool shows "(python module)" by
+# default (accurate for lief/angr/scapy/z3/tree-sitter, which really are used
+# via `import`) -- misleading here, since plaso is used through its bundled
+# scripts, not by importing it. A working version probe pre-empts that: the
+# module exposes a plain version string, verified against a real install.
+version = ["python3", "-c", "import plaso; print(plaso.__version__)"]
 tags    = ["forensics", "timeline", "python"]
 
 [tool.plaso.install]

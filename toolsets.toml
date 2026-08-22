@@ -69,7 +69,7 @@ desc = "debuggers only — no instrumentation frameworks"
 tags = ["debugger"]
 
 [toolset.android]
-desc  = "Android application analysis"
+desc  = "Android application analysis and device forensics"
 # frida is tagged `mobile`, not `android`: it is not an Android tool, it is a
 # general one that Android work reaches for. Naming it here says exactly that.
 tags  = ["android"]

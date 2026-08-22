@@ -583,6 +583,22 @@ tags   = ["forensics", "macos", "python"]
 # install even if it were on PyPI.
 manual = "git clone https://github.com/ydkhatri/spotlight_parser"
 
+[tool.fseventsparser]
+name   = "FSEventsParser"
+desc   = "parse macOS FSEvents records: historical file-system activity"
+invoke = "python3 FSEParser_V4.1.py"
+# The upstream filename carries its own version (V4.1 at the time of
+# writing) and has changed with past releases -- update this alongside a
+# catalogue refresh if `reactor doctor` starts reporting it absent on a
+# machine that has a newer clone.
+detect = { binary = "FSEParser_V4.1.py" }
+tags   = ["forensics", "macos", "python"]
+
+[tool.fseventsparser.install]
+# A single script; dfvfs is only needed for its optional "parse directly from
+# a raw disk image" mode, not for parsing already-extracted fsevents files.
+manual = "git clone https://github.com/dlcowen/FSEventsParser (optionally: pip install dfvfs, for parsing a raw disk image instead of an extracted fsevents directory)"
+
 [tool.ileapp]
 name   = "iLEAPP"
 desc   = "parse iOS logs, events, and property lists into forensic reports"
@@ -594,6 +610,29 @@ tags   = ["forensics", "ios", "python"]
 # Not packaged anywhere either -- same shape as mac_apt: clone, then its own
 # requirements file.
 manual = "git clone https://github.com/abrignoni/iLEAPP && pip install -r iLEAPP/requirements.txt"
+
+[tool.aleapp]
+name   = "ALEAPP"
+desc   = "parse Android logs, events, and protobufs into forensic reports"
+invoke = "python3 aleapp.py"
+detect = { binary = "aleapp.py" }
+tags   = ["forensics", "android", "python"]
+
+[tool.aleapp.install]
+# iLEAPP's sibling project, same author, same shape.
+manual = "git clone https://github.com/abrignoni/ALEAPP && pip install -r ALEAPP/requirements.txt"
+
+[tool.mvt]
+name   = "mvt"
+desc   = "detect spyware/IOCs on iOS and Android backups (mvt-ios, mvt-android)"
+invoke = "mvt-ios"
+detect = { binary = "mvt-ios" }
+tags   = ["forensics", "mobile", "malware", "ios", "android"]
+
+[tool.mvt.install]
+pacman = "pacman -S mvt"
+uv     = "uv tool install mvt"
+pipx   = "pipx install mvt"
 
 [tool.plaso]
 name    = "plaso"

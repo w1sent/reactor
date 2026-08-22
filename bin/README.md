@@ -27,8 +27,11 @@ reactor state                     what is active right now, and from which file
 reactor skills list               configured upstream skills and whether they are here
 reactor skills show <id>          print a skill for review before trusting it
 reactor skills fetch [<id>...]    fetch configured upstream skills
-reactor install <id>...           opt-in install  [--method M] [--dry-run] [--yes]
+reactor install <id>...           opt-in install  [--method M] [--dry-run] [--yes] [--create-venv]
   reactor install all             every catalogued tool
+  reactor install 'decompile-python[all]'
+                                   every python3.x the platform's own package manager
+                                   offers (not all's business -- see below)
 reactor refresh                   drop the probe cache and re-probe
 reactor completion <shell>        print a completion script (bash, zsh, fish -- ADR-0015)
 reactor diff-config               diff(1) shipped vs installed config  [--file tools|toolsets]
@@ -67,6 +70,20 @@ leaves the extension a pure transport.
 - `install` runs a command only when its package manager was verified present.
   Free-text install keys (`manual`, a URL) are shown and never executed
   ([ADR-0010](../docs/adr/0010-install-recipes-keyed-by-package-manager.md)).
+- `install 'decompile-python[all]'` is a single special-cased pseudo-target,
+  not a catalogue id: it installs every `python3.x` package the platform's
+  *own* package manager (never an AUR helper) currently offers, because the
+  `decompile-python` skill needs to run a `.pyc` through the interpreter
+  version that produced it. Never swept in by `install all`. The bracket is
+  deliberate -- same shape as `pip install pkg[extra]` -- and needs quoting
+  in most shells for the same reason that does.
+- A `pip` recipe that fails with pip's own "externally-managed-environment"
+  message (PEP 668) gets a `hint` in its `install` result pointing at
+  `--create-venv`, which creates `~/.pi/reactor/venv` (once; later calls reuse
+  it) and redirects `pip` recipes into it instead of the system interpreter.
+  It never touches `uv`/`pipx` recipes, which already manage their own
+  isolated environment. The venv's location is always printed at the end of a
+  run made with the flag.
 - Nothing time-derived may reach `render_registry`. That is enforced by a test,
   not by care.
 - Activation edits are **minimal**: `enable`/`disable` store an override only

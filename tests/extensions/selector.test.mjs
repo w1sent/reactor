@@ -158,6 +158,24 @@ test("a filter that matches nothing says so", needsPi, () =>
 		});
 	}));
 
+test("/ is the conventional search key: it resets rather than being typed", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		await withOverlay(fixture, async (view) => {
+			for (const ch of "firmware") view.component.handleInput(ch);
+			assert.match(view.text(), /gamma/);
+
+			view.component.handleInput("/");
+
+			// Back to the unfiltered list -- not a literal search for a tool
+			// whose id, name, description or tags contain a slash.
+			assert.match(view.text(), /type to filter/);
+			assert.match(view.text(), /alpha/);
+
+			for (const ch of "firmware") view.component.handleInput(ch);
+			assert.match(view.text(), /gamma/);
+		});
+	}));
+
 test("tab switches pane and drops the filter with it", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		await withOverlay(fixture, async (view) => {

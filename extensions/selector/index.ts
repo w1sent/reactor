@@ -6,7 +6,11 @@
  * advertising two dozen tools when six are relevant is noise, and noise
  * degrades tool selection ([ADR-0007](../../docs/adr/0007-deactivation-is-soft.md)).
  *
- * One overlay, two panes -- tools and toolsets, switched with Tab. Space
+ * One overlay, two panes -- tools and toolsets, switched with Tab. Any
+ * printable key filters the current pane from the first keystroke (id, name,
+ * description and tags all match); "/" is the conventional shortcut for that
+ * same behaviour and resets the query rather than being typed into it, which
+ * matters once the catalogue is too long to page through by eye. Space
  * toggles, Enter inspects, and every mutation is a `reactor` call: activation
  * is derived from the toolsets rather than stored, so only the CLI knows what
  * the smallest correct edit to `state.json` is
@@ -336,9 +340,18 @@ class SelectorOverlay implements Component {
 		} else if (data === "\x7f" || data === "\b") {
 			this.query = this.query.slice(0, -1);
 			this.index = 0;
+		} else if (data === "/") {
+			// The conventional search key (less, vim, fzf) and, not coincidentally,
+			// what the header already renders the query as: `/query`. Typing is
+			// filtering from the first keystroke regardless, so this is not a mode
+			// switch -- it is a fast way back to a bare prompt without holding
+			// backspace, and a discoverable answer to "how do I search" for anyone
+			// who has not noticed that every other key already does.
+			this.query = "";
+			this.index = 0;
 		} else if (/^[\x20-\x7e]$/.test(data)) {
-			// Space is the toggle, so it never reaches here; every other
-			// printable character is filter text.
+			// Space is the toggle and "/" resets, so neither reaches here; every
+			// other printable character is filter text.
 			this.query += data;
 			this.index = 0;
 		}
@@ -497,7 +510,7 @@ class SelectorOverlay implements Component {
 	private hint(): string {
 		const where = this.pane === "tools" ? "toolsets" : "tools";
 		return this.pane === "tools"
-			? `space toggle · enter inspect · ctrl-r unpin · tab ${where} · esc close   [+]/[-] pinned`
-			: `space toggle · tab ${where} · esc close`;
+			? `space toggle · enter inspect · ctrl-r unpin · / reset search · tab ${where} · esc close   [+]/[-] pinned`
+			: `space toggle · / reset search · tab ${where} · esc close`;
 	}
 }

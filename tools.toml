@@ -199,6 +199,65 @@ tags    = ["static", "managed", "dotnet", "decompiler"]
 [tool.ilspycmd.install]
 dotnet = "dotnet tool install --global ilspycmd"
 
+[tool.decompile-python]
+name   = "decompile .pyc"
+desc   = "decompile compiled Python bytecode (.pyc): dis+marshal, then lift to source"
+invoke = "python3 -m dis <file.pyc>"
+detect = { binary = "python3" }
+# No `skill = {...}` here on purpose: this tool has no upstream to fetch a
+# skill from -- the technique itself, not any single binary, is the tool, and
+# the REactor-authored skill that teaches it ships unconditionally under
+# skills/decompile-python/ (same shape as skills/pi-subagent/, ADR-0008's
+# third preference: no upstream, no --help worth reading, so a written skill
+# is where the value actually is). `requires: [decompile-python]` in its
+# frontmatter documents the link back to this entry.
+tags   = ["static", "managed", "python", "decompiler"]
+
+[tool.decompile-python.install]
+pacman = "pacman -S python"
+apt    = "apt install python3"
+brew   = "brew install python3"
+dnf    = "dnf install python3"
+# Not a fallback for a missing recipe -- python3 above almost always resolves,
+# since reactor itself needs it. This is the actual point: one interpreter
+# decompiles nothing outside its own bytecode version, and there is no way to
+# know which version a given .pyc needs ahead of time.
+manual = "for version-matching against arbitrary .pyc files, install every version your distro ships: `reactor install 'decompile-python[all]'` (the platform's own repos only, never the AUR)"
+
+
+# ---------------------------------------------------------------------------
+# Static analysis — malware triage
+# ---------------------------------------------------------------------------
+
+[tool.oletools]
+name   = "oletools"
+desc   = "extract and scan macros/streams in Office documents for malware"
+invoke = "olevba"
+detect = { binary = "olevba" }
+tags   = ["static", "triage", "malware", "python"]
+
+[tool.oletools.install]
+uv   = "uv pip install oletools"
+pip  = "pip install oletools"
+# Arch's own repos have nothing; the AUR package is named for its upstream
+# import name rather than the PyPI one.
+paru = "paru -S python-oletools"
+yay  = "yay -S python-oletools"
+# Fedora packages it under the same import-name convention.
+dnf  = "dnf install python3-oletools"
+
+[tool.flare-floss]
+name    = "FLOSS"
+desc    = "extract obfuscated strings from malware: stack, decoded, tight-loop"
+invoke  = "floss"
+detect  = { binary = "floss" }
+version = ["floss", "--version"]
+tags    = ["static", "triage", "malware", "python"]
+
+[tool.flare-floss.install]
+uv   = "uv tool install flare-floss"
+pipx = "pipx install flare-floss"
+
 
 # ---------------------------------------------------------------------------
 # Dynamic instrumentation
@@ -386,6 +445,172 @@ tags    = ["triage", "pattern-matching"]
 pacman = "pacman -S yara"
 apt    = "apt install yara"
 brew   = "brew install yara"
+
+
+# ---------------------------------------------------------------------------
+# Forensics — disk, memory, timeline, and metadata
+# ---------------------------------------------------------------------------
+
+[tool.exiftool]
+name    = "ExifTool"
+desc    = "read and write image/document/media metadata (EXIF, IPTC, XMP, and more)"
+invoke  = "exiftool"
+detect  = { binary = "exiftool" }
+version = ["exiftool", "-ver"]
+tags    = ["forensics", "triage"]
+
+[tool.exiftool.install]
+# Packaged under its Perl distribution name everywhere except brew.
+pacman = "pacman -S perl-image-exiftool"
+apt    = "apt install libimage-exiftool-perl"
+brew   = "brew install exiftool"
+dnf    = "dnf install perl-Image-ExifTool"
+
+[tool.sleuthkit]
+name    = "The Sleuth Kit"
+desc    = "analyze disk images and filesystems: fls, icat, mmls, and more"
+invoke  = "fls"
+detect  = { binary = "fls" }
+version = ["fls", "-V"]
+tags    = ["forensics", "disk"]
+
+[tool.sleuthkit.install]
+pacman = "pacman -S sleuthkit"
+apt    = "apt install sleuthkit"
+brew   = "brew install sleuthkit"
+dnf    = "dnf install sleuthkit"
+
+[tool.foremost]
+name   = "Foremost"
+desc   = "carve files from a disk image by header/footer signatures"
+invoke = "foremost"
+detect = { binary = "foremost" }
+tags   = ["forensics", "disk", "carving"]
+
+[tool.foremost.install]
+pacman = "pacman -S foremost"
+apt    = "apt install foremost"
+brew   = "brew install foremost"
+dnf    = "dnf install foremost"
+
+[tool.photorec]
+name   = "PhotoRec"
+desc   = "recover deleted or lost files from disks via data carving"
+invoke = "photorec"
+detect = { binary = "photorec" }
+tags   = ["forensics", "disk", "carving"]
+
+[tool.photorec.install]
+# photorec ships inside the testdisk package/repo everywhere it is packaged.
+pacman = "pacman -S testdisk"
+apt    = "apt install testdisk"
+brew   = "brew install testdisk"
+dnf    = "dnf install testdisk"
+
+[tool.bulk-extractor]
+name   = "bulk_extractor"
+desc   = "scan disk images for emails, URLs, credit cards, and other features"
+invoke = "bulk_extractor"
+detect = { binary = "bulk_extractor" }
+tags   = ["forensics", "disk", "carving"]
+
+[tool.bulk-extractor.install]
+brew   = "brew install bulk_extractor"
+manual = "https://github.com/simsong/bulk_extractor — not packaged elsewhere; build from source (CMake) or take a release asset"
+
+[tool.dissect]
+name   = "dissect"
+desc   = "parse disk images, filesystems, and artifacts from python"
+invoke = "target-query"
+detect = { binary = "target-query" }
+tags   = ["forensics", "disk", "python"]
+
+[tool.dissect.install]
+# `dissect` on PyPI is the umbrella package that pulls in target-query,
+# target-shell and every dissect.* format library; installed as an app, like
+# frida-tools, because that is how its console scripts are meant to be used.
+uv   = "uv tool install dissect"
+pipx = "pipx install dissect"
+
+[tool.mac-apt]
+name   = "mac_apt"
+desc   = "parse macOS/iOS forensic artifacts: plists, logs, databases, and more"
+invoke = "python3 mac_apt.py"
+detect = { binary = "mac_apt.py" }
+tags   = ["forensics", "macos", "python"]
+
+[tool.mac-apt.install]
+# Not packaged anywhere, and not on PyPI either -- upstream's own install
+# instructions are "clone it and pip install its requirements file".
+manual = "git clone https://github.com/ydkhatri/mac_apt && pip install -r mac_apt/requirements.txt"
+
+[tool.spotlight-parser]
+name   = "spotlight_parser"
+desc   = "parse macOS Spotlight store.db metadata databases"
+invoke = "python3 spotlight_parser.py"
+detect = { binary = "spotlight_parser.py" }
+tags   = ["forensics", "macos", "python"]
+
+[tool.spotlight-parser.install]
+# A single stdlib-only script, not a package -- there is nothing for pip to
+# install even if it were on PyPI.
+manual = "git clone https://github.com/ydkhatri/spotlight_parser"
+
+[tool.ileapp]
+name   = "iLEAPP"
+desc   = "parse iOS logs, events, and property lists into forensic reports"
+invoke = "python3 ileapp.py"
+detect = { binary = "ileapp.py" }
+tags   = ["forensics", "ios", "python"]
+
+[tool.ileapp.install]
+# Not packaged anywhere either -- same shape as mac_apt: clone, then its own
+# requirements file.
+manual = "git clone https://github.com/abrignoni/iLEAPP && pip install -r iLEAPP/requirements.txt"
+
+[tool.plaso]
+name    = "plaso"
+desc    = "create and analyze forensic timelines from many log/artifact formats"
+invoke  = "log2timeline.py"
+detect  = { binary = "log2timeline.py" }
+version = ["log2timeline.py", "--version"]
+tags    = ["forensics", "timeline", "python"]
+
+[tool.plaso.install]
+apt = "apt install plaso"
+uv  = "uv pip install plaso"
+pip = "pip install plaso"
+
+[tool.volatility3]
+name   = "Volatility 3"
+desc   = "analyze memory dumps: processes, network, malware, kernel objects"
+invoke = "vol"
+detect = { binary = "vol" }
+tags   = ["forensics", "memory", "python"]
+
+[tool.volatility3.install]
+pacman = "pacman -S volatility3"
+uv     = "uv pip install volatility3"
+pip    = "pip install volatility3"
+
+
+# ---------------------------------------------------------------------------
+# Password recovery
+# ---------------------------------------------------------------------------
+
+[tool.hashcat]
+name    = "hashcat"
+desc    = "GPU-accelerated password recovery and hash cracking"
+invoke  = "hashcat"
+detect  = { binary = "hashcat" }
+version = ["hashcat", "--version"]
+tags    = ["password", "cracking"]
+
+[tool.hashcat.install]
+pacman = "pacman -S hashcat"
+apt    = "apt install hashcat"
+brew   = "brew install hashcat"
+dnf    = "dnf install hashcat"
 
 
 # ---------------------------------------------------------------------------

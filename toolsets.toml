@@ -48,7 +48,7 @@ desc = "static analysis of compiled binaries"
 tags = ["native"]
 
 [toolset.managed]
-desc = "decompilation of managed bytecode: JVM/DEX and .NET"
+desc = "decompilation of managed bytecode: JVM/DEX, .NET, and Python"
 tags = ["managed"]
 
 [toolset.source]
@@ -76,14 +76,34 @@ tags  = ["android"]
 tools = ["frida"]
 
 [toolset.ios]
-desc  = "iOS application and firmware analysis"
+desc  = "iOS application, firmware, and device forensics"
 tags  = ["ios"]
 tools = ["frida"]
+
+[toolset.macos]
+desc = "macOS forensic artifact parsing"
+tags = ["macos"]
 
 [toolset.firmware]
 desc  = "firmware and embedded images: identify, carve, inspect"
 tags  = ["firmware"]
 tools = ["lief", "yara"]
+
+[toolset.malware]
+desc = "static malware triage: documents and obfuscated strings"
+tags = ["malware"]
+
+[toolset.forensics]
+desc = "disk, memory, and artifact forensics"
+tags = ["forensics"]
+
+[toolset.memory]
+desc = "memory dump analysis -- a narrow slice of forensics"
+tags = ["memory"]
+
+[toolset.password]
+desc = "password recovery and hash cracking"
+tags = ["password"]
 
 [toolset.network]
 desc = "traffic capture and packet work"

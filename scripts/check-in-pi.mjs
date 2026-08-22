@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const EXTENSIONS = ["tool-registry", "selector", "status", "scenario", "rolling-context"];
+const EXTENSIONS = ["tool-registry", "selector", "status", "scenario", "rolling-context", "context-editor"];
 
 /**
  * Covers the command each extension registers, including the two ordering
@@ -51,7 +51,11 @@ const EXTENSIONS = ["tool-registry", "selector", "status", "scenario", "rolling-
  * that degrade path is itself extension code that can throw. The
  * `rolling-context/` tail turns it on, exercises `/goal`/`/frame` and a real
  * `context` fade, then off again -- unrelated to the toolbox and worth
- * checking on its own account (ADR-0019).
+ * checking on its own account (ADR-0019). `context-editor/`'s two commands
+ * degrade the same way `/reactor-tools` does over RPC -- both its landscape
+ * overlay and its external-editor launch need a real terminal (`ctx.mode
+ * === "tui"`), so they just notify instead, which is still extension code
+ * worth exercising for a throw.
  */
 const DEFAULT_COMMANDS = [
 	"/reactor",
@@ -72,6 +76,8 @@ const DEFAULT_COMMANDS = [
 	"/goal check the crash",
 	"/frame",
 	"/rolling off",
+	"/context-editor",
+	"/context-editor manual",
 ];
 
 const commands = process.argv.slice(2);

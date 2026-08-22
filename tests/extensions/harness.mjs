@@ -412,9 +412,25 @@ export const plainTheme = {
 export function makeTui({ rows = 40, columns = 120 } = {}) {
 	const tui = {
 		renders: 0,
+		stops: 0,
+		starts: 0,
 		terminal: { rows, columns },
 		requestRender() {
 			tui.renders++;
+		},
+		// Real pi's TUI holds the terminal in raw mode for its own keystroke
+		// handling; `stop()`/`start()` are how an extension suspends that
+		// around something that needs the terminal for itself (spawning an
+		// interactive command or editor with `stdio: "inherit"`) -- see
+		// `examples/extensions/interactive-shell.ts` in pi's own docs. The
+		// fake just counts calls; a test asserting suspend/resume happened
+		// (and in the right order relative to the spawn) reads `tui.stops`/
+		// `tui.starts`.
+		stop() {
+			tui.stops++;
+		},
+		start() {
+			tui.starts++;
 		},
 	};
 	return tui;
@@ -452,12 +468,38 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * "working" against a mock that never actually goes stale -- this is the
  * only reason `reactor-toolbox off`'s stale-ctx crash didn't show up here
  * first. Omit `guard` for a test that doesn't touch reload at all.
+ *
+ * `selectAnswers` -- queued return values for `ctx.ui.select`, shifted one
+ * per call; an empty queue answers `undefined` (the dialog was dismissed),
+ * the same default a real cancel produces. `newSessionCancelled` makes
+ * `ctx.newSession()` report `{cancelled: true}` without running `setup`, for
+ * a test that needs to exercise the "user backed out" path.
  */
 export function makeContext(
 	fixture,
-	{ mode = "tui", tui = makeTui(), entries = [], branch = [], model, systemPrompt = "", guard = { stale: false } } = {},
+	{
+		mode = "tui",
+		tui = makeTui(),
+		entries = [],
+		branch = [],
+		model,
+		systemPrompt = "",
+		guard = { stale: false },
+		selectAnswers = [],
+		newSessionCancelled = false,
+	} = {},
 ) {
-	const calls = { status: [], notify: [], reloads: 0, custom: [], overlay: undefined, widgets: [] };
+	const calls = {
+		status: [],
+		notify: [],
+		reloads: 0,
+		custom: [],
+		overlay: undefined,
+		widgets: [],
+		select: [],
+		newSession: [],
+	};
+	const answers = [...selectAnswers];
 	const wholeBranch = () => [
 		...branch,
 		...entries.map((e) => ({ type: "custom", customType: e.customType, data: e.data })),
@@ -471,11 +513,21 @@ export function makeContext(
 		sessionManager: {
 			getEntries: wholeBranch,
 			getBranch: wholeBranch,
+			// The fake host models neither pi's tree structure nor compaction --
+			// entries fixtures carry no id/parentId to walk -- so this is just
+			// the branch again. Real leaf-path/compaction handling is pi's own
+			// code, exercised by `scripts/check-in-pi.mjs` against a real
+			// process, not by this mock.
+			buildContextEntries: wholeBranch,
 		},
 		ui: {
 			setStatus: (key, value) => calls.status.push({ key, value }),
 			clearStatus: (key) => calls.status.push({ key, value: undefined }),
 			notify: (message, level) => calls.notify.push({ message, level }),
+			select: async (title, options, opts) => {
+				calls.select.push({ title, options, opts });
+				return answers.shift();
+			},
 			// Widgets take either a string array or a component factory, so the
 			// fake normalises both into lines a test can read.
 			setWidget: (key, content, options) => {
@@ -505,6 +557,22 @@ export function makeContext(
 		reload: async () => {
 			calls.reloads++;
 			guard.stale = true;
+		},
+		// A minimal writable SessionManager: enough for a `setup` callback that
+		// only replays messages (what context-editor's fork path does), not a
+		// faithful re-implementation of pi's real append-only tree.
+		newSession: async (options) => {
+			const appended = [];
+			const fakeSessionManager = {
+				appendMessage: (message) => {
+					appended.push(message);
+					return `fake-${appended.length}`;
+				},
+			};
+			if (!newSessionCancelled) await options?.setup?.(fakeSessionManager);
+			calls.newSession.push({ options, appended });
+			guard.stale = true;
+			return { cancelled: newSessionCancelled };
 		},
 	};
 	const ctx = new Proxy(raw, {

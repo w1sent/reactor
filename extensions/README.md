@@ -24,6 +24,7 @@ unrelated to the catalogue and switched independently of everything else here
 | `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
 | `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
 | `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. Instead of pi's summarization compaction, keeps a small manifest (goal + agent-maintained steps) at the front of every prompt and fades everything else out of the *next* `context` call once it stops fitting a configurable budget — the session file itself is untouched. `/goal`, `/guidelines`, `/frame`; `update_steps`, `history_index`/`_search`/`_read` tools. General-purpose, not catalogue-aware (ADR-0019). |
+| `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
 ## The toolbox toggle and hidden services (ADR-0016)
 
@@ -140,20 +141,29 @@ And two for rolling-context:
   standalone draft ignored `PI_CODING_AGENT_DIR` when set, silently reading
   the wrong file. Same default path either way.
 
+And one for context-editor:
+
+- **Fork replays messages; current-branch persists a filter — never a
+  rewrite.** `SessionManager` is append-only, so there is no third option.
+  Both close over tool-call/tool-result pairs the same way rolling-context's
+  cut point does, so hiding one half never orphans the other
+  ([ADR-0021](../docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md)).
+
 ## Tests
 
 ```bash
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All five are driven through **pi's own loader**
+All six are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
 is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
-pointed at a fixture catalogue; `rolling-context/` never calls `reactor` at
-all, so its tests exercise pi's own history/context APIs instead. Only the
-host is faked: the context, its `ui`, and the TUI/theme/`done` triple that
-`ctx.ui.custom` hands a component.
+pointed at a fixture catalogue; `rolling-context/` and `context-editor/`
+never call `reactor` at all, so their tests exercise pi's own
+history/session/context APIs instead. Only the host is faked: the context,
+its `ui`, and the TUI/theme/`done` triple that `ctx.ui.custom` hands a
+component.
 
 Two consequences for anyone adding a test. The theme is identity rather than
 ANSI, because width is most of what is worth asserting about a list that must
@@ -175,12 +185,22 @@ here that does. `makeContext`'s `branch` option seeds it; `model` and
 `getSystemPrompt()` were added alongside it, both otherwise unused by
 anything else in this repo.
 
+`context-editor.test.mjs` needs two more fakes `makeContext` grew for it:
+`ui.select` answers from a `selectAnswers` queue (empty = the dialog was
+dismissed), and `newSession` runs its `setup` callback against a minimal
+recorder exposing only `appendMessage`, logging what got appended for a test
+to assert on. Neither models pi's real tree or compaction machinery — that
+stays pi's own code, exercised by `scripts/check-in-pi.mjs`'s real process,
+not by this mock.
+
 `ctx`/`pi` here are still mocks, though — `harness.mjs`'s optional `guard`
 (see the Rules below) only catches a stale-ctx-after-`reload()` bug once a
-test knows to wire it in. `scripts/check-in-pi.mjs` is the check that needs
-no simulation: it drives a **real** `pi --mode rpc` process with these same
-extension files loaded for real, and watches for `extension_error`. Run it
-after touching anything that calls `ctx.reload()` and its siblings.
+test knows to wire it in; `newSession` (and `fork`/`switchSession`) set the
+same `guard.stale` `reload()` does, for the same reason. `scripts/check-in-pi.mjs`
+is the check that needs no simulation: it drives a **real** `pi --mode rpc`
+process with these same extension files loaded for real, and watches for
+`extension_error`. Run it after touching anything that calls `ctx.reload()`
+and its siblings.
 
 ## Rules
 

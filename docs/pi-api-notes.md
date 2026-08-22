@@ -159,13 +159,53 @@ happened, and an explicit `appendEntry` call for a state pointer that is easy
 to find again without re-scanning the transcript for the last matching tool
 result.
 
-### `context` — the alternative injection point, rejected
+### `context` — the alternative injection point, rejected for the registry, load-bearing for context-editor
 
 **[verified]** `ContextEvent { messages }` → `ContextEventResult { messages? }`,
 "Fired before each LLM call. Can modify messages." Freshest possible injection,
 but fires once per agent-loop iteration rather than once per user turn, and
-rewriting the message array fights prompt caching. Not used; see
-[ADR-0006](adr/0006-registry-injected-into-system-prompt.md).
+rewriting the message array fights prompt caching. Not used for the registry
+block; see [ADR-0006](adr/0006-registry-injected-into-system-prompt.md). It is
+exactly the right hook for something that *removes* rather than injects,
+though — `context-editor/`'s current-branch filter trims `event.messages`
+here, and does not care about the caching cost since what it returns is
+smaller, not different, on the common turn.
+
+### `ctx.sessionManager.buildContextEntries()` is exposed on the read-only interface
+
+**[verified]** `ReadonlySessionManager` (`Pick<SessionManager, … |
+"buildContextEntries" | …>`) includes `buildContextEntries()`, despite being
+the function pi uses internally to build the compaction-aware, leaf-path
+entry list for the LLM. An extension gets the same view pi's own turn loop
+does, not an approximation of it — `context-editor/`'s landscape and manual
+views both build their row list from this rather than raw `getBranch()`, so
+what a person sees to edit is exactly what would otherwise be sent.
+
+### `ctx.newSession()`'s `setup` gets a real, writable `SessionManager`
+
+**[verified]** `ExtensionCommandContext.newSession(options?: { parentSession?,
+setup?: (sessionManager: SessionManager) => Promise<void>, withSession? })`.
+Unlike `ctx.sessionManager` (`ReadonlySessionManager` everywhere else), the
+`SessionManager` `setup` receives is the full class —
+`appendMessage`/`appendCustomEntry`/`appendCompaction`/`branchWithSummary` and
+the rest — because it is building the *new* session before it becomes active,
+not reading the current one. `appendMessage(message: Message | CustomMessage |
+BashExecutionMessage)` pointedly excludes `BranchSummaryMessage` and
+`CompactionSummaryMessage`, which get their own dedicated append methods —
+there is no generic "append any AgentMessage" call. `context-editor/`'s fork
+path (ADR-0021) is built entirely on this: replay the kept entries' messages
+into a fresh session via `appendMessage`, skip the two message roles it
+cannot take.
+
+**Confirms and extends the `reload()` invalidation note above**: `newSession`
+(like `fork`/`switchSession`) invalidates the calling `ctx` the moment it
+resolves, same as `reload()` — this file previously only had `reload()`
+actually reproduced against the real bug. `context-editor/`'s fork branch hit
+it directly in testing (a `ctx.ui.notify()` call placed *after* `await
+ctx.newSession(...)`, caught by `tests/extensions/harness.mjs`'s `guard`
+wired the same way for `newSession` as it already was for `reload`): the fix
+is the same ordering discipline, do every `ctx`/`pi` action first, make the
+session-replacing call the literal last statement.
 
 ## Packaging and install
 

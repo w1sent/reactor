@@ -158,6 +158,27 @@ tags    = ["static", "native"]
 # to the headless CLI) both apply.
 manual = "build from source -- git clone https://github.com/google/bindiff && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBINEXPORT_ENABLE_IDAPRO=OFF && cmake --build build && cmake --install build (needs CMake 3.14+, Ninja, a C++ compiler, and Git)"
 
+[tool.vxsig]
+name   = "VxSig"
+desc   = "generate AV signatures (YARA) from sets of pairwise-diffed binaries"
+invoke = "vxsig --detection_name=NAME diff1.BinDiff [diff2.BinDiff ...]"
+detect = { binary = "vxsig" }
+# No `version` entry: `vxsig --version` prints only the bare string "vxsig",
+# no actual version number, so there is nothing useful to show.
+tags   = ["static", "malware"]
+
+[tool.vxsig.install]
+# No releases and not packaged anywhere -- Bazel build from source is the
+# only path. Built and verified in this catalogue's own dev environment, and
+# independently reproduced on a second machine: vxsig has nothing to do with
+# Android, but on a machine where ANDROID_HOME/ANDROID_SDK_ROOT disagree (any
+# box with Android tooling installed is a candidate), Bazel's rules_android
+# module misfires trying to auto-configure a toolchain from it and the build
+# never reaches vxsig's own code at all -- hence the env -u prefix below on
+# every run, not just as a fallback. Binary lands at bazel-bin/vxsig/vxsig;
+# run its example against vxsig/testdata/*.BinDiff to confirm before install.
+manual = "git clone https://github.com/google/vxsig && cd vxsig && env -u ANDROID_HOME -u ANDROID_SDK_ROOT -u ANDROID_NDK_HOME bazelisk build -c opt //vxsig:vxsig && sudo install -Dm755 bazel-bin/vxsig/vxsig /usr/local/bin/vxsig"
+
 [tool.lief]
 name   = "LIEF"
 desc   = "parse and modify ELF/PE/Mach-O from python"

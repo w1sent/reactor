@@ -29,3 +29,4 @@ Write the ADR before implementing, not after.
 | [0019](0019-rolling-context-ships-here-general-purpose.md) | rolling-context ships here too, general-purpose and independently switched |
 | [0020](0020-rolling-context-measures-and-cuts-like-pi-does.md) | rolling-context measures tokens and cuts turns the same way pi's own compaction does |
 | [0021](0021-context-editor-forks-or-filters-never-rewrites.md) | context-editor forks a new session or filters the current one; it never rewrites history |
+| [0022](0022-pi-subagent-gets-a-skill-so-it-gets-a-clearer-id.md) | pi-subagent gets a skill, so it gets a clearer id |

@@ -227,12 +227,18 @@ Some of these get nothing but a catalogue entry — a name, a line of descriptio
 and `--help`. That is the expected outcome for most of them, and it is not a gap.
 
 The last row is not an RE tool at all: `pi` — the harness this agent is
-already running inside — is catalogued the same way angr or joern are, for
-delegating a self-contained subtask to a fresh agent. Recursive, and not
-treated specially for it; withholding a real capability because it happens to
-point back at the harness would be inconsistent with cataloguing everything
-else worth reaching for
+already running inside — is catalogued as `pi-subagent`, the same way angr or
+joern are, for delegating a self-contained subtask to a fresh agent.
+Recursive, and not treated specially for it; withholding a real capability
+because it happens to point back at the harness would be inconsistent with
+cataloguing everything else worth reaching for
 ([ADR-0018](adr/0018-pi-itself-is-a-catalogue-entry-non-interactive-only.md)).
+It is also the one entry in this catalogue with a self-authored skill behind
+it — `skills/pi-subagent/` — because *scoping* a delegated subagent (pi's own
+`--no-tools`/`--tools`/`--exclude-tools`, an enforced boundary, versus
+REactor's own toolbox activation, advisory only per ADR-0007) is exactly the
+kind of cross-tool workflow knowledge no single `--help` contains
+([ADR-0022](adr/0022-pi-subagent-gets-a-skill-so-it-gets-a-clearer-id.md)).
 
 Where a decompiler has both a GUI and a CLI, the CLI is the entry: `ilspycmd`
 rather than ILSpy. The agent invokes commands, so a tool it cannot invoke is not

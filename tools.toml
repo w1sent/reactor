@@ -698,6 +698,20 @@ pacman = "pacman -S jq"
 apt    = "apt install jq"
 brew   = "brew install jq"
 
+[tool.sqlite3]
+name    = "sqlite3"
+desc    = "read, write, and query SQLite database files from the command line"
+invoke  = "sqlite3"
+detect  = { binary = "sqlite3" }
+version = ["sqlite3", "--version"]
+tags    = ["general"]
+
+[tool.sqlite3.install]
+pacman = "pacman -S sqlite"
+apt    = "apt install sqlite3"
+brew   = "brew install sqlite"
+dnf    = "dnf install sqlite"
+
 
 # ---------------------------------------------------------------------------
 # Agent delegation

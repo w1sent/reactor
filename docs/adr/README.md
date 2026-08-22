@@ -27,4 +27,5 @@ Write the ADR before implementing, not after.
 | [0017](0017-scenario-steps-are-read-directly-not-pi-prompts.md) | Scenario steps are read directly from prompts/scenarios/, not surfaced as pi prompt commands |
 | [0018](0018-pi-itself-is-a-catalogue-entry-non-interactive-only.md) | pi itself is a catalogue entry, and its invoke example is load-bearing |
 | [0019](0019-rolling-context-ships-here-general-purpose.md) | rolling-context ships here too, general-purpose and independently switched |
+| [0020](0020-rolling-context-measures-and-cuts-like-pi-does.md) | rolling-context measures tokens and cuts turns the same way pi's own compaction does |
 | [0021](0021-context-editor-forks-or-filters-never-rewrites.md) | context-editor forks a new session or filters the current one; it never rewrites history |

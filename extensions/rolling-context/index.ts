@@ -36,7 +36,7 @@ import { join } from "node:path";
 
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
-import { convertToLlm, getAgentDir, serializeConversation } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, estimateTokens as estimateMessageTokens, getAgentDir, serializeConversation } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage, SessionEntry } from "@earendil-works/pi-agent-core";
 
 // ============================================================================
@@ -234,7 +234,15 @@ function buildSerialized(entries: SessionEntry[]): { lines: string[]; lineStarts
 	return { lines, lineStarts };
 }
 
-function estimateTokens(s: string): number {
+/**
+ * chars/4 estimate for plain strings -- fine for the manifest and system prompt
+ * (small, our own bounded text) and for history_read's paging budget (a display
+ * concern, not a wire-format one). NOT used for the fade's own budget math
+ * anymore: that has to agree with what pi itself measures, which means calling
+ * pi's own `estimateTokens(message)` (imported as `estimateMessageTokens`) on
+ * the actual outgoing messages -- see the `context` handler.
+ */
+function estimateStringTokens(s: string): number {
 	return Math.max(1, Math.ceil((s || "").length / 4));
 }
 
@@ -271,7 +279,9 @@ You are responsible for keeping the manifest current so work survives fading:
 - Record progress as CONCEPTUAL steps (e.g. "verified input schema", "determined root cause of X"), not trivial micro-actions (e.g. "found function x").
 - Each step has a short summary and a 3-word status. Overwrite the full step list with update_steps.
 - If the step count exceeds the soft limit, consolidate/merge finished steps to bring it back under.
-- If you need information that was removed from context, use history_index / history_search / history_read to recover it, then write the important details into the manifest via update_steps.
+- Trust the manifest first. It is what survives the fade on purpose -- if a past decision or finding matters, it belongs there, not in a recovery call you have to repeat every time it fades out again.
+
+history_index / history_search / history_read are a recovery path, not a browsing habit -- each call spends part of the very budget the fade exists to protect. Reach for them only when you need one specific, concrete detail that isn't in the manifest and isn't reconstructible by re-deriving it (e.g. re-running the tool that produced it); never as a routine first step, never to double-check something the manifest already states, and never speculatively "in case it's useful." If you find yourself calling history_search often, that is a signal to write more into the manifest via update_steps, not to search more.
 
 The session goal and guidelines are set by the user; you must not change them. Only the steps list is yours to maintain.`;
 
@@ -299,10 +309,21 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// ---- disable auto-compaction (keep manual /compact) -------------------
+	// ---- disable auto-compaction (keep manual /compact and overflow recovery) ---
+	//
+	// Only "threshold" compaction is ours to preempt -- the fade already keeps
+	// the outgoing prompt under budget, so pi's own summarization compaction
+	// firing early on the same signal is redundant, not a safety net.
+	// "overflow" is pi's *last-resort* recovery after a request has already
+	// been rejected by the backend for exceeding the context window (a real
+	// error already happened). Cancelling that too was the direct cause of
+	// bug #2: a session that ever got here had no way back, because the one
+	// mechanism able to recover from it was being vetoed unconditionally.
+	// Leaving "overflow" (and "manual") alone costs nothing when our own hard
+	// budget below is doing its job -- it only ever fires when it isn't.
 	pi.on("session_before_compact", (event) => {
 		if (!isEnabled()) return;
-		if (event.reason !== "manual") return { cancel: true };
+		if (event.reason === "threshold") return { cancel: true };
 	});
 
 	// ---- guidelines + standing guidance into the system prompt ------------
@@ -320,54 +341,76 @@ export default function (pi: ExtensionAPI) {
 
 		const sm = ctx.sessionManager;
 		const branch = sm.getBranch();
+		// content/serialized/totalLines exist for the history_index/_search/_read
+		// tools and for the manifest's human-readable "visible from line" pointer.
+		// They are NOT used to decide what gets sent anymore -- see the note above
+		// findSafeCut for why conflating the two was the root cause of bugs #1-#3.
 		const content = branch.filter((e) => serializeEntry(e) !== "");
 		const serialized = buildSerialized(content);
 		const totalLines = serialized.lines.length;
 
 		const window = ctx.model?.contextWindow ?? ctx.getContextUsage?.()?.contextWindow ?? 128_000;
 		const reserve = getEffectiveReserve();
-		const budget = Math.max(0, config.pct * (window - reserve));
+		// The hard ceiling: what pi itself will not send more than (its own
+		// getContextUsage()/shouldCompact() are measured against exactly this).
+		// Soft is where the fade aims, to leave headroom for the *next* turn's
+		// growth rather than arriving at the ceiling exactly on this one.
+		const hardBudget = Math.max(0, window - reserve);
+		const softBudget = Math.max(0, config.pct * hardBudget);
 
 		let sysTokens = 0;
 		try {
-			sysTokens = estimateTokens(ctx.getSystemPrompt());
+			sysTokens = estimateStringTokens(ctx.getSystemPrompt());
 		} catch {
 			sysTokens = 0;
 		}
-		const manifestText = buildManifestText(0, totalLines, false);
-		const manifestTokens = estimateTokens(manifestText);
-		const historyBudget = Math.max(0, budget - sysTokens - manifestTokens);
+		const manifestTokens = estimateStringTokens(buildManifestText(0, totalLines, false));
 
-		// walk newest -> oldest to find the first kept message
-		let keepFirst = 0;
-		let used = 0;
-		for (let i = content.length - 1; i >= 0; i--) {
-			const tokens = estimateTokens(serializeEntry(content[i]));
-			if (used + tokens > historyBudget) {
-				// always keep at least the newest message (the current turn)
-				if (used === 0) keepFirst = i;
-				else keepFirst = i + 1;
-				break;
-			}
-			used += tokens;
-			if (i === 0) keepFirst = 0;
-		}
+		// Cut `event.messages` itself -- the actual array about to go over the
+		// wire -- rather than a separately-serialized session-branch array whose
+		// entry count never lined up with it 1:1 (custom/compaction/branch_summary
+		// entries, and pi's own leaf-path assembly, all break the assumption that
+		// "the Nth branch entry is the Nth outgoing message"). That mismatch is
+		// what let a plain positional slice land mid tool-call/tool-result pair,
+		// which is bug #3, and it also fed a stale-unit token estimate into pi's
+		// own real usage accounting, which is bugs #1 and #2 -- fixed together by
+		// measuring and cutting the one array that actually matters, in its own
+		// units (estimateMessageTokens, pi's own estimator).
+		const messages = event.messages;
+		const soft = findSafeCut(messages, Math.max(0, softBudget - sysTokens - manifestTokens));
+		let kept = messages.slice(soft.keepFrom);
 
-		const keptCount = content.length - keepFirst;
-		const visibleStartLine = serialized.lineStarts[keepFirst] ?? 0;
+		// Hard boundary: even the newest turn must never be allowed to push the
+		// *actual* request over the window. findSafeCut always keeps at least the
+		// newest message no matter how large (matching the previous contract),
+		// so this is the only place oversized content can still slip through --
+		// enforceHardBudget archives (truncates, never drops) down to fit rather
+		// than let it overflow, however small that leaves what reaches the model.
+		const hard = enforceHardBudget(kept, Math.max(0, hardBudget - sysTokens - manifestTokens));
+		kept = hard.messages;
 
-		// apply the same trim to the outgoing messages
-		let messages = event.messages;
-		const dropCount = Math.max(0, messages.length - keptCount);
-		if (dropCount > 0) messages = messages.slice(dropCount);
+		const dropCount = Math.max(0, messages.length - kept.length);
+		// Cosmetic only: content.length and messages.length are still different
+		// unit spaces (branch entries vs. outgoing messages), so this maps the
+		// drop count proportionally onto the serialized line index purely to give
+		// the manifest and history tools a rough "you are here" pointer -- it is
+		// never used to decide what gets sent.
+		const keepFirstContent = Math.max(0, content.length - kept.length);
+		const visibleStartLine = serialized.lineStarts[keepFirstContent] ?? 0;
 
-		const showTruncation = visibleStartLine > lastReportedStartLine;
-		if (showTruncation) lastReportedStartLine = visibleStartLine;
+		const showTruncation = visibleStartLine > lastReportedStartLine || hard.archived;
+		if (showTruncation) lastReportedStartLine = Math.max(lastReportedStartLine, visibleStartLine);
 
 		if (dropCount > 0) {
 			ctx.ui.notify?.(
 				`[rolling-context] dropped ${dropCount} message(s); visible context starts at line ${visibleStartLine}`,
 				"muted",
+			);
+		}
+		if (hard.archived) {
+			ctx.ui.notify?.(
+				"[rolling-context] the newest turn alone exceeded the hard context limit; its content was archived (truncated) to stay under it -- recover the rest via history_search/history_read",
+				"warning",
 			);
 		}
 
@@ -378,9 +421,8 @@ export default function (pi: ExtensionAPI) {
 			display: true,
 			timestamp: new Date().toISOString(),
 		};
-		messages = [manifest, ...messages];
 
-		return { messages };
+		return { messages: [manifest, ...kept] };
 	});
 
 	// ---- commands -----------------------------------------------------------
@@ -565,7 +607,7 @@ export default function (pi: ExtensionAPI) {
 			let lastLine = from;
 			for (let i = from; i <= to; i++) {
 				const l = lines[i];
-				used += estimateTokens(l);
+				used += estimateStringTokens(l);
 				if (used > budget && selected.length > 0) break;
 				selected.push(`${i} | ${l}`);
 				lastLine = i;
@@ -577,6 +619,155 @@ export default function (pi: ExtensionAPI) {
 			return { content: [{ type: "text", text }], details: {} };
 		},
 	});
+}
+
+// ============================================================================
+// The fade's cut point -- mirrors pi's own compaction boundary rules
+// ============================================================================
+//
+// pi's own `findCutPoint` (core/compaction) picks a cut point in *session
+// entries*, never at a `toolResult` (which must follow its `toolCall`), and
+// reports separately whether that point lands mid-turn. The same rules apply
+// here, just against `AgentMessage[]` directly -- the array actually being
+// sent -- rather than against entries, which is what let the old positional
+// slice land inside a tool-call/tool-result pair (bug #3) and back a token
+// budget with a different array than the one it was cutting (bugs #1, #2).
+
+/** A `toolResult` can never start a kept window -- it must follow its call. */
+function isCutPointRole(role: AgentMessage["role"]): boolean {
+	return role !== "toolResult";
+}
+
+/** What pi considers the start of a fresh turn (not a tool-call continuation). */
+function isTurnStartRole(role: AgentMessage["role"]): boolean {
+	return role === "user" || role === "bashExecution" || role === "custom" || role === "branchSummary" || role === "compactionSummary";
+}
+
+interface SafeCut {
+	keepFrom: number;
+	isSplitTurn: boolean;
+}
+
+/**
+ * Find the first index to keep from, walking newest -> oldest and stopping
+ * once `keepTokens` is accounted for -- same algorithm as pi's `findCutPoint`,
+ * retargeted from session entries to the live message array. Always keeps at
+ * least the newest message, however large (the hard-budget pass afterward is
+ * what keeps that from overflowing the real ceiling).
+ */
+function findSafeCut(messages: AgentMessage[], keepTokens: number): SafeCut {
+	if (messages.length === 0) return { keepFrom: 0, isSplitTurn: false };
+
+	const cutPoints: number[] = [];
+	for (let i = 0; i < messages.length; i++) {
+		if (isCutPointRole(messages[i].role)) cutPoints.push(i);
+	}
+	if (cutPoints.length === 0) return { keepFrom: 0, isSplitTurn: false };
+
+	let accumulated = 0;
+	let cutIndex = cutPoints[0];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const tokens = estimateMessageTokens(messages[i]);
+		if (tokens === 0) continue;
+		accumulated += tokens;
+		if (accumulated >= keepTokens) {
+			for (const c of cutPoints) {
+				if (c >= i) {
+					cutIndex = c;
+					break;
+				}
+			}
+			break;
+		}
+	}
+	return { keepFrom: cutIndex, isSplitTurn: !isTurnStartRole(messages[cutIndex].role) };
+}
+
+const ARCHIVE_NOTE =
+	"\n\n…(content archived to stay under the hard context limit; recover the rest via history_search/history_read)";
+
+/** Shrink the text-bearing content of one message to roughly `keepTokens`, never touching role, tool-call ids, or arguments. */
+function archiveMessageContent(message: AgentMessage, keepTokens: number): AgentMessage {
+	const keepChars = Math.max(0, Math.floor(keepTokens * 4));
+	if (message.role === "assistant") {
+		let budget = keepChars;
+		const content = (message as any).content.map((block: any) => {
+			if (block.type === "toolCall") return block;
+			if (block.type !== "text" && block.type !== "thinking") return block;
+			const field = block.type === "text" ? "text" : "thinking";
+			const value: string = block[field] ?? "";
+			if (budget <= 0) return { ...block, [field]: "" };
+			const kept = value.length > budget ? value.slice(0, budget) + ARCHIVE_NOTE : value;
+			budget -= value.length;
+			return { ...block, [field]: kept };
+		});
+		return { ...message, content } as AgentMessage;
+	}
+	// user / toolResult / custom: content is a string or a text/image block array.
+	const raw = (message as any).content;
+	if (typeof raw === "string") {
+		return { ...message, content: raw.length > keepChars ? raw.slice(0, keepChars) + ARCHIVE_NOTE : raw } as AgentMessage;
+	}
+	if (Array.isArray(raw)) {
+		let budget = keepChars;
+		const content = raw
+			.map((block: any) => {
+				if (block.type !== "text") return budget > 0 ? block : undefined;
+				if (budget <= 0) return undefined;
+				const text = block.text.length > budget ? block.text.slice(0, budget) + ARCHIVE_NOTE : block.text;
+				budget -= block.text.length;
+				return { ...block, text };
+			})
+			.filter((b: any) => b !== undefined);
+		return { ...message, content: content.length > 0 ? content : [{ type: "text", text: ARCHIVE_NOTE.trim() }] } as AgentMessage;
+	}
+	return message;
+}
+
+interface HardBudgetResult {
+	messages: AgentMessage[];
+	archived: boolean;
+}
+
+/**
+ * The hard boundary: `messages` is already a structurally-safe kept window
+ * (see findSafeCut), but even that can exceed the real context window when a
+ * single turn is enormous -- a giant disassembly listing or packet capture is
+ * exactly the content this extension exists for. Rather than send it and let
+ * the backend reject the request (bug #2) or let pi's own usage accounting
+ * read over 100% (bug #1), drop the oldest of the kept messages first and, if
+ * even the newest one alone is still too big, archive (truncate) its content
+ * -- never drop the newest message outright, and never break a
+ * toolCall/toolResult pairing by leaving an orphaned result at the front.
+ */
+function enforceHardBudget(messages: AgentMessage[], hardTokens: number): HardBudgetResult {
+	if (messages.length === 0) return { messages, archived: false };
+
+	let total = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+	if (total <= hardTokens) return { messages, archived: false };
+
+	const out = [...messages];
+	while (out.length > 1 && total > hardTokens) {
+		total -= estimateMessageTokens(out[0]);
+		out.shift();
+	}
+	// A dropped toolCall leaves its toolResult orphaned at the front; a dropped
+	// toolResult never orphans anything on its own. Either way, clear any
+	// leading toolResult the budget walk above could have exposed.
+	while (out.length > 1 && out[0].role === "toolResult") {
+		total -= estimateMessageTokens(out[0]);
+		out.shift();
+	}
+
+	if (total > hardTokens) {
+		// The one message left (necessarily the newest -- it is never dropped)
+		// is alone bigger than the hard ceiling. Archive its content instead of
+		// omitting it: a stub of the current turn beats silently overflowing.
+		const floor = Math.max(64, hardTokens);
+		out[out.length - 1] = archiveMessageContent(out[out.length - 1], floor);
+	}
+
+	return { messages: out, archived: true };
 }
 
 // ============================================================================

@@ -232,10 +232,6 @@ sibling repo with a catalogue entry rather than an extension
 ([ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md)) —
 it is a tool, not a harness integration.
 
-### Context optimisation
-Reducing context, model-specific prompt variants. Underspecified; needs a concrete
-complaint from real sessions before it becomes a design.
-
 ### Catalogue overlay model
 Package catalogue authoritative, user file holding only deltas — dissolves the
 merge problem instead of managing it. Recorded as the better answer in
@@ -266,6 +262,18 @@ the snapshot is seconds old; wrong if the overlay is ever left open.
 
 ## Resolved
 
+- **Context optimisation** → the concrete complaint arrived: real sessions
+  showed `rolling-context/`'s fade measuring tokens in a different unit than
+  what actually went over the wire, occasionally cutting mid tool-call/
+  tool-result pair, and cancelling pi's own overflow recovery along with the
+  threshold compaction it was meant to preempt. Fixed by measuring and
+  cutting the same way pi's own compaction does, plus a hard ceiling the fade
+  may never cross ([ADR-0020](docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)).
+  Alongside it, `extensions/context-editor/` gives a person the same
+  decision by hand — a landscape overlay or a `$EDITOR` text file, applied by
+  forking a new session or filtering the current one, since pi's session
+  store cannot be rewritten in place
+  ([ADR-0021](docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md)).
 - **Where scenario definitions live** → Markdown files under
   `prompts/scenarios/<id>/`, read directly by `extensions/scenario/` rather
   than surfaced as pi prompt commands

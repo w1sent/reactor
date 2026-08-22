@@ -176,20 +176,20 @@ entry. Three outstanding:
      is what [ADR-0006](docs/adr/0006-registry-injected-into-system-prompt.md)
      requires of anything entering the block.
 
-### No REactor-authored skills yet
-Expected state ([ADR-0008](docs/adr/0008-aggregate-upstream-skills.md)) — they
-are only worth writing where `--help` and upstream skills genuinely do not
-suffice, meaning cross-tool workflow knowledge. Deciding *which* should follow
-real sessions rather than precede them.
-
 ### `requires:` in REactor-authored skills is inert
 `skills/` is a conventional directory at the package root, so pi's *package*
 loader discovers everything in it before the extension's `resources_discover`
 runs — those skills load whether or not their tools are present or active.
 Only fetched upstream skills are gated today. Fixing it means serving
 `skills/` from `resources_discover` too, which means moving it out of the
-conventional layout. Costs nothing while the directory is empty; decide before
-the first skill lands in it.
+conventional layout.
+
+The first skill has landed (`skills/pi-subagent/`,
+[ADR-0022](docs/adr/0022-pi-subagent-gets-a-skill-so-it-gets-a-clearer-id.md))
+without forcing this decision: its tool is the harness itself, present by
+construction in any session that could load the skill at all, so unconditional
+loading and gated loading are observably the same for it. Still open for
+whichever skill lands next whose tool is not always present.
 
 ### Selector: probe cost and `SettingsList`
 Opening the selector costs a live probe rather than reading the cache, so the
@@ -274,6 +274,15 @@ the snapshot is seconds old; wrong if the overlay is ever left open.
   forking a new session or filtering the current one, since pi's session
   store cannot be rewritten in place
   ([ADR-0021](docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md)).
+- **No REactor-authored skills yet** → the first one has landed,
+  `skills/pi-subagent/`: how to scope a delegated `pi -p` subagent, which
+  `--help` alone does not connect — pi's own `--tools`/`--no-tools` flags are
+  an enforced boundary on what it can call, REactor's toolbox/toolset
+  activation is advisory only (ADR-0007), and conflating the two is the
+  mistake worth a skill over. `[tool.pi]` renamed to `[tool.pi-subagent]`
+  alongside it, so the skill's `requires:` has a name that means "delegating
+  to a subagent" rather than "the harness itself"
+  ([ADR-0022](docs/adr/0022-pi-subagent-gets-a-skill-so-it-gets-a-clearer-id.md)).
 - **Where scenario definitions live** → Markdown files under
   `prompts/scenarios/<id>/`, read directly by `extensions/scenario/` rather
   than surfaced as pi prompt commands

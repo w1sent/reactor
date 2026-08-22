@@ -478,20 +478,21 @@ brew   = "brew install jq"
 # Agent delegation
 # ---------------------------------------------------------------------------
 
-[tool.pi]
+[tool.pi-subagent]
 name    = "pi"
-desc    = "spin up a fresh agent for a subtask; non-interactive only (-p), never bare"
+desc    = "spin up a fresh, scoped subagent; non-interactive only (-p), never bare"
 # Multi-word invoke is a usage example, not a command name (see bin/reactor's
 # _label()) -- and here the example is the point: bare `pi` wants a real
 # terminal, which a Bash tool call does not have, so it hangs until the tool
 # timeout kills it. -p is what pi's own --help calls "non-interactive mode:
 # process prompt and exit" -- the one flag that both needs no TTY and exits
-# when done. See ADR-0018.
+# when done. See ADR-0018 and ADR-0022 (catalogue id `pi-subagent`, not bare
+# `pi`, once a skill needed a name of its own to bind to).
 invoke  = 'pi -p "<prompt>"'
 detect  = { binary = "pi" }
 version = ["pi", "--version"]
 tags    = ["agent"]
 
-[tool.pi.install]
+[tool.pi-subagent.install]
 npm    = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 manual = "https://pi.dev/docs — quickstart has the curl installer too"

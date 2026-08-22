@@ -484,6 +484,123 @@ class TestRecipeRanking(CatalogueFixture):
         self.assertEqual(expect, sys.platform.startswith("darwin") and bool(available.get("brew")))
 
 
+class TestDecompilePythonAll(CatalogueFixture):
+    """`reactor install 'decompile-python[all]'` -- a single pseudo-target,
+    not a catalogue id, special-cased in cmd_install before catalogue lookup.
+    Discovery and execution are monkeypatched throughout so nothing here
+    shells out to a real package manager.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._saved_discovery = dict(R._PYTHON_ALL_DISCOVERY)
+        self._saved_available = R.available_managers
+        self._saved_run = R.subprocess.run
+        # A distinct name: `CatalogueFixture` already registered its own
+        # `_restore` via `addCleanup` in `super().setUp()` above, and a same-
+        # named override here would shadow it rather than add to it -- silently
+        # skipping the parent's cleanup (CONFIG_DIR/PACKAGE_ROOT restoration,
+        # temp dir deletion) instead of layering on top of it.
+        self.addCleanup(self._restore_python_all_globals)
+
+    def _restore_python_all_globals(self):
+        R._PYTHON_ALL_DISCOVERY.clear()
+        R._PYTHON_ALL_DISCOVERY.update(self._saved_discovery)
+        R.available_managers = self._saved_available
+        R.subprocess.run = self._saved_run
+
+    def fake_managers(self, **managers):
+        R.available_managers = lambda cat: dict(managers)
+
+    def args(self, **kw):
+        base = dict(id=[R.DECOMPILE_PYTHON_ALL_ID], format="json",
+                    method=None, dry_run=False, yes=False)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def invoke(self, **kw):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = R.cmd_install(self.args(**kw))
+        return rc, json.loads(out.getvalue())
+
+    def test_not_a_catalogue_id_and_never_swept_into_install_all(self):
+        cat = R.load_catalogue()
+        self.assertNotIn(R.DECOMPILE_PYTHON_ALL_ID, cat.tools)
+        self.assertNotIn(R.DECOMPILE_PYTHON_ALL_ID, R.catalogue_order(cat))
+
+    def test_method_flag_is_rejected(self):
+        self.fake_managers(pacman="/usr/bin/pacman")
+        with self.assertRaises(R.ReactorError):
+            self.invoke(method="pip")
+
+    def test_no_supported_manager_is_an_error(self):
+        # uv is a real, present manager -- just never a python-version source.
+        self.fake_managers(uv="/usr/bin/uv")
+        rc, payload = self.invoke()
+        self.assertEqual(rc, 1)
+        self.assertIn("error", payload)
+
+    def test_a_manager_with_nothing_discovered_is_an_error(self):
+        self.fake_managers(pacman="/usr/bin/pacman")
+        R._PYTHON_ALL_DISCOVERY["pacman"] = lambda: []
+        rc, payload = self.invoke()
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["packages"], [])
+
+    def test_aur_helpers_are_never_candidates_even_when_present(self):
+        # yay ranks nowhere near last in a real [platform].prefer, but it is
+        # not in _PYTHON_ALL_DISCOVERY at all, which is what actually excludes
+        # it -- not a ranking loss.
+        self.fake_managers(pacman="/usr/bin/pacman", yay="/usr/bin/yay")
+        R._PYTHON_ALL_DISCOVERY["pacman"] = lambda: ["python"]
+        rc, payload = self.invoke(dry_run=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["manager"], "pacman")
+
+    def test_dry_run_reports_the_plan_and_runs_nothing(self):
+        self.fake_managers(pacman="/usr/bin/pacman")
+        R._PYTHON_ALL_DISCOVERY["pacman"] = lambda: ["python"]
+
+        def boom(*a, **kw):
+            raise AssertionError("--dry-run must not execute anything")
+
+        R.subprocess.run = boom
+        rc, payload = self.invoke(dry_run=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["packages"], ["python"])
+        self.assertEqual(payload["ran"], [])
+        self.assertIn("pacman", payload["argv"])
+
+    def test_confirmed_run_installs_every_discovered_package_at_once(self):
+        self.fake_managers(pacman="/usr/bin/pacman")
+        R._PYTHON_ALL_DISCOVERY["pacman"] = lambda: ["python", "python-extra"]
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"] = argv
+            return types.SimpleNamespace(returncode=0, stdout="ok\n")
+
+        R.subprocess.run = fake_run
+        rc, payload = self.invoke(yes=True)
+        self.assertEqual(rc, 0)
+        expect = (["sudo"] if os.geteuid() != 0 else []) + ["pacman", "-S", "python", "python-extra"]
+        self.assertEqual(seen["argv"], expect)
+        self.assertEqual(payload["ran"][0]["returncode"], 0)
+
+    def test_unconfirmed_run_installs_nothing(self):
+        self.fake_managers(pacman="/usr/bin/pacman")
+        R._PYTHON_ALL_DISCOVERY["pacman"] = lambda: ["python"]
+
+        def boom(*a, **kw):
+            raise AssertionError("an unconfirmed run must not execute anything")
+
+        R.subprocess.run = boom
+        rc, payload = self.invoke(format="json")  # no --yes, and json has no tty to confirm on
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["ran"], [])
+
+
 class TestHelpers(unittest.TestCase):
     def test_version_extraction_drops_the_banner(self):
         # Full --version banners carry build dates and hostnames; letting one

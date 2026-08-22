@@ -159,6 +159,33 @@ def check_dnf(cmd: str, pkg: str) -> tuple[str, str]:
     return "MISSING", "not in Fedora"
 
 
+_BREW_ALIASES: dict[str, str] | None = None
+
+
+def _brew_alias_map() -> dict[str, str]:
+    """alias -> canonical formula name, e.g. "python3" -> "python@3.14".
+
+    Homebrew resolves these at the CLI (`brew install python3` genuinely
+    installs `python@3.14`), but formulae.brew.sh's per-name endpoint 404s on
+    an alias -- it only answers to the canonical name. Fetched once, lazily,
+    only when a direct lookup has already failed, since most recipes never
+    need it and the full formula list is a much bigger response than one
+    formula.
+    """
+    global _BREW_ALIASES
+    if _BREW_ALIASES is None:
+        _BREW_ALIASES = {}
+        status, body = get("https://formulae.brew.sh/api/formula.json")
+        if status == 200:
+            try:
+                for f in json.loads(body):
+                    for alias in f.get("aliases") or []:
+                        _BREW_ALIASES[alias] = f["name"]
+            except (ValueError, KeyError, TypeError):
+                pass
+    return _BREW_ALIASES
+
+
 def check_brew(cmd: str, pkg: str) -> tuple[str, str]:
     wants_cask = "--cask" in cmd
     name = pkg.rsplit("/", 1)[-1]
@@ -190,7 +217,10 @@ def check_brew(cmd: str, pkg: str) -> tuple[str, str]:
         return OK, f"formula {formula}"
     if cask:
         return "IS-A-CASK", f"cask {cask} — recipe needs --cask"
-    return "MISSING", "no core formula or cask"
+    canonical = _brew_alias_map().get(name)
+    if canonical:
+        return OK, f"formula {canonical} (via alias {name!r})"
+    return "MISSING", "no core formula, cask, or alias"
 
 
 def check_pypi(cmd: str, pkg: str) -> tuple[str, str]:

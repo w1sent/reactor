@@ -20,6 +20,9 @@ never read the catalogue themselves. Human output carries no such guarantee.
   reactor skills ...          upstream skills REactor has fetched
   reactor install <id>...     install a missing tool, platform-appropriate
                                ('all' installs every catalogued tool)
+                               (--create-venv routes pip recipes into a venv)
+                               ('decompile-python[all]': every python3.x the
+                               platform's own repos ship, opt-in, not in 'all')
   reactor refresh             drop the probe cache
   reactor completion <shell>  print a completion script (bash, zsh, fish)
   reactor diff-config         diff shipped config against yours
@@ -62,6 +65,11 @@ DEFAULT_PYTHON = "python3"
 
 PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
 UP, DOWN = "up", "down"
+
+# pip's own wording for PEP 668 (a distro-managed Python refusing a system-wide
+# install). Matched against captured output so `install` can tell this one
+# well-known, actionable failure apart from "something else went wrong".
+EXTERNALLY_MANAGED_MARKER = "externally-managed-environment"
 
 # One subprocess answers every python_module probe at once, and find_spec is
 # used rather than import so that probing angr does not pay for loading angr.
@@ -1315,7 +1323,204 @@ def cmd_skills_fetch(args) -> int:
     return 1 if failures else 0
 
 
+def _venv_exe(venv_dir: Path, name: str) -> Path:
+    """Where `name` lives inside a venv, on this OS."""
+    if os.name == "nt":
+        return venv_dir / "Scripts" / f"{name}.exe"
+    return venv_dir / "bin" / name
+
+
+def _ensure_venv(venv_dir: Path) -> tuple[bool, str]:
+    """Create `venv_dir` with the stdlib `venv` module unless it already looks
+    like one. → (ok, message). Never raises -- a failure here is reported like
+    any other install failure, not a crash."""
+    pip = _venv_exe(venv_dir, "pip")
+    if pip.is_file():
+        return True, "already exists"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+        )
+    except OSError as exc:
+        return False, str(exc)
+    if proc.returncode != 0 or not pip.is_file():
+        tail = next((line for line in reversed((proc.stdout or "").splitlines()) if line.strip()), "")
+        return False, tail or f"`{sys.executable} -m venv` exited {proc.returncode}"
+    return True, "created"
+
+
+# ---------------------------------------------------------------------------
+# `decompile-python[all]` -- every python this platform's own repos ship
+# ---------------------------------------------------------------------------
+#
+# Not a catalogue id: `decompile-python` (tools.toml) is one tool with one
+# normal install table, same as anything else. This is a single special-cased
+# pseudo-target recognised by cmd_install before catalogue lookup even
+# happens, because what it does has no shape a `[tool.*.install]` table can
+# express -- "however many packages a live repo query turns up", not one
+# fixed command. It exists at all because the decompile-python skill has to
+# run a .pyc against the *matching* interpreter version, and the more
+# versions are on PATH, the more .pyc files that works for.
+#
+# Deliberately excluded from `reactor install all`: it is a lot of installed
+# weight (several full interpreters) for one narrow skill, so it stays
+# opt-in and separately named -- and, being outside the catalogue entirely,
+# it was never going to be swept in by `all`'s `catalogue_order()` anyway.
+#
+# The bracket in the name is real syntax, borrowed from `pip install
+# pkg[extra]` on purpose (same shape, same idea: an optional, named bundle on
+# top of the base tool) -- and like pip's, it needs quoting in most shells:
+# `reactor install 'decompile-python[all]'`.
+
+DECOMPILE_PYTHON_ALL_ID = "decompile-python[all]"
+
+# How long a live repo-listing command gets. These are index queries against
+# a local or remote package database, not installs -- slower than a probe,
+# not worth a separate config knob for one pseudo-target.
+_PYTHON_DISCOVERY_TIMEOUT = 30.0
+
+
+def _python_packages_pacman() -> list[str]:
+    # Arch is rolling and its official repos carry exactly one blessed
+    # python3 -- there is no "all versions" to enumerate here. Every
+    # pythonNN package on Arch lives in the AUR, which this deliberately
+    # excludes (see the module comment above).
+    ok, rc, _ = _run(["pacman", "-Si", "python"], _PYTHON_DISCOVERY_TIMEOUT)
+    return ["python"] if ok and rc == 0 else []
+
+
+def _python_packages_apt() -> list[str]:
+    ok, rc, out = _run(
+        ["apt-cache", "search", "--names-only", r"^python3\.[0-9]+$"], _PYTHON_DISCOVERY_TIMEOUT
+    )
+    if not ok or rc != 0:
+        return []
+    names = []
+    for line in out.splitlines():
+        name = line.split(" ", 1)[0].strip()
+        if re.fullmatch(r"python3\.\d+", name) and name not in names:
+            names.append(name)
+    return sorted(names)
+
+
+def _python_packages_dnf() -> list[str]:
+    ok, rc, out = _run(
+        ["dnf", "--quiet", "list", "--available", "python3.*"], _PYTHON_DISCOVERY_TIMEOUT
+    )
+    if not ok or rc != 0:
+        return []
+    names = []
+    for line in out.splitlines():
+        first = line.split()[0] if line.split() else ""
+        m = re.match(r"^(python3\.\d+)\.", first)  # strips the trailing .<arch>
+        if m and m.group(1) not in names:
+            names.append(m.group(1))
+    return sorted(names)
+
+
+def _python_packages_brew() -> list[str]:
+    # A regex search, not a fixed list: Homebrew's versioned formulae
+    # (python@3.9, python@3.10, ...) change as old ones are retired and new
+    # ones land, and a hardcoded list here would just go stale in the other
+    # direction from the problem this is trying to solve.
+    ok, rc, out = _run(["brew", "search", r"/^python@3\.[0-9]+$/"], _PYTHON_DISCOVERY_TIMEOUT)
+    if not ok or rc != 0:
+        return []
+    return sorted({line.strip() for line in out.splitlines() if re.fullmatch(r"python@3\.\d+", line.strip())})
+
+
+# Manager id -> zero-argument discovery function. A manager with no entry
+# here is never a candidate for this pseudo-target, which is what keeps AUR
+# helpers (paru, yay) out even when `reactor install` would otherwise prefer
+# them for other tools: they are simply never added to this table.
+_PYTHON_ALL_DISCOVERY = {
+    "pacman": _python_packages_pacman,
+    "apt": _python_packages_apt,
+    "dnf": _python_packages_dnf,
+    "brew": _python_packages_brew,
+}
+
+_PYTHON_ALL_INSTALL_ARGV = {
+    "pacman": lambda pkgs: ["pacman", "-S", *pkgs],
+    "apt": lambda pkgs: ["apt", "install", *pkgs],
+    "dnf": lambda pkgs: ["dnf", "install", *pkgs],
+    "brew": lambda pkgs: ["brew", "install", *pkgs],
+}
+
+
+def _install_python_all(args) -> int:
+    if args.method:
+        raise ReactorError(
+            f"--method does not apply to {DECOMPILE_PYTHON_ALL_ID!r}; it always uses "
+            "whichever supported package manager `[platform].prefer` ranks first"
+        )
+
+    cat = load_catalogue()
+    order = {mid: i for i, mid in enumerate(cat.prefer)}
+    present = available_managers(cat)
+    candidates = sorted(
+        (m for m in present if m in _PYTHON_ALL_DISCOVERY),
+        key=lambda m: order.get(m, len(order)),
+    )
+    if not candidates:
+        message = (
+            "no supported package manager on this machine can discover python "
+            f"versions ({', '.join(sorted(_PYTHON_ALL_DISCOVERY))})"
+        )
+        emit(args, {"manager": None, "packages": [], "ran": [], "error": message}, message)
+        return 1
+
+    manager = candidates[0]
+    packages = _PYTHON_ALL_DISCOVERY[manager]()
+    if not packages:
+        message = f"{manager}: found no python3.x packages in the platform's own repos"
+        emit(args, {"manager": manager, "packages": [], "ran": [], "error": message}, message)
+        return 1
+
+    m = cat.managers[manager]
+    argv = _PYTHON_ALL_INSTALL_ARGV[manager](packages)
+    if m.sudo and os.geteuid() != 0:
+        argv = ["sudo", *argv]
+    command_text = shlex.join(argv)
+
+    if args.dry_run:
+        emit(
+            args,
+            {"manager": manager, "packages": packages, "argv": argv, "ran": []},
+            f"would run  {command_text}",
+        )
+        return 0
+
+    if args.format != "json":
+        print(f"  {command_text}")
+    if not _confirm(f"install {len(packages)} python version(s) via {manager}?", args):
+        emit(
+            args,
+            {"manager": manager, "packages": packages, "argv": argv, "ran": [],
+             "message": "not confirmed; re-run with --yes or --dry-run"},
+            "aborted -- re-run with --yes to execute, or --dry-run to see the plan",
+        )
+        return 1
+
+    if args.format == "json":
+        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        output = "\n".join((proc.stdout or "").splitlines()[-20:])
+    else:
+        proc = subprocess.run(argv)
+        output = None
+    Cache(cat).clear()
+    result = {"tool": DECOMPILE_PYTHON_ALL_ID, "command": command_text,
+              "returncode": proc.returncode, "output": output}
+    human = ("ok   " if proc.returncode == 0 else "FAIL ") + command_text
+    emit(args, {"manager": manager, "packages": packages, "argv": argv, "ran": [result]}, human)
+    return 1 if proc.returncode != 0 else 0
+
+
 def cmd_install(args) -> int:
+    if args.id == [DECOMPILE_PYTHON_ALL_ID]:
+        return _install_python_all(args)
+
     cat = load_catalogue()
     toolsets = load_toolsets()
     state = load_state()
@@ -1327,6 +1532,11 @@ def cmd_install(args) -> int:
     ids = catalogue_order(cat) if args.id == ["all"] else _select(cat, args.id)
     results = probe(cat, ids, refresh=True, services=False)
     entries = describe(cat, toolsets, state, ids, results, with_install=True)
+
+    # Chosen up front so the plan (and --dry-run's preview of it) can already
+    # show pip recipes redirected here, even though the directory itself is
+    # not created until the run is confirmed -- see below.
+    venv_dir = (CONFIG_DIR / "venv") if args.create_venv else None
 
     plan, skipped = [], []
     for e in entries:
@@ -1350,14 +1560,26 @@ def cmd_install(args) -> int:
                 else "no recipe for this machine",
             })
             continue
-        plan.append({"tool": e["id"], **recipe, "argv": _recipe_argv(recipe)})
+        argv = _recipe_argv(recipe)
+        if venv_dir is not None and recipe["method"] == "pip":
+            # The one recipe kind PEP 668 can refuse. Redirecting to the venv's
+            # own pip sidesteps that without needing sudo, which is also why
+            # this never touches a `uv`/`pipx` recipe -- both already manage
+            # their own isolated environment.
+            argv = [str(_venv_exe(venv_dir, "pip")), *argv[1:]]
+        plan.append({"tool": e["id"], **recipe, "argv": argv})
 
     if args.dry_run or not plan:
-        human = "\n".join(
+        lines = (
             [f"would run  {p['tool']:<12} {_recipe_text(p)}" for p in plan]
             + [f"skip       {s['tool']:<12} {s['reason']}" for s in skipped]
         )
-        emit(args, {"plan": plan, "skipped": skipped, "ran": []}, human or "nothing to do")
+        if venv_dir is not None:
+            lines.append(f"venv       {venv_dir} (not created -- --dry-run)")
+        payload = {"plan": plan, "skipped": skipped, "ran": []}
+        if venv_dir is not None:
+            payload["venv"] = str(venv_dir)
+        emit(args, payload, "\n".join(lines) or "nothing to do")
         return 0
 
     if args.format != "json":
@@ -1369,27 +1591,57 @@ def cmd_install(args) -> int:
              "aborted -- re-run with --yes to execute, or --dry-run to see the plan")
         return 1
 
+    if venv_dir is not None:
+        ok, note = _ensure_venv(venv_dir)
+        if not ok:
+            raise ReactorError(f"--create-venv: could not create {venv_dir}: {note}")
+        if args.format != "json":
+            print(f"venv  {venv_dir} ({note})")
+
     ran = []
     for p in plan:
+        output, captured = None, ""
         if args.format == "json":
             # An installer writing to the inherited stdout would corrupt the
             # payload, so capture it and hand back the tail instead.
             proc = subprocess.run(p["argv"], stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, errors="replace")
-            output = "\n".join((proc.stdout or "").splitlines()[-20:])
+            captured = proc.stdout or ""
+            output = "\n".join(captured.splitlines()[-20:])
+        elif p["method"] == "pip":
+            # pip is the one recipe kind with a well-known, worth-detecting
+            # failure (PEP 668), so its stderr is captured rather than
+            # streamed live -- and, since that means the user does not see it
+            # as it happens, echoed back below once the run is over.
+            proc = subprocess.run(p["argv"], stderr=subprocess.PIPE, text=True, errors="replace")
+            captured = proc.stderr or ""
+            if proc.returncode != 0 and captured:
+                print(captured, end="" if captured.endswith("\n") else "\n", file=sys.stderr)
         else:
             proc = subprocess.run(p["argv"])
-            output = None
-        ran.append({"tool": p["tool"], "command": _recipe_text(p),
-                    "returncode": proc.returncode, "output": output})
+        entry = {"tool": p["tool"], "command": _recipe_text(p),
+                  "returncode": proc.returncode, "output": output}
+        if proc.returncode != 0 and p["method"] == "pip" and EXTERNALLY_MANAGED_MARKER in captured:
+            entry["hint"] = (
+                "this Python refuses system-wide pip installs (PEP 668). Re-run with "
+                f"`reactor install --create-venv {p['tool']}` to install into a venv instead."
+            )
+        ran.append(entry)
         if proc.returncode == 0 and cat.tools[p["tool"]].skill:
             fetch_skill(cat.tools[p["tool"]], quiet=args.format == "json")
     Cache(cat).clear()
     failed = [r for r in ran if r["returncode"] != 0]
-    human = "\n".join(
-        ("ok   " if r["returncode"] == 0 else "FAIL ") + f"{r['tool']:<12} {r['command']}" for r in ran
-    )
-    emit(args, {"plan": plan, "skipped": skipped, "ran": ran}, human)
+    lines = [
+        ("ok   " if r["returncode"] == 0 else "FAIL ") + f"{r['tool']:<12} {r['command']}"
+        + (f"\n       hint: {r['hint']}" if r.get("hint") else "")
+        for r in ran
+    ]
+    if venv_dir is not None:
+        lines.append(f"venv       {venv_dir}")
+    payload = {"plan": plan, "skipped": skipped, "ran": ran}
+    if venv_dir is not None:
+        payload["venv"] = str(venv_dir)
+    emit(args, payload, "\n".join(lines))
     return 1 if failed else 0
 
 
@@ -1848,10 +2100,19 @@ def build_parser() -> argparse.ArgumentParser:
     kf.set_defaults(func=cmd_skills_fetch)
 
     i = sub.add_parser("install", parents=[common], help="install a missing tool")
-    i.add_argument("id", nargs="+", help="tool id(s) to install, or 'all' for the whole catalogue")
+    i.add_argument(
+        "id", nargs="+",
+        help="tool id(s) to install, or 'all' for the whole catalogue; "
+             "'decompile-python[all]' installs every python3.x version the platform's "
+             "own package manager offers (opt-in, not part of 'all' -- quote it in your shell)",
+    )
     i.add_argument("--method", help="force a specific install method (see `reactor tools show`)")
     i.add_argument("--dry-run", action="store_true", help="print the plan and stop")
     i.add_argument("--yes", "-y", action="store_true", help="do not ask before running")
+    i.add_argument("--create-venv", action="store_true",
+                   help="run pip recipes inside a dedicated venv (~/.pi/reactor/venv), "
+                        "printing its location when done -- sidesteps a system Python "
+                        "refusing pip with 'externally-managed-environment' (PEP 668)")
     i.set_defaults(func=cmd_install)
 
     f = sub.add_parser("refresh", parents=[common], help="drop the probe cache and re-probe")

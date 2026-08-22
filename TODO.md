@@ -42,7 +42,9 @@ doesn't want more real usage first.
 ### `extensions/selector/` — built
 
 `/reactor-tools`: one overlay, two panes switched with Tab, fuzzy search over
-id, name, description and tags, space to toggle, Enter to inspect, Ctrl+R to
+id, name, description and tags (any key filters; `/` is the conventional
+shortcut for it and resets the query rather than being typed into it), space
+to toggle, Enter to inspect, Ctrl+R to
 drop an override, Esc to close. `ctx.reload()` fires once on close if anything
 was written. Inspected detail and skill bodies go in as out-of-context session
 entries, because they are for the human and the model already has the block.
@@ -190,6 +192,15 @@ without forcing this decision: its tool is the harness itself, present by
 construction in any session that could load the skill at all, so unconditional
 loading and gated loading are observably the same for it. Still open for
 whichever skill lands next whose tool is not always present.
+
+`skills/decompile-python/` is that case: `python3` is not guaranteed just
+because pi is running (pi itself needs no Python; only `reactor`, a separate
+CLI, does), so its `requires: [decompile-python]` is a real gap today rather
+than a coincidentally-moot one — the skill loads and advertises itself even
+on a machine with no Python at all. Landed anyway because it is still the
+correct *eventual* behaviour once gating exists, and because ADR-0008's case
+3 (no upstream skill, no `--help` to fall back to — the technique itself is
+the tool) applies cleanly regardless of when this is fixed.
 
 ### Selector: probe cost and `SettingsList`
 Opening the selector costs a live probe rather than reading the cache, so the

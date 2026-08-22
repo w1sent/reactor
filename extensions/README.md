@@ -23,7 +23,7 @@ unrelated to the catalogue and switched independently of everything else here
 | `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search, space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
 | `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
 | `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
-| `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. Instead of pi's summarization compaction, keeps a small manifest (goal + agent-maintained steps) at the front of every prompt and fades everything else out of the *next* `context` call once it stops fitting a configurable budget — the session file itself is untouched. `/goal`, `/guidelines`, `/frame`; `update_steps`, `history_index`/`_search`/`_read` tools. General-purpose, not catalogue-aware (ADR-0019). |
+| `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. Instead of pi's summarization compaction, keeps a small manifest (goal + agent-maintained steps) at the front of every prompt and fades everything else out of the *next* `context` call once it stops fitting a configurable budget — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020). `/goal`, `/guidelines`, `/frame`; `update_steps`, `history_index`/`_search`/`_read` tools. General-purpose, not catalogue-aware (ADR-0019). |
 | `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
 ## The toolbox toggle and hidden services (ADR-0016)
@@ -140,6 +140,14 @@ And two for rolling-context:
   `homedir() + ".pi/agent"`.** The one behaviour change this port makes: the
   standalone draft ignored `PI_CODING_AGENT_DIR` when set, silently reading
   the wrong file. Same default path either way.
+- **The fade measures and cuts in pi's own units, not its own.** It calls
+  pi's exported `estimateTokens(message)` against the live `event.messages`
+  array directly, using the same never-start-on-a-`toolResult` rule pi's own
+  `findCutPoint` encodes, rather than a separately-serialized approximation
+  of a differently-counted array. A hard ceiling (`window - reserve`) below
+  the soft fade budget archives (truncates) the newest turn's content rather
+  than ever send more than that, however small that leaves it
+  ([ADR-0020](../docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)).
 
 And one for context-editor:
 

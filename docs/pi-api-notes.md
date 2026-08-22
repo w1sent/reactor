@@ -159,7 +159,7 @@ happened, and an explicit `appendEntry` call for a state pointer that is easy
 to find again without re-scanning the transcript for the last matching tool
 result.
 
-### `context` — the alternative injection point, rejected for the registry, load-bearing for context-editor
+### `context` — the alternative injection point, rejected for the registry, load-bearing for rolling-context and context-editor
 
 **[verified]** `ContextEvent { messages }` → `ContextEventResult { messages? }`,
 "Fired before each LLM call. Can modify messages." Freshest possible injection,
@@ -167,19 +167,59 @@ but fires once per agent-loop iteration rather than once per user turn, and
 rewriting the message array fights prompt caching. Not used for the registry
 block; see [ADR-0006](adr/0006-registry-injected-into-system-prompt.md). It is
 exactly the right hook for something that *removes* rather than injects,
-though — `context-editor/`'s current-branch filter trims `event.messages`
-here, and does not care about the caching cost since what it returns is
-smaller, not different, on the common turn.
+though — `rolling-context/`'s fade and `context-editor/`'s current-branch
+filter both trim `event.messages` here, and neither cares about the caching
+cost since what they return is smaller, not different, on the common turn.
 
-### `ctx.sessionManager.buildContextEntries()` is exposed on the read-only interface
+### Compaction primitives are exported, not internal
 
-**[verified]** `ReadonlySessionManager` (`Pick<SessionManager, … |
-"buildContextEntries" | …>`) includes `buildContextEntries()`, despite being
-the function pi uses internally to build the compaction-aware, leaf-path
-entry list for the LLM. An extension gets the same view pi's own turn loop
-does, not an approximation of it — `context-editor/`'s landscape and manual
-views both build their row list from this rather than raw `getBranch()`, so
-what a person sees to edit is exactly what would otherwise be sent.
+**[verified]** (pi 0.83.0's `index.d.ts`) `calculateContextTokens`,
+`DEFAULT_COMPACTION_SETTINGS`, `estimateTokens`, `findCutPoint`,
+`findTurnStartIndex`, `getLastAssistantUsage`, `serializeConversation`,
+`shouldCompact`, and `SessionEntry`/`SessionManager`/`buildContextEntries`/
+`sessionEntryToContextMessages`/`getLatestCompactionEntry` are all re-exported
+from the package root, not internal to `dist/core/compaction/`. An extension
+that needs to trim or measure context does not have to reinvent any of this —
+and should not: `rolling-context/`'s original bug (ADR-0020) was exactly a
+hand-rolled chars/4 estimate and a positional slice standing in for these.
+
+- `estimateTokens(message: AgentMessage): number` — pi's own per-message
+  chars/4 estimator. The same function `getContextUsage()` and
+  `shouldCompact()` measure against; using anything else for a budget decision
+  guarantees disagreement with what pi itself reports.
+- `findCutPoint(entries, startIndex, endIndex, keepRecentTokens):
+  CutPointResult` walks `SessionEntry[]` newest → oldest and never returns a
+  cut point at a `toolResult` (`isCutPointMessage`/`findValidCutPoints`,
+  internal but trivial to mirror against `AgentMessage.role` directly when
+  what needs cutting is a live message array rather than session entries —
+  see `findSafeCut` in `extensions/rolling-context/index.ts`).
+- `ctx.sessionManager.buildContextEntries()` **is** on `ReadonlySessionManager`
+  (`Pick<SessionManager, … | "buildContextEntries" | …>`), despite being the
+  function pi uses internally to build the compaction-aware, leaf-path entry
+  list. An extension gets the same view pi's own turn loop does, not an
+  approximation of it.
+- `getContextUsage()` itself (`dist/core/agent-session.js`) does **not**
+  re-measure every message on every call: it takes the last valid assistant
+  `usage` on the branch (real, provider-reported tokens for whatever was
+  actually sent) and adds `estimateTokens` only for messages *after* that —
+  `estimateContextTokens` in `core/compaction/compaction.js`. This is why a
+  fade that changes what gets sent shows up correctly in the footer/threshold
+  check on the very next response: the real number comes from the provider,
+  not from re-deriving it.
+
+### `session_before_compact`'s three reasons are not interchangeable
+
+**[verified]** `SessionBeforeCompactEvent.reason: "manual" | "threshold" |
+"overflow"`. `"threshold"` is pi's own proactive compaction, checked against
+`getContextUsage()`. `"overflow"` is different in kind, not just in trigger:
+it only fires from `_checkCompaction`'s "Case 1" — *after* a request has
+already been rejected or truncated for exceeding the context window — as a
+last-resort compact-and-retry. Cancelling `session_before_compact`
+unconditionally for every non-manual reason (as `rolling-context/` originally
+did) blocks that recovery along with the proactive compaction it was meant to
+preempt, and a session that ever hits real overflow with no recovery path has
+no way back (ADR-0020). An extension that wants to preempt only the proactive
+path should check `event.reason === "threshold"` specifically.
 
 ### `ctx.newSession()`'s `setup` gets a real, writable `SessionManager`
 

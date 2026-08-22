@@ -293,7 +293,11 @@ const BIG_BRANCH = [
 
 test("a small context window drops the oldest messages and notifies", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { ctx, calls, extension } = await enabled(fixture, { branch: BIG_BRANCH, model: { contextWindow: 4000 } });
+		// Window picked so the *soft* budget forces a drop while staying well
+		// above the default 16384-token reserve -- the hard ceiling (window -
+		// reserve) has to leave comfortable room, or this is testing the
+		// hard-boundary archive path below instead of a plain soft drop.
+		const { ctx, calls, extension } = await enabled(fixture, { branch: BIG_BRANCH, model: { contextWindow: 18_000 } });
 		const messages = BIG_BRANCH.map((b) => b.message);
 
 		const result = await extension.handlers.get("context")[0]({ messages }, ctx);
@@ -301,6 +305,48 @@ test("a small context window drops the oldest messages and notifies", needsPi, (
 		assert.ok(result.messages.length < messages.length + 1, "nothing was dropped");
 		assert.equal(result.messages[0].customType, "pi-rolling-context");
 		assert.match(lastNotify(calls).message, /dropped \d+ message\(s\)/);
+	}));
+
+test("a cut never orphans a tool result from its tool call", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		// Same shape a real multi-step tool turn takes: assistant-with-toolCall
+		// immediately followed by its toolResult. A positional slice that does
+		// not respect this boundary would send the toolResult alone and the
+		// backend would reject the request (bug #2/#3).
+		const branch = [
+			msg("user", "A".repeat(2000)),
+			{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "1", name: "read", arguments: {} }] } },
+			{ type: "message", message: { role: "toolResult", toolCallId: "1", content: [{ type: "text", text: "B".repeat(2000) }] } },
+			msg("assistant", "C".repeat(2000)),
+		];
+		const { ctx, extension } = await enabled(fixture, { branch, model: { contextWindow: 18_000 } });
+		const messages = branch.map((b) => b.message);
+
+		const result = await extension.handlers.get("context")[0]({ messages }, ctx);
+
+		const kept = result.messages.slice(1); // drop the prepended manifest
+		if (kept.length > 0) {
+			assert.notEqual(kept[0].role, "toolResult", "kept window must not start on an orphaned tool result");
+		}
+	}));
+
+test("a turn far larger than the whole hard budget is archived, not overflowed or silently dropped", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		// The default reserve (16384) alone exceeds this window, so the hard
+		// ceiling (window - reserve) clamps to 0: nothing at all fits without
+		// archiving. This is the scenario the old code silently overflowed --
+		// it kept the newest message whole regardless of the ceiling, which is
+		// exactly how a request ends up rejected by the backend (bug #2).
+		const { ctx, calls, extension } = await enabled(fixture, { branch: BIG_BRANCH, model: { contextWindow: 4000 } });
+		const messages = BIG_BRANCH.map((b) => b.message);
+
+		const result = await extension.handlers.get("context")[0]({ messages }, ctx);
+
+		const kept = result.messages.slice(1);
+		assert.equal(kept.length, 1, "the newest message is archived, never dropped outright");
+		assert.match(kept[0].content[0].text, /archived/);
+		assert.ok(kept[0].content[0].text.length < 2000, "content was actually shrunk, not sent whole");
+		assert.match(lastNotify(calls).message, /exceeded the hard context limit/);
 	}));
 
 test("the manifest carries the goal and steps, not just the line marker", needsPi, () =>
@@ -344,7 +390,7 @@ test("the newest message always survives even under a near-zero budget", needsPi
 // Compaction is suppressed while enabled, except when manual
 // ---------------------------------------------------------------------------
 
-test("automatic compaction is cancelled while enabled", needsPi, () =>
+test("threshold compaction is cancelled while enabled -- the fade already covers it", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { ctx, extension } = await enabled(fixture);
 
@@ -358,6 +404,15 @@ test("a manual /compact is allowed through even while enabled", needsPi, () =>
 		const { ctx, extension } = await enabled(fixture);
 
 		const result = await extension.handlers.get("session_before_compact")[0]({ reason: "manual" }, ctx);
+
+		assert.equal(result, undefined);
+	}));
+
+test("overflow recovery is never cancelled -- it is pi's last resort after a real backend rejection", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, extension } = await enabled(fixture);
+
+		const result = await extension.handlers.get("session_before_compact")[0]({ reason: "overflow" }, ctx);
 
 		assert.equal(result, undefined);
 	}));

@@ -795,6 +795,29 @@ apt    = "apt install sqlite3"
 brew   = "brew install sqlite"
 dnf    = "dnf install sqlite"
 
+[tool.lnav]
+name    = "lnav"
+desc    = "log file viewer with SQL queries, timeline merging, and headless scripting"
+# -n: no curses UI (headless); -N: skip the default syslog file when none is
+# named -- both matter for an agent, which has no terminal and should never
+# end up tailing this machine's own syslog by accident.
+invoke  = "lnav -n -N -c ';SELECT ...' <file>"
+detect  = { binary = "lnav" }
+version = ["lnav", "-V"]
+# No `skill = {...}` here: lnav's own --help documents its flags, but not the
+# headless SQL-query workflow, or that its two data paths -- a recognized
+# format's real columns versus fields auto-discovered from unstructured text
+# -- do not behave the same way under filtering and aggregation (verified;
+# see the skill). That gap is what the REactor-authored skill under
+# skills/lnav/ covers (ADR-0008 case 3).
+tags    = ["general", "triage"]
+
+[tool.lnav.install]
+pacman = "pacman -S lnav"
+apt    = "apt install lnav"
+brew   = "brew install lnav"
+dnf    = "dnf install lnav"
+
 
 # ---------------------------------------------------------------------------
 # Agent delegation

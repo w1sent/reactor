@@ -258,6 +258,20 @@ tags    = ["static", "triage", "malware", "python"]
 uv   = "uv tool install flare-floss"
 pipx = "pipx install flare-floss"
 
+[tool.capa]
+name    = "capa"
+desc    = "detect capabilities in executable files via rule-based matching"
+invoke  = "capa"
+detect  = { binary = "capa" }
+version = ["capa", "--version"]
+tags    = ["static", "triage", "malware"]
+
+[tool.capa.install]
+# PyPI's bare `capa` is an unrelated, unaffiliated package -- this one is
+# published under the FLARE team's own prefix.
+uv   = "uv tool install flare-capa"
+pipx = "pipx install flare-capa"
+
 
 # ---------------------------------------------------------------------------
 # Dynamic instrumentation
@@ -446,6 +460,19 @@ pacman = "pacman -S yara"
 apt    = "apt install yara"
 brew   = "brew install yara"
 
+[tool.ssdeep]
+name   = "ssdeep"
+desc   = "compute and compare fuzzy hashes to find similar files"
+invoke = "ssdeep"
+detect = { binary = "ssdeep" }
+tags   = ["triage", "pattern-matching"]
+
+[tool.ssdeep.install]
+pacman = "pacman -S ssdeep"
+apt    = "apt install ssdeep"
+brew   = "brew install ssdeep"
+dnf    = "dnf install ssdeep"
+
 
 # ---------------------------------------------------------------------------
 # Forensics — disk, memory, timeline, and metadata
@@ -628,6 +655,23 @@ tags   = ["network", "pcap"]
 pacman = "pacman -S wireshark-cli"
 apt    = "apt install tshark"
 brew   = "brew install wireshark"
+
+[tool.zeek]
+name    = "Zeek"
+desc    = "network security monitor: deep packet inspection and protocol logging"
+invoke  = "zeek"
+detect  = { binary = "zeek" }
+version = ["zeek", "--version"]
+tags    = ["network", "pcap"]
+
+[tool.zeek.install]
+brew   = "brew install zeek"
+# Not in Debian/Ubuntu's own archives (only Debian's debports, which most
+# machines do not have enabled) and not in Fedora either -- upstream ships
+# its own repo per distro instead.
+paru   = "paru -S zeek"
+yay    = "yay -S zeek"
+manual = "https://zeek.org/get-zeek/ — adds the right upstream repo for your distro"
 
 [tool.scapy]
 name   = "scapy"

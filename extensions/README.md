@@ -23,6 +23,7 @@ unrelated to the catalogue and switched independently of everything else here
 | `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search (any key filters; `/` resets it), space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
 | `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
 | `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
+| `reporting/` | Off by default; `/report on\|off\|level <0\|1\|2>\|status\|folder <path>\|reset` opts a session in. Appends a "document as you go" block to the system prompt; levels 1–2 track tool-call "steps" since the reporting folder last changed on disk (a size/mtime snapshot diff, not tool-call inspection) and escalate — level 1 nags every LLM call once a threshold is crossed, level 2 reverts the ignored turn and re-demands the prompt, up to `maxReverts` times, before falling back to nagging (ADR-0023). Footer entry `reporting mode`/`· low`/`· strict`. |
 | `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. Instead of pi's summarization compaction, keeps a small manifest (goal + agent-maintained steps) at the front of every prompt and fades everything else out of the *next* `context` call once it stops fitting a configurable budget — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020). `/goal`, `/guidelines`, `/frame`; `update_steps`, `history_index`/`_search`/`_read` tools. General-purpose, not catalogue-aware (ADR-0019). |
 | `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
@@ -157,19 +158,48 @@ And one for context-editor:
   cut point does, so hiding one half never orphans the other
   ([ADR-0021](../docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md)).
 
+And three for reporting:
+
+- **Detection is a filesystem probe, not tool-call inspection.** A recursive
+  size/mtime snapshot of the reporting folder, diffed on every
+  `tool_execution_end`, catches a `write`/`edit` tool call, a `bash`
+  redirect, `git checkout`, or a hand edit in another window identically —
+  nothing here is special-cased to one tool, unlike the `tool_call`-watching
+  design this replaced during review. Same "ask the machine" stance
+  `status/` takes for services, not the command-line-guessing heuristic
+  [ADR-0007](../docs/adr/0007-deactivation-is-soft.md) rejected — see
+  [ADR-0023](../docs/adr/0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md)
+  for why that's a different case, not an exception to it.
+- **Level 2's revert triggers from `agent_settled`, never `turn_end`.**
+  `navigateTree` throws while the agent is still streaming, and `turn_end`
+  fires mid-loop where that is very often still true; `agent_settled` is the
+  first point pi itself guarantees it is safe
+  (`docs/pi-api-notes.md`). Getting there from a plain event handler at all
+  depends on a second fact recorded in the same file:
+  `pi.sendUserMessage("/reactor-report-enforce", { expandPromptTemplates:
+  true })` dispatches a real `ExtensionCommandContext` — the only way this
+  extension reaches `navigateTree`, which ordinary event handlers are not
+  given. No other extension here self-dispatches a command like this.
+- **`maxReverts` is a hard stop, not a suggestion.** After that many
+  consecutive reverts the extension falls back to level-1-style nagging
+  (already running underneath, since level 2 is level 1 plus reverts) and
+  notifies the user once, so a model that will not comply can never leave a
+  session reverting forever.
+
 ## Tests
 
 ```bash
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All six are driven through **pi's own loader**
+All seven are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
 is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
-pointed at a fixture catalogue; `rolling-context/` and `context-editor/`
-never call `reactor` at all, so their tests exercise pi's own
-history/session/context APIs instead. Only the host is faked: the context,
+pointed at a fixture catalogue; `rolling-context/`, `context-editor/` and
+`reporting/` never call `reactor` at all, so their tests exercise pi's own
+history/session/context APIs (or, for `reporting/`, real files under a
+temporary `ctx.cwd`) instead. Only the host is faked: the context,
 its `ui`, and the TUI/theme/`done` triple that `ctx.ui.custom` hands a
 component.
 
@@ -200,6 +230,20 @@ recorder exposing only `appendMessage`, logging what got appended for a test
 to assert on. Neither models pi's real tree or compaction machinery — that
 stays pi's own code, exercised by `scripts/check-in-pi.mjs`'s real process,
 not by this mock.
+
+`reporting.test.mjs` needs two more fakes: `runtime.sendUserMessage` (a
+recorder alongside `sendMessage`/`appendEntry`, since `loadExtension()`
+otherwise leaves it a throwing stub) and `ctx.navigateTree` (a recorder that
+returns `{cancelled: false}`, the same shape `newSession` already fakes).
+Both only *record the call* — neither reproduces pi's real command dispatch
+or session-tree navigation, so level 2's actual self-dispatch chain
+(`agent_settled` → `pi.sendUserMessage("/reactor-report-enforce", ...)` →
+`_tryExecuteExtensionCommand` building a real command context) is exercised
+only by `scripts/check-in-pi.mjs` against a real process, same as the
+`ctx.reload()` staleness class of bug below. `folderPath(ctx)` resolves
+against `fixture.dir`, which is a real temporary directory, so folder-change
+detection is tested by actually writing files there rather than faking
+`fs`.
 
 `ctx`/`pi` here are still mocks, though — `harness.mjs`'s optional `guard`
 (see the Rules below) only catches a stale-ctx-after-`reload()` bug once a

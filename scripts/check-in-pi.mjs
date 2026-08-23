@@ -40,7 +40,15 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const EXTENSIONS = ["tool-registry", "selector", "status", "scenario", "rolling-context", "context-editor"];
+const EXTENSIONS = [
+	"tool-registry",
+	"selector",
+	"status",
+	"scenario",
+	"rolling-context",
+	"context-editor",
+	"reporting",
+];
 
 /**
  * Covers the command each extension registers, including the two ordering
@@ -55,7 +63,16 @@ const EXTENSIONS = ["tool-registry", "selector", "status", "scenario", "rolling-
  * degrade the same way `/reactor-tools` does over RPC -- both its landscape
  * overlay and its external-editor launch need a real terminal (`ctx.mode
  * === "tui"`), so they just notify instead, which is still extension code
- * worth exercising for a throw.
+ * worth exercising for a throw. The `reporting/` tail exercises `/report`'s
+ * subcommands and, importantly, `/reactor-report-enforce` itself with no
+ * prior user message in the session -- the "nothing to revert to" branch,
+ * which is the one path in that extension real pi's loader can check
+ * without an LLM call. `agent_settled` actually calling
+ * `pi.sendUserMessage("/reactor-report-enforce", ...)` mid-turn -- the
+ * self-dispatch bridge this extension depends on (docs/pi-api-notes.md,
+ * ADR-0023) -- needs a real agent turn to reach, which needs a model and an
+ * API key; out of reach for this script by the same constraint that keeps
+ * it out of `tests/extensions/reporting.test.mjs` too.
  */
 const DEFAULT_COMMANDS = [
 	"/reactor",
@@ -78,6 +95,13 @@ const DEFAULT_COMMANDS = [
 	"/rolling off",
 	"/context-editor",
 	"/context-editor manual",
+	"/report",
+	"/report level 2",
+	"/report status",
+	"/report folder scratch-report",
+	"/reactor-report-enforce",
+	"/report reset",
+	"/report off",
 ];
 
 const commands = process.argv.slice(2);

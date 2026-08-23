@@ -365,6 +365,7 @@ export async function loadExtension(relativePath, fixture, { guard = { stale: fa
 	const runtime = loader.createExtensionRuntime();
 	const sent = [];
 	const entries = [];
+	const sentUserMessages = [];
 	runtime.sendMessage = (message) => {
 		if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
 		sent.push(message);
@@ -372,6 +373,16 @@ export async function loadExtension(relativePath, fixture, { guard = { stale: fa
 	runtime.appendEntry = (customType, data) => {
 		if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
 		entries.push({ customType, data });
+	};
+	// Real pi dispatches a leading "/" through a full command context
+	// (`docs/pi-api-notes.md`), which this mock does not reproduce -- it only
+	// records that the call happened, for a test that needs to assert
+	// self-dispatch was *attempted* (reporting/'s level 2) without exercising
+	// pi's actual command-execution plumbing. See `scripts/check-in-pi.mjs`
+	// for the real thing.
+	runtime.sendUserMessage = (content, options) => {
+		if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
+		sentUserMessages.push({ content, options });
 	};
 
 	// Cleared because pi memoises by path, and two tests loading the same file
@@ -386,7 +397,7 @@ export async function loadExtension(relativePath, fixture, { guard = { stale: fa
 		runtime,
 	);
 	if (errors.length) throw new Error(errors.map((e) => e.error ?? e).join("; "));
-	return { extension: extensions[0], sent, entries, guard };
+	return { extension: extensions[0], sent, entries, sentUserMessages, guard };
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +480,13 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * only reason `reactor-toolbox off`'s stale-ctx crash didn't show up here
  * first. Omit `guard` for a test that doesn't touch reload at all.
  *
+ * `navigateTree` is faked the same way `newSession` is -- it records the call
+ * in `calls.navigateTree` and returns `{cancelled: false}` -- but, matching
+ * the real one, does *not* set `guard.stale`: `navigateTree` moves the leaf
+ * pointer in place rather than replacing the session (docs/pi-api-notes.md),
+ * so a handler is expected to keep using `ctx` right after it, and a test
+ * asserting that should not have the mock poison it.
+ *
  * `selectAnswers` -- queued return values for `ctx.ui.select`, shifted one
  * per call; an empty queue answers `undefined` (the dialog was dismissed),
  * the same default a real cancel produces. `newSessionCancelled` makes
@@ -498,6 +516,7 @@ export function makeContext(
 		widgets: [],
 		select: [],
 		newSession: [],
+		navigateTree: [],
 	};
 	const answers = [...selectAnswers];
 	const wholeBranch = () => [
@@ -573,6 +592,15 @@ export function makeContext(
 			calls.newSession.push({ options, appended });
 			guard.stale = true;
 			return { cancelled: newSessionCancelled };
+		},
+		// Unlike newSession/fork/switchSession, real navigateTree does not
+		// invalidate ctx (docs/pi-api-notes.md) -- it moves the leaf pointer
+		// within the same session rather than replacing it. So this fake does
+		// not set guard.stale either; a handler is expected to keep using ctx
+		// afterward.
+		navigateTree: async (targetId, options) => {
+			calls.navigateTree.push({ targetId, options });
+			return { cancelled: false };
 		},
 	};
 	const ctx = new Proxy(raw, {

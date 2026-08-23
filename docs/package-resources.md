@@ -32,6 +32,13 @@ knowledge** that no single tool's `--help` could contain. If a draft skill reads
 like a summary of one tool's options, it should not exist; the tool already
 documents itself better and stays current when it is updated.
 
+`reactor-reporting` is the one exception to "cross-tool" rather than
+"no tool at all" — it isn't bound to a catalogued tool (no `requires:`), it's
+the write-up-your-findings companion to `extensions/reporting/`: how to
+document, not how to run something. Its structure template lives in
+`references/template.md`, editable directly — same "the plain file is the
+customization point" convention `tools.toml`/`toolsets.toml` use.
+
 Every loaded skill puts its `name` and `description` into the system prompt
 permanently. The body and `references/` cost nothing until read. So the count is
 what to be careful about, not the length.

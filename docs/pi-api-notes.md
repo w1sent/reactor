@@ -159,6 +159,83 @@ happened, and an explicit `appendEntry` call for a state pointer that is easy
 to find again without re-scanning the transcript for the last matching tool
 result.
 
+### `pi.sendUserMessage("/cmd", { expandPromptTemplates: true })` dispatches a real command context, even from inside an event handler
+
+**[verified]** against pi 0.84.2's shipped `core/agent-session.js`, read
+directly rather than from the `.d.ts` alone -- traced for
+`extensions/reporting/`, which needs this to reach `navigateTree` (below)
+from `agent_settled`, a plain event handler that is not handed an
+`ExtensionCommandContext`.
+
+`ExtensionAPI.sendUserMessage` (`runner.bindCore`'s `sendUserMessage`) calls
+`AgentSession.sendUserMessage(content, options)`, which normalizes `content`
+to text and calls `this.prompt(text, { expandPromptTemplates: options
+?.expandPromptTemplates ?? false, streamingBehavior: options?.deliverAs,
+source: "extension" })`. `prompt()`'s very first branch, *before* it checks
+`this.isStreaming` or does anything else:
+
+```js
+if (expandPromptTemplates && text.startsWith("/")) {
+    const handled = await this._tryExecuteExtensionCommand(text);
+    if (handled) { preflightResult?.(true); return; }
+}
+```
+
+`_tryExecuteExtensionCommand` looks the command up and calls
+`this._extensionRunner.createCommandContext()` for it -- the same
+`ExtensionCommandContext` a real `/foo` typed by a person gets, complete with
+`navigateTree`/`fork`/`newSession`/`reload`. So any event handler can reach
+those by calling `pi.sendUserMessage("/own-command", { expandPromptTemplates:
+true })` and having that command registered via `pi.registerCommand`.
+
+Two things worth knowing about this path specifically:
+
+- **It bypasses the streaming/queueing logic entirely** -- the command
+  dispatch returns before `prompt()` ever reaches its `isStreaming` branch,
+  so this works even while the agent is mid-loop (which is exactly when
+  `agent_settled`/`turn_end`/etc. fire).
+- **`ExtensionAPI.sendUserMessage` itself is fire-and-forget.** `runner.js`'s
+  `bindCore` wires it as `(content, options) => { this.sendUserMessage(...)
+  .catch(err => runner.emitError(...)); }` -- it does not return the promise,
+  so an extension cannot `await` the dispatched command finishing. A handler
+  that needs to know the outcome has to observe it some other way (a later
+  event, a status/notify call from the command itself), not by awaiting the
+  call that triggered it.
+
+No other extension in this repo self-dispatches a command like this --
+`scenario/`'s `/reactor-scenario next` and `status/`'s `mute`/`unmute` are
+always a person (or a test) calling `registerCommand`'s handler directly.
+
+### `navigateTree` throws while streaming, and does not invalidate `ctx`
+
+**[verified]**, same source pass. `AgentSession.navigateTree(targetId,
+options)`:
+
+```js
+async navigateTree(targetId, options = {}) {
+    if (this.isStreaming) {
+        throw new Error("Wait for the current response to finish before navigating the session tree.");
+    }
+    ...
+```
+
+So it cannot be called while the agent loop is still active. `isStreaming`
+returns `this._isAgentRunActive`, which `_emitAgentSettled()` sets to `false`
+*before* emitting `agent_settled` -- making `agent_settled` the first point
+pi itself guarantees a safe call, and `turn_end` (fired mid-loop, per LLM
+round trip) an unsafe one for this specifically, even though it looks like
+the more natural "a turn just happened" hook.
+
+Unlike `reload`/`newSession`/`fork`/`switchSession` -- which call
+`this._extensionRunner.invalidate(...)`, poisoning the calling `ctx` and
+`pi` the instant they resolve (see the `ctx.reload()` note above) --
+`navigateTree` never calls `invalidate()`. It moves the active leaf pointer
+within the same `SessionManager` rather than replacing the session, so the
+same `ctx` stays valid afterward: a command handler can `await
+ctx.navigateTree(...)` and then keep using `ctx`/`pi` (`extensions/reporting/`
+does exactly this, following the revert with `pi.sendUserMessage(...)` to
+resend the prompt on the now-rewound branch).
+
 ### `context` — the alternative injection point, rejected for the registry, load-bearing for rolling-context and context-editor
 
 **[verified]** `ContextEvent { messages }` → `ContextEventResult { messages? }`,

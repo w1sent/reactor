@@ -10,11 +10,11 @@ run in that directory.
 
 **Every RE-tool extension here shells out to `reactor … --format json`.** None
 of them parses `tools.toml`, and none reimplements catalogue semantics —
-[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Six are
+[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Seven are
 general-purpose and never call `reactor` at all: `goal-setting/`,
 `history-tools/` and `rolling-context/` (session memory, recovery and the
 fade — split out of one extension, [ADR-0024](../docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)),
-plus `context-editor/`, `reporting/` and `auto-continue/`.
+plus `context-editor/`, `reporting/`, `auto-continue/` and `identity/`.
 
 ## Built
 
@@ -28,6 +28,7 @@ plus `context-editor/`, `reporting/` and `auto-continue/`.
 | `goal-setting/` | The session manifest in the system prompt: `/goal <text>`, `/guidelines <text>`, `/frame`; `/manifest [on\|off]` is the switch. `update_steps` — active while a goal is set *and* the switch is on, so it is inactive in a fresh session — rewrites the step list (3-word statuses, soft-limit warning). The block is injected on content only, so an untouched session's system prompt stays byte-identical. General-purpose; split out of rolling-context (ADR-0024). |
 | `history-tools/` | `history_index`/`history_search`/`history_read` — line-addressed recovery over the session file, on by default in any session; `/history-tools [on\|off]` (per-session) is the user's lever when the agent overuses them. General-purpose; split out of rolling-context (ADR-0024). |
 | `auto-continue/` | Off by default; `/auto-continue [on\|off]` opts a session in. After a successful *automatic* compaction that left the turn ended (`session_compact`, threshold or overflow, `willRetry: false`), sends the model a continuation message at `agent_settled` — default `continue`, configurable. Overflow recovery is left to pi's own retry; manual `/compact` and failed compactions are skipped. A consecutive-continuation counter pauses it after `maxConsecutive` and any other prompt resets it (ADR-0025). |
+| `identity/` | The working persona, in the system prompt: `/identity <name>` selects a built-in (`reverse-engineer`, `cyber-forensics`, `forensics`, `software-engineer`, `devops`, `publisher`), a saved user identity, or the adhoc `custom` one (`/identity write <text>` or `/identity editor`); `/identity save <name>` keeps a proven custom one in `pi-identity.json`, `/identity delete <name>` removes it, `/identity off` switches off. Block on content only; per-session selection, global default (ADR-0026). |
 | `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. The fade: instead of pi's summarization compaction, only the newest messages that fit a configurable budget go to the model — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020); cancels only threshold compaction. No tools, no manifest — the two extensions above own those. General-purpose, not catalogue-aware (ADR-0019). |
 | `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
@@ -232,7 +233,7 @@ And three for reporting:
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All ten are driven through **pi's own loader**
+All eleven are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
 is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
@@ -257,8 +258,8 @@ checks its *shape* — four steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.
 
-`goal-setting.test.mjs`, `history-tools.test.mjs`, `auto-continue.test.mjs` and
-`rolling-context.test.mjs`
+`goal-setting.test.mjs`, `history-tools.test.mjs`, `auto-continue.test.mjs`,
+`identity.test.mjs` and `rolling-context.test.mjs`
 need `ctx.sessionManager.getBranch()` to return actual conversation messages,
 not just custom entries — the first extension here that needed that was
 rolling-context before the split. `makeContext`'s `branch` option seeds it;

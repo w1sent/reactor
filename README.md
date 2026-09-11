@@ -27,8 +27,11 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 > file) ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md));
 > plus `auto-continue`, which keeps the agent going after an automatic
 > compaction ends its turn
-> ([ADR-0025](docs/adr/0025-auto-continue-continues-after-automatic-compaction.md)).
-> `npm test` covers all of it: 81 tests on the CLI, 190 driving the
+> ([ADR-0025](docs/adr/0025-auto-continue-continues-after-automatic-compaction.md)),
+> and `identity`, a persona in the system prompt with built-ins for the
+> scenarios a security professional moves between
+> ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).
+> `npm test` covers all of it: 81 tests on the CLI, 210 driving the
 > extensions against pi's own loader. See `TODO.md`.
 
 ## The idea in one screen
@@ -68,7 +71,7 @@ toolsets.toml    Shipped toolset definitions — seeds the user's copy
 bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
 extensions/      pi extensions (TypeScript): tool-registry, selector, status,
                  scenario, goal-setting, history-tools, rolling-context,
-                 auto-continue
+                 auto-continue, identity
 skills/          Skills REactor authors itself — only where --help is insufficient
 prompts/         Prompt templates, including multi-step analysis scenarios
 themes/          pi themes

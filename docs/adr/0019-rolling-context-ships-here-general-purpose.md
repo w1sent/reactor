@@ -1,5 +1,12 @@
 # rolling-context ships here too, general-purpose and independently switched
 
+> Superseded in part by
+> [ADR-0024](0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md):
+> the manifest (goal/guidelines/steps/`update_steps`) and the history tools
+> are their own extensions now, with their own commands, switches and config
+> files. What remains here under this ADR's reasoning is the fade and
+> `/rolling`.
+
 `extensions/rolling-context/` is an existing, working pi extension — an
 alternative to pi's own summarization-based compaction, for models with a
 small context window and compaction that fixates on old content. It keeps a

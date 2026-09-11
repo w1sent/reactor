@@ -48,6 +48,7 @@ const EXTENSIONS = [
 	"goal-setting",
 	"history-tools",
 	"rolling-context",
+	"auto-continue",
 	"context-editor",
 	"reporting",
 ];
@@ -60,9 +61,8 @@ const EXTENSIONS = [
  * there per docs/rpc.md) rather than opening -- still worth a line, since
  * that degrade path is itself extension code that can throw. The
  * `rolling-context/`'s tail turns it on and off, and the goal-setting/ and
- * history-tools/ tails exercise their commands -- unrelated to the toolbox
- * and worth checking on their own account (ADR-0019, ADR-0024). The fade
- * itself needs an LLM call to fire a real `context` event, which no command
+ * history-tools/ tails exercise their commands; auto-continue/ contributes
+ * `/auto-continue` (ADR-0019, ADR-0024, ADR-0025). The fade itself needs an LLM call to fire a real `context` event, which no command
  * here can trigger; what this covers is that loading the three siblings
  * together, toggling each, and running every command throws nothing.
  * `context-editor/`'s two commands
@@ -104,6 +104,9 @@ const DEFAULT_COMMANDS = [
 	"/history-tools",
 	"/history-tools off",
 	"/history-tools on",
+	"/auto-continue",
+	"/auto-continue off",
+	"/auto-continue on",
 	"/rolling off",
 	"/context-editor",
 	"/context-editor manual",

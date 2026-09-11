@@ -32,3 +32,4 @@ Write the ADR before implementing, not after.
 | [0022](0022-pi-subagent-gets-a-skill-so-it-gets-a-clearer-id.md) | pi-subagent gets a skill, so it gets a clearer id |
 | [0023](0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md) | reporting's enforcement is a filesystem probe, not the heuristic ADR-0007 rejected |
 | [0024](0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md) | rolling-context splits into goal-setting, history-tools and the fade |
+| [0025](0025-auto-continue-continues-after-automatic-compaction.md) | auto-continue continues after automatic compaction, bounded, and never into pi's own retry |

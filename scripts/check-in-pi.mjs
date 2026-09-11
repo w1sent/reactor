@@ -49,6 +49,7 @@ const EXTENSIONS = [
 	"history-tools",
 	"rolling-context",
 	"auto-continue",
+	"identity",
 	"context-editor",
 	"reporting",
 ];
@@ -62,7 +63,9 @@ const EXTENSIONS = [
  * that degrade path is itself extension code that can throw. The
  * `rolling-context/`'s tail turns it on and off, and the goal-setting/ and
  * history-tools/ tails exercise their commands; auto-continue/ contributes
- * `/auto-continue` (ADR-0019, ADR-0024, ADR-0025). The fade itself needs an LLM call to fire a real `context` event, which no command
+ * `/auto-continue` and identity/ its selection/write/save/delete tail (the
+ * editor degrades to a notify over RPC, still worth exercising)
+ * (ADR-0019, ADR-0024, ADR-0025, ADR-0026). The fade itself needs an LLM call to fire a real `context` event, which no command
  * here can trigger; what this covers is that loading the three siblings
  * together, toggling each, and running every command throws nothing.
  * `context-editor/`'s two commands
@@ -107,6 +110,14 @@ const DEFAULT_COMMANDS = [
 	"/auto-continue",
 	"/auto-continue off",
 	"/auto-continue on",
+	"/identity",
+	"/identity reverse-engineer",
+	"/identity show",
+	"/identity write focus on firmware boot chains",
+	"/identity save firmware",
+	"/identity delete firmware",
+	"/identity off",
+	"/identity editor",
 	"/rolling off",
 	"/context-editor",
 	"/context-editor manual",

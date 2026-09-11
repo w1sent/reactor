@@ -33,3 +33,4 @@ Write the ADR before implementing, not after.
 | [0023](0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md) | reporting's enforcement is a filesystem probe, not the heuristic ADR-0007 rejected |
 | [0024](0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md) | rolling-context splits into goal-setting, history-tools and the fade |
 | [0025](0025-auto-continue-continues-after-automatic-compaction.md) | auto-continue continues after automatic compaction, bounded, and never into pi's own retry |
+| [0026](0026-identity-is-a-persona-block-in-the-system-prompt.md) | identity is a persona block in the system prompt; built-ins are code, user identities are config |

@@ -248,6 +248,26 @@ though — `rolling-context/`'s fade and `context-editor/`'s current-branch
 filter both trim `event.messages` here, and neither cares about the caching
 cost since what they return is smaller, not different, on the common turn.
 
+### `before_agent_start` chains systemPrompt, and `ctx.getSystemPrompt()` sees the chain
+
+**[verified]** (pi 0.85.1, `runner.js` `emitBeforeAgentStart`) each handler's
+`{ systemPrompt }` result becomes the next handler's `event.systemPrompt` —
+appending a section needs no assumption about extension order. The chained
+prompt is written into `agent.state.systemPrompt` (`agent-session.js:932`),
+and the ctx's `ctx.getSystemPrompt()` returns exactly that
+(`agent-session.js:2088`), including during later `context` events — which is
+how the fade's budget math accounts for goal-setting's manifest block with no
+knowledge of goal-setting ([ADR-0024](adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)).
+
+**[verified]** the *order* of that chain is the order extensions were
+loaded, and for a package's `extensions/` directory that is the unsorted
+`readdirSync` order of `collectAutoExtensionEntries` (`package-manager.js`) —
+filesystem enumeration order, not alphabetical by guarantee, not
+controllable from the package. Extensions must therefore compose
+order-independently: `before_agent_start` appends are fine, two extensions
+both rewriting `event.messages` in `context` are not — whoever loads later
+acts on the other's output.
+
 ### Compaction primitives are exported, not internal
 
 **[verified]** (pi 0.83.0's `index.d.ts`) `calculateContextTokens`,

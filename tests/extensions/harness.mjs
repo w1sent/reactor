@@ -24,7 +24,12 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "../..");
 // Locating pi
 // ---------------------------------------------------------------------------
 
-/** pi's `dist/`, or undefined. Found through PATH, so it follows the symlink. */
+/** pi's `dist/`, or undefined. Found through PATH, so it follows the symlink.
+ *
+ * Some pi builds ship the CLI one level deeper (`dist/bundle/cli.js`), so the
+ * resolved directory is walked upward until it is the one that actually
+ * contains the loader -- a bare `dirname` check would silently skip the whole
+ * extension suite on those installs. */
 function findPiDist() {
 	if (process.env.REACTOR_PI_DIST) return process.env.REACTOR_PI_DIST;
 	let resolved;
@@ -34,8 +39,12 @@ function findPiDist() {
 		return undefined;
 	}
 	if (!resolved) return undefined;
-	const dist = path.dirname(fs.realpathSync(resolved));
-	return fs.existsSync(path.join(dist, "core/extensions/loader.js")) ? dist : undefined;
+	let dir = path.dirname(fs.realpathSync(resolved));
+	for (let i = 0; i < 4 && dir !== path.parse(dir).root; i++) {
+		if (fs.existsSync(path.join(dir, "core/extensions/loader.js"))) return dir;
+		dir = path.dirname(dir);
+	}
+	return undefined;
 }
 
 const PI_DIST = findPiDist();

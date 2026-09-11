@@ -45,6 +45,8 @@ const EXTENSIONS = [
 	"selector",
 	"status",
 	"scenario",
+	"goal-setting",
+	"history-tools",
 	"rolling-context",
 	"context-editor",
 	"reporting",
@@ -57,9 +59,13 @@ const EXTENSIONS = [
  * degrades to "point at the CLI" in RPC mode (`ctx.ui.custom` is `undefined`
  * there per docs/rpc.md) rather than opening -- still worth a line, since
  * that degrade path is itself extension code that can throw. The
- * `rolling-context/` tail turns it on, exercises `/goal`/`/frame` and a real
- * `context` fade, then off again -- unrelated to the toolbox and worth
- * checking on its own account (ADR-0019). `context-editor/`'s two commands
+ * `rolling-context/`'s tail turns it on and off, and the goal-setting/ and
+ * history-tools/ tails exercise their commands -- unrelated to the toolbox
+ * and worth checking on their own account (ADR-0019, ADR-0024). The fade
+ * itself needs an LLM call to fire a real `context` event, which no command
+ * here can trigger; what this covers is that loading the three siblings
+ * together, toggling each, and running every command throws nothing.
+ * `context-editor/`'s two commands
  * degrade the same way `/reactor-tools` does over RPC -- both its landscape
  * overlay and its external-editor launch need a real terminal (`ctx.mode
  * === "tui"`), so they just notify instead, which is still extension code
@@ -91,7 +97,13 @@ const DEFAULT_COMMANDS = [
 	"/reactor-scenario stop",
 	"/rolling on",
 	"/goal check the crash",
+	"/guidelines keep it quiet",
 	"/frame",
+	"/manifest",
+	"/manifest on",
+	"/history-tools",
+	"/history-tools off",
+	"/history-tools on",
 	"/rolling off",
 	"/context-editor",
 	"/context-editor manual",

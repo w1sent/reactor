@@ -18,11 +18,15 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 > **Status: Milestones 1, 2 and 3 are built.** The `reactor` CLI, the
 > installer, the catalogue, the toolsets, scenarios, and the four RE-focused
 > extensions — tool-registry, selector, status, scenario — work end to end.
-> A fifth, `rolling-context`, is a general-purpose alternative to pi's own
-> compaction, unrelated to the catalogue and switched independently
-> ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md)).
-> `npm test` covers all of it: 73 tests on the CLI, 123 driving the extensions
-> against pi's own loader. See `TODO.md`.
+> Three general-purpose extensions ship alongside them, switched
+> independently of the catalogue: `rolling-context`, an alternative to pi's
+> own compaction
+> ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md)),
+> split into itself, `goal-setting` (the session manifest, in the system
+> prompt) and `history-tools` (line-addressed recovery over the session
+> file) ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)).
+> `npm test` covers all of it: 81 tests on the CLI, 173 driving the
+> extensions against pi's own loader. See `TODO.md`.
 
 ## The idea in one screen
 
@@ -60,7 +64,7 @@ tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
 toolsets.toml    Shipped toolset definitions — seeds the user's copy
 bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
 extensions/      pi extensions (TypeScript): tool-registry, selector, status,
-                 scenario, rolling-context
+                 scenario, goal-setting, history-tools, rolling-context
 skills/          Skills REactor authors itself — only where --help is insufficient
 prompts/         Prompt templates, including multi-step analysis scenarios
 themes/          pi themes

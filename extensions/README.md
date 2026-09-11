@@ -10,10 +10,11 @@ run in that directory.
 
 **Every RE-tool extension here shells out to `reactor … --format json`.** None
 of them parses `tools.toml`, and none reimplements catalogue semantics —
-[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). `rolling-context/`
-is the one exception: it is a general-purpose context-management extension,
-unrelated to the catalogue and switched independently of everything else here
-([ADR-0019](../docs/adr/0019-rolling-context-ships-here-general-purpose.md)).
+[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Five are
+general-purpose and never call `reactor` at all: `goal-setting/`,
+`history-tools/` and `rolling-context/` (session memory, recovery and the
+fade — split out of one extension, [ADR-0024](../docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)),
+plus `context-editor/` and `reporting/`.
 
 ## Built
 
@@ -24,7 +25,9 @@ unrelated to the catalogue and switched independently of everything else here
 | `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
 | `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
 | `reporting/` | Off by default; `/report on\|off\|level <0\|1\|2>\|status\|folder <path>\|reset` opts a session in. Appends a "document as you go" block to the system prompt; levels 1–2 track tool-call "steps" since the reporting folder last changed on disk (a size/mtime snapshot diff, not tool-call inspection) and escalate — level 1 nags every LLM call once a threshold is crossed, level 2 reverts the ignored turn and re-demands the prompt, up to `maxReverts` times, before falling back to nagging (ADR-0023). Footer entry `reporting mode`/`· low`/`· strict`. |
-| `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. Instead of pi's summarization compaction, keeps a small manifest (goal + agent-maintained steps) at the front of every prompt and fades everything else out of the *next* `context` call once it stops fitting a configurable budget — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020). `/goal`, `/guidelines`, `/frame`; `update_steps`, `history_index`/`_search`/`_read` tools. General-purpose, not catalogue-aware (ADR-0019). |
+| `goal-setting/` | The session manifest in the system prompt: `/goal <text>`, `/guidelines <text>`, `/frame`; `/manifest [on\|off]` is the switch. `update_steps` — active while a goal is set *and* the switch is on, so it is inactive in a fresh session — rewrites the step list (3-word statuses, soft-limit warning). The block is injected on content only, so an untouched session's system prompt stays byte-identical. General-purpose; split out of rolling-context (ADR-0024). |
+| `history-tools/` | `history_index`/`history_search`/`history_read` — line-addressed recovery over the session file, on by default in any session; `/history-tools [on\|off]` (per-session) is the user's lever when the agent overuses them. General-purpose; split out of rolling-context (ADR-0024). |
+| `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. The fade: instead of pi's summarization compaction, only the newest messages that fit a configurable budget go to the model — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020); cancels only threshold compaction. No tools, no manifest — the two extensions above own those. General-purpose, not catalogue-aware (ADR-0019). |
 | `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
 ## The toolbox toggle and hidden services (ADR-0016)
@@ -130,17 +133,30 @@ And three for scenarios:
   narrowing what is advertised mid-scenario is not this extension's call to
   make.
 
-And two for rolling-context:
+And five for the three ex-rolling-context extensions (ADR-0024):
 
+- **The manifest lives in the system prompt, not the message array.**
+  goal-setting injects it from `before_agent_start` on content, and the fade
+  accounts for it with no knowledge of goal-setting: `ctx.getSystemPrompt()`
+  returns the chained prompt, which the fade already subtracts from its
+  budget. The per-turn line pointer died with the message-manifest — the
+  fade's own comment called it cosmetic — and the fade's dropped-count
+  notification plus the `ARCHIVE_NOTE` carry what remains worth saying.
+- **Nothing here may assume extension load order.** pi composes `context`
+  handlers in load order, which for a package directory is unsorted
+  `readdirSync` — not alphabetical by guarantee, not controllable. The three
+  siblings compose order-independently on purpose: prompt sections append,
+  the fade cuts, the history tools read the branch.
 - **The manifest is the only permanent memory.** Everything else the fade
   drops is still in the session file, never in the model's next prompt,
   unless the agent copies it into the steps via `update_steps` first —
   recovery via the history tools is one-shot, since a tool result fades like
   any other recent message.
 - **`GLOBAL_CONFIG_PATH` reads through `getAgentDir()`, not a hand-rolled
-  `homedir() + ".pi/agent"`.** The one behaviour change this port makes: the
-  standalone draft ignored `PI_CODING_AGENT_DIR` when set, silently reading
-  the wrong file. Same default path either way.
+  `homedir() + ".pi/agent"`.** The one behaviour change the port into this
+  package makes: the standalone draft ignored `PI_CODING_AGENT_DIR` when
+  set, silently reading the wrong file. Same default path either way. All
+  three ex-rolling-context extensions read their own file this way.
 - **The fade measures and cuts in pi's own units, not its own.** It calls
   pi's exported `estimateTokens(message)` against the live `event.messages`
   array directly, using the same never-start-on-a-`toolResult` rule pi's own
@@ -192,16 +208,16 @@ And three for reporting:
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All seven are driven through **pi's own loader**
+All nine are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
 is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
-pointed at a fixture catalogue; `rolling-context/`, `context-editor/` and
-`reporting/` never call `reactor` at all, so their tests exercise pi's own
-history/session/context APIs (or, for `reporting/`, real files under a
-temporary `ctx.cwd`) instead. Only the host is faked: the context,
-its `ui`, and the TUI/theme/`done` triple that `ctx.ui.custom` hands a
-component.
+pointed at a fixture catalogue; `goal-setting/`, `history-tools/`,
+`rolling-context/`, `context-editor/` and `reporting/` never call `reactor`
+at all, so their tests exercise pi's own history/session/context APIs (or,
+for `reporting/`, real files under a temporary `ctx.cwd`) instead. Only the
+host is faked: the context, its `ui`, and the TUI/theme/`done` triple that
+`ctx.ui.custom` hands a component.
 
 Two consequences for anyone adding a test. The theme is identity rather than
 ANSI, because width is most of what is worth asserting about a list that must
@@ -217,11 +233,13 @@ checks its *shape* — four steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.
 
-`rolling-context.test.mjs` needs `ctx.sessionManager.getBranch()` to return
-actual conversation messages, not just custom entries — the first extension
-here that does. `makeContext`'s `branch` option seeds it; `model` and
-`getSystemPrompt()` were added alongside it, both otherwise unused by
-anything else in this repo.
+`goal-setting.test.mjs`, `history-tools.test.mjs` and `rolling-context.test.mjs`
+need `ctx.sessionManager.getBranch()` to return actual conversation messages,
+not just custom entries — the first extension here that needed that was
+rolling-context before the split. `makeContext`'s `branch` option seeds it;
+`model` and `getSystemPrompt()` were added alongside it — and the fade's
+tests now lean on the latter, since the budget subtracts the fake's system
+prompt exactly the way the real one subtracts the chained prompt (ADR-0024).
 
 `context-editor.test.mjs` needs two more fakes `makeContext` grew for it:
 `ui.select` answers from a `selectAnswers` queue (empty = the dialog was

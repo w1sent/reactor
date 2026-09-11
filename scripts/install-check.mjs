@@ -84,6 +84,7 @@ const CASES = [
 	{ message: "/definitely-not-a-command", expect: null, why: "negative control: a bogus command must emit no extension notify" },
 	{ message: "/goal install-check", expect: { method: "notify" }, why: "goal-setting/ is registered (ADR-0024)" },
 	{ message: "/history-tools off", expect: { method: "notify" }, why: "history-tools/ is registered (ADR-0024)" },
+	{ message: "/auto-continue", expect: { method: "notify" }, why: "auto-continue/ is registered (ADR-0025)" },
 	{ message: "/rolling on", expect: { method: "setStatus", statusKey: "rolling-context" }, why: "the fade is registered and toggles" },
 	{ message: "/rolling off", expect: { method: "setStatus", statusKey: "rolling-context" }, why: "the fade toggles off cleanly" },
 ];

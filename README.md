@@ -24,8 +24,11 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 > ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md)),
 > split into itself, `goal-setting` (the session manifest, in the system
 > prompt) and `history-tools` (line-addressed recovery over the session
-> file) ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)).
-> `npm test` covers all of it: 81 tests on the CLI, 173 driving the
+> file) ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md));
+> plus `auto-continue`, which keeps the agent going after an automatic
+> compaction ends its turn
+> ([ADR-0025](docs/adr/0025-auto-continue-continues-after-automatic-compaction.md)).
+> `npm test` covers all of it: 81 tests on the CLI, 190 driving the
 > extensions against pi's own loader. See `TODO.md`.
 
 ## The idea in one screen
@@ -64,7 +67,8 @@ tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
 toolsets.toml    Shipped toolset definitions — seeds the user's copy
 bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
 extensions/      pi extensions (TypeScript): tool-registry, selector, status,
-                 scenario, goal-setting, history-tools, rolling-context
+                 scenario, goal-setting, history-tools, rolling-context,
+                 auto-continue
 skills/          Skills REactor authors itself — only where --help is insufficient
 prompts/         Prompt templates, including multi-step analysis scenarios
 themes/          pi themes

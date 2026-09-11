@@ -268,6 +268,23 @@ order-independently: `before_agent_start` appends are fine, two extensions
 both rewriting `event.messages` in `context` are not — whoever loads later
 acts on the other's output.
 
+### `session_compact` carries reason and willRetry; `agent_settled` is past every automatic continuation
+
+**[verified]** (pi 0.85.1) `SessionCompactEvent` fires per *successful*
+compaction with `reason: "manual" | "threshold" | "overflow"` and
+`willRetry: boolean` — true exactly when pi's post-run loop is about to
+`agent.continue()` the turn itself (overflow recovery). The post-run loop
+(`_handlePostAgentRun`) continues on a retryable error, on compaction with
+retry, or on messages queued by `agent_end` handlers
+(`agent.hasQueuedMessages()`); `agent_settled` is emitted in the `finally` —
+the first point nothing is streaming, no compaction is in progress, and no
+automatic continuation is pending. `pi.sendUserMessage(text, { deliverAs })`
+maps `deliverAs` onto `prompt()`'s `streamingBehavior`: bare calls throw
+"Agent is already processing" while anything is streaming, `"followUp"`
+queues instead — which is what makes two extensions prompting from the same
+`agent_settled` a delay rather than a failure (`auto-continue/`,
+[ADR-0025](adr/0025-auto-continue-continues-after-automatic-compaction.md)).
+
 ### Compaction primitives are exported, not internal
 
 **[verified]** (pi 0.83.0's `index.d.ts`) `calculateContextTokens`,

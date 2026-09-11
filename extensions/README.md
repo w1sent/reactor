@@ -10,11 +10,11 @@ run in that directory.
 
 **Every RE-tool extension here shells out to `reactor … --format json`.** None
 of them parses `tools.toml`, and none reimplements catalogue semantics —
-[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Five are
+[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Six are
 general-purpose and never call `reactor` at all: `goal-setting/`,
 `history-tools/` and `rolling-context/` (session memory, recovery and the
 fade — split out of one extension, [ADR-0024](../docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)),
-plus `context-editor/` and `reporting/`.
+plus `context-editor/`, `reporting/` and `auto-continue/`.
 
 ## Built
 
@@ -27,6 +27,7 @@ plus `context-editor/` and `reporting/`.
 | `reporting/` | Off by default; `/report on\|off\|level <0\|1\|2>\|status\|folder <path>\|reset` opts a session in. Appends a "document as you go" block to the system prompt; levels 1–2 track tool-call "steps" since the reporting folder last changed on disk (a size/mtime snapshot diff, not tool-call inspection) and escalate — level 1 nags every LLM call once a threshold is crossed, level 2 reverts the ignored turn and re-demands the prompt, up to `maxReverts` times, before falling back to nagging (ADR-0023). Footer entry `reporting mode`/`· low`/`· strict`. |
 | `goal-setting/` | The session manifest in the system prompt: `/goal <text>`, `/guidelines <text>`, `/frame`; `/manifest [on\|off]` is the switch. `update_steps` — active while a goal is set *and* the switch is on, so it is inactive in a fresh session — rewrites the step list (3-word statuses, soft-limit warning). The block is injected on content only, so an untouched session's system prompt stays byte-identical. General-purpose; split out of rolling-context (ADR-0024). |
 | `history-tools/` | `history_index`/`history_search`/`history_read` — line-addressed recovery over the session file, on by default in any session; `/history-tools [on\|off]` (per-session) is the user's lever when the agent overuses them. General-purpose; split out of rolling-context (ADR-0024). |
+| `auto-continue/` | Off by default; `/auto-continue [on\|off]` opts a session in. After a successful *automatic* compaction that left the turn ended (`session_compact`, threshold or overflow, `willRetry: false`), sends the model a continuation message at `agent_settled` — default `continue`, configurable. Overflow recovery is left to pi's own retry; manual `/compact` and failed compactions are skipped. A consecutive-continuation counter pauses it after `maxConsecutive` and any other prompt resets it (ADR-0025). |
 | `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. The fade: instead of pi's summarization compaction, only the newest messages that fit a configurable budget go to the model — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020); cancels only threshold compaction. No tools, no manifest — the two extensions above own those. General-purpose, not catalogue-aware (ADR-0019). |
 | `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
@@ -166,6 +167,29 @@ And five for the three ex-rolling-context extensions (ADR-0024):
   than ever send more than that, however small that leaves it
   ([ADR-0020](../docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)).
 
+And three for auto-continue:
+
+- **The trigger is `session_compact` with `willRetry: false` — never the
+  recovery path.** pi's post-run loop continues an overflow-recovered turn by
+  itself (`agent.continue()` after `_handlePostAgentRun`); queueing a
+  "continue" there would inject into the retrying run. A failed compaction
+  never shrank the context, so it is skipped for the same reason; manual
+  `/compact` is housekeeping.
+- **It sends from `agent_settled` with `deliverAs: "followUp"`.**
+  `agent_settled` is pi's own settle point (the same one reporting/ level 2
+  dispatches from), and `followUp` is the difference between a queued
+  continuation and a throw when two extensions prompt from the same settle —
+  `reporting/`'s revert resend and this extension's continue can in principle
+  land on the same settle, and the second bare prompt would throw
+  "already processing" instead of queueing.
+- **The runaway counter counts its own message text, not compactions.**
+  `before_agent_start` sees each turn's prompt; only a turn starting with
+  exactly the configured continuation message keeps the count, any other
+  prompt resets it and lifts a pause. A hand-typed "continue" therefore also
+  counts — the count is about how many turns in a row the model was nudged
+  with that exact word, which is the pattern that needs a bound
+  ([ADR-0025](../docs/adr/0025-auto-continue-continues-after-automatic-compaction.md)).
+
 And one for context-editor:
 
 - **Fork replays messages; current-branch persists a filter — never a
@@ -208,7 +232,7 @@ And three for reporting:
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All nine are driven through **pi's own loader**
+All ten are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
 is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
@@ -233,7 +257,8 @@ checks its *shape* — four steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.
 
-`goal-setting.test.mjs`, `history-tools.test.mjs` and `rolling-context.test.mjs`
+`goal-setting.test.mjs`, `history-tools.test.mjs`, `auto-continue.test.mjs` and
+`rolling-context.test.mjs`
 need `ctx.sessionManager.getBranch()` to return actual conversation messages,
 not just custom entries — the first extension here that needed that was
 rolling-context before the split. `makeContext`'s `branch` option seeds it;

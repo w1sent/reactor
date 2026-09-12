@@ -123,6 +123,6 @@ _Avoid_: search tools, replay, rollback.
 **Identity**:
 The working persona `identity/` injects into the system prompt: a built-in
 (`reverse-engineer`, `cyber-forensics`, `forensics`, `software-engineer`,
-`devops`, `publisher`), a saved user identity, or an adhoc custom text. The
+`infrastructure`, `publisher`), a saved user identity, or an adhoc custom text. The
 human selects it; the model never does ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).
 _Avoid_: role, profile, mode.

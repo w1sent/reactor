@@ -61,7 +61,7 @@ test("a selected identity reaches the system prompt under its own header", needs
 
 		assert.ok(result.systemPrompt.startsWith("BASE"));
 		assert.match(result.systemPrompt, /## Identity/);
-		assert.match(result.systemPrompt, /forensic analyst/);
+		assert.match(result.systemPrompt, /Forensics analyst for general investigations/);
 	}));
 
 test("every documented built-in selects and injects its own text", needsPi, () =>
@@ -69,12 +69,12 @@ test("every documented built-in selects and injects its own text", needsPi, () =
 		const { ctx, extension } = await started(fixture);
 
 		for (const [name, marker] of [
-			["reverse-engineer", /reverse engineer/],
-			["cyber-forensics", /systems where malware is suspected or known to have executed/],
-			["forensics", /what a user did on a system/],
-			["software-engineer", /software engineer/],
-			["devops", /infrastructure engineer/],
-			["publisher", /publisher/],
+			["reverse-engineer", /You are the Reverse Engineer/],
+			["cyber-forensics", /reconstruct a malware incident end-to-end/],
+			["forensics", /what a user or actor did/],
+			["software-engineer", /Software Engineer supporting the analysis team/],
+			["infrastructure", /safe, reproducible analysis infrastructure/],
+			["publisher", /You are the Publisher/],
 		]) {
 			await extension.commands.get("identity").handler(name, ctx);
 			const result = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
@@ -92,7 +92,7 @@ test("an unknown name warns and lists the available identities", needsPi, () =>
 		assert.equal(lastNotify(calls).level, "warning");
 		assert.match(
 			lastNotify(calls).message,
-			/reverse-engineer, cyber-forensics, forensics, software-engineer, devops, publisher, custom/,
+			/reverse-engineer, cyber-forensics, forensics, software-engineer, infrastructure, publisher, custom/,
 		);
 	}));
 
@@ -109,12 +109,12 @@ test("/identity with no arg reports the active identity and the list", needsPi, 
 
 test("/identity off is an explicit off, and it overrides a configured default", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		fs.writeFileSync(configPath(fixture), JSON.stringify({ default: "devops" }));
+		fs.writeFileSync(configPath(fixture), JSON.stringify({ default: "infrastructure" }));
 		const { ctx, calls, extension } = await started(fixture);
 
 		// The global default applies before the session says otherwise.
 		const withDefault = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
-		assert.match(withDefault.systemPrompt, /infrastructure engineer/);
+		assert.match(withDefault.systemPrompt, /Infrastructure engineer/);
 
 		await extension.commands.get("identity").handler("off", ctx);
 		const off = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
@@ -309,7 +309,7 @@ test("the global default applies when the session has not chosen one", needsPi, 
 
 		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "identity: publisher" });
 		const result = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
-		assert.match(result.systemPrompt, /publisher/);
+		assert.match(result.systemPrompt, /You are the Publisher/);
 	}));
 
 test("a hand-saved identity cannot shadow a built-in", needsPi, () =>
@@ -335,6 +335,6 @@ test("a hand-saved identity cannot shadow a built-in", needsPi, () =>
 		// And the built-in still resolves to its own text.
 		await extension.commands.get("identity").handler("publisher", ctx);
 		const result = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
-		assert.match(result.systemPrompt, /turning technical findings into documents/);
+		assert.match(result.systemPrompt, /defensible deliverables/);
 		assert.doesNotMatch(result.systemPrompt, /pretend builtin/);
 	}));

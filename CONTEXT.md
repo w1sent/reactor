@@ -96,3 +96,33 @@ its own release cycle, installed independently and referenced only by a
 catalogue entry. They are cloned, released and installed independently,
 and REactor assumes nothing about where they sit.
 _Avoid_: submodule, vendored tool, subproject.
+
+**Manifest**:
+The session block `goal-setting/` keeps in the system prompt: the user's goal,
+the agent's self-maintained steps (each a conceptual summary with a 3-word
+status), and the session guidelines. Injected on content only, so an untouched
+session's prompt stays byte-identical. It is what survives both pi's
+compaction and the fade — keeping it current is how work outlives either.
+_Avoid_: goal list, todo list, step list (the steps are one part of it), memory (too broad).
+
+**Fade**:
+`rolling-context/`'s alternative to pi's summarization compaction: only the
+newest messages that fit a configurable budget go to the model; older ones are
+left out of the next request only — the session file is untouched, and the
+history tools recover what was faded. Measures and cuts the same way pi's own
+compaction does ([ADR-0020](docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)).
+_Avoid_: truncation (that is the hard-boundary archive path, a last resort), summary (the fade summarizes nothing), context pruning.
+
+**History tools**:
+`history_index` / `history_search` / `history_read` — line-addressed recovery
+over the serialized session history, on by default in any session, independent
+of the fade. A recovery path, not a browsing habit; the fade's guidance is
+where that economics lives.
+_Avoid_: search tools, replay, rollback.
+
+**Identity**:
+The working persona `identity/` injects into the system prompt: a built-in
+(`reverse-engineer`, `cyber-forensics`, `forensics`, `software-engineer`,
+`devops`, `publisher`), a saved user identity, or an adhoc custom text. The
+human selects it; the model never does ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).
+_Avoid_: role, profile, mode.

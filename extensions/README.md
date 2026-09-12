@@ -4,9 +4,11 @@ pi extensions, TypeScript. Auto-discovered by pi because this directory carries
 a conventional name at the package root — see `docs/pi-api-notes.md` (and note
 the `"pi": {}` trap recorded there).
 
-Single-file extensions are `<name>.ts`; extensions needing npm dependencies are
-`<name>/` with their own `package.json` and `src/index.ts`, and `npm install`
-run in that directory.
+Every extension is a directory with an `index.ts` — pi's loader accepts a bare
+`<name>.ts` too, but the directory form is the convention here. None of them
+need `package.json` or `npm install`: imports resolve through pi's own alias
+map, so the module graph under test is the one the running agent gets
+([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 
 **Every RE-tool extension here shells out to `reactor … --format json`.** None
 of them parses `tools.toml`, and none reimplements catalogue semantics —

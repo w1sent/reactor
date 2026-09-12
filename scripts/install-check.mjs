@@ -126,4 +126,4 @@ if (failed || errors.length) {
 	console.error(`\nFAIL -- ${errors.length} extension_error(s), check the case output above`);
 	process.exit(1);
 }
-console.log("\nok -- the installed package discovered and loaded the split extensions (ADR-0024)");
+console.log("\nok -- the installed package discovered and loaded every extension");

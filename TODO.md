@@ -131,6 +131,34 @@ state machine and against the real shipped `triage` scenario for shape only
 (four steps, each with its own title), the way `TestShippedConfig` checks the
 catalogue in the Python suite rather than pinning its exact text.
 
+## Built beyond the milestones — the general-purpose half
+
+The RE milestones above are not the whole package: extensions ship with it
+that never touch the catalogue and never call `reactor`, each with its own
+ADR and its own tests, deferred to real use the same way the milestones are.
+
+- **`rolling-context/`** — the fade, an alternative to pi's summarization
+  compaction ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md),
+  [ADR-0020](docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)),
+  split into itself, **`goal-setting/`** (the session manifest: goal,
+  guidelines, steps) and **`history-tools/`** (line-addressed recovery over
+  the session file)
+  ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)).
+- **`auto-continue/`** — keeps the agent going after an automatic compaction
+  ends its turn, bounded against runaway cycles
+  ([ADR-0025](docs/adr/0025-auto-continue-continues-after-automatic-compaction.md)).
+- **`identity/`** — the working persona in the system prompt: built-ins for
+  the scenarios a security professional moves between, plus an adhoc custom
+  identity that can be saved as a reusable one
+  ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).
+- **`context-editor/`**
+  ([ADR-0021](docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md))
+  and **`reporting/`**
+  ([ADR-0023](docs/adr/0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md)).
+
+What would move any of these forward is real use, not another round of
+building — same rule as the milestones.
+
 ## Later — not scheduled
 
 ### Catalogue gaps

@@ -232,6 +232,106 @@ test("/identity editor runs the external editor with the TUI suspended", needsPi
 	}));
 
 // ---------------------------------------------------------------------------
+// Argument completion
+// ---------------------------------------------------------------------------
+
+/** The completion function, exactly as pi's autocomplete calls it. */
+const completions = async (extension, argumentText) =>
+	await extension.commands.get("identity").getArgumentCompletions(argumentText);
+
+const values = (items) => items.map((item) => item.value).sort();
+
+test("an empty argument offers every selectable identity plus the subcommands", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await started(fixture);
+
+		const items = await completions(extension, "");
+
+		assert.deepEqual(values(items), [
+			"cyber-forensics",
+			"delete",
+			"editor",
+			"forensics",
+			"infrastructure",
+			"off",
+			"publisher",
+			"reverse-engineer",
+			"save",
+			"show",
+			"software-engineer",
+			"write",
+		]);
+	}));
+
+test("items carry a description so the user knows what each identity is", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await started(fixture);
+
+		const items = await completions(extension, "");
+
+		assert.equal(items.find((i) => i.value === "cyber-forensics").description, "malware incident reconstruction");
+		assert.equal(items.find((i) => i.value === "off").description, "switch identity off");
+	}));
+
+test("a partial word matches names and subcommands case-insensitively", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await started(fixture);
+
+		assert.deepEqual(values(await completions(extension, "cy")), ["cyber-forensics"]);
+		assert.deepEqual(values(await completions(extension, "SH")), ["show"]);
+		// No matches at all -> null, pi shows nothing.
+		assert.equal(await completions(extension, "zzz"), null);
+	}));
+
+test("a name-taking subcommand completes as a runnable line", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await started(fixture);
+
+		assert.deepEqual(values(await completions(extension, "show fo")), ["show forensics"]);
+		assert.deepEqual(values(await completions(extension, "show ")), [
+			"show cyber-forensics",
+			"show forensics",
+			"show infrastructure",
+			"show publisher",
+			"show reverse-engineer",
+			"show software-engineer",
+		]);
+	}));
+
+test("subcommands that take free text or no argument complete nothing", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { extension } = await started(fixture);
+
+		assert.equal(await completions(extension, "write "), null);
+		assert.equal(await completions(extension, "off "), null);
+		assert.equal(await completions(extension, "editor "), null);
+	}));
+
+test("the custom identity is offered only once it has text", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, extension } = await started(fixture);
+
+		assert.equal((await completions(extension, "")).some((i) => i.value === "custom"), false);
+
+		await extension.commands.get("identity").handler("write triage ransomware samples only", ctx);
+		const items = await completions(extension, "");
+		const custom = items.find((i) => i.value === "custom");
+		assert.equal(custom.description, "adhoc custom identity");
+	}));
+
+test("saved identities appear in the completions once they exist", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, extension } = await started(fixture);
+
+		await extension.commands.get("identity").handler("write triage ransomware samples only", ctx);
+		await extension.commands.get("identity").handler("save ransomware", ctx);
+
+		assert.deepEqual(values(await completions(extension, "rans")), ["ransomware"]);
+		// ...and complete in place after a name-taking subcommand.
+		assert.deepEqual(values(await completions(extension, "delete rans")), ["delete ransomware"]);
+	}));
+
+// ---------------------------------------------------------------------------
 // Saving, deleting
 // ---------------------------------------------------------------------------
 

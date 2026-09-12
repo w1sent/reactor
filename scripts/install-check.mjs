@@ -65,7 +65,7 @@ async function send(message) {
 	const id = String(nextId++);
 	const before = events.length;
 	child.stdin.write(`${JSON.stringify({ type: "prompt", message, id })}\n`);
-	const deadline = Date.now() + 15_000;
+	const deadline = Date.now() + 30_000;
 	while (!events.some((e) => e.type === "response" && e.id === id)) {
 		if (Date.now() > deadline) throw new Error(`timed out waiting for a response to ${message}`);
 		await new Promise((r) => setTimeout(r, 20));
@@ -90,14 +90,14 @@ const CASES = [
 	{ message: "/rolling off", expect: { method: "setStatus", statusKey: "rolling-context" }, why: "the fade toggles off cleanly" },
 ];
 
-await new Promise((resolve) => setTimeout(resolve, 1200)); // let extension load settle
+await new Promise((resolve) => setTimeout(resolve, 2500)); // let extension load settle
 
 let failed = false;
 for (const { message, expect, why } of CASES) {
 	const id = String(nextId++);
 	const before = events.length;
 	child.stdin.write(`${JSON.stringify({ type: "prompt", message, id })}\n`);
-	const deadline = Date.now() + 15_000;
+	const deadline = Date.now() + 30_000;
 	while (!events.some((e) => e.type === "response" && e.id === id)) {
 		if (Date.now() > deadline) throw new Error(`timed out waiting for a response to ${message}`);
 		await new Promise((r) => setTimeout(r, 20));

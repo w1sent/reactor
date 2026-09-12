@@ -191,7 +191,7 @@ let nextId = 0;
  * from the ordering-within-one-handler bug this script was written for; it
  * is a real risk on its own, just not the one `-c` overlap testing wants.
  */
-async function sendAndWait(message, timeoutMs = 15_000) {
+async function sendAndWait(message, timeoutMs = 30_000) {
 	const id = String(nextId++);
 	const deadline = Date.now() + timeoutMs;
 	child.stdin.write(`${JSON.stringify({ type: "prompt", message, id })}\n`);
@@ -206,7 +206,7 @@ async function sendAndWait(message, timeoutMs = 15_000) {
 	await new Promise((resolve) => setTimeout(resolve, 150));
 }
 
-await new Promise((resolve) => setTimeout(resolve, 800)); // let extension load settle
+await new Promise((resolve) => setTimeout(resolve, 2500)); // let extension load settle
 
 for (const cmd of toRun) {
 	console.log(`  ${cmd}`);

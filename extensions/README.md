@@ -21,41 +21,26 @@ plus `context-editor/`, `reporting/`, `auto-continue/` and `identity/`.
 ## At a glance
 
 One line per extension — what it is for, how the user reaches it, whether it
-is on by default. The table below ("Built") and the notes after it carry the
-edge behaviours and the reasoning; the ADRs carry the decisions.
+is on by default. Each extension's README (linked in the first column) carries
+the usage detail; the notes below carry the edge behaviours; the ADRs carry
+the decisions.
 
 | Extension | For | Reach it with | Default |
 |---|---|---|---|
-| `tool-registry/` | Advertises the machine's RE tools to the agent, in one registry block | `/reactor`, `/reactor-toolbox` | on* |
-| `selector/` | Curate tools and toolsets in a two-pane overlay | `/reactor-tools` | on* |
-| `status/` | Live service state in the footer and a panel | `/reactor-status` | on |
-| `scenario/` | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_step_complete` | on |
-| `goal-setting/` | The session manifest: goal, guidelines, self-maintained steps | `/goal`, `/guidelines`, `/manifest`, `/frame` | on (rendered on content) |
-| `history-tools/` | Line-addressed recovery over the session history | `history_index`/`_search`/`_read` | on |
-| `rolling-context/` | The fade: drops old messages instead of summarizing them | `/rolling` | off |
-| `auto-continue/` | Resumes the agent after an automatic compaction | `/auto-continue` | off |
-| `identity/` | The working persona, in the system prompt | `/identity` | off (until selected) |
-| `context-editor/` | Hand-edit what the model sees — fork or filter | `/context-editor` | on |
-| `reporting/` | Documents as it goes; nags or reverts when nothing lands | `/report` | off |
+| [`tool-registry/`](tool-registry/README.md) | Advertises the machine's RE tools to the agent, in one registry block | `/reactor`, `/reactor-toolbox` | on* |
+| [`selector/`](selector/README.md) | Curate tools and toolsets in a two-pane overlay | `/reactor-tools` | on* |
+| [`status/`](status/README.md) | Live service state in the footer and a panel | `/reactor-status` | on |
+| [`scenario/`](scenario/README.md) | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_step_complete` | on |
+| [`goal-setting/`](goal-setting/README.md) | The session manifest: goal, guidelines, self-maintained steps | `/goal`, `/guidelines`, `/manifest`, `/frame` | on (rendered on content) |
+| [`history-tools/`](history-tools/README.md) | Line-addressed recovery over the session history | `history_index`/`_search`/`_read` | on |
+| [`rolling-context/`](rolling-context/README.md) | The fade: drops old messages instead of summarizing them | `/rolling` | off |
+| [`auto-continue/`](auto-continue/README.md) | Resumes the agent after an automatic compaction | `/auto-continue` | off |
+| [`identity/`](identity/README.md) | The working persona, in the system prompt | `/identity` | off (until selected) |
+| [`context-editor/`](context-editor/README.md) | Hand-edit what the model sees — fork or filter | `/context-editor` | on |
+| [`reporting/`](reporting/README.md) | Documents as it goes; nags or reverts when nothing lands | `/report` | off |
 
 \* The toolbox gate: `toolbox: false` in `<agent dir>/reactor.json` removes
 `tool-registry/` and `selector/` from the session entirely (ADR-0016).
-
-## Built
-
-| Extension | Does |
-|---|---|
-| `tool-registry/` | Appends the registry block to the system prompt from `before_agent_start`; answers `resources_discover` with the skill directories of active, present tools; `ctx.ui.setStatus` shows `RE <present>/<catalogued>`; `/reactor [refresh\|show]`; `/reactor-toolbox [on\|off]`. Registers nothing else when `toolbox: false` (ADR-0016). |
-| `selector/` | `/reactor-tools` — one overlay, two panes (Tab), fuzzy search (any key filters; `/` resets it), space to toggle, Enter to inspect, Ctrl+R to unpin. Every write is a `reactor tools\|toolsets …` call; `ctx.reload()` once on close if anything changed. Registers nothing at all when `toolbox: false` (ADR-0016). |
-| `status/` | `/reactor-status [refresh\|hide\|mute <id>\|unmute <id>]` — footer entry plus a toggleable panel above the editor, from `reactor services`. Refreshes on `session_start` and once per turn; no timer. `hiddenServices` (ADR-0016) omits muted catalogue ids from both. |
-| `scenario/` | `reactor_step_complete(summary)` — a tool the LLM calls; its own return content is the next step's briefing. `/reactor-scenario [list\|start <id>\|status\|next [summary]\|stop]` — the human's view of the same state, and the manual override. Steps are Markdown files under `prompts/scenarios/<id>/`, read directly (ADR-0017). |
-| `reporting/` | Off by default; `/report on\|off\|level <0\|1\|2>\|status\|folder <path>\|reset` opts a session in. Appends a "document as you go" block to the system prompt; levels 1–2 track tool-call "steps" since the reporting folder last changed on disk (a size/mtime snapshot diff, not tool-call inspection) and escalate — level 1 nags every LLM call once a threshold is crossed, level 2 reverts the ignored turn and re-demands the prompt, up to `maxReverts` times, before falling back to nagging (ADR-0023). Footer entry `reporting mode`/`· low`/`· strict`. |
-| `goal-setting/` | The session manifest in the system prompt: `/goal <text>`, `/guidelines <text>`, `/frame`; `/manifest [on\|off]` is the switch. `update_steps` — active while a goal is set *and* the switch is on, so it is inactive in a fresh session — rewrites the step list (3-word statuses, soft-limit warning). The block is injected on content only, so an untouched session's system prompt stays byte-identical. General-purpose; split out of rolling-context (ADR-0024). |
-| `history-tools/` | `history_index`/`history_search`/`history_read` — line-addressed recovery over the session file, on by default in any session; `/history-tools [on\|off]` (per-session) is the user's lever when the agent overuses them. General-purpose; split out of rolling-context (ADR-0024). |
-| `auto-continue/` | Off by default; `/auto-continue [on\|off]` opts a session in. After a successful *automatic* compaction that left the turn ended (`session_compact`, threshold or overflow, `willRetry: false`), sends the model a continuation message at `agent_settled` — default `continue`, configurable. Overflow recovery is left to pi's own retry; manual `/compact` and failed compactions are skipped. A consecutive-continuation counter pauses it after `maxConsecutive` and any other prompt resets it (ADR-0025). |
-| `identity/` | The working persona, in the system prompt: `/identity <name>` selects a built-in (`reverse-engineer`, `cyber-forensics`, `forensics`, `software-engineer`, `infrastructure`, `publisher`), a saved user identity, or the adhoc `custom` one (`/identity write <text>` or `/identity editor`); `/identity save <name>` keeps a proven custom one in `pi-identity.json`, `/identity delete <name>` removes it, `/identity off` switches off. Block on content only; per-session selection, global default; argument completion offers the built-ins, saved identities and subcommands with descriptions (ADR-0026). |
-| `rolling-context/` | Off by default; `/rolling [on\|off]` opts a session in. The fade: instead of pi's summarization compaction, only the newest messages that fit a configurable budget go to the model — the session file itself is untouched. Measures and cuts the same way pi's own compaction does, never overflowing the real window (ADR-0020); cancels only threshold compaction. No tools, no manifest — the two extensions above own those. General-purpose, not catalogue-aware (ADR-0019). |
-| `context-editor/` | `/context-editor` (landscape overlay: toggle which entries are visible) and `/context-editor manual` (same entries as a text file, opened in `$VISUAL`/`$EDITOR`/`nano`). Either way, ends by asking whether the edit forks a new session (default) or filters the current one going forward — pi's session store is append-only, so those are the two real mechanisms, not a preference (ADR-0021). Independent of `rolling-context/` and the toolbox; general-purpose. |
 
 ## The toolbox toggle and hidden services (ADR-0016)
 

@@ -13,26 +13,8 @@ whether they are installed, and whether the ones that are services are actually
 running* — that gap is what REactor fills.
 
 See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
-full, `docs/adr/` for the decisions behind it, and `TODO.md` for what is built.
-
-> **Status: Milestones 1, 2 and 3 are built.** The `reactor` CLI, the
-> installer, the catalogue, the toolsets, scenarios, and the four RE-focused
-> extensions — tool-registry, selector, status, scenario — work end to end.
-> Three general-purpose extensions ship alongside them, switched
-> independently of the catalogue: `rolling-context`, an alternative to pi's
-> own compaction
-> ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md)),
-> split into itself, `goal-setting` (the session manifest, in the system
-> prompt) and `history-tools` (line-addressed recovery over the session
-> file) ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md));
-> plus `auto-continue`, which keeps the agent going after an automatic
-> compaction ends its turn
-> ([ADR-0025](docs/adr/0025-auto-continue-continues-after-automatic-compaction.md)),
-> and `identity`, a persona in the system prompt with built-ins for the
-> scenarios a security professional moves between
-> ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).
-> `npm test` covers all of it: 81 tests on the CLI, 217 driving the
-> extensions against pi's own loader. A build record is in `TODO.md`.
+full, `docs/adr/` for the decisions behind it, and `extensions/README.md` for
+the extension inventory — what each one does, its switches, its default state.
 
 ## The idea in one screen
 
@@ -62,6 +44,23 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for what is built.
 
 The agent is told what is *here*, in one compact block, and nothing more. It
 reads `--help` when it needs to know how something works.
+
+Around that spine, seven extensions exist to make long sessions usable —
+memory that survives compaction, a working persona, and hands-off operation:
+
+```
+        goal-setting     the session manifest: goal, steps, guidelines
+        identity         the working persona, one `/identity` away
+        rolling-context  fades old messages instead of summarizing them
+        auto-continue    resumes the agent after compaction -- no "continue" typing
+        history-tools    line-addressed recovery over the session history
+        context-editor   hand-curates what the model sees: fork or filter
+        reporting        documents as it goes, escalating when nothing lands
+```
+
+None of them touch the catalogue; each is switched independently, and
+`extensions/README.md` has the full inventory — what each one does, its
+switches, its default state, and the reasoning behind it.
 
 ## Layout
 
@@ -121,3 +120,39 @@ REactor targets pi and only pi. It is not a portable skill collection; if
 another harness becomes interesting, the tool repositories are reused and a new
 flavor of REactor is built for it. See
 [ADR-0001](docs/adr/0001-pi-is-the-only-target-harness.md).
+
+## Status
+
+REactor is in **alpha**, on the road to v1.0. The design is settled —
+`docs/adr/` records every decision — and everything below is built and tested.
+What moves any of it forward is real use, not another round of building;
+deferred ideas are deliberately not tracked in these files (the reasoning
+lives in git history and the ADRs).
+
+The spine works end to end: the catalogue, the `reactor` CLI, the installer
+(symlinks the CLI, seeds `~/.pi/reactor/`, fetches upstream skills, installs
+completions), the toolsets and scenarios, and the four RE-focused extensions —
+tool-registry, selector, status, scenario.
+
+Seven general-purpose extensions ship alongside them, switched independently of
+the catalogue:
+
+- `rolling-context`, the fade — an alternative to pi's own compaction
+  ([ADR-0019](docs/adr/0019-rolling-context-ships-here-general-purpose.md),
+  [ADR-0020](docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)),
+  split into `goal-setting` (the session manifest, in the system prompt) and
+  `history-tools` (line-addressed recovery over the session file)
+  ([ADR-0024](docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md));
+- `auto-continue`, which keeps the agent going after an automatic compaction
+  ends its turn
+  ([ADR-0025](docs/adr/0025-auto-continue-continues-after-automatic-compaction.md));
+- `identity`, a persona in the system prompt with built-ins for the scenarios
+  a security professional moves between
+  ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md));
+- `context-editor`
+  ([ADR-0021](docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md))
+  and `reporting`
+  ([ADR-0023](docs/adr/0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md)).
+
+`npm test` covers all of it: 81 tests on the CLI, 217 driving the extensions
+against pi's own loader.

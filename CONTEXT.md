@@ -89,7 +89,7 @@ _Avoid_: stage prompt, phase instruction.
 **Spine**:
 The non-optional chain every other feature builds on: catalogue → `reactor` CLI
 → tool-registry extension. Each needs the one before it. Used when talking about
-milestone scope.
+the core the rest of the package assumes.
 _Avoid_: core, base, foundation layer.
 
 **Sibling repo**:

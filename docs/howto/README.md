@@ -1,8 +1,11 @@
 # howto/
 
-Task-oriented guides — how to add a tool to the catalogue, how to write and test
-an extension, how to install REactor from scratch, how to recover when
-`diff-config` shows a conflict.
+Task-oriented guides. Written only for things that work — how-to material for
+unimplemented software is wrong on arrival.
 
-Empty until there is something to operate. Writing how-to material for
-unimplemented software produces documentation that is wrong on arrival.
+- **[Add a tool to the catalogue](add-a-tool.md)** — the `tools.toml` entry,
+  its install recipes, `verify-recipes.py`, and the determinism the registry
+  depends on.
+- **[Add a toolset](add-a-toolset.md)** — `toolsets.toml`, intersecting tags
+  vs. explicit members, the shipped copy vs. the user's copy, and the
+  scenario-step wiring.

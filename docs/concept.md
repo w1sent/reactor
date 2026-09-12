@@ -209,8 +209,8 @@ as stages C, D, E and N.
 
 ## Target tool surface
 
-Not all of these land at once; see `TODO.md` for phasing. The catalogue is meant
-to grow to cover at least:
+Not all of these land at once — the catalogue grows as real analysis needs it,
+not by plan. It is meant to cover at least:
 
 | Area | Tools |
 |---|---|

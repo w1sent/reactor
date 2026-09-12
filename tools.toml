@@ -13,7 +13,7 @@
 # python library, a plain binary, tools with and without upstream skills, and
 # tools that are absent from most machines — so both the present and
 # missing code paths get exercised. The full target surface is listed in
-# docs/concept.md; filling it in is Milestone 1 in TODO.md.
+# docs/concept.md; the catalogue grows as real analysis needs it.
 #
 # Every `[tool.*.install]` recipe below has been checked against its manager's
 # package index — `scripts/verify-recipes.py`, which fails if a recipe names a

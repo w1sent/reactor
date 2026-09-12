@@ -43,6 +43,9 @@ Every loaded skill puts its `name` and `description` into the system prompt
 permanently. The body and `references/` cost nothing until read. So the count is
 what to be careful about, not the length.
 
+Currently: `pi-subagent` (delegating to a fresh pi subagent), `decompile-python`,
+`lnav`, `bindiff`, and `reactor-reporting` (the exception above).
+
 ### Format
 
 ```
@@ -106,7 +109,7 @@ own, since advancing is stateful and a raw prompt command has no memory of
 which step came before it. `extensions/scenario/` reads these files directly
 with `node:fs` instead of through `resources_discover`
 ([ADR-0017](adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md),
-resolving the question this section used to leave open in `TODO.md`).
+resolving the question this section used to leave open).
 
 ```
 prompts/scenarios/investigation/

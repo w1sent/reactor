@@ -18,6 +18,29 @@ general-purpose and never call `reactor` at all: `goal-setting/`,
 fade — split out of one extension, [ADR-0024](../docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)),
 plus `context-editor/`, `reporting/`, `auto-continue/` and `identity/`.
 
+## At a glance
+
+One line per extension — what it is for, how the user reaches it, whether it
+is on by default. The table below ("Built") and the notes after it carry the
+edge behaviours and the reasoning; the ADRs carry the decisions.
+
+| Extension | For | Reach it with | Default |
+|---|---|---|---|
+| `tool-registry/` | Advertises the machine's RE tools to the agent, in one registry block | `/reactor`, `/reactor-toolbox` | on* |
+| `selector/` | Curate tools and toolsets in a two-pane overlay | `/reactor-tools` | on* |
+| `status/` | Live service state in the footer and a panel | `/reactor-status` | on |
+| `scenario/` | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_step_complete` | on |
+| `goal-setting/` | The session manifest: goal, guidelines, self-maintained steps | `/goal`, `/guidelines`, `/manifest`, `/frame` | on (rendered on content) |
+| `history-tools/` | Line-addressed recovery over the session history | `history_index`/`_search`/`_read` | on |
+| `rolling-context/` | The fade: drops old messages instead of summarizing them | `/rolling` | off |
+| `auto-continue/` | Resumes the agent after an automatic compaction | `/auto-continue` | off |
+| `identity/` | The working persona, in the system prompt | `/identity` | off (until selected) |
+| `context-editor/` | Hand-edit what the model sees — fork or filter | `/context-editor` | on |
+| `reporting/` | Documents as it goes; nags or reverts when nothing lands | `/report` | off |
+
+\* The toolbox gate: `toolbox: false` in `<agent dir>/reactor.json` removes
+`tool-registry/` and `selector/` from the session entirely (ADR-0016).
+
 ## Built
 
 | Extension | Does |

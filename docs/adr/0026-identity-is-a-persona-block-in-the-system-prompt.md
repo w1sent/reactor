@@ -2,9 +2,11 @@
 
 `extensions/identity/` puts a working persona into the system prompt. The
 built-in identities cover the situations a security professional moves
-between — `reverse-engineer`, `cyber-forensics` (systems that experienced
-malware execution), `forensics` (what a user did on a system),
-`software-engineer`, `devops`, `publisher` — and an adhoc `custom` identity can be
+between — `reverse-engineer` (code-level artifact analysis), `cyber-forensics`
+(malware incident reconstruction), `forensics` (general and user-activity
+forensics), `software-engineer` (tooling for the analysis team),
+`infrastructure` (safe reproducible analysis infrastructure), `publisher`
+(defensible deliverables) — and an adhoc `custom` identity can be
 written in the session (`/identity write <text>`, or an external editor via
 `/identity editor`) and saved as a named, reusable one (`/identity save
 <name>`) once it has proven useful. Off by default; with no selection,

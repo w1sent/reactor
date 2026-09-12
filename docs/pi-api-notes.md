@@ -285,6 +285,23 @@ queues instead — which is what makes two extensions prompting from the same
 `agent_settled` a delay rather than a failure (`auto-continue/`,
 [ADR-0025](adr/0025-auto-continue-continues-after-automatic-compaction.md)).
 
+### Extension commands can complete their arguments — and must filter them themselves
+
+**[verified]** (pi 0.85.1) `RegisteredCommand.getArgumentCompletions(argumentText)`
+is called by `CombinedAutocompleteProvider` once a space follows the command
+name, with the *entire* argument text typed so far — and the chosen item's
+`value` replaces that entire text. Three consequences an extension must design
+around: the completions function has to parse subcommands out of the argument
+text itself (and return composed values like `"show <name>"` for the line to
+be runnable after acceptance); pi applies **no fuzzy filtering** to extension
+commands' suggestions (built-ins filter their own via
+`createFuzzyAutocompleteItems`), so the command must filter — a completion
+offering strings that merely *contain* the typed token reads as noise; and the
+loader spreads `registerCommand` options verbatim
+(`loader.js` `registerCommand`), so the callback survives to
+`extension.commands.get(name).getArgumentCompletions` and is testable through
+the harness (`identity/`, ADR-0026).
+
 ### Compaction primitives are exported, not internal
 
 **[verified]** (pi 0.83.0's `index.d.ts`) `calculateContextTokens`,

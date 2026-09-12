@@ -109,11 +109,10 @@ with `node:fs` instead of through `resources_discover`
 resolving the question this section used to leave open in `TODO.md`).
 
 ```
-prompts/scenarios/triage/
-  01-triage.md
-  02-static.md
-  03-dynamic.md
-  04-report.md
+prompts/scenarios/investigation/
+  01-scoping.md
+  ...
+  17-tooling.md
 ```
 
 Two frontmatter fields, hand-parsed rather than a full YAML parser: `title`

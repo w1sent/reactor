@@ -13,7 +13,7 @@ whether they are installed, and whether the ones that are services are actually
 running* — that gap is what REactor fills.
 
 See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
-full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
+full, `docs/adr/` for the decisions behind it, and `TODO.md` for what is built.
 
 > **Status: Milestones 1, 2 and 3 are built.** The `reactor` CLI, the
 > installer, the catalogue, the toolsets, scenarios, and the four RE-focused
@@ -31,8 +31,8 @@ full, `docs/adr/` for the decisions behind it, and `TODO.md` for the plan.
 > and `identity`, a persona in the system prompt with built-ins for the
 > scenarios a security professional moves between
 > ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).
-> `npm test` covers all of it: 81 tests on the CLI, 210 driving the
-> extensions against pi's own loader. See `TODO.md`.
+> `npm test` covers all of it: 81 tests on the CLI, 217 driving the
+> extensions against pi's own loader. A build record is in `TODO.md`.
 
 ## The idea in one screen
 

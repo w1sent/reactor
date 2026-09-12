@@ -30,6 +30,7 @@ import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 // ============================================================================
 // The built-in identities
@@ -211,6 +212,97 @@ function availableNames(): string {
 }
 
 // ============================================================================
+// Completion vocabulary
+// ============================================================================
+
+/** One line per built-in, for the autocomplete dropdown. */
+const BUILTIN_DESCRIPTIONS: Record<string, string> = {
+	"reverse-engineer": "code-level artifact analysis",
+	"cyber-forensics": "malware incident reconstruction",
+	forensics: "general and user-activity forensics",
+	"software-engineer": "tooling for the analysis team",
+	infrastructure: "analysis infrastructure and isolation",
+	publisher: "defensible deliverables",
+};
+
+const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
+	off: "switch identity off",
+	show: "view an identity's text",
+	write: "set an adhoc custom identity",
+	editor: "edit the custom identity in $EDITOR",
+	save: "save the custom identity under a name",
+	delete: "delete a saved identity",
+};
+
+/** Names that can be selected right now: built-ins, the custom one when it has text, and the user's saved ones. */
+function selectableNames(): string[] {
+	return [
+		...Object.keys(BUILTINS),
+		...(state.custom?.trim() ? ["custom"] : []),
+		...Object.keys(config.user),
+	];
+}
+
+function nameItems(): AutocompleteItem[] {
+	return selectableNames().map((name) => ({
+		value: name,
+		label: name,
+		description:
+			name === "custom" ? "adhoc custom identity" : (BUILTIN_DESCRIPTIONS[name] ?? "saved identity"),
+	}));
+}
+
+const NAME_TAKING_SUBCOMMANDS = new Set(["show", "save", "delete"]);
+
+function subcommandItems(): AutocompleteItem[] {
+	return Object.entries(SUBCOMMAND_DESCRIPTIONS).map(([value, description]) => ({ value, label: value, description }));
+}
+
+/**
+ * Argument completion for `/identity`. pi hands this the whole argument text
+ * typed after the command name and replaces that text with the chosen item's
+ * `value` -- it applies no fuzzy filtering of its own to extension commands,
+ * so the filtering here is ours: case-insensitive substring on the word being
+ * typed. Subcommands that take an identity name complete as
+ * `"<subcommand> <name>"` so the accepted line is runnable as-is.
+ */
+function argumentCompletions(argumentText: string): AutocompleteItem[] | null {
+	const trimmed = argumentText.replace(/^\s+/, "");
+	const endsWithSpace = /\s$/.test(trimmed);
+	const tokens = trimmed.split(/\s+/).filter(Boolean);
+
+	// `/identity ` with nothing typed: everything selectable plus the subcommands.
+	if (trimmed === "") return [...nameItems(), ...subcommandItems()];
+
+	// A subcommand and a fresh argument: complete identity names after it.
+	if (endsWithSpace) {
+		const head = tokens[0];
+		if (!NAME_TAKING_SUBCOMMANDS.has(head)) return null;
+		return nameItems().map((item) => ({ ...item, value: `${head} ${item.value}` }));
+	}
+
+	// One word, no trailing space: it could be either an identity name or a subcommand.
+	if (tokens.length === 1) {
+		const prefix = tokens[0].toLowerCase();
+		const candidates = [...nameItems(), ...subcommandItems()].filter((item) =>
+			item.value.toLowerCase().startsWith(prefix),
+		);
+		return candidates.length > 0 ? candidates : null;
+	}
+
+	// `<subcommand> <partial-name>`: complete the name in place.
+	if (tokens.length === 2) {
+		const [head, tail] = tokens;
+		if (!NAME_TAKING_SUBCOMMANDS.has(head)) return null;
+		const candidates = nameItems().filter((item) => item.value.toLowerCase().startsWith(tail.toLowerCase()));
+		return candidates.length > 0 ? candidates.map((item) => ({ ...item, value: `${head} ${item.value}` })) : null;
+	}
+
+	// Longer input is the user's own words (write <text>); never complete over it.
+	return null;
+}
+
+// ============================================================================
 // External editor (same shape as context-editor's manual mode, no shared
 // module -- ADR-0014)
 // ============================================================================
@@ -298,6 +390,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("identity", {
 		description:
 			"Show the active identity and the available ones (no arg), select one (/identity <name>), switch off (/identity off), view text (/identity show [name]), write an adhoc custom identity (/identity write <text> or /identity editor), save it (/identity save <name>) or delete a saved one (/identity delete <name>).",
+		getArgumentCompletions: argumentCompletions,
 		handler: async (args, ctx) => {
 			const arg = (args || "").trim();
 			if (!arg) {

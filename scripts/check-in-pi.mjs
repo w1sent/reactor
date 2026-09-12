@@ -94,7 +94,7 @@ const DEFAULT_COMMANDS = [
 	"/reactor-status mute adb",
 	"/reactor-status unmute adb",
 	"/reactor-scenario list",
-	"/reactor-scenario start triage",
+	"/reactor-scenario start investigation",
 	"/reactor-scenario status",
 	"/reactor-scenario next smoke test",
 	"/reactor-scenario stop",

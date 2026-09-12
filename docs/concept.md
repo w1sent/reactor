@@ -183,9 +183,12 @@ tool result and redirects it. Like the rest of REactor it persuades; it does not
 enforce — a step may activate a toolset as it advances, but never deactivates
 the one before it.
 
-The first scenario ships with the package: `triage` — triage, static, dynamic,
-report — the same four phases used as the illustrative example throughout this
-document and in ADR-0009.
+The first scenario ships with the package: `investigation` — seventeen stages
+covering the full arc from scoping and evidence acquisition through triage,
+static, dynamic and deep analysis, timeline, detection, reporting and
+remediation to analysis-derived tooling. The four phases used as the
+illustrative example throughout this document and in ADR-0009 live inside it
+as stages C, D, E and N.
 
 ## What REactor deliberately does not do
 

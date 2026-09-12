@@ -281,7 +281,7 @@ out to be annoying in practice.
 Point the diff at `vimdiff`/`delta` rather than plain `diff(1)`. Convenience only.
 
 ### More than one scenario, and richer scenario tooling
-Only `triage` exists. Whether more scenarios want `reactor-scenario list` to
+Only `investigation` exists. Whether more scenarios want `reactor-scenario list` to
 group or tag them, whether a step should be able to name more than one
 toolset, and whether `pi.setActiveTools()`-based dynamic visibility for
 `reactor_step_complete` is worth the shared-state risk

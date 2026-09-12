@@ -2,7 +2,7 @@
  * scenario: does reactor_step_complete actually advance, and restore across a reload?
  *
  * Uses a throwaway two-step scenario (`REACTOR_SCENARIOS_DIR`, ADR-0017)
- * rather than this package's own shipped `triage` scenario for the state
+ * rather than this package's own shipped `investigation` scenario for the state
  * machine, so assertions do not break because someone reworded a step's
  * prose. One test runs the real shipped scenario end to end and checks its
  * *shape* only, the way `TestShippedConfig` does for the catalogue.
@@ -264,7 +264,7 @@ test("a stop persisted before reload restores to no scenario active", needsPi, (
 // The shipped scenario -- shape only, like TestShippedConfig
 // ---------------------------------------------------------------------------
 
-test("the shipped triage scenario is a real, orderable, four-step chain", needsPi, () =>
+test("the shipped investigation scenario is a real, orderable, seventeen-step chain", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		// Overrides the fixture's own isolated (empty) scenarios dir with the
 		// real one this package ships, for this test only.
@@ -273,19 +273,19 @@ test("the shipped triage scenario is a real, orderable, four-step chain", needsP
 		const { ctx, calls } = makeContext(fixture, { entries });
 
 		await extension.commands.get("reactor-scenario").handler("list", ctx);
-		assert.match(lastNotify(calls).message, /triage/);
+		assert.match(lastNotify(calls).message, /investigation/);
 
-		await extension.commands.get("reactor-scenario").handler("start triage", ctx);
-		assert.match(sent[0].content, /Step 1\/4:/);
+		await extension.commands.get("reactor-scenario").handler("start investigation", ctx);
+		assert.match(sent[0].content, /Step 1\/17:/);
 
 		const tool = extension.tools.get("reactor_step_complete").definition;
 		let result;
-		for (let i = 0; i < 3; i++) {
+		for (let i = 0; i < 16; i++) {
 			result = await tool.execute(`id${i}`, { summary: `step ${i + 1} done` }, undefined, undefined, ctx);
 			// Every real step declares its own title -- never the "step N"
 			// placeholder a file with no frontmatter would fall back to.
-			assert.doesNotMatch(result.content[0].text, /Step \d+\/4: step \d+/);
+			assert.doesNotMatch(result.content[0].text, /Step \d+\/17: step \d+/);
 		}
-		result = await tool.execute("id3", { summary: "report written" }, undefined, undefined, ctx);
-		assert.match(result.content[0].text, /scenario "triage" complete -- 4 step\(s\) done/);
+		result = await tool.execute("id16", { summary: "tooling delivered" }, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /scenario "investigation" complete -- 17 step\(s\) done/);
 	}));

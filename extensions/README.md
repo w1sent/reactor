@@ -253,10 +253,10 @@ awaited via `press()`, which waits for the overlay to stop being busy rather
 than guessing at a delay.
 
 `scenario.test.mjs` adds one more: `REACTOR_SCENARIOS_DIR` isolates the state
-machine's tests from this package's own shipped `prompts/scenarios/triage/`,
+machine's tests from this package's own shipped `prompts/scenarios/investigation/`,
 the same way `REACTOR_CONFIG_DIR` isolates everything else from
 `~/.pi/reactor/`. One test runs that real shipped scenario end to end and
-checks its *shape* — four steps, each with its own title — rather than its
+checks its *shape* — seventeen steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.
 

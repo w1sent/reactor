@@ -71,8 +71,10 @@ tool with no upstream skill at all is normal and simply relies on `--help`.
 _Avoid_: vendored skill, external skill, third-party doc.
 
 **Scenario**:
-A multi-step analysis workflow expressed as prompt templates — triage, then
-static, then dynamic, then report. The agent advances by calling
+A multi-step analysis workflow expressed as prompt templates — the shipped
+`investigation` scenario runs from scoping and evidence acquisition through
+triage, analysis, timeline, detection and reporting to lessons learned and
+analysis-derived tooling. The agent advances by calling
 `reactor_step_complete`, whose *return value is the next step's briefing*.
 Scenarios steer the agent's sequencing; like everything else in REactor they
 persuade rather than enforce.

@@ -44,7 +44,11 @@ permanently. The body and `references/` cost nothing until read. So the count is
 what to be careful about, not the length.
 
 Currently: `pi-subagent` (delegating to a fresh pi subagent), `decompile-python`,
-`lnav`, `bindiff`, and `reactor-reporting` (the exception above).
+`lnav`, `bindiff`, `reactor-reporting` (the exception above), and
+`extend-reactor` (a development skill -- how to add a tool or toolset to the
+catalogue; invoked by the user when extending REactor itself, so it has no
+`requires:` and needs none: the files it teaches about are in the repo, not
+the machine's tool state).
 
 ### Format
 

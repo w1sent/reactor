@@ -302,6 +302,31 @@ loader spreads `registerCommand` options verbatim
 `extension.commands.get(name).getArgumentCompletions` and is testable through
 the harness (`identity/`, ADR-0026).
 
+### Extensions call the model through `ctx.modelRegistry` — never through pi-ai directly
+
+**[verified]** (pi 0.85.1, the hard way) every command and event context
+carries `modelRegistry: ModelRegistry` — a facade whose doc comment says it is
+"exposed to extensions" while "coding-agent internals use ModelRuntime
+directly". Its `complete(model, context)` resolves auth **itself**, including
+custom providers from `models.json` (literal, `$ENV`, `!command` keys) and
+OAuth refresh. Bypassing it is the difference between working and failing:
+pi-ai's `complete()` from `@earendil-works/pi-ai` requires the caller to pass
+`options.apiKey` — every provider implementation throws
+`No API key for provider: <id>` without one, *even for local servers* — and
+`readStoredCredential` (pi's root export) only reads `auth.json`, never
+`models.json`, so a hand-rolled key resolution misses custom providers by
+construction. `goal-setting/`'s `/derive` is the worked example: through
+`ctx.modelRegistry` it works against a models.json-defined ollama; through
+pi-ai directly it failed in exactly that way.
+
+Also verified on the same surface: the registry returns provider failures as
+`stopReason: "error"` + `errorMessage` rather than throwing, so the extension
+must surface them itself; and for offline tests, fake `modelRegistry` in the
+harness with a stub `complete` returning `fauxAssistantMessage` shapes
+(`@earendil-works/pi-ai/compat`'s faux provider — the harness exports the
+module as `piAiCompat`; pi-ai's package exports are ESM-only, so
+`require.resolve` cannot see the `./compat` subpath).
+
 ### Compaction primitives are exported, not internal
 
 **[verified]** (pi 0.83.0's `index.d.ts`) `calculateContextTokens`,

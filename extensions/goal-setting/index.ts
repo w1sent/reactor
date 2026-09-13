@@ -45,13 +45,15 @@ import { join } from "node:path";
 
 import { Type } from "typebox";
 import type { ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getAgentDir, serializeConversation } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 // ============================================================================
 // Types
 // ============================================================================
 
 const CUSTOM_TYPE = "pi-goal-setting";
+const STATUS_KEY = "goal-setting";
 
 interface Step {
 	summary: string;
@@ -70,12 +72,15 @@ interface GoalSettingConfig {
 	softStepLimit: number;
 	maxDescription: number;
 	statusWords: number;
+	/** Char budget for the session tail handed to the derive call. */
+	deriveContextChars: number;
 }
 
 const DEFAULT_CONFIG: GoalSettingConfig = {
 	softStepLimit: 20,
 	maxDescription: 80,
 	statusWords: 3,
+	deriveContextChars: 24_000,
 };
 
 // getAgentDir(), not homedir() + ".pi/agent" by hand: it is also what respects
@@ -102,6 +107,26 @@ function toolGateMessage(): string | undefined {
 	if (!isEnabled()) return "goal-setting is off. Run /manifest on to enable it.";
 	if (!hasGoal()) return "update_steps is inactive until a session goal is set. Set one with /goal <text>.";
 	return undefined;
+}
+
+// ============================================================================
+// Footer indicator: visible only while the extension is active AND has
+// content -- a fresh session shows nothing, a paused one shows nothing.
+// ============================================================================
+
+function statusText(): string | undefined {
+	if (!isEnabled()) return undefined;
+	const hasContent = Boolean(hasGoal() || state.guidelines?.trim() || state.steps.length > 0);
+	if (!hasContent) return undefined;
+	return hasGoal() ? `goal: ${truncate(state.goal!.trim(), 48)}` : "manifest: set";
+}
+
+function refreshFooter(ctx: ExtensionContext): void {
+	try {
+		ctx.ui.setStatus(STATUS_KEY, statusText());
+	} catch {
+		// no terminal -- print and json modes carry no footer
+	}
 }
 
 // ============================================================================
@@ -163,6 +188,9 @@ function normalizeState(raw: unknown): SessionState {
  * prompt stays byte-identical, which is what the prompt cache needs.
  */
 function manifestBlock(): string | undefined {
+	// The switch pauses the whole extension: block and tool both go quiet,
+	// while the goal/guidelines/steps state is preserved for /manifest on.
+	if (!isEnabled()) return undefined;
 	const parts: string[] = [];
 	if (hasGoal()) {
 		parts.push("## Session Manifest");
@@ -190,6 +218,192 @@ function manifestBlock(): string | undefined {
 }
 
 // ============================================================================
+// Derive: goal / guidelines / steps from the session, via a direct provider
+// call -- no chat message, no agent loop, no tools. The result is applied
+// straight to the manifest state, exactly like /goal writes it.
+// ============================================================================
+
+const DERIVE_SYSTEM =
+	"You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.";
+
+function deriveTask(scope: "all" | "goal" | "guidelines" | "steps"): string {
+	const shape =
+		scope === "goal"
+			? '{"goal": "<one sentence: what this session is trying to achieve>"}'
+		: scope === "guidelines"
+			? '{"guidelines": "<standing constraints the work implies, or \"\" if none>"}'
+		: scope === "steps"
+			? '{"steps": [{"summary": "<conceptual step, not a micro-action>", "status": "<3 words>"}]}'
+			: '{"goal": "<one sentence>", "guidelines": "<standing constraints, or \"\" if none>", "steps": [{"summary": "<conceptual step>", "status": "<3 words>"}]}';
+	const what =
+		scope === "goal"
+			? "the session goal"
+		: scope === "guidelines"
+			? "standing guidelines"
+		: scope === "steps"
+			? "the steps (covering the REMAINING work)"
+			: "the goal, guidelines and steps";
+	return (
+		`Based on the transcript below, derive ${what} for this session. ` +
+		`Respond with ONLY a JSON object of exactly this shape: ${shape}. ` +
+		`Steps cover what remains, not history; statuses are 3 words each.\n\n` +
+		`--- session transcript (tail) ---\n`
+	);
+}
+
+/** Own copy -- extensions share no modules (ADR-0014). Same approach as history-tools. */
+function serializeBranchTail(sm: SessionManager, budget: number): string {
+	const blocks: string[] = [];
+	for (const entry of sm.getBranch()) {
+		let text = "";
+		try {
+			if (entry.type === "message") {
+				text = serializeConversation(convertToLlm([entry.message]));
+			} else if (entry.type === "custom_message") {
+				const content = (entry as any).content;
+				text = `[Custom]: ${typeof content === "string" ? content : (content ?? []).filter((c: any) => c.type === "text").map((c: any) => c.text).join(" ")}`;
+			} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+				text = `[History summary]: ${(entry as any).summary ?? ""}`;
+			}
+		} catch {
+			text = "";
+		}
+		if (text.trim()) blocks.push(text.trim());
+	}
+	// newest last: accumulate from the end while under budget
+	let out = "";
+	for (let i = blocks.length - 1; i >= 0; i--) {
+		const candidate = out ? `${blocks[i]}\n\n${out}` : blocks[i];
+		if (candidate.length > budget && out) break;
+		out = candidate;
+	}
+	return out;
+}
+
+/** Pull the first JSON object out of a model response, fences and prose notwithstanding. */
+function extractJson(text: string): any | undefined {
+	const stripped = text.replace(/```(?:json)?/g, "").trim();
+	const start = stripped.indexOf("{");
+	const end = stripped.lastIndexOf("}");
+	if (start === -1 || end === -1 || end <= start) return undefined;
+	try {
+		return JSON.parse(stripped.slice(start, end + 1));
+	} catch {
+		return undefined;
+	}
+}
+
+interface DerivedParts {
+	goal?: string;
+	guidelines?: string;
+	steps?: Step[];
+}
+
+function parseDerivation(text: string, scope: string): DerivedParts | undefined {
+	const parsed = extractJson(text);
+	if (!parsed || typeof parsed !== "object") return undefined;
+	const parts: DerivedParts = {};
+	if ((scope === "all" || scope === "goal") && typeof parsed.goal === "string" && parsed.goal.trim()) {
+		parts.goal = parsed.goal.trim();
+	}
+	if ((scope === "all" || scope === "guidelines") && typeof parsed.guidelines === "string") {
+		parts.guidelines = parsed.guidelines.trim();
+	}
+	if ((scope === "all" || scope === "steps") && Array.isArray(parsed.steps)) {
+		const steps = parsed.steps
+			.filter((st: any) => st && typeof st.summary === "string" && st.summary.trim())
+			.map((st: any) => ({
+				summary: truncate(st.summary, config.maxDescription),
+				status: truncateWords(typeof st.status === "string" ? st.status : "", config.statusWords),
+			}));
+		parts.steps = steps;
+	}
+	if (parts.goal === undefined && parts.guidelines === undefined && parts.steps === undefined) return undefined;
+	return parts;
+}
+
+async function callProvider(ctx: any, task: string): Promise<string> {
+	const model = ctx.model;
+	if (!model) throw new Error("no model selected -- /model first");
+	// pi's own facade, exposed to extensions: it resolves auth for the
+	// configured model itself -- including custom providers from models.json,
+	// whose keys readStoredCredential (auth.json) never sees.
+	const registry = ctx.modelRegistry;
+	if (!registry?.complete) throw new Error("no model registry in this context");
+	const response = await registry.complete(model, {
+		systemPrompt: DERIVE_SYSTEM,
+		messages: [{ role: "user", content: task + serializeBranchTail(ctx.sessionManager, config.deriveContextChars), timestamp: Date.now() }],
+	});
+	if (response.stopReason === "error") {
+		throw new Error(response.errorMessage ?? "provider error");
+	}
+	const text = (response.content ?? [])
+		.filter((b: any) => b.type === "text")
+		.map((b: any) => b.text)
+		.join("")
+		.trim();
+	if (!text) throw new Error("the model returned no text");
+	return text;
+}
+
+function applyDerived(pi: ExtensionAPI, parts: DerivedParts): string[] {
+	const applied: string[] = [];
+	if (parts.goal !== undefined) {
+		state = { ...state, goal: parts.goal };
+		applied.push(`goal: ${parts.goal}`);
+	}
+	if (parts.guidelines !== undefined) {
+		state = { ...state, guidelines: parts.guidelines };
+		applied.push("guidelines");
+	}
+	if (parts.steps !== undefined) {
+		state = { ...state, steps: parts.steps };
+		applied.push(`steps: ${parts.steps.length}`);
+	}
+	pi.appendEntry(CUSTOM_TYPE, state);
+	return applied;
+}
+
+let deriving = false;
+
+async function runDerive(pi: ExtensionAPI, ctx: any, scope: "all" | "goal" | "guidelines" | "steps"): Promise<void> {
+	if (deriving) {
+		ctx.ui.notify("derive: already running -- wait for it to finish", "warning");
+		return;
+	}
+	deriving = true;
+	try {
+		const text = await callProvider(ctx, deriveTask(scope));
+		const parts = parseDerivation(text, scope);
+		if (!parts) {
+			ctx.ui.notify("derive: the response was not the requested JSON -- nothing applied", "warning");
+			return;
+		}
+		const applied = applyDerived(pi, parts);
+		refreshFooter(ctx);
+		ctx.ui.notify(`derive: ${applied.join(", ")} -- /frame to review`, "info");
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		ctx.ui.notify(`derive failed: ${message}`, "error");
+	} finally {
+		deriving = false;
+	}
+}
+
+const DERIVE_SCOPES = ["all", "goal", "guidelines", "steps"];
+
+function deriveCompletions(argumentText: string): AutocompleteItem[] | null {
+	const prefix = argumentText.trim().toLowerCase();
+	const items: AutocompleteItem[] = DERIVE_SCOPES.map((scope) => ({
+		value: scope,
+		label: scope,
+		description: scope === "all" ? "derive goal, guidelines and steps" : `derive the ${scope} only`,
+	}));
+	const candidates = prefix ? items.filter((item) => item.value.startsWith(prefix)) : items;
+	return candidates.length > 0 ? candidates : null;
+}
+
+// ============================================================================
 // Extension
 // ============================================================================
 
@@ -199,10 +413,12 @@ export default function (pi: ExtensionAPI) {
 	// ---- session lifecycle ------------------------------------------------
 	pi.on("session_start", (_event, ctx) => {
 		loadSessionState(ctx.sessionManager);
+		refreshFooter(ctx);
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		state = { steps: [] };
+		refreshFooter(ctx);
 	});
 
 	// ---- the manifest block into the system prompt ------------------------
@@ -217,12 +433,20 @@ export default function (pi: ExtensionAPI) {
 		description: "Set the session goal (survives /resume). Activates update_steps.",
 		handler: (args, ctx) => {
 			const text = (args || "").trim();
+			if (text.toLowerCase() === "clear") {
+				state = { ...state, goal: undefined };
+				pi.appendEntry(CUSTOM_TYPE, state);
+				refreshFooter(ctx);
+				ctx.ui.notify("goal cleared", "info");
+				return;
+			}
 			if (!text) {
-				ctx.ui.notify("usage: /goal <text>", "warning");
+				ctx.ui.notify("usage: /goal <text> | /goal clear", "warning");
 				return;
 			}
 			state = { ...state, goal: text };
 			pi.appendEntry(CUSTOM_TYPE, state);
+			refreshFooter(ctx);
 			ctx.ui.notify(`goal set: ${text}`, "info");
 		},
 	});
@@ -231,26 +455,59 @@ export default function (pi: ExtensionAPI) {
 		description: "Set session-specific guidelines (goes into the system prompt).",
 		handler: (args, ctx) => {
 			const text = (args || "").trim();
+			if (text.toLowerCase() === "clear") {
+				state = { ...state, guidelines: undefined };
+				pi.appendEntry(CUSTOM_TYPE, state);
+				refreshFooter(ctx);
+				ctx.ui.notify("guidelines cleared", "info");
+				return;
+			}
 			if (!text) {
-				ctx.ui.notify("usage: /guidelines <text>", "warning");
+				ctx.ui.notify("usage: /guidelines <text> | /guidelines clear", "warning");
 				return;
 			}
 			state = { ...state, guidelines: text };
 			pi.appendEntry(CUSTOM_TYPE, state);
+			refreshFooter(ctx);
 			ctx.ui.notify(`guidelines set: ${text}`, "info");
 		},
 	});
 
+	const manifestCompletions = (argumentText: string): AutocompleteItem[] => {
+		const prefix = argumentText.trim().toLowerCase();
+		const items: AutocompleteItem[] = [
+			{ value: "on", label: "on", description: "activate the update_steps switch" },
+			{ value: "off", label: "off", description: "deactivate the update_steps switch" },
+			{ value: "clear", label: "clear", description: "clear goal, guidelines and steps" },
+		];
+		const candidates = prefix ? items.filter((item) => item.value.startsWith(prefix)) : items;
+		return candidates.length > 0 ? candidates : null;
+	};
+
 	pi.registerCommand("manifest", {
-		description: "Toggle goal-setting's update_steps switch (or /manifest on|off). Shows status with no arg.",
+		description:
+			"Toggle goal-setting's update_steps switch (/manifest on|off), clear the whole manifest (/manifest clear), or show status with no arg.",
+		getArgumentCompletions: manifestCompletions,
 		handler: (args, ctx) => {
 			const arg = (args || "").trim().toLowerCase();
+			if (arg === "clear") {
+				state = { ...state, goal: undefined, guidelines: undefined, steps: [] };
+				pi.appendEntry(CUSTOM_TYPE, state);
+				refreshFooter(ctx);
+				ctx.ui.notify("manifest cleared -- goal, guidelines and steps are gone", "info");
+				return;
+			}
 			let next: boolean;
 			if (arg === "on") next = true;
 			else if (arg === "off") next = false;
-			else next = !isEnabled();
+			else if (arg === "") next = !isEnabled();
+			else {
+				ctx.ui.notify(`manifest: unknown argument "${arg}" -- try on, off or clear`, "warning");
+				return;
+			}
 			state = { ...state, enabled: next };
 			pi.appendEntry(CUSTOM_TYPE, state);
+			refreshFooter(ctx);
 			ctx.ui.notify(`goal-setting ${next ? "enabled" : "disabled"}`, next ? "info" : "warning");
 		},
 	});
@@ -259,6 +516,20 @@ export default function (pi: ExtensionAPI) {
 		description: "View the current manifest (goal, guidelines, steps, switch state).",
 		handler: (_args, ctx) => {
 			ctx.ui.notify(buildFrameView(), "info");
+		},
+	});
+
+	pi.registerCommand("derive", {
+		description:
+			"Derive the manifest from this session with a direct model call -- no chat, no tools. /derive [all|goal|guidelines|steps]; writes the result straight into the manifest.",
+		getArgumentCompletions: deriveCompletions,
+		handler: async (args, ctx) => {
+			const sub = (args || "").trim().toLowerCase() || "all";
+			if (!DERIVE_SCOPES.includes(sub)) {
+				ctx.ui.notify(`derive: unknown scope "${sub}" -- try all, goal, guidelines or steps`, "warning");
+				return;
+			}
+			await runDerive(pi, ctx, sub as "all" | "goal" | "guidelines" | "steps");
 		},
 	});
 

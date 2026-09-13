@@ -69,6 +69,17 @@ export const piTui = PI_DIST
 		)
 	: {};
 
+// pi-ai's compat surface (complete, registerFauxProvider). pi-ai is
+// ESM-only -- require.resolve cannot reach its "./compat" subpath, so this
+// resolves the file directly, exactly where pi's own loader imports it from.
+export const piAiCompat = PI_DIST
+	? await import(
+			pathToFileURL(
+				path.join(PI_DIST, "..", "node_modules/@earendil-works/pi-ai/dist/compat.js"),
+			).href
+		)
+	: {};
+
 // ---------------------------------------------------------------------------
 // The fixture catalogue
 // ---------------------------------------------------------------------------
@@ -480,6 +491,11 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  * extensions never read either). `model` stays undefined by default, the
  * same as a context with no model selected yet.
  *
+ * `modelRegistry` -- pi's ModelRegistry facade, on real contexts only. A
+ * fake `complete` records calls and returns scripted messages
+ * (goal-setting/'s /derive is the user); omitting it makes any registry
+ * access fail, which is what a derive test that asserts failure needs.
+ *
  * `guard` -- pass `loadExtension()`'s returned `guard` here too, and
  * `ctx.reload()` poisons the *whole* `ctx`, the same way pi's own runtime
  * invalidates a captured ctx/pi after `await ctx.reload()`: any further
@@ -510,6 +526,7 @@ export function makeContext(
 		entries = [],
 		branch = [],
 		model,
+		modelRegistry,
 		systemPrompt = "",
 		guard = { stale: false },
 		selectAnswers = [],
@@ -537,6 +554,7 @@ export function makeContext(
 		mode,
 		hasUI: mode === "tui" || mode === "rpc",
 		model,
+		modelRegistry,
 		getSystemPrompt: () => systemPrompt,
 		sessionManager: {
 			getEntries: wholeBranch,

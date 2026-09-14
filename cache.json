@@ -1,0 +1,348 @@
+{
+  "detect": {
+    "aapt2": {
+      "path": "/usr/bin/aapt2",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "2.20-15087165"
+    },
+    "adb": {
+      "path": "/usr/bin/adb",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "aleapp": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "angr": {
+      "path": null,
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "apktool": {
+      "path": "/usr/bin/apktool",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "bindiff": {
+      "path": "/usr/local/bin/bindiff",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "BinDiff 8 (@internal, Aug 22 202"
+    },
+    "binwalk": {
+      "path": "/usr/bin/binwalk",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "bn": {
+      "path": "/home/user/.local/bin/bn",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "bulk-extractor": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "capa": {
+      "path": "/home/user/env-analysis/bin/capa",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "9.4.0"
+    },
+    "cqlsh": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "decompile-python": {
+      "path": "/home/user/env-analysis/bin/python3",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "dissect": {
+      "path": "/home/user/env-analysis/bin/target-query",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "exiftool": {
+      "path": "/usr/bin/vendor_perl/exiftool",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "13.55"
+    },
+    "flare-floss": {
+      "path": "/home/user/env-analysis/bin/floss",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "3.1.1"
+    },
+    "foremost": {
+      "path": "/usr/bin/foremost",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "frida": {
+      "path": "/home/user/env-analysis/bin/frida",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "17.9.7"
+    },
+    "fseventsparser": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "gdb": {
+      "path": "/usr/bin/gdb",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "17.2"
+    },
+    "hashcat": {
+      "path": "/usr/bin/hashcat",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "1.2"
+    },
+    "ileapp": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "ilspycmd": {
+      "path": "/home/user/.dotnet/tools/ilspycmd",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "10.1.1.8388"
+    },
+    "influx": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.3933122,
+      "version": null
+    },
+    "ipsw": {
+      "path": "/usr/bin/ipsw",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "jadx": {
+      "path": "/usr/bin/jadx",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "1.5.6"
+    },
+    "joern": {
+      "path": "/usr/local/bin/joern",
+      "status": "present",
+      "ts": 1789390362.8689106,
+      "version": null
+    },
+    "jq": {
+      "path": "/usr/bin/jq",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "lief": {
+      "path": null,
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "lldb": {
+      "path": "/usr/bin/lldb",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "22.1.8"
+    },
+    "lnav": {
+      "path": "/usr/bin/lnav",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "0.14.1"
+    },
+    "mac-apt": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "mobilecli": {
+      "path": "/usr/bin/mobilecli",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "mongosh": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "mvt": {
+      "path": "/usr/bin/mvt-ios",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "objection": {
+      "path": "/home/user/env-analysis/bin/objection",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "oletools": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "photorec": {
+      "path": "/usr/bin/photorec",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "pi-subagent": {
+      "path": "/home/user/.local/bin/pi",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "0.85.1"
+    },
+    "plaso": {
+      "path": null,
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "20260720"
+    },
+    "redis-cli": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "ripgrep": {
+      "path": "/usr/bin/rg",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "15.2.0"
+    },
+    "rr": {
+      "path": "/usr/bin/rr",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "scapy": {
+      "path": null,
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "sleuthkit": {
+      "path": "/usr/bin/fls",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "4.15.0"
+    },
+    "spotlight-parser": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "sqlite3": {
+      "path": "/usr/bin/sqlite3",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "3.53.4"
+    },
+    "ssdeep": {
+      "path": "/usr/bin/ssdeep",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "tree-sitter": {
+      "path": null,
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "tshark": {
+      "path": "/usr/bin/tshark",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "usql": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "volatility3": {
+      "path": "/usr/bin/vol",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "vxsig": {
+      "path": "/usr/local/bin/vxsig",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "yara": {
+      "path": "/usr/bin/yara",
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": "4.5.8"
+    },
+    "z3": {
+      "path": null,
+      "status": "present",
+      "ts": 1789390383.491091,
+      "version": null
+    },
+    "zeek": {
+      "path": null,
+      "status": "absent",
+      "ts": 1789390383.491091,
+      "version": null
+    }
+  },
+  "service": {
+    "adb": {
+      "detail": "0 devices",
+      "state": "up",
+      "ts": 1789390383.491091
+    },
+    "bn": {
+      "detail": null,
+      "state": "down",
+      "ts": 1789390383.491091
+    }
+  },
+  "stamp": "1789390263165463141:43379",
+  "version": 1
+}

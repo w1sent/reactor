@@ -104,6 +104,7 @@ class Tool:
     detect_value: str
     tags: list[str] = field(default_factory=list)
     version_argv: list[str] | None = None
+    source: str | None = None
     service_probe: list[str] | None = None
     service_label: str | None = None
     service_count: dict | None = None
@@ -216,6 +217,16 @@ def load_catalogue() -> Catalogue:
         install = spec.get("install") or {}
         if not all(isinstance(v, str) for v in install.values()):
             raise ReactorError(f"{where}.install: every recipe must be a string")
+        source = spec.get("source")
+        if source is not None:
+            # ADR-0028: provenance is https or nothing -- the field exists so a
+            # manual install can be checked against where the tool really
+            # comes from, and an insecure URL defeats that purpose.
+            if not isinstance(source, str) or not source.startswith("https://"):
+                raise ReactorError(
+                    f"{where}.source: must be an https:// URL (the tool's true "
+                    "upstream) -- see ADR-0028"
+                )
         tools[tid] = Tool(
             id=tid,
             name=spec["name"],
@@ -225,6 +236,7 @@ def load_catalogue() -> Catalogue:
             detect_value=value,
             tags=_str_list(spec.get("tags"), f"{where}.tags"),
             version_argv=_str_list(spec.get("version"), f"{where}.version") or None,
+            source=source,
             service_probe=_str_list(service.get("probe"), f"{where}.service.probe") or None,
             service_label=service.get("label"),
             service_count=service.get("count"),
@@ -673,6 +685,7 @@ def describe(
             "id": t.id,
             "name": t.name,
             "desc": t.desc,
+            "source": t.source,
             "invoke": t.invoke,
             "tags": t.tags,
             "detect": {"kind": t.detect_kind, "value": t.detect_value},
@@ -924,6 +937,8 @@ def render_tool_show(entry: dict) -> str:
     out.append(f"  tags      {', '.join(entry['tags']) or '-'}")
     d = entry["detect"]
     out.append(f"  detect    {d['kind']} = {d['value']}")
+    if entry.get("source"):
+        out.append(f"  source    {entry['source']}")
     svc = entry.get("service")
     if svc:
         detail = f" ({svc['detail']})" if svc.get("detail") else ""
@@ -1455,6 +1470,12 @@ def _install_python_all(args) -> int:
             f"--method does not apply to {DECOMPILE_PYTHON_ALL_ID!r}; it always uses "
             "whichever supported package manager `[platform].prefer` ranks first"
         )
+    if getattr(args, "auto_install_manual", False) or getattr(args, "force_install_manual", False):
+        raise ReactorError(
+            f"--auto-install-manual/--force-install-manual do not apply to "
+            f"{DECOMPILE_PYTHON_ALL_ID!r}; it has no manual path -- its manual note "
+            "describes the platform's own repos, which the default path already uses"
+        )
 
     cat = load_catalogue()
     order = {mid: i for i, mid in enumerate(cat.prefer)}
@@ -1521,6 +1542,19 @@ def cmd_install(args) -> int:
     if args.id == [DECOMPILE_PYTHON_ALL_ID]:
         return _install_python_all(args)
 
+    manual_auto = getattr(args, "auto_install_manual", False)
+    manual_force = getattr(args, "force_install_manual", False)
+    if manual_auto and manual_force:
+        raise ReactorError(
+            "--auto-install-manual and --force-install-manual are mutually exclusive: "
+            "one makes the oneliner a fallback, the other an override"
+        )
+    if (manual_auto or manual_force) and args.method:
+        raise ReactorError(
+            "--method picks among manager recipes; the manual flags pick the "
+            "manual-install-oneliner instead (ADR-0027)"
+        )
+
     cat = load_catalogue()
     toolsets = load_toolsets()
     state = load_state()
@@ -1544,21 +1578,37 @@ def cmd_install(args) -> int:
             skipped.append({"tool": e["id"], "reason": "already present"})
             continue
         inst = e["install"]
+        oneliner = inst["notes"].get("manual-install-oneliner")
         recipe = None
-        if args.method:
+        if manual_force:
+            if oneliner is None:
+                skipped.append({"tool": e["id"], "reason": "no manual-install-oneliner"})
+                continue
+            # Never sudo-prefixed (ADR-0027): an upstream build that needs root
+            # is what the `manual` note is for; the oneliner targets the user's
+            # own prefix and asks for nothing it cannot do as itself.
+            recipe = {"method": "manual", "command": oneliner, "sudo": False}
+        elif args.method:
             recipe = next((c for c in inst["candidates"] if c["method"] == args.method), None)
             if recipe is None:
                 skipped.append({"tool": e["id"], "reason": f"no runnable {args.method} recipe"})
                 continue
         else:
             recipe = inst["recommended"]
+            if recipe is None and manual_auto and oneliner is not None:
+                recipe = {"method": "manual", "command": oneliner, "sudo": False}
         if recipe is None:
             note = next(iter(inst["notes"].items()), None)
-            skipped.append({
-                "tool": e["id"],
-                "reason": f"no recipe for this machine; ({note[0]}) {note[1]}" if note
-                else "no recipe for this machine",
-            })
+            reason = (f"no recipe for this machine; ({note[0]}) {note[1]}" if note
+                      else "no recipe for this machine")
+            if oneliner is not None:
+                reason += (" -- a manual-install-oneliner exists; re-run with "
+                           "--auto-install-manual to use it")
+            skipped.append({"tool": e["id"], "reason": reason})
+            continue
+        if recipe["method"] == "manual":
+            plan.append({"tool": e["id"], **recipe,
+                         "argv": ["sh", "-c", recipe["command"]]})
             continue
         argv = _recipe_argv(recipe)
         if venv_dir is not None and recipe["method"] == "pip":
@@ -1600,11 +1650,21 @@ def cmd_install(args) -> int:
 
     ran = []
     for p in plan:
-        output, captured = None, ""
+        output, captured, cwd = None, "", None
+        if p["method"] == "manual":
+            # The oneliner's scratch dir doubles as its install dir (ADR-0027):
+            # recreated per run so `git clone && ...` chains stay re-runnable,
+            # and kept afterwards because the PATH promotion below symlinks
+            # into it. Scripts like mac_apt.py need their clone's siblings, so
+            # promotion symlinks rather than copies.
+            run_dir = CONFIG_DIR / "manual" / p["tool"]
+            shutil.rmtree(run_dir, ignore_errors=True)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            cwd = str(run_dir)
         if args.format == "json":
             # An installer writing to the inherited stdout would corrupt the
             # payload, so capture it and hand back the tail instead.
-            proc = subprocess.run(p["argv"], stdout=subprocess.PIPE,
+            proc = subprocess.run(p["argv"], cwd=cwd, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, errors="replace")
             captured = proc.stdout or ""
             output = "\n".join(captured.splitlines()[-20:])
@@ -1613,14 +1673,20 @@ def cmd_install(args) -> int:
             # failure (PEP 668), so its stderr is captured rather than
             # streamed live -- and, since that means the user does not see it
             # as it happens, echoed back below once the run is over.
-            proc = subprocess.run(p["argv"], stderr=subprocess.PIPE, text=True, errors="replace")
+            proc = subprocess.run(p["argv"], cwd=cwd, stderr=subprocess.PIPE, text=True, errors="replace")
             captured = proc.stderr or ""
             if proc.returncode != 0 and captured:
                 print(captured, end="" if captured.endswith("\n") else "\n", file=sys.stderr)
         else:
-            proc = subprocess.run(p["argv"])
+            proc = subprocess.run(p["argv"], cwd=cwd)
         entry = {"tool": p["tool"], "command": _recipe_text(p),
-                  "returncode": proc.returncode, "output": output}
+                 "returncode": proc.returncode, "output": output}
+        if proc.returncode == 0 and p["method"] == "manual":
+            link, hint = _promote_binary(cat.tools[p["tool"]], run_dir)
+            if link:
+                entry["path"] = link
+            if hint:
+                entry["hint"] = hint
         if proc.returncode != 0 and p["method"] == "pip" and EXTERNALLY_MANAGED_MARKER in captured:
             entry["hint"] = (
                 "this Python refuses system-wide pip installs (PEP 668). Re-run with "
@@ -1633,6 +1699,7 @@ def cmd_install(args) -> int:
     failed = [r for r in ran if r["returncode"] != 0]
     lines = [
         ("ok   " if r["returncode"] == 0 else "FAIL ") + f"{r['tool']:<12} {r['command']}"
+        + (f"\n       path: {r['path']}" if r.get("path") else "")
         + (f"\n       hint: {r['hint']}" if r.get("hint") else "")
         for r in ran
     ]
@@ -1650,6 +1717,50 @@ def _recipe_argv(recipe: dict) -> list[str]:
     if recipe.get("sudo") and os.geteuid() != 0:
         argv = ["sudo", *argv]
     return argv
+
+
+def _promote_binary(tool: Tool, run_dir: Path) -> tuple[str | None, str | None]:
+    """After a manual oneliner ran, make the tool's binary reachable (ADR-0027).
+
+    Returns (symlink path, hint). One-liners build or unpack into their scratch
+    dir, which no probe will ever look at, so when the tool's detect binary is
+    still absent from PATH after the run, the scratch dir is searched and the
+    binary symlinked into ~/.local/bin -- the user-local PATH directory,
+    created on demand. A oneliner that installs onto PATH itself (the influx
+    one does) makes this a no-op.
+    """
+    if tool.detect_kind != "binary":
+        return None, None
+    name = tool.detect_value
+    if shutil.which(name):
+        return None, None
+    found = None
+    for dirpath, dirs, files in os.walk(run_dir):
+        # Bound the walk: a scratch dir can hold a whole build tree.
+        if os.path.relpath(dirpath, run_dir).count(os.sep) >= 4:
+            dirs[:] = []
+        if name in files:
+            found = Path(dirpath) / name
+            break
+    if found is None:
+        return None, (f"{name} is not on PATH and was not found under {run_dir}; "
+                      "check where the one-liner put it and add that to PATH")
+    try:
+        # Scripts cloned from upstream are often not +x yet; a symlink to a
+        # non-executable file is useless to shutil.which.
+        found.chmod(found.stat().st_mode | 0o111)
+    except OSError:
+        pass
+    bin_dir = Path.home() / ".local" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / name
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    os.symlink(found.resolve(), link)
+    hint = None
+    if str(bin_dir) not in os.environ.get("PATH", "").split(os.pathsep):
+        hint = f"{bin_dir} is not on PATH; add it to pick up {name}"
+    return str(link), hint
 
 
 def _config_drift(name: str) -> str:
@@ -2113,6 +2224,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run pip recipes inside a dedicated venv (~/.pi/reactor/venv), "
                         "printing its location when done -- sidesteps a system Python "
                         "refusing pip with 'externally-managed-environment' (PEP 668)")
+    i.add_argument("--auto-install-manual", action="store_true",
+                   help="when no manager recipe is runnable, fall back to the tool's "
+                        "manual-install-oneliner (ADR-0027), run in a scratch dir and "
+                        "with the resulting binary symlinked into ~/.local/bin")
+    i.add_argument("--force-install-manual", action="store_true",
+                   help="install via the manual-install-oneliner (ADR-0027) even when a "
+                        "manager recipe is runnable; mutually exclusive with "
+                        "--auto-install-manual and --method")
     i.set_defaults(func=cmd_install)
 
     f = sub.add_parser("refresh", parents=[common], help="drop the probe cache and re-probe")

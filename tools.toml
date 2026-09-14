@@ -38,6 +38,10 @@ version = 1
 #             python_module = "lief"        → importlib.util.find_spec, in the
 #                                             interpreter named by [probe].python
 #   version Optional argv whose stdout carries a version string.
+#   source  Optional but shipped-mandatory: the tool's true upstream as one
+#           https:// URL — canonical repo over product site. Provenance for
+#           the manual install paths; shown by `reactor tools show`.
+#           See docs/adr/0028-every-tool-declares-its-source.md.
 #   tags    Free-form; toolsets select on these as well as on ids.
 #   service Optional. The tool talks to something that may or may not be
 #           running: { probe = [argv], label = "…" }. Exit 0 is up, anything
@@ -56,7 +60,12 @@ version = 1
 #   Keys name PACKAGE MANAGERS, not distributions. A key declared in
 #   [platform.manager] below whose binary is on PATH is a candidate; candidates
 #   are ranked by [platform].prefer. Any other key — `manual`, a bare URL — is a
-#   note: always shown, never selected, never executed.
+#   note: always shown, never selected, never executed. The one exception is
+#   `manual-install-oneliner`: a runnable shell one-liner for the manual path,
+#   executed only when --auto-install-manual (fallback, no manager recipe ran)
+#   or --force-install-manual (override) is passed, then promoted onto PATH
+#   via ~/.local/bin. See docs/adr/0027-manual-install-oneliner-is-executed-
+#   only-under-explicit-flags.md.
 #   See docs/adr/0010-install-recipes-keyed-by-package-manager.md.
 
 
@@ -127,6 +136,7 @@ python = "python3"
 [tool.bn]
 name   = "Binary Ninja"
 desc   = "reverse engineering framework; drives a live BN session"
+source  = "https://github.com/w1sent/bn-plugins"
 invoke = "bn"
 detect = { binary = "bn" }
 tags   = ["static", "native", "disassembler", "decompiler"]
@@ -139,6 +149,7 @@ manual = "install the binja-mcp plugin from the bn-plugins repo, then run its sc
 [tool.bindiff]
 name    = "BinDiff"
 desc    = "diff two binaries' disassembly headlessly: matched functions, similarity"
+source  = "https://github.com/google/bindiff"
 invoke  = "bindiff --primary=a.BinExport --secondary=b.BinExport --output_dir=."
 detect  = { binary = "bindiff" }
 version = ["bindiff", "--version"]
@@ -157,10 +168,13 @@ tags    = ["static", "native"]
 # and skipping the Java GUI (needs the commercial yFiles library, irrelevant
 # to the headless CLI) both apply.
 manual = "build from source -- git clone https://github.com/google/bindiff && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBINEXPORT_ENABLE_IDAPRO=OFF && cmake --build build && cmake --install build (needs CMake 3.14+, Ninja, a C++ compiler, and Git)"
+# The same build, into the user-local prefix instead of /usr/local (ADR-0027).
+manual-install-oneliner = 'git clone https://github.com/google/bindiff && cd bindiff && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBINEXPORT_ENABLE_IDAPRO=OFF && cmake --build build && cmake --install build --prefix "$HOME/.local"'
 
 [tool.vxsig]
 name   = "VxSig"
 desc   = "generate AV signatures (YARA) from sets of pairwise-diffed binaries"
+source = "https://github.com/google/vxsig"
 invoke = "vxsig --detection_name=NAME diff1.BinDiff [diff2.BinDiff ...]"
 detect = { binary = "vxsig" }
 # No `version` entry: `vxsig --version` prints only the bare string "vxsig",
@@ -178,10 +192,13 @@ tags   = ["static", "malware"]
 # every run, not just as a fallback. Binary lands at bazel-bin/vxsig/vxsig;
 # run its example against vxsig/testdata/*.BinDiff to confirm before install.
 manual = "git clone https://github.com/google/vxsig && cd vxsig && env -u ANDROID_HOME -u ANDROID_SDK_ROOT -u ANDROID_NDK_HOME bazelisk build -c opt //vxsig:vxsig && sudo install -Dm755 bazel-bin/vxsig/vxsig /usr/local/bin/vxsig"
+# Same build, into the user-local prefix -- no sudo (ADR-0027).
+manual-install-oneliner = 'git clone https://github.com/google/vxsig && cd vxsig && env -u ANDROID_HOME -u ANDROID_SDK_ROOT -u ANDROID_NDK_HOME bazelisk build -c opt //vxsig:vxsig && install -Dm755 bazel-bin/vxsig/vxsig "$HOME/.local/bin/vxsig"'
 
 [tool.lief]
 name   = "LIEF"
 desc   = "parse and modify ELF/PE/Mach-O from python"
+source = "https://github.com/lief-project/LIEF"
 invoke = "python3 -c 'import lief'"
 detect = { python_module = "lief" }
 tags   = ["static", "native", "parsing", "python"]
@@ -193,6 +210,7 @@ pip = "pip install lief"
 [tool.joern]
 name   = "Joern"
 desc   = "code property graph; dataflow and reachability queries over source"
+source = "https://github.com/joernio/joern"
 invoke = "joern"
 detect = { binary = "joern" }
 tags   = ["static", "source", "dataflow"]
@@ -203,6 +221,7 @@ manual = "https://joern.io/ — download and add to PATH"
 [tool.angr]
 name   = "angr"
 desc   = "binary analysis and symbolic execution from python"
+source = "https://github.com/angr/angr"
 invoke = "python3 -c 'import angr'"
 detect = { python_module = "angr" }
 tags   = ["static", "native", "symbolic", "solving", "python"]
@@ -219,6 +238,7 @@ pip = "pip install angr"
 [tool.jadx]
 name    = "jadx"
 desc    = "decompile Android DEX/APK to Java"
+source  = "https://github.com/skylot/jadx"
 invoke  = "jadx"
 detect  = { binary = "jadx" }
 version = ["jadx", "--version"]
@@ -234,6 +254,7 @@ manual = "https://github.com/skylot/jadx/releases"
 [tool.ilspycmd]
 name    = "ilspycmd"
 desc    = "decompile .NET assemblies to C#; ILSpy's command-line form"
+source  = "https://github.com/icsharpcode/ILSpy"
 invoke  = "ilspycmd"
 detect  = { binary = "ilspycmd" }
 version = ["ilspycmd", "--version"]
@@ -245,6 +266,7 @@ dotnet = "dotnet tool install --global ilspycmd"
 [tool.decompile-python]
 name   = "decompile .pyc"
 desc   = "decompile compiled Python bytecode (.pyc): dis+marshal, then lift to source"
+source = "https://docs.python.org/3/library/dis.html"
 invoke = "python3 -m dis <file.pyc>"
 detect = { binary = "python3" }
 # No `skill = {...}` here on purpose: this tool has no upstream to fetch a
@@ -275,6 +297,7 @@ manual = "for version-matching against arbitrary .pyc files, install every versi
 [tool.oletools]
 name   = "oletools"
 desc   = "extract and scan macros/streams in Office documents for malware"
+source = "https://github.com/decalage2/oletools"
 invoke = "olevba"
 detect = { binary = "olevba" }
 tags   = ["static", "triage", "malware", "python"]
@@ -292,6 +315,7 @@ dnf  = "dnf install python3-oletools"
 [tool.flare-floss]
 name    = "FLOSS"
 desc    = "extract obfuscated strings from malware: stack, decoded, tight-loop"
+source  = "https://github.com/mandiant/flare-floss"
 invoke  = "floss"
 detect  = { binary = "floss" }
 version = ["floss", "--version"]
@@ -304,6 +328,7 @@ pipx = "pipx install flare-floss"
 [tool.capa]
 name    = "capa"
 desc    = "detect capabilities in executable files via rule-based matching"
+source  = "https://github.com/mandiant/capa"
 invoke  = "capa"
 detect  = { binary = "capa" }
 version = ["capa", "--version"]
@@ -323,6 +348,7 @@ pipx = "pipx install flare-capa"
 [tool.frida]
 name    = "frida"
 desc    = "dynamic instrumentation; hook and trace running processes"
+source  = "https://github.com/frida/frida"
 invoke  = "frida"
 detect  = { binary = "frida" }
 version = ["frida", "--version"]
@@ -337,6 +363,7 @@ pipx = "pipx install frida-tools"
 [tool.objection]
 name   = "objection"
 desc   = "runtime mobile exploration built on frida"
+source = "https://github.com/sensepost/objection"
 invoke = "objection"
 detect = { binary = "objection" }
 tags   = ["dynamic", "mobile", "android", "ios"]
@@ -353,6 +380,7 @@ pipx = "pipx install objection"
 [tool.gdb]
 name    = "GDB"
 desc    = "native debugger"
+source  = "https://sourceware.org/gdb/"
 invoke  = "gdb"
 detect  = { binary = "gdb" }
 version = ["gdb", "--version"]
@@ -366,6 +394,7 @@ dnf    = "dnf install gdb"
 [tool.lldb]
 name    = "LLDB"
 desc    = "native debugger; scriptable with `lldb --batch -o <command>`"
+source  = "https://lldb.llvm.org/"
 invoke  = "lldb"
 detect  = { binary = "lldb" }
 # Tagged exactly as gdb is. "native" would be true but it is a *static*
@@ -386,6 +415,7 @@ manual = "macOS: xcode-select --install"
 [tool.rr]
 name   = "rr"
 desc   = "record and deterministically replay execution; reverse debugging"
+source = "https://github.com/rr-debugger/rr"
 invoke = "rr"
 detect = { binary = "rr" }
 tags   = ["dynamic", "debugger", "record-replay"]
@@ -404,6 +434,7 @@ yay  = "yay -S rr"
 [tool.adb]
 name    = "adb"
 desc    = "Android device bridge; shell, install, pull, forward"
+source  = "https://developer.android.com/tools/adb"
 invoke  = "adb"
 detect  = { binary = "adb" }
 tags    = ["mobile", "android", "device"]
@@ -419,6 +450,7 @@ brew   = "brew install --cask android-platform-tools"
 [tool.apktool]
 name   = "apktool"
 desc   = "unpack and repack APK resources and smali"
+source = "https://github.com/iBotPeaches/Apktool"
 invoke = "apktool"
 detect = { binary = "apktool" }
 tags   = ["mobile", "android", "unpacking"]
@@ -433,6 +465,7 @@ yay  = "yay -S android-apktool"
 [tool.aapt2]
 name    = "aapt2"
 desc    = "inspect APK manifests, resources and the resource table"
+source  = "https://developer.android.com/tools/aapt2"
 invoke  = "aapt2"
 detect  = { binary = "aapt2" }
 # `aapt2 version`, not `--version`: the flag form prints "unknown option" and
@@ -451,6 +484,7 @@ manual = "part of the Android SDK build-tools; `sdkmanager 'build-tools;35.0.0'`
 [tool.ipsw]
 name   = "ipsw"
 desc   = "iOS/macOS firmware and dyld_shared_cache tooling"
+source = "https://github.com/blacktop/ipsw"
 invoke = "ipsw"
 detect = { binary = "ipsw" }
 tags   = ["mobile", "ios", "firmware", "macho"]
@@ -465,6 +499,7 @@ manual = "https://github.com/blacktop/ipsw/releases"
 [tool.mobilecli]
 name   = "mobilecli"
 desc   = "drive Android and iOS devices; screenshot, tap, launch"
+source = "https://github.com/mobile-next/mobilecli"
 invoke = "mobilecli"
 detect = { binary = "mobilecli" }
 tags   = ["mobile", "android", "ios", "device"]
@@ -480,6 +515,7 @@ npm = "npm install -g mobilecli"
 [tool.binwalk]
 name   = "binwalk"
 desc   = "identify and carve embedded files from firmware images"
+source = "https://github.com/ReFirmLabs/binwalk"
 invoke = "binwalk"
 detect = { binary = "binwalk" }
 tags   = ["firmware", "carving", "triage"]
@@ -493,6 +529,7 @@ cargo  = "cargo install binwalk"
 [tool.yara]
 name    = "YARA"
 desc    = "pattern matching over files and process memory"
+source  = "https://github.com/VirusTotal/yara"
 invoke  = "yara"
 detect  = { binary = "yara" }
 version = ["yara", "--version"]
@@ -506,6 +543,7 @@ brew   = "brew install yara"
 [tool.ssdeep]
 name   = "ssdeep"
 desc   = "compute and compare fuzzy hashes to find similar files"
+source = "https://github.com/ssdeep-project/ssdeep"
 invoke = "ssdeep"
 detect = { binary = "ssdeep" }
 tags   = ["triage", "pattern-matching"]
@@ -524,6 +562,7 @@ dnf    = "dnf install ssdeep"
 [tool.exiftool]
 name    = "ExifTool"
 desc    = "read and write image/document/media metadata (EXIF, IPTC, XMP, and more)"
+source  = "https://exiftool.org/"
 invoke  = "exiftool"
 detect  = { binary = "exiftool" }
 version = ["exiftool", "-ver"]
@@ -539,6 +578,7 @@ dnf    = "dnf install perl-Image-ExifTool"
 [tool.sleuthkit]
 name    = "The Sleuth Kit"
 desc    = "analyze disk images and filesystems: fls, icat, mmls, and more"
+source  = "https://github.com/sleuthkit/sleuthkit"
 invoke  = "fls"
 detect  = { binary = "fls" }
 version = ["fls", "-V"]
@@ -553,6 +593,7 @@ dnf    = "dnf install sleuthkit"
 [tool.foremost]
 name   = "Foremost"
 desc   = "carve files from a disk image by header/footer signatures"
+source = "https://sourceforge.net/projects/foremost/"
 invoke = "foremost"
 detect = { binary = "foremost" }
 tags   = ["forensics", "disk", "carving"]
@@ -566,6 +607,7 @@ dnf    = "dnf install foremost"
 [tool.photorec]
 name   = "PhotoRec"
 desc   = "recover deleted or lost files from disks via data carving"
+source = "https://www.cgsecurity.org/wiki/PhotoRec"
 invoke = "photorec"
 detect = { binary = "photorec" }
 tags   = ["forensics", "disk", "carving"]
@@ -580,6 +622,7 @@ dnf    = "dnf install testdisk"
 [tool.bulk-extractor]
 name   = "bulk_extractor"
 desc   = "scan disk images for emails, URLs, credit cards, and other features"
+source = "https://github.com/simsong/bulk_extractor"
 invoke = "bulk_extractor"
 detect = { binary = "bulk_extractor" }
 tags   = ["forensics", "disk", "carving"]
@@ -591,6 +634,7 @@ manual = "https://github.com/simsong/bulk_extractor — not packaged elsewhere; 
 [tool.dissect]
 name   = "dissect"
 desc   = "parse disk images, filesystems, and artifacts from python"
+source = "https://github.com/fox-it/dissect.target"
 invoke = "target-query"
 detect = { binary = "target-query" }
 tags   = ["forensics", "disk", "python"]
@@ -605,6 +649,7 @@ pipx = "pipx install dissect"
 [tool.mac-apt]
 name   = "mac_apt"
 desc   = "parse macOS/iOS forensic artifacts: plists, logs, databases, and more"
+source = "https://github.com/ydkhatri/mac_apt"
 invoke = "python3 mac_apt.py"
 detect = { binary = "mac_apt.py" }
 tags   = ["forensics", "macos", "python"]
@@ -613,10 +658,12 @@ tags   = ["forensics", "macos", "python"]
 # Not packaged anywhere, and not on PyPI either -- upstream's own install
 # instructions are "clone it and pip install its requirements file".
 manual = "git clone https://github.com/ydkhatri/mac_apt && pip install -r mac_apt/requirements.txt"
+manual-install-oneliner = 'git clone https://github.com/ydkhatri/mac_apt && pip install -r mac_apt/requirements.txt'
 
 [tool.spotlight-parser]
 name   = "spotlight_parser"
 desc   = "parse macOS Spotlight store.db metadata databases"
+source = "https://github.com/ydkhatri/spotlight_parser"
 invoke = "python3 spotlight_parser.py"
 detect = { binary = "spotlight_parser.py" }
 tags   = ["forensics", "macos", "python"]
@@ -625,10 +672,12 @@ tags   = ["forensics", "macos", "python"]
 # A single stdlib-only script, not a package -- there is nothing for pip to
 # install even if it were on PyPI.
 manual = "git clone https://github.com/ydkhatri/spotlight_parser"
+manual-install-oneliner = 'git clone https://github.com/ydkhatri/spotlight_parser'
 
 [tool.fseventsparser]
 name   = "FSEventsParser"
 desc   = "parse macOS FSEvents records: historical file-system activity"
+source = "https://github.com/dlcowen/FSEventsParser"
 invoke = "python3 FSEParser_V4.1.py"
 # The upstream filename carries its own version (V4.1 at the time of
 # writing) and has changed with past releases -- update this alongside a
@@ -641,10 +690,12 @@ tags   = ["forensics", "macos", "python"]
 # A single script; dfvfs is only needed for its optional "parse directly from
 # a raw disk image" mode, not for parsing already-extracted fsevents files.
 manual = "git clone https://github.com/dlcowen/FSEventsParser (optionally: pip install dfvfs, for parsing a raw disk image instead of an extracted fsevents directory)"
+manual-install-oneliner = 'git clone https://github.com/dlcowen/FSEventsParser'
 
 [tool.ileapp]
 name   = "iLEAPP"
 desc   = "parse iOS logs, events, and property lists into forensic reports"
+source = "https://github.com/abrignoni/iLEAPP"
 invoke = "python3 ileapp.py"
 detect = { binary = "ileapp.py" }
 tags   = ["forensics", "ios", "python"]
@@ -653,10 +704,12 @@ tags   = ["forensics", "ios", "python"]
 # Not packaged anywhere either -- same shape as mac_apt: clone, then its own
 # requirements file.
 manual = "git clone https://github.com/abrignoni/iLEAPP && pip install -r iLEAPP/requirements.txt"
+manual-install-oneliner = 'git clone https://github.com/abrignoni/iLEAPP && pip install -r iLEAPP/requirements.txt'
 
 [tool.aleapp]
 name   = "ALEAPP"
 desc   = "parse Android logs, events, and protobufs into forensic reports"
+source = "https://github.com/abrignoni/ALEAPP"
 invoke = "python3 aleapp.py"
 detect = { binary = "aleapp.py" }
 tags   = ["forensics", "android", "python"]
@@ -664,10 +717,12 @@ tags   = ["forensics", "android", "python"]
 [tool.aleapp.install]
 # iLEAPP's sibling project, same author, same shape.
 manual = "git clone https://github.com/abrignoni/ALEAPP && pip install -r ALEAPP/requirements.txt"
+manual-install-oneliner = 'git clone https://github.com/abrignoni/ALEAPP && pip install -r ALEAPP/requirements.txt'
 
 [tool.mvt]
 name   = "mvt"
 desc   = "detect spyware/IOCs on iOS and Android backups (mvt-ios, mvt-android)"
+source = "https://github.com/mvt-project/mvt"
 invoke = "mvt-ios"
 detect = { binary = "mvt-ios" }
 tags   = ["forensics", "mobile", "malware", "ios", "android"]
@@ -680,6 +735,7 @@ pipx   = "pipx install mvt"
 [tool.plaso]
 name    = "plaso"
 desc    = "create and analyze forensic timelines from many log/artifact formats"
+source  = "https://github.com/log2timeline/plaso"
 # plaso is a bundle, not a single binary -- there is no tool actually named
 # "plaso", and the bundled scripts (log2timeline, psort, pinfo, image_export,
 # psteal) are not even named consistently across install methods: pip's
@@ -705,6 +761,7 @@ pip = "pip install plaso"
 [tool.volatility3]
 name   = "Volatility 3"
 desc   = "analyze memory dumps: processes, network, malware, kernel objects"
+source = "https://github.com/volatilityfoundation/volatility3"
 invoke = "vol"
 detect = { binary = "vol" }
 tags   = ["forensics", "memory", "python"]
@@ -722,6 +779,7 @@ pip    = "pip install volatility3"
 [tool.hashcat]
 name    = "hashcat"
 desc    = "GPU-accelerated password recovery and hash cracking"
+source  = "https://github.com/hashcat/hashcat"
 invoke  = "hashcat"
 detect  = { binary = "hashcat" }
 version = ["hashcat", "--version"]
@@ -741,6 +799,7 @@ dnf    = "dnf install hashcat"
 [tool.tshark]
 name   = "tshark"
 desc   = "capture and dissect network traffic; Wireshark's CLI"
+source = "https://www.wireshark.org/"
 invoke = "tshark"
 detect = { binary = "tshark" }
 tags   = ["network", "pcap"]
@@ -753,6 +812,7 @@ brew   = "brew install wireshark"
 [tool.zeek]
 name    = "Zeek"
 desc    = "network security monitor: deep packet inspection and protocol logging"
+source  = "https://github.com/zeek/zeek"
 invoke  = "zeek"
 detect  = { binary = "zeek" }
 version = ["zeek", "--version"]
@@ -770,6 +830,7 @@ manual = "https://zeek.org/get-zeek/ — adds the right upstream repo for your d
 [tool.scapy]
 name   = "scapy"
 desc   = "craft, send and dissect packets from python"
+source = "https://github.com/secdev/scapy"
 invoke = "python3 -c 'import scapy'"
 detect = { python_module = "scapy" }
 tags   = ["network", "python"]
@@ -792,6 +853,7 @@ pip = "pip install scapy"
 [tool.usql]
 name   = "usql"
 desc   = "universal SQL client: PostgreSQL, MySQL, SQLite, SQL Server, Oracle, and more"
+source  = "https://github.com/xo/usql"
 invoke = 'usql <dsn> -c "<sql>"'
 detect = { binary = "usql" }
 version = ["usql", "--version"]
@@ -806,10 +868,14 @@ brew = "brew install xo/xo/usql"
 paru = "paru -S usql"
 yay  = "yay -S usql"
 manual = "https://github.com/xo/usql/releases — or `go install -tags most github.com/xo/usql@latest`"
+# Assumes the default GOBIN (~/.local/bin on go >= 1.25, else ~/go/bin); the
+# symlink lands there either way, which is the promotion step's whole job.
+manual-install-oneliner = 'go install -tags most github.com/xo/usql@latest && ln -sf "$(go env GOPATH)/bin/usql" "$HOME/.local/bin/usql"'
 
 [tool.mongosh]
 name    = "mongosh"
 desc    = "MongoDB shell: query and inspect MongoDB databases"
+source  = "https://github.com/mongodb-js/mongosh"
 invoke  = 'mongosh <uri> --eval "<js>"'
 detect  = { binary = "mongosh" }
 version = ["mongosh", "--version"]
@@ -828,6 +894,7 @@ manual = "https://www.mongodb.com/try/download/shell — upstream's own apt/dnf 
 [tool.redis-cli]
 name    = "redis-cli"
 desc    = "Redis CLI: query, inspect and script Redis servers"
+source  = "https://github.com/redis/redis"
 invoke  = "redis-cli"
 detect  = { binary = "redis-cli" }
 version = ["redis-cli", "--version"]
@@ -842,17 +909,22 @@ brew = "brew install redis"
 paru = "paru -S redis-cli"
 yay  = "yay -S redis-cli"
 manual = "build from https://github.com/redis/redis (`make redis-cli`) — or valkey-cli, its wire-compatible fork client"
+# A redis-cli build needs nothing but a C compiler: only the client target.
+manual-install-oneliner = 'git clone https://github.com/redis/redis && cd redis && make redis-cli && install -Dm755 src/redis-cli "$HOME/.local/bin/redis-cli"'
 
 [tool.cqlsh]
 name    = "cqlsh"
 desc    = "Cassandra CQL shell: query and inspect Cassandra clusters"
+source  = "https://github.com/apache/cassandra"
 invoke  = 'cqlsh -e "<cql>" <host>'
 detect  = { binary = "cqlsh" }
 version = ["cqlsh", "--version"]
 tags    = ["database"]
 
 [tool.cqlsh.install]
-# The PyPI package is the Apache project's own standalone cqlsh, no server.
+# The PyPI package is a community packaging of cqlsh (jeffwidman/cqlsh), not
+# the Apache project's own -- its source is apache/cassandra, which ships
+# cqlsh in the distribution and does not publish it to PyPI itself. No server.
 uv  = "uv pip install cqlsh"
 pip = "pip install cqlsh"
 # Every other path is the full Cassandra distribution; cqlsh ships inside it
@@ -865,6 +937,7 @@ manual = "ships with Cassandra itself — https://cassandra.apache.org/"
 [tool.influx]
 name    = "Influx CLI"
 desc    = "InfluxDB CLI: query, write and manage InfluxDB instances"
+source  = "https://github.com/influxdata/influx-cli"
 invoke  = "influx"
 detect  = { binary = "influx" }
 # `version`, not `--version`: the subcommand is the documented probe.
@@ -877,6 +950,10 @@ tags    = ["database"]
 # and there is no AUR package for the CLI either.
 brew = "brew install influxdb-cli"
 manual = "https://github.com/influxdata/influx-cli/releases — apt/dnf packages live in InfluxData's own repositories (add the repo first)"
+# Upstream's GitHub releases carry no binary assets; the version-pinned
+# tarballs live on InfluxData's portal, so the oneliner resolves the latest
+# tag via the (asset-less) GitHub API and builds the portal URL from it.
+manual-install-oneliner = 'v=$(curl -fsSL https://api.github.com/repos/influxdata/influx-cli/releases/latest | python3 -c "import json,sys; print(json.load(sys.stdin)[\"tag_name\"].lstrip(\"v\"))") && cd "$(mktemp -d)" && curl -fsSL "https://dl.influxdata.com/influxdb/releases/influxdb2-client-$v-linux-$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac).tar.gz" | tar -xz && install -Dm755 influx "$HOME/.local/bin/influx"'
 
 
 # ---------------------------------------------------------------------------
@@ -886,6 +963,7 @@ manual = "https://github.com/influxdata/influx-cli/releases — apt/dnf packages
 [tool.z3]
 name   = "z3"
 desc   = "SMT solver; constraint solving from python"
+source = "https://github.com/Z3Prover/z3"
 invoke = "python3 -c 'import z3'"
 detect = { python_module = "z3" }
 tags   = ["solving", "python"]
@@ -897,6 +975,7 @@ pip = "pip install z3-solver"
 [tool.tree-sitter]
 name   = "tree-sitter"
 desc   = "parse and transform source text via concrete syntax trees"
+source = "https://github.com/tree-sitter/tree-sitter"
 invoke = "python3 -c 'import tree_sitter'"
 detect = { python_module = "tree_sitter" }
 tags   = ["parsing", "source", "python"]
@@ -913,6 +992,7 @@ pip = "pip install tree-sitter"
 [tool.ripgrep]
 name    = "ripgrep"
 desc    = "fast recursive search; the default grep for large trees"
+source  = "https://github.com/BurntSushi/ripgrep"
 invoke  = "rg"
 detect  = { binary = "rg" }
 version = ["rg", "--version"]
@@ -927,6 +1007,7 @@ cargo  = "cargo install ripgrep"
 [tool.jq]
 name   = "jq"
 desc   = "filter JSON on the command line"
+source = "https://github.com/jqlang/jq"
 invoke = "jq"
 detect = { binary = "jq" }
 tags   = ["general"]
@@ -939,6 +1020,7 @@ brew   = "brew install jq"
 [tool.sqlite3]
 name    = "sqlite3"
 desc    = "read, write, and query SQLite database files from the command line"
+source  = "https://www.sqlite.org/"
 invoke  = "sqlite3"
 detect  = { binary = "sqlite3" }
 version = ["sqlite3", "--version"]
@@ -953,6 +1035,7 @@ dnf    = "dnf install sqlite"
 [tool.lnav]
 name    = "lnav"
 desc    = "log file viewer with SQL queries, timeline merging, and headless scripting"
+source  = "https://github.com/tstack/lnav"
 # -n: no curses UI (headless); -N: skip the default syslog file when none is
 # named -- both matter for an agent, which has no terminal and should never
 # end up tailing this machine's own syslog by accident.
@@ -981,6 +1064,7 @@ dnf    = "dnf install lnav"
 [tool.pi-subagent]
 name    = "pi"
 desc    = "spin up a fresh, scoped subagent; non-interactive only (-p), never bare"
+source  = "https://github.com/earendil-works/pi"
 # Multi-word invoke is a usage example, not a command name (see bin/reactor's
 # _label()) -- and here the example is the point: bare `pi` wants a real
 # terminal, which a Bash tool call does not have, so it hangs until the tool

@@ -44,9 +44,12 @@ These are the failure modes; the how-tos explain the reasoning.
   system prompt every time a service jitter
   ([ADR-0006](../../docs/adr/0006-registry-injected-into-system-prompt.md)).
 - **Install recipes are keyed by package managers** (`[platform.manager]`),
-  ranked by `[platform].prefer`; other keys are notes, shown but never
-  executed. Run `python3 scripts/verify-recipes.py` after touching any
-  install table.
+  ranked by `[platform].prefer`; other keys are notes, shown but never executed
+  — except the `manual-install-oneliner`, run only under the explicit
+  `--auto-install-manual`/`--force-install-manual` flags and promoted onto
+  PATH (ADR-0027). Every tool also declares its `source` — the true upstream,
+  https only (ADR-0028) — which manual paths are trusted relative to. Run
+  `python3 scripts/verify-recipes.py` after touching any install table.
 - **The registry block must stay byte-identical** for an unchanged machine —
   if your `desc` is two lines or your probe emits free text, determinism
   breaks first.

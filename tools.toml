@@ -780,6 +780,106 @@ pip = "pip install scapy"
 
 
 # ---------------------------------------------------------------------------
+# Databases — clients for talking to running database servers
+# ---------------------------------------------------------------------------
+
+# No service probes here, deliberately: these are clients, and the thing they
+# talk to is usually a remote server with credentials of its own, not a
+# well-defined local default. `redis-cli ping`, `mongosh --eval ...` and
+# `influx ping` are one command away whenever the agent needs the answer, and
+# an auth wall would make a live server read as down.
+
+[tool.usql]
+name   = "usql"
+desc   = "universal SQL client: PostgreSQL, MySQL, SQLite, SQL Server, Oracle, and more"
+invoke = 'usql <dsn> -c "<sql>"'
+detect = { binary = "usql" }
+version = ["usql", "--version"]
+tags   = ["database"]
+
+[tool.usql.install]
+# Not in Debian/Ubuntu or Fedora. Upstream also supports `go install`, but a
+# plain `go install github.com/xo/usql@latest` builds only the base drivers
+# (PostgreSQL, MySQL, SQLite3, SQL Server, Oracle); release, AUR and tap
+# builds carry the `most` tag, so the go route stays a note, never a recipe.
+brew = "brew install xo/xo/usql"
+paru = "paru -S usql"
+yay  = "yay -S usql"
+manual = "https://github.com/xo/usql/releases — or `go install -tags most github.com/xo/usql@latest`"
+
+[tool.mongosh]
+name    = "mongosh"
+desc    = "MongoDB shell: query and inspect MongoDB databases"
+invoke  = 'mongosh <uri> --eval "<js>"'
+detect  = { binary = "mongosh" }
+version = ["mongosh", "--version"]
+tags    = ["database"]
+
+[tool.mongosh.install]
+# Upstream's apt/dnf packages live only in MongoDB's own repositories, which
+# have to be added first -- so those routes are the manual note, not recipes.
+npm  = "npm install -g mongosh"
+brew = "brew install mongosh"
+# mongosh-bin is the standalone shell in the AUR; there is no mongodb-mongosh.
+paru = "paru -S mongosh-bin"
+yay  = "yay -S mongosh-bin"
+manual = "https://www.mongodb.com/try/download/shell — upstream's own apt/dnf repositories (add the repo first)"
+
+[tool.redis-cli]
+name    = "redis-cli"
+desc    = "Redis CLI: query, inspect and script Redis servers"
+invoke  = "redis-cli"
+detect  = { binary = "redis-cli" }
+version = ["redis-cli", "--version"]
+tags    = ["database"]
+
+[tool.redis-cli.install]
+# No pacman recipe: Arch's official repos replaced redis with valkey, whose
+# client is valkey-cli; the AUR has a standalone redis-cli build. No dnf
+# recipe for the same reason -- Fedora also ships valkey.
+apt  = "apt install redis-tools"
+brew = "brew install redis"
+paru = "paru -S redis-cli"
+yay  = "yay -S redis-cli"
+manual = "build from https://github.com/redis/redis (`make redis-cli`) — or valkey-cli, its wire-compatible fork client"
+
+[tool.cqlsh]
+name    = "cqlsh"
+desc    = "Cassandra CQL shell: query and inspect Cassandra clusters"
+invoke  = 'cqlsh -e "<cql>" <host>'
+detect  = { binary = "cqlsh" }
+version = ["cqlsh", "--version"]
+tags    = ["database"]
+
+[tool.cqlsh.install]
+# The PyPI package is the Apache project's own standalone cqlsh, no server.
+uv  = "uv pip install cqlsh"
+pip = "pip install cqlsh"
+# Every other path is the full Cassandra distribution; cqlsh ships inside it
+# and is not packaged on its own.
+brew = "brew install cassandra"
+paru = "paru -S cassandra"
+yay  = "yay -S cassandra"
+manual = "ships with Cassandra itself — https://cassandra.apache.org/"
+
+[tool.influx]
+name    = "Influx CLI"
+desc    = "InfluxDB CLI: query, write and manage InfluxDB instances"
+invoke  = "influx"
+detect  = { binary = "influx" }
+# `version`, not `--version`: the subcommand is the documented probe.
+version = ["influx", "version"]
+tags    = ["database"]
+
+[tool.influx.install]
+# The brew formula is influxdb-cli, renamed from influx-cli. No pacman recipe:
+# Arch's influxdb package ships only the influxd server binary, not the CLI,
+# and there is no AUR package for the CLI either.
+brew = "brew install influxdb-cli"
+manual = "https://github.com/influxdata/influx-cli/releases — apt/dnf packages live in InfluxData's own repositories (add the repo first)"
+
+
+# ---------------------------------------------------------------------------
 # Solving and parsing
 # ---------------------------------------------------------------------------
 
@@ -842,7 +942,7 @@ desc    = "read, write, and query SQLite database files from the command line"
 invoke  = "sqlite3"
 detect  = { binary = "sqlite3" }
 version = ["sqlite3", "--version"]
-tags    = ["general"]
+tags    = ["general", "database"]
 
 [tool.sqlite3.install]
 pacman = "pacman -S sqlite"

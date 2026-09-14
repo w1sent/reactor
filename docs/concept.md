@@ -222,6 +222,7 @@ not by plan. It is meant to cover at least:
 | Firmware / carving | binwalk, LIEF |
 | Pattern matching | YARA |
 | Network | tshark/Wireshark, scapy |
+| Databases | usql, redis-cli, mongosh, cqlsh, influx (Influx CLI) |
 | Solving | z3, angr |
 | Parsing / transformation | tree-sitter |
 | Agent delegation | pi itself, non-interactive only (`-p`) |

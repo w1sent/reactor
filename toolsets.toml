@@ -113,6 +113,10 @@ tags = ["network"]
 desc = "search and JSON — worth adding back to any narrow set"
 tags = ["general"]
 
+[toolset.database]
+desc = "clients for talking to running database servers"
+tags = ["database"]
+
 [toolset.agent]
 desc = "delegate work to another agent — subagents, one-shot tasks"
 tags = ["agent"]

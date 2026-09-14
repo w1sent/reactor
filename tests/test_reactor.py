@@ -761,9 +761,20 @@ class TestShippedConfig(unittest.TestCase):
                 self.assertLessEqual(len(t.desc), 80, f"{t.id}: desc is {len(t.desc)} chars")
                 self.assertNotIn("\n", t.desc)
 
+    def test_every_tool_declares_an_https_source(self):
+        # ADR-0028: provenance is not decoration. It is what a manual install
+        # path (note or oneliner) is trusted relative to, so every shipped
+        # entry must have decided where its tool comes from, over https.
+        cat = R.load_catalogue()
+        for t in cat.tools.values():
+            with self.subTest(tool=t.id):
+                self.assertTrue(t.source, f"{t.id}: no source declared")
+                self.assertTrue(t.source.startswith("https://"),
+                                f"{t.id}: source is not https: {t.source}")
+
     def test_every_install_key_is_a_manager_or_deliberately_free_text(self):
         cat = R.load_catalogue()
-        allowed_notes = {"manual"}
+        allowed_notes = {"manual", "manual-install-oneliner"}
         for t in cat.tools.values():
             for key in t.install:
                 with self.subTest(tool=t.id, key=key):
@@ -933,6 +944,143 @@ class TestJsonContract(unittest.TestCase):
         payload, proc = self.run_cli("install", "all", "jq", "--dry-run")
         self.assertEqual(proc.returncode, 1)
         self.assertIn("all", payload.get("error", ""))
+
+
+_DEMO_MANUAL_TOOL = '''
+
+[tool.demo-manual]
+name    = "demo"
+desc    = "manual one-liner demo"
+source  = "https://example.com/demo"
+invoke  = "demo-manual"
+detect  = { binary = "demo-bin" }
+tags    = ["general"]
+
+[tool.demo-manual.install]
+manual = "prose only, never a command"
+manual-install-oneliner = "mkdir -p out && touch out/demo-bin && chmod +x out/demo-bin"
+'''
+
+
+class TestManualInstall(unittest.TestCase):
+    """--auto-install-manual / --force-install-manual (ADR-0027).
+
+    Runs against a fixture catalogue carrying one tool with no manager recipes
+    at all, so the tests stay machine-independent: no manager's presence or
+    absence can change which branch executes.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="reactor-manual-")
+        cls._home = tempfile.TemporaryDirectory(prefix="reactor-home-")
+        cls.cfg = Path(cls._tmp.name)
+        (cls.cfg / "tools.toml").write_text(
+            (REPO_ROOT / "tools.toml").read_text() + _DEMO_MANUAL_TOOL)
+        (cls.cfg / "toolsets.toml").write_text((REPO_ROOT / "toolsets.toml").read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+        cls._home.cleanup()
+
+    def run_cli(self, *args):
+        env = {**os.environ,
+               "REACTOR_CONFIG_DIR": str(self.cfg),
+               # Promotion writes into ~/.local/bin; the test's HOME points the
+               # CLI at a throwaway home so nothing lands in the real one.
+               "HOME": self._home.name}
+        proc = subprocess.run(
+            [sys.executable, str(CLI_PATH), *args, "--format", "json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=120,
+        )
+        try:
+            payload = json.loads(proc.stdout)
+        except ValueError:
+            payload = {}
+        return payload, proc
+
+    def test_force_plans_the_one_liner(self):
+        payload, proc = self.run_cli("install", "demo-manual",
+                                     "--force-install-manual", "--dry-run")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual([p["method"] for p in payload["plan"]], ["manual"])
+        self.assertIn("demo-bin", payload["plan"][0]["command"])
+
+    def test_auto_falls_back_when_no_manager_recipe_ran(self):
+        payload, proc = self.run_cli("install", "demo-manual",
+                                     "--auto-install-manual", "--dry-run")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual([p["method"] for p in payload["plan"]], ["manual"])
+
+    def test_without_a_flag_the_oneliner_is_only_a_note(self):
+        payload, proc = self.run_cli("install", "demo-manual", "--dry-run")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(payload["plan"], [])
+        self.assertTrue(
+            any("manual-install-oneliner" in s["reason"] for s in payload["skipped"]),
+            f"skip reasons should point at the oneliner: {payload['skipped']}")
+
+    def test_force_without_a_oneliner_skips(self):
+        # bulk-extractor: has only `brew` + a `manual` note, no oneliner, and
+        # is not plausibly installed on a dev machine -- so the skip is the
+        # reason we are checking, not "already present".
+        payload, proc = self.run_cli("install", "bulk-extractor", "--force-install-manual", "--dry-run")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(payload["plan"], [])
+        self.assertTrue(
+            any(s["reason"] == "no manual-install-oneliner" for s in payload["skipped"]))
+
+    def test_flags_are_mutually_exclusive(self):
+        payload, proc = self.run_cli("install", "demo-manual",
+                                     "--auto-install-manual", "--force-install-manual")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("mutually exclusive", payload.get("error", ""))
+
+    def test_method_conflicts_with_the_manual_flags(self):
+        payload, proc = self.run_cli("install", "demo-manual",
+                                     "--method", "pacman", "--force-install-manual")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("--method", payload.get("error", ""))
+
+    def test_run_executes_the_oneliner_and_promotes_onto_path(self):
+        payload, proc = self.run_cli("install", "demo-manual",
+                                     "--force-install-manual", "--yes")
+        self.assertEqual(proc.returncode, 0)
+        ran = payload["ran"][0]
+        self.assertEqual(ran["returncode"], 0)
+        link = Path(ran["path"])
+        self.assertEqual(link.parent, Path(self._home.name) / ".local" / "bin")
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(os.access(link, os.X_OK))
+        # The scratch dir is the install dir, not a temp dir (ADR-0027).
+        self.assertTrue((self.cfg / "manual" / "demo-manual" / "out" / "demo-bin").exists())
+        # The fake home's .local/bin cannot be in the inherited PATH, so the
+        # run must say so rather than claim the binary is reachable.
+        self.assertIn("hint", ran)
+
+
+class TestSourceField(unittest.TestCase):
+    """ADR-0028: `source` is provenance, https only."""
+
+    def test_http_source_is_rejected_by_the_loader(self):
+        text = (REPO_ROOT / "tools.toml").read_text() + '''
+
+[tool.demo-source]
+name    = "demo"
+desc    = "http source demo"
+source  = "http://example.com/demo"
+invoke  = "demo-source"
+detect  = { binary = "demo-bin" }
+'''
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            (cfg / "tools.toml").write_text(text)
+            (cfg / "toolsets.toml").write_text((REPO_ROOT / "toolsets.toml").read_text())
+            with loading_from(cfg):
+                with self.assertRaises(R.ReactorError) as ctx:
+                    R.load_catalogue()
+            self.assertIn("https", str(ctx.exception))
 
 
 class TestCompletion(unittest.TestCase):

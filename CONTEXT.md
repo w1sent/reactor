@@ -23,7 +23,9 @@ _Avoid_: registry (that is the injected block), manifest, tool database, index.
 One catalogue entry — an external binary or library REactor can detect, describe
 and install. `bn`, `frida`, `jadx`, `yara`, `rg`. A tool is not written by us;
 even the ones we do write live in their own repositories and enter REactor only
-as a catalogue entry.
+as a catalogue entry. Every entry declares its `source` — the tool's true
+upstream, https only — which is what the manual install paths are trusted
+relative to ([ADR-0028](docs/adr/0028-every-tool-declares-its-source.md)).
 _Avoid_: integration, plugin, backend.
 
 **Toolset**:
@@ -59,7 +61,11 @@ _Avoid_: platform, distro, backend, provider.
 A *recipe* is an install command whose manager REactor has verified is present —
 the only kind `reactor install` will ever run. A *note* is any other value in an
 `[tool.*.install]` table: `manual`, a release URL, a command for a manager this
-machine does not have. Notes are always shown and never executed.
+machine does not have. Notes are always shown and never executed — with one
+deliberate exception: `manual-install-oneliner`, a runnable manual path that
+`--auto-install-manual` (fallback) and `--force-install-manual` (override)
+execute, promoting the result into the user-local PATH
+([ADR-0027](docs/adr/0027-manual-install-oneliner-is-executed-only-under-explicit-flags.md)).
 _Avoid_: instruction, hint, fallback (for either).
 
 **Upstream skill**:

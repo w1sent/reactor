@@ -25,6 +25,9 @@ upstream skill), `[tool.bindiff]` (manual install + REactor-authored skill),
 - **`desc` is the highest-leverage text in the project.** It lands in every
   system prompt for as long as the tool is installed and active. One line,
   capability not usage — `<tool> --help` is the usage documentation.
+- **`source`** is the tool's true upstream as one https:// URL — the canonical
+  repository over the product site. Shipped-mandatory (ADR-0028): it is what a
+  manual install path is trusted relative to, and `tools show` displays it.
 - **`invoke`** is what the agent types — shown in the registry block.
 - **`detect`** is exactly one of `binary` (a `shutil.which` lookup) or
   `python_module` (importlib, in the interpreter `[probe].python` names). If
@@ -46,10 +49,13 @@ upstream skill), `[tool.bindiff]` (manual install + REactor-authored skill),
 
 ## 2. Write the install table
 
-`[tool.<id>.install]` keys are **package managers, not distributions** — a key
-whose manager binary is on `PATH` is a candidate, ranked by
-`[platform].prefer`. Anything else (`manual`, a bare URL) is a note: always
-shown, never selected, never executed.
+Anything else (`manual`, a bare URL) is a note: always shown, never selected,
+never executed — except the `manual-install-oneliner`, a runnable manual path
+that only `--auto-install-manual` (fallback when no manager recipe ran) or
+`--force-install-manual` (override) executes, promoting the resulting binary
+into `~/.local/bin` ([ADR-0027](../adr/0027-manual-install-oneliner-is-executed-only-under-explicit-flags.md)).
+Write one when the manual path is a command a machine could actually run; a
+URL-only manual needs no oneliner, and the flags then report that plainly.
 
 Then run:
 

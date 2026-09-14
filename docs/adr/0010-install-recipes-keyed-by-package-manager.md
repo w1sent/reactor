@@ -96,3 +96,13 @@ REactor has never heard of adds four lines rather than filing a bug.
   `brew info`) — rejected for v1; it is a network or database round trip per
   candidate per tool, to refine a recommendation the user is about to read
   anyway.
+
+## Amendment
+
+[ADR-0027](0027-manual-install-oneliner-is-executed-only-under-explicit-flags.md)
+adds one non-manager key that is conditionally executable —
+`manual-install-oneliner`, run only under the two explicit
+`--auto-install-manual` / `--force-install-manual` flags. The rule this ADR
+establishes is unchanged for everything else: `reactor install` still only ever
+runs a command whose manager it has verified, unless the user asked for the
+manual path by name.

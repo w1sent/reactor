@@ -76,6 +76,17 @@ knows the tool best. A configured-but-unfetchable upstream skill is a warning; a
 tool with no upstream skill at all is normal and simply relies on `--help`.
 _Avoid_: vendored skill, external skill, third-party doc.
 
+**Guide**:
+A popup for the person at the keyboard (`/guide`) — the concept, the footer's
+blocks, and the flows, with an index (`/guide tools`) and a page per tool
+(`/guide <name>`). **It is part of surfacing a tool, not an afterthought:**
+adding an extension or tool, or changing one whose commands, states or
+vocabulary are user-facing, means updating its guide page in
+`extensions/guide/` in the same change — the guide's pages are data
+(the guide's `PAGES` map in `extensions/guide/index.ts`), so a stale entry
+is a code change away, and the tests pin the names.
+_Avoid_: manual, tutorial, help text.
+
 **Scenario**:
 A multi-phase analysis workflow expressed as prompt templates — the shipped
 `investigation` scenario runs from scoping and evidence acquisition through

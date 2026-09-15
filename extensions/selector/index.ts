@@ -27,6 +27,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { fuzzyFilter, getKeybindings, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { frame } from "../lib/overlay.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -407,22 +408,26 @@ class SelectorOverlay implements Component {
 
 	render(width: number): string[] {
 		const t = this.theme;
+		// The frame's two side borders and their margins; the content is
+		// computed against the remainder so nothing clips through the border.
+		const inner = Math.max(8, width - 4);
 		if (this.detailFor !== undefined) {
 			const hasSkill = this.tools.find((x) => x.id === this.detailFor)?.skill?.fetched;
 			const lines = [
-				t.bold(t.fg("accent", `  ${this.detailFor}`)),
-				"",
 				...(this.busy ? ["  ..."] : this.detailBody.split("\n").map((l) => `  ${l}`)),
 				"",
 				...(this.notice ? [t.fg("error", `  ${this.notice}`)] : []),
-				t.fg("dim", hasSkill ? "  s read the fetched skill · esc back" : "  esc back"),
 			];
-			return lines.map((l) => truncateToWidth(l, width));
+			return frame(t, width, {
+				title: this.detailFor,
+				lines: lines.map((l) => truncateToWidth(l, inner)),
+				hint: hasSkill ? "s read the fetched skill · esc back" : "esc back",
+			});
 		}
 
 		const rows = this.rows();
 		this.index = Math.min(this.index, Math.max(0, rows.length - 1));
-		const lines = [this.header(width), ""];
+		const lines = [this.header(inner), ""];
 
 		if (rows.length === 0) {
 			lines.push(t.fg("muted", `  nothing matches "${this.query}"`));
@@ -436,7 +441,7 @@ class SelectorOverlay implements Component {
 			const rightWidth = Math.min(20, Math.max(...rows.map((r) => visibleWidth(this.rightText(r)))));
 			for (let i = start; i < end; i++) {
 				lines.push(
-					truncateToWidth(this.row(rows[i], i === this.index, idWidth, rightWidth, width), width),
+					truncateToWidth(this.row(rows[i], i === this.index, idWidth, rightWidth, inner), inner),
 				);
 			}
 			if (start > 0 || end < rows.length) {
@@ -445,9 +450,11 @@ class SelectorOverlay implements Component {
 		}
 
 		lines.push("");
-		if (this.notice) lines.push(truncateToWidth(t.fg("error", `  ${this.notice}`), width));
-		lines.push(truncateToWidth(t.fg("dim", `  ${this.hint()}`), width));
-		return lines;
+		if (this.notice) lines.push(truncateToWidth(t.fg("error", `  ${this.notice}`), inner));
+		// The key hints sit in the frame's bottom rule; the framed card is
+		// what tells the eye this is an overlay, not session output
+		// (extensions/lib/overlay.ts).
+		return frame(t, width, { title: "reactor tools", lines, hint: this.hint() });
 	}
 
 	private header(width: number): string {

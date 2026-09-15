@@ -12,7 +12,7 @@ map, so the module graph under test is the one the running agent gets
 
 **Every RE-tool extension here shells out to `reactor … --format json`.** None
 of them parses `tools.toml`, and none reimplements catalogue semantics —
-[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Seven are
+[ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md). Eight are
 general-purpose and never call `reactor` at all: `goal-setting/`,
 `history-tools/` and `rolling-context/` (session memory, recovery and the
 fade — split out of one extension, [ADR-0024](../docs/adr/0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md)),
@@ -32,6 +32,7 @@ the decisions.
 | [`status/`](status/README.md) | Live service state in the footer and a panel | `/reactor-status` | on |
 | [`scenario/`](scenario/README.md) | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_phase_complete` | on |
 | [`goal-setting/`](goal-setting/README.md) | The session manifest: goal, guidelines, self-maintained steps | `/goal`, `/guidelines`, `/manifest`, `/frame`, `/derive`; `clear` variants | on (rendered on content) |
+| [`guide/`](guide/README.md) | A popup guide: the concept and the flows, for the person at the keyboard | `/guide` | on |
 | [`history-tools/`](history-tools/README.md) | Line-addressed recovery over the session history | `history_index`/`_search`/`_read` | on |
 | [`rolling-context/`](rolling-context/README.md) | The fade: drops old messages instead of summarizing them | `/rolling` | off |
 | [`auto-continue/`](auto-continue/README.md) | Resumes the agent after an automatic compaction | `/auto-continue` | off |
@@ -259,7 +260,7 @@ And three for reporting:
 node --test "tests/extensions/*.test.mjs"
 ```
 
-All eleven are driven through **pi's own loader**
+All twelve are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
 is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`

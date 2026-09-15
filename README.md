@@ -45,7 +45,7 @@ the extension inventory — what each one does, its switches, its default state.
 The agent is told what is *here*, in one compact block, and nothing more. It
 reads `--help` when it needs to know how something works.
 
-Around that spine, seven extensions exist to make long sessions usable —
+Around that spine, eight extensions exist to make long sessions usable —
 memory that survives compaction, a working persona, and hands-off operation:
 
 ```
@@ -134,7 +134,7 @@ The spine works end to end: the catalogue, the `reactor` CLI, the installer
 completions), the toolsets and scenarios, and the four RE-focused extensions —
 tool-registry, selector, status, scenario.
 
-Seven general-purpose extensions ship alongside them, switched independently of
+Eight general-purpose extensions ship alongside them, switched independently of
 the catalogue:
 
 - `rolling-context`, the fade — an alternative to pi's own compaction
@@ -152,7 +152,9 @@ the catalogue:
 - `context-editor`
   ([ADR-0021](docs/adr/0021-context-editor-forks-or-filters-never-rewrites.md))
   and `reporting`
-  ([ADR-0023](docs/adr/0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md)).
+  ([ADR-0023](docs/adr/0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md));
+- `guide`, a popup for the person at the keyboard: the concept and the flows,
+  one `/guide` away.
 
-`npm test` covers all of it: 81 tests on the CLI, 217 driving the extensions
+`npm test` covers all of it: 90 tests on the CLI, 281 driving the extensions
 against pi's own loader.

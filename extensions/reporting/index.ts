@@ -42,6 +42,7 @@
  */
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { glyph, lead } from "../lib/statusbar.ts";
 import type {
 	AgentSettledEvent,
 	BeforeAgentStartEvent,
@@ -52,6 +53,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	SessionStartEvent,
+	Theme,
 	ToolExecutionEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -199,11 +201,19 @@ function folderPath(ctx: ExtensionContext): string {
 	return resolve(ctx.cwd, config.folder);
 }
 
-/** One line for the footer -- undefined clears it, same contract `ctx.ui.setStatus` documents everywhere else. */
-function statusText(): string | undefined {
+/**
+ * One line for the footer -- undefined clears it, same contract `ctx.ui.setStatus`
+ * documents everywhere else. Same vocabulary as the rest of the statusbar
+ * (each extension carries its own copy -- ADR-0014): a glyph in the anchor
+ * colour marks the block, the level is the one word that changes behaviour,
+ * so `strict` takes the warning colour.
+ */
+function statusText(t: Theme): string | undefined {
 	if (!isEnabled()) return undefined;
 	const lvl = level();
-	return lvl === 0 ? "reporting mode" : lvl === 1 ? "reporting mode · low" : "reporting mode · strict";
+	if (lvl === 0) return `${lead(t)}${glyph(t, "¶")} reporting`;
+	const word = lvl === 1 ? "low" : "strict";
+	return `${lead(t)}${glyph(t, "¶")} reporting ${t.fg("dim", "·")} ${t.fg(lvl === 2 ? "warning" : "muted", word)}`;
 }
 
 function reportingBlock(): string {
@@ -229,7 +239,7 @@ export default function reporting(pi: ExtensionAPI) {
 		maxRevertsWarned = false;
 		pendingRevert = false;
 		basePrompt = "";
-		ctx.ui.setStatus(STATUS_KEY, statusText());
+		ctx.ui.setStatus(STATUS_KEY, statusText(ctx.ui.theme));
 	});
 
 	function setSession(next: SessionState): void {
@@ -361,7 +371,7 @@ export default function reporting(pi: ExtensionAPI) {
 			switch (sub ?? "status") {
 				case "on":
 					setSession({ ...session, enabled: true });
-					ctx.ui.setStatus(STATUS_KEY, statusText());
+					ctx.ui.setStatus(STATUS_KEY, statusText(ctx.ui.theme));
 					ctx.ui.notify(`reactor-reporting: on, level ${level()}`, "info");
 					return;
 
@@ -378,7 +388,7 @@ export default function reporting(pi: ExtensionAPI) {
 						return;
 					}
 					setSession({ enabled: true, level: n });
-					ctx.ui.setStatus(STATUS_KEY, statusText());
+					ctx.ui.setStatus(STATUS_KEY, statusText(ctx.ui.theme));
 					ctx.ui.notify(`reactor-reporting: on, level ${n}`, "info");
 					return;
 				}

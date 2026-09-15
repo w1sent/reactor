@@ -18,7 +18,7 @@ count the same way — and nags once per turn past a threshold. Level 2
 escalates: the turn that ignored the requirement is reverted and the prompt
 re-demanded, up to `maxReverts` times, then it falls back to level-1 nagging.
 
-Config in `~/.pi/agent/pi-reactor-reporting.json`; the footer entry reads
-`reporting mode` / `· low` / `· strict`. Why enforcement is a filesystem probe rather than tool-call inspection:
+Config in `~/.pi/agent/pi-reactor-reporting.json`; the footer block reads
+`¶ reporting` / `· low` (muted) / `· strict` (warning). Why enforcement is a filesystem probe rather than tool-call inspection:
 [ADR-0023](../../docs/adr/0023-reporting-enforcement-is-a-filesystem-probe-not-a-heuristic.md);
 the write-up structure lives in the `reactor-reporting` skill.

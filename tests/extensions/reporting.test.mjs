@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { test } from "node:test";
 import path from "node:path";
-import { loadExtension, makeContext, needsPi, withFixture } from "./harness.mjs";
+import { loadExtension, makeContext, needsPi, recordingTheme, withFixture } from "./harness.mjs";
 
 const EXT = "extensions/reporting/index.ts";
 
@@ -114,14 +114,19 @@ test("a configured templatePath is named in the block", needsPi, () =>
 
 test("the footer shows reporting mode at each level, and clears when off", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { extension, ctx, calls } = await enabled(fixture, 0);
-		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "reporting mode" });
+		const rec = recordingTheme;
+		const { extension, ctx, calls } = await enabled(fixture, 0, { theme: rec.theme });
+		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "· ¶ reporting" });
 
 		await extension.commands.get("report").handler("level 1", ctx);
-		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "reporting mode · low" });
+		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "· ¶ reporting · low" });
+		assert.equal(rec.fgCalls.find((c) => c.text === "low")?.color, "muted");
 
 		await extension.commands.get("report").handler("level 2", ctx);
-		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "reporting mode · strict" });
+		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "· ¶ reporting · strict" });
+		// Strict changes what the agent owes; the one word that changes
+		// behaviour takes the warning colour.
+		assert.equal(rec.fgCalls.find((c) => c.text === "strict")?.color, "warning");
 
 		await extension.commands.get("report").handler("off", ctx);
 		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: undefined });
@@ -394,5 +399,5 @@ test("enabled/level survive a simulated reload", needsPi, () =>
 		const { ctx: ctx2, calls } = makeContext(fixture, { entries: first.entries });
 		await second.extension.handlers.get("session_start")[0]({}, ctx2);
 
-		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "reporting mode · strict" });
+		assert.deepEqual(calls.status.at(-1), { key: "reactor-reporting", value: "· ¶ reporting · strict" });
 	}));

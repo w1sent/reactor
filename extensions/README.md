@@ -120,12 +120,30 @@ And two for the status panel:
 
 - **It shares nothing with `tool-registry` but `cache.json`**, which both reach
   through the CLI ([ADR-0014](../docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
-  There is no shared module between extensions and there cannot be a useful
-  one: pi loads each extension with its own jiti instance, so an import common
-  to two of them is instantiated twice and the two copies drift.
+  What extensions cannot share is *state*: pi loads each extension with its
+  own jiti instance, so a module common to two of them is instantiated twice
+  and two copies of a cache drift. What they *can* share is stateless code —
+  the statusbar vocabulary lives in `extensions/lib/`
+  ([ADR-0029](../docs/adr/0029-extensions-share-stateless-presentation-code.md)).
 - **It refreshes per turn, never on a timer.** The state that matters is the
   state at the moment the agent acts, which is turn time; a background probe
   would cost a process spawn per tick to be wrong slightly less often.
+
+And one for the footer line every REactor extension writes into:
+
+- **The tool count is the line's anchor; every other block leads with the
+  separator.** pi joins extension statuses sorted by key with a single
+  space, so a separator between blocks must live inside the status texts.
+  `tool-registry/`'s key (`0-reactor`) sorts first, making the tool count
+  the line's first block; every other REactor block leads with the dim `·`
+  while the toolbox is on — the flag is the anchor's existence, from the
+  same `reactor.json` ([ADR-0016](../docs/adr/0016-extension-toggles-live-in-their-own-pi-side-file.md))
+  each of them already reads or can read. pi trims each status and joins
+  with one space, so the dot lands exactly between blocks; with the toolbox
+  off, nothing leads and no separator dangles. The vocabulary lives in
+  `extensions/lib/statusbar.ts` — a block imports it rather than copying the
+  pattern ([ADR-0029](../docs/adr/0029-extensions-share-stateless-presentation-code.md)),
+  and `tests/extensions/statusbar.test.mjs` holds every block to the grammar.
 
 And three for scenarios:
 

@@ -45,10 +45,13 @@ import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	BeforeAgentStartEvent,
+	ExtensionContext,
 	SessionCompactEvent,
 	SessionManager,
+	Theme,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { glyph, lead } from "../lib/statusbar.ts";
 
 // ============================================================================
 // Types
@@ -136,7 +139,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		loadSessionState(ctx.sessionManager);
 		try {
-			ctx.ui.setStatus("auto-continue", isEnabled() ? "auto-continue: on" : undefined);
+			const t: Theme = ctx.ui.theme;
+			ctx.ui.setStatus("auto-continue", isEnabled() ? `${lead(t)}${glyph(t, "↻")} auto-continue` : undefined);
 		} catch {
 			// no terminal -- print and json modes carry no footer
 		}
@@ -209,7 +213,8 @@ export default function (pi: ExtensionAPI) {
 			else next = !isEnabled();
 			sessionEnabled = next;
 			pi.appendEntry(CUSTOM_TYPE, { enabled: next });
-			ctx.ui.setStatus("auto-continue", next ? "auto-continue: on" : undefined);
+			const t: Theme = ctx.ui.theme;
+			ctx.ui.setStatus("auto-continue", next ? `${lead(t)}${glyph(t, "↻")} auto-continue` : undefined);
 			ctx.ui.notify(`auto-continue ${next ? "enabled" : "disabled"}`, next ? "info" : "warning");
 		},
 	});

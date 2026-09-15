@@ -28,9 +28,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ExtensionAPI, ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionManager, Theme } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { glyph, lead } from "../lib/statusbar.ts";
 
 // ============================================================================
 // The built-in identities
@@ -336,6 +337,21 @@ async function editInExternalEditor(content: string): Promise<EditorResult> {
 	}
 }
 
+/**
+ * The footer block: `@ <name>`. Same vocabulary as the rest of the statusbar
+ * (each extension carries its own copy -- ADR-0014): a glyph in the anchor
+ * colour marks the block, the value stays in the text colour.
+ */
+/**
+ * The footer block: `@ <name>`. The shape -- the separator a block leads
+ * with, the glyph in the anchor colour, the value in the text colour -- is
+ * the shared statusbar vocabulary (`extensions/lib/`, ADR-0029); the name is
+ * this extension's own.
+ */
+function statusBlock(t: Theme, name: string | undefined): string | undefined {
+	return name ? `${lead(t)}${glyph(t, "@")} ${name}` : undefined;
+}
+
 // ============================================================================
 // Extension
 // ============================================================================
@@ -348,7 +364,7 @@ export default function (pi: ExtensionAPI) {
 		loadSessionState(ctx.sessionManager);
 		const name = activeName();
 		try {
-			ctx.ui.setStatus("identity", name ? `identity: ${name}` : undefined);
+			ctx.ui.setStatus("identity", statusBlock(ctx.ui.theme, name));
 		} catch {
 			// no terminal -- print and json modes carry no footer
 		}
@@ -357,7 +373,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", (_event, ctx) => {
 		state = {};
 		try {
-			ctx.ui.setStatus("identity", undefined);
+			ctx.ui.setStatus("identity", statusBlock(ctx.ui.theme, undefined));
 		} catch {
 			// ignore
 		}
@@ -383,7 +399,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		state = { ...state, active: name };
 		pi.appendEntry(CUSTOM_TYPE, state);
-		ctx.ui.setStatus("identity", `identity: ${name}`);
+		ctx.ui.setStatus("identity", statusBlock(ctx.ui.theme, name));
 		ctx.ui.notify(`identity: ${name}`, "info");
 	}
 
@@ -405,7 +421,7 @@ export default function (pi: ExtensionAPI) {
 			if (arg === "off") {
 				state = { ...state, active: "" };
 				pi.appendEntry(CUSTOM_TYPE, state);
-				ctx.ui.setStatus("identity", undefined);
+				ctx.ui.setStatus("identity", statusBlock(ctx.ui.theme, undefined));
 				ctx.ui.notify("identity: off", "info");
 				return;
 			}
@@ -429,7 +445,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				state = { ...state, active: "custom", custom: text };
 				pi.appendEntry(CUSTOM_TYPE, state);
-				ctx.ui.setStatus("identity", "identity: custom");
+				ctx.ui.setStatus("identity", statusBlock(ctx.ui.theme, "custom"));
 				ctx.ui.notify("identity: custom set -- save it with /identity save <name> if it proves useful", "info");
 				return;
 			}
@@ -467,7 +483,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				state = { ...state, active: "custom", custom: text };
 				pi.appendEntry(CUSTOM_TYPE, state);
-				ctx.ui.setStatus("identity", "identity: custom");
+				ctx.ui.setStatus("identity", statusBlock(ctx.ui.theme, "custom"));
 				ctx.ui.notify("identity: custom set -- save it with /identity save <name> if it proves useful", "info");
 				return;
 			}

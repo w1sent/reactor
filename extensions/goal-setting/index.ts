@@ -19,7 +19,8 @@
  * assumption about which extension loads first. pi's own
  * `ctx.getSystemPrompt()` reports the *chained* prompt, so the fade's budget
  * math accounts for this block exactly, with no coupling between the two
- * extensions (ADR-0014: no shared modules, and none needed).
+ * extensions (ADR-0014: no shared state; presentation code is shared
+ * through `extensions/lib/`, ADR-0029).
  *
  * The `update_steps` tool is registered once, always, but answers with
  * instructions instead of acting until it is useful: it is active while a
@@ -44,9 +45,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Type } from "typebox";
-import type { ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	SessionManager,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
 import { convertToLlm, getAgentDir, serializeConversation } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import type { AutocompleteItem, Component, TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ============================================================================
 // Types
@@ -54,6 +61,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 const CUSTOM_TYPE = "pi-goal-setting";
 const STATUS_KEY = "goal-setting";
+const WIDGET_KEY = "goal-setting";
 
 interface Step {
 	summary: string;
@@ -110,22 +118,79 @@ function toolGateMessage(): string | undefined {
 }
 
 // ============================================================================
-// Footer indicator: visible only while the extension is active AND has
-// content -- a fresh session shows nothing, a paused one shows nothing.
+// The goal row: the manifest's own line, directly above the footer
 // ============================================================================
 
-function statusText(): string | undefined {
-	if (!isEnabled()) return undefined;
-	const hasContent = Boolean(hasGoal() || state.guidelines?.trim() || state.steps.length > 0);
-	if (!hasContent) return undefined;
-	return hasGoal() ? `goal: ${truncate(state.goal!.trim(), 48)}` : "manifest: set";
+/** How much goal text the row carries before it yields to an ellipsis. */
+const MAX_GOAL_CHARS = 96;
+
+function hasContent(): boolean {
+	return Boolean(hasGoal() || state.guidelines?.trim() || state.steps.length > 0);
 }
 
-function refreshFooter(ctx: ExtensionContext): void {
+/** ` · 3 steps`, coloured: muted is metadata, past the soft limit is a warning. */
+function stepsSuffix(t: Theme): string {
+	const n = state.steps.length;
+	if (!n) return "";
+	const colour = n > config.softStepLimit ? "warning" : "muted";
+	return ` ${t.fg("dim", "·")} ${t.fg(colour, `${n} step${n === 1 ? "" : "s"}`)}`;
+}
+
+/** The row: `◎ <goal>` with its steps count, or `◎ manifest` without a goal. */
+function goalRow(t: Theme): string {
+	const head = hasGoal() ? truncate(state.goal!.trim(), MAX_GOAL_CHARS) : "manifest";
+	return `${t.fg("accent", "◎")} ${head}${stepsSuffix(t)}`;
+}
+
+/**
+ * The row as a component, so a narrow window shortens the goal instead of
+ * cutting into the steps count: prose can ellipsize, a number cannot.
+ */
+class GoalRow implements Component {
+	constructor(private theme: Theme) {}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const t = this.theme;
+		const suffix = stepsSuffix(t);
+		const head = hasGoal() ? truncate(state.goal!.trim(), MAX_GOAL_CHARS) : "manifest";
+		const full = `${t.fg("accent", "◎")} ${head}${suffix}`;
+		if (visibleWidth(full) <= width) return [full];
+		const available = Math.max(8, width - visibleWidth(suffix) - 3);
+		return [truncateToWidth(`${t.fg("accent", "◎")} ${truncateToWidth(head, available)}${suffix}`, width)];
+	}
+}
+
+/**
+ * The manifest's own row, above the footer: the footer's status line is a
+ * guest shelf shared with every other extension, and a goal is prose, not a
+ * one-glance fact. Rendered fresh from module state on every paint, so a
+ * `update_steps` mid-turn changes the count without a setWidget round trip;
+ * the set itself only makes the row appear or vanish. Replaces the footer
+ * entry this extension used to keep.
+ */
+function refreshStatus(ctx: ExtensionContext): void {
+	if (ctx.mode !== "tui" && ctx.mode !== "rpc") return; // print and json carry no UI
 	try {
-		ctx.ui.setStatus(STATUS_KEY, statusText());
+		ctx.ui.setStatus(STATUS_KEY, undefined); // the row replaces the footer entry
+		if (ctx.mode === "rpc") {
+			// rpc takes string lines, not component factories; every state
+			// mutation calls refreshStatus, so the snapshot stays current.
+			ctx.ui.setWidget(
+				WIDGET_KEY,
+				isEnabled() && hasContent() ? [goalRow(ctx.ui.theme)] : undefined,
+				{ placement: "belowEditor" },
+			);
+			return;
+		}
+		ctx.ui.setWidget(
+			WIDGET_KEY,
+			isEnabled() && hasContent() ? (_tui: TUI, theme: Theme) => new GoalRow(theme) : undefined,
+			{ placement: "belowEditor" },
+		);
 	} catch {
-		// no terminal -- print and json modes carry no footer
+		// no terminal -- print and json modes carry no UI
 	}
 }
 
@@ -251,7 +316,7 @@ function deriveTask(scope: "all" | "goal" | "guidelines" | "steps"): string {
 	);
 }
 
-/** Own copy -- extensions share no modules (ADR-0014). Same approach as history-tools. */
+/** Own copy: it walks session entries, which are facts, not presentation (ADR-0029 scopes what may be shared). */
 function serializeBranchTail(sm: SessionManager, budget: number): string {
 	const blocks: string[] = [];
 	for (const entry of sm.getBranch()) {
@@ -380,7 +445,7 @@ async function runDerive(pi: ExtensionAPI, ctx: any, scope: "all" | "goal" | "gu
 			return;
 		}
 		const applied = applyDerived(pi, parts);
-		refreshFooter(ctx);
+		refreshStatus(ctx);
 		ctx.ui.notify(`derive: ${applied.join(", ")} -- /frame to review`, "info");
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -413,12 +478,12 @@ export default function (pi: ExtensionAPI) {
 	// ---- session lifecycle ------------------------------------------------
 	pi.on("session_start", (_event, ctx) => {
 		loadSessionState(ctx.sessionManager);
-		refreshFooter(ctx);
+		refreshStatus(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		state = { steps: [] };
-		refreshFooter(ctx);
+		refreshStatus(ctx);
 	});
 
 	// ---- the manifest block into the system prompt ------------------------
@@ -436,7 +501,7 @@ export default function (pi: ExtensionAPI) {
 			if (text.toLowerCase() === "clear") {
 				state = { ...state, goal: undefined };
 				pi.appendEntry(CUSTOM_TYPE, state);
-				refreshFooter(ctx);
+				refreshStatus(ctx);
 				ctx.ui.notify("goal cleared", "info");
 				return;
 			}
@@ -446,7 +511,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			state = { ...state, goal: text };
 			pi.appendEntry(CUSTOM_TYPE, state);
-			refreshFooter(ctx);
+			refreshStatus(ctx);
 			ctx.ui.notify(`goal set: ${text}`, "info");
 		},
 	});
@@ -458,7 +523,7 @@ export default function (pi: ExtensionAPI) {
 			if (text.toLowerCase() === "clear") {
 				state = { ...state, guidelines: undefined };
 				pi.appendEntry(CUSTOM_TYPE, state);
-				refreshFooter(ctx);
+				refreshStatus(ctx);
 				ctx.ui.notify("guidelines cleared", "info");
 				return;
 			}
@@ -468,7 +533,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			state = { ...state, guidelines: text };
 			pi.appendEntry(CUSTOM_TYPE, state);
-			refreshFooter(ctx);
+			refreshStatus(ctx);
 			ctx.ui.notify(`guidelines set: ${text}`, "info");
 		},
 	});
@@ -493,7 +558,7 @@ export default function (pi: ExtensionAPI) {
 			if (arg === "clear") {
 				state = { ...state, goal: undefined, guidelines: undefined, steps: [] };
 				pi.appendEntry(CUSTOM_TYPE, state);
-				refreshFooter(ctx);
+				refreshStatus(ctx);
 				ctx.ui.notify("manifest cleared -- goal, guidelines and steps are gone", "info");
 				return;
 			}
@@ -507,7 +572,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			state = { ...state, enabled: next };
 			pi.appendEntry(CUSTOM_TYPE, state);
-			refreshFooter(ctx);
+			refreshStatus(ctx);
 			ctx.ui.notify(`goal-setting ${next ? "enabled" : "disabled"}`, next ? "info" : "warning");
 		},
 	});
@@ -567,6 +632,7 @@ export default function (pi: ExtensionAPI) {
 			}));
 			state = { ...state, steps: clamped };
 			pi.appendEntry(CUSTOM_TYPE, state);
+			refreshStatus(ctx); // the row's steps count is live, but the row must appear
 			const over = clamped.length > config.softStepLimit;
 			let text = `Steps updated: ${clamped.length} step(s).`;
 			if (over) {

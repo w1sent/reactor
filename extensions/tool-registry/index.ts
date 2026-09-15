@@ -24,8 +24,10 @@ import type {
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SessionStartEvent,
+	Theme,
 } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { ANCHOR_KEY, errorBlock, glyph } from "../lib/statusbar.ts";
 import { join } from "node:path";
 
 /** Shape of `reactor registry --format json`. Part of REactor's contract. */
@@ -44,7 +46,13 @@ interface RegistryPayload {
  */
 const EXEC_TIMEOUT_MS = 20_000;
 
-const STATUS_KEY = "reactor";
+/**
+ * The key is the anchor of the whole statusbar line: it sorts before every
+ * other REactor status, so the tool count is the first block, and the other
+ * blocks' leading separators (the dim `·` they carry while the toolbox is
+ * on) always land between blocks instead of dangling at the line's head.
+ */
+const STATUS_KEY = ANCHOR_KEY;
 
 const REACTOR_JSON = () => join(getAgentDir(), "reactor.json");
 
@@ -119,10 +127,23 @@ export default function toolRegistry(pi: ExtensionAPI) {
 	let last: RegistryPayload | undefined;
 	let missingCliWarned = false;
 
+	/**
+	 * The anchor block: the key sorts before every other REactor status, so
+	 * the tool count is the first block on the line, and the other blocks'
+	 * leading separators (ADR-0029's vocabulary) land between blocks instead
+	 * of dangling at the line's head. The shape -- glyph in the anchor
+	 * colour, words in the text colour, the unit dim -- is the shared
+	 * statusbar grammar; the count is this extension's fact.
+	 */
+	function countBlock(t: Theme, present: number, catalogued: number): string {
+		return `${glyph(t, "🛠")} ${present}/${catalogued} ${t.fg("dim", "tools")}`;
+	}
+
 	async function fetchRegistry(
 		ctx: ExtensionContext,
 		args: string[] = [],
 	): Promise<RegistryPayload | undefined> {
+		const t = ctx.ui.theme;
 		// pi's exec resolves rather than throwing, including on ENOENT: a
 		// missing `reactor` arrives as code 1 with empty stdout, exactly like a
 		// crashed one. Both mean the same thing here.
@@ -132,7 +153,7 @@ export default function toolRegistry(pi: ExtensionAPI) {
 		});
 
 		if (result.killed) {
-			ctx.ui.setStatus(STATUS_KEY, "reactor: probe timed out");
+			ctx.ui.setStatus(STATUS_KEY, errorBlock(t, "reactor: probe timed out"));
 			return undefined;
 		}
 		if (!result.stdout.trim()) {
@@ -140,7 +161,7 @@ export default function toolRegistry(pi: ExtensionAPI) {
 			// valid state for a pi session, not an error to repeat every turn.
 			if (!missingCliWarned) {
 				missingCliWarned = true;
-				ctx.ui.setStatus(STATUS_KEY, "reactor: CLI unavailable");
+				ctx.ui.setStatus(STATUS_KEY, errorBlock(t, "reactor: CLI unavailable"));
 			}
 			return undefined;
 		}
@@ -149,17 +170,17 @@ export default function toolRegistry(pi: ExtensionAPI) {
 		try {
 			payload = JSON.parse(result.stdout) as RegistryPayload;
 		} catch {
-			ctx.ui.setStatus(STATUS_KEY, "reactor: unreadable output");
+			ctx.ui.setStatus(STATUS_KEY, errorBlock(t, "reactor: unreadable output"));
 			return undefined;
 		}
 		if (payload.error) {
-			ctx.ui.setStatus(STATUS_KEY, `reactor: ${payload.error}`);
+			ctx.ui.setStatus(STATUS_KEY, errorBlock(t, `reactor: ${payload.error}`));
 			return undefined;
 		}
 
 		last = payload;
 		const { present, catalogued } = payload.summary;
-		ctx.ui.setStatus(STATUS_KEY, `RE ${present}/${catalogued}`);
+		ctx.ui.setStatus(STATUS_KEY, countBlock(t, present, catalogued));
 		return payload;
 	}
 

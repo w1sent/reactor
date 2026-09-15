@@ -1,5 +1,11 @@
 # Extensions share probe results through the cache, never through each other
 
+> Amended in part by
+> [ADR-0029](0029-extensions-share-stateless-presentation-code.md): extensions
+> may share *stateless* presentation code through `extensions/lib/`. The rule
+> as written here -- probe results flow through the cache, and no shared
+> module may hold state -- stands.
+
 Every extension shells out to `reactor` on its own. `cache.json` and its TTLs
 are the entire sharing mechanism: no extension imports another, publishes to
 another, or reads another's state, and none of them knows how many others exist.

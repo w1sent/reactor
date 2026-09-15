@@ -17,6 +17,7 @@ import {
 	loadExtension,
 	makeContext,
 	needsPi,
+	recordingTheme,
 	withFixture,
 } from "./harness.mjs";
 
@@ -66,7 +67,36 @@ test("deactivating narrows the block", needsPi, () =>
 		assert.doesNotMatch(result.systemPrompt, /diffs gamma firmware images/);
 		// Present counts the active tools; catalogued counts the whole file, so
 		// the footer keeps saying how much is being held back.
-		assert.equal(lastStatus(calls), "RE 1/3");
+		assert.equal(lastStatus(calls), "🛠 1/3 tools");
+		// The key sorts first: the anchor is the first block on the line,
+		// which is what the other blocks' leading separators hang off.
+		assert.equal(calls.status.at(-1).key, "0-reactor");
+	}));
+
+test("the footer block is coloured like the rest of the statusbar", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const rec = recordingTheme;
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture, { theme: rec.theme });
+
+		await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
+
+		assert.match(lastStatus(calls), /🛠 2\/3 tools/);
+		assert.equal(rec.fgCalls.find((c) => c.text === "🛠")?.color, "accent");
+	}));
+
+test("a failed probe is an error, and reads like one", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const rec = recordingTheme;
+		const { extension } = await loadExtension(EXT, fixture);
+		const { ctx, calls } = makeContext(fixture, { theme: rec.theme });
+		fixture.mode = CLI_ERROR;
+
+		await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
+
+		assert.equal(lastStatus(calls), "✗ reactor: probe exploded");
+		assert.equal(rec.fgCalls.find((c) => c.text?.startsWith("✗"))?.color, "error");
+		fixture.mode = "ok";
 	}));
 
 test("the status line reports presence against the whole catalogue", needsPi, () =>
@@ -76,7 +106,7 @@ test("the status line reports presence against the whole catalogue", needsPi, ()
 
 		await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
 
-		assert.equal(lastStatus(calls), "RE 2/3");
+		assert.equal(lastStatus(calls), "🛠 2/3 tools");
 	}));
 
 // ---------------------------------------------------------------------------
@@ -123,7 +153,7 @@ test("a missing CLI is announced once, not every turn", needsPi, () =>
 		await handler({ systemPrompt: "" }, ctx);
 
 		// REactor not being installed is a valid state for a pi session.
-		const unavailable = calls.status.filter((s) => s.value === "reactor: CLI unavailable");
+		const unavailable = calls.status.filter((s) => s.value === "✗ reactor: CLI unavailable");
 		assert.equal(unavailable.length, 1);
 	}));
 
@@ -136,7 +166,7 @@ test("output that is not JSON says so instead of throwing", needsPi, () =>
 		const result = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
 
 		assert.equal(result, undefined);
-		assert.equal(lastStatus(calls), "reactor: unreadable output");
+		assert.equal(lastStatus(calls), "✗ reactor: unreadable output");
 	}));
 
 test("an error payload is surfaced verbatim", needsPi, () =>
@@ -147,7 +177,7 @@ test("an error payload is surfaced verbatim", needsPi, () =>
 
 		await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "" }, ctx);
 
-		assert.equal(lastStatus(calls), "reactor: probe exploded");
+		assert.equal(lastStatus(calls), "✗ reactor: probe exploded");
 	}));
 
 // ---------------------------------------------------------------------------

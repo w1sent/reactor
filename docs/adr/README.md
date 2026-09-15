@@ -34,3 +34,6 @@ Write the ADR before implementing, not after.
 | [0024](0024-rolling-context-splits-into-goal-setting-history-tools-and-the-fade.md) | rolling-context splits into goal-setting, history-tools and the fade |
 | [0025](0025-auto-continue-continues-after-automatic-compaction.md) | auto-continue continues after automatic compaction, bounded, and never into pi's own retry |
 | [0026](0026-identity-is-a-persona-block-in-the-system-prompt.md) | identity is a persona block in the system prompt; built-ins are code, user identities are config |
+| [0027](0027-manual-install-oneliner-is-executed-only-under-explicit-flags.md) | The manual-install one-liner is executed only under explicit flags |
+| [0028](0028-every-tool-declares-its-source.md) | Every tool declares its source |
+| [0029](0029-extensions-share-stateless-presentation-code.md) | Extensions share stateless presentation code; state stays in the cache |

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { loadExtension, makeContext, makeTui, needsPi, withFixture } from "./harness.mjs";
+import { loadExtension, makeContext, makeTui, needsPi, recordingTheme, withFixture } from "./harness.mjs";
 
 const EXT = "extensions/identity/index.ts";
 
@@ -151,7 +151,7 @@ test("/identity write sets an adhoc custom identity and activates it", needsPi, 
 
 		assert.ok(result.systemPrompt.startsWith("BASE"));
 		assert.match(result.systemPrompt, /boot chains/);
-		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "identity: custom" });
+		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "· @ custom" });
 	}));
 
 test("selecting an empty custom identity warns instead of activating", needsPi, () =>
@@ -175,7 +175,7 @@ test("the custom identity survives a simulated reload", needsPi, () =>
 		const { ctx: ctx2, calls } = makeContext(fixture, { entries: first.entries });
 		await second.extension.handlers.get("session_start")[0]({}, ctx2);
 
-		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "identity: custom" });
+		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "· @ custom" });
 		const result = await second.extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx2);
 		assert.match(result.systemPrompt, /ransomware samples only/);
 	}));
@@ -228,7 +228,7 @@ test("/identity editor runs the external editor with the TUI suspended", needsPi
 
 		const result = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
 		assert.match(result.systemPrompt, /firmware boot chains/);
-		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "identity: custom" });
+		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "· @ custom" });
 	}));
 
 // ---------------------------------------------------------------------------
@@ -402,12 +402,25 @@ test("/identity delete removes a saved identity but never a built-in", needsPi, 
 		assert.match(lastNotify(calls).message, /built in/);
 	}));
 
+test("the block hangs off the anchor: a separator while the toolbox is on, none when it is off", needsPi, () =>
+	withFixture({ agentSettings: { toolbox: false } }, async (fixture) => {
+		const { ctx, calls, extension } = await started(fixture);
+
+		await extension.commands.get("identity").handler("publisher", ctx);
+
+		// The anchor (the tool count) is gone with the toolbox, so a leading
+		// separator would dangle at the head of the line.
+		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "@ publisher" });
+	}));
+
 test("the global default applies when the session has not chosen one", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		fs.writeFileSync(configPath(fixture), JSON.stringify({ default: "publisher" }));
-		const { ctx, calls, extension } = await started(fixture);
+		const rec = recordingTheme;
+		const { ctx, calls, extension } = await started(fixture, { theme: rec.theme });
 
-		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "identity: publisher" });
+		assert.deepEqual(calls.status.at(-1), { key: "identity", value: "· @ publisher" });
+		assert.equal(rec.fgCalls.find((c) => c.text === "@")?.color, "accent");
 		const result = await extension.handlers.get("before_agent_start")[0]({ systemPrompt: "BASE" }, ctx);
 		assert.match(result.systemPrompt, /You are the Publisher/);
 	}));

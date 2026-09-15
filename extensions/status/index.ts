@@ -24,10 +24,12 @@ import type {
 	ExtensionContext,
 	SessionStartEvent,
 	Theme,
+	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lead } from "../lib/statusbar.ts";
 import { join } from "node:path";
 
 /** Shape of `reactor services --format json`. Part of REactor's contract. */
@@ -56,11 +58,19 @@ const STATUS_KEY = "reactor-status";
 const WIDGET_KEY = "reactor-status";
 
 /**
- * How much footer the status line may take before it collapses to counts. The
- * footer is shared with the branch, the model and the registry's own entry, so
- * this is a guest in someone else's space.
+ * How much of the footer's status line REactor may use before it starts
+ * shedding detail. The line is shared with the other extensions' entries
+ * (identity, auto-continue, ...), whose length no API exposes, so this is a
+ * fixed allowance carved off the real terminal width, never the whole width.
  */
-const MAX_STATUS_WIDTH = 44;
+const FOOTER_RESERVE = 24;
+
+/** Icon, colour and words for one service's state. */
+interface StateDeco {
+	glyph: string;
+	colour: ThemeColor;
+	text: string;
+}
 
 const REACTOR_JSON = () => join(getAgentDir(), "reactor.json");
 
@@ -155,7 +165,13 @@ export default function status(pi: ExtensionAPI) {
 	async function refresh(ctx: ExtensionContext, args: string[] = []): Promise<boolean> {
 		const payload = (await fetchServices(ctx, args)) ?? last;
 		if (ctx.mode !== "tui") return payload !== undefined;
-		ctx.ui.setStatus(STATUS_KEY, payload ? statusLine(payload) : undefined);
+		// Colours come from the live theme, re-read per refresh: a `/theme`
+		// switch shows up on the next turn without a reload. The lead is the
+		// dim separator that ties the line to the anchor block before it.
+		ctx.ui.setStatus(
+			STATUS_KEY,
+			payload ? statusLine(payload, ctx.ui.theme, lead(ctx.ui.theme)) : undefined,
+		);
 		if (shown) paint(ctx, payload);
 		return payload !== undefined;
 	}
@@ -258,33 +274,135 @@ function oneLine(s: ServiceRow): string {
 	return `${s.id}: ${s.state === "up" ? (s.detail ?? "up") : s.state}`;
 }
 
+// ---------------------------------------------------------------------------
+// The shared vocabulary of the two views
+// ---------------------------------------------------------------------------
+
+/**
+ * What one service's state looks like: a glyph and words coloured by state.
+ * Green means running, red means "do something", dim means "nothing to act
+ * on" -- an unanswered probe and an uninstalled tool alike, because neither
+ * is a fault, they are just absences of an answer. The glyphs are the same
+ * marks pi's own UI reaches for (dots, ballot marks), so the statusbar reads
+ * as part of the TUI rather than as a guest with its own alphabet.
+ */
+function stateDeco(s: ServiceRow): StateDeco {
+	if (s.status !== "present") return { glyph: "○", colour: "dim", text: "not installed" };
+	if (s.state === "up") return { glyph: "●", colour: "success", text: s.detail ?? "up" };
+	if (s.state === "down") return { glyph: "✗", colour: "error", text: "down" };
+	return { glyph: "?", colour: "dim", text: "unknown" };
+}
+
+/**
+ * Colours that name a service rather than judge it. `success`, `error` and
+ * `warning` are deliberately absent from the rotation: on the glyph and the
+ * state words they must keep meaning exactly one thing. A rotation of five,
+ * handed out by sorted id, so `bn` and `adb` disagree in the footer and the
+ * panel alike, and an id keeps its colour for as long as the set of services
+ * does -- muted or newly installed services reshuffle it, which is the price
+ * of never colliding.
+ */
+const IDENTITY_COLOURS = ["accent", "mdLink", "thinkingHigh", "thinkingXhigh", "syntaxType"] as const;
+
+function identityColours(services: ServiceRow[]): Map<string, ThemeColor> {
+	const map = new Map<string, ThemeColor>();
+	[...services]
+		.sort((a, b) => a.id.localeCompare(b.id))
+		.forEach((s, i) => map.set(s.id, IDENTITY_COLOURS[i % IDENTITY_COLOURS.length]));
+	return map;
+}
+
+// ---------------------------------------------------------------------------
+// The footer line
+// ---------------------------------------------------------------------------
+
+/**
+ * The budget behind the ladder: the real terminal width minus a fixed
+ * allowance for the other extensions' entries that share the line, whose
+ * length no API exposes. The width is pi-tui's own chain (`stdout.columns
+ * || $COLUMNS || 80`, terminal.js), re-read on every refresh, so a resize
+ * lands with the next turn like any other state change.
+ */
+function footerBudget(): number {
+	const columns = process.stdout.columns || Number(process.env.COLUMNS) || 0;
+	return Math.max(FOOTER_RESERVE, (columns || 80) - FOOTER_RESERVE);
+}
+
+/** One footer block: state glyph, service id, state words. */
+function footerBlock(s: ServiceRow, colours: Map<string, ThemeColor>, t: Theme): string {
+	const { glyph, colour, text } = stateDeco(s);
+	return `${t.fg(colour, glyph)} ${t.fg(colours.get(s.id) ?? "text", s.id)} ${t.fg(colour, text)}`;
+}
+
 /**
  * The footer line. Down services first: they are the ones that mean "do
- * something". Falls back to counts rather than being cut mid-word, because a
- * truncated `adb: 12 devices` reads as a different number.
+ * something". Blocks are separated by a dim middot, the separator pi's own
+ * selectors use -- and while the anchor (the tool count) is on the line, the
+ * whole line leads with one, so the anchor and the services read as blocks
+ * of the same line, not two unrelated strings pi happened to join with a
+ * space.
+ *
+ * Three rungs, each width-checked against `footerBudget()`, so a narrow
+ * window sheds detail before pi's own truncation can ever cut a number into
+ * a different number: full blocks, then names only, then counts.
  */
-function statusLine(payload: ServicesPayload): string | undefined {
+function statusLine(payload: ServicesPayload, t: Theme, lead: string): string | undefined {
 	const known = payload.services.filter((s) => s.status === "present");
 	if (!known.length) return undefined;
 
 	const ordered = [...known].sort((a, b) => rank(a) - rank(b));
-	const full = ordered.map((s) => `${s.id}:${s.state === "up" ? (s.detail ?? "up") : s.state}`);
-	const line = full.join(" · ");
-	if (visibleWidth(line) <= MAX_STATUS_WIDTH) return line;
+	const colours = identityColours(payload.services);
+	const joiner = t.fg("dim", " · ");
+	const budget = footerBudget();
 
-	const counts = { up: 0, down: 0, unknown: 0 };
+	const blocks = lead + ordered.map((s) => footerBlock(s, colours, t)).join(joiner);
+	if (visibleWidth(blocks) <= budget) return blocks;
+
+	// Drop the details, keep every name: a count that vanished because the
+	// window was narrow is a guessable loss; a truncated `12 devices` reads
+	// as `1` and is a lie.
+	const names = lead + ordered
+		.map((s) => {
+			const { glyph, colour } = stateDeco(s);
+			return `${t.fg(colour, glyph)} ${t.fg(colours.get(s.id) ?? "text", s.id)}`;
+		})
+		.join(joiner);
+	if (visibleWidth(names) <= budget) return names;
+
+	// Counts, worst first -- the same order the blocks above use. Short by
+	// construction, so this rung is the floor: below it, pi's ellipsis would
+	// at worst shave the last word, and there is no number left to misread.
+	const counts: Record<ServiceRow["state"], number> = { down: 0, unknown: 0, up: 0 };
 	for (const s of known) counts[s.state]++;
-	return Object.entries(counts)
-		.filter(([, n]) => n > 0)
-		.map(([k, n]) => `${n} ${k}`)
-		.join(" · ");
+	const countColour: Record<ServiceRow["state"], ThemeColor> = {
+		down: "error",
+		unknown: "dim",
+		up: "success",
+	};
+	return (
+		lead +
+		(["down", "unknown", "up"] as const)
+			.map((state) => [state, counts[state]] as const)
+			.filter(([, n]) => n > 0)
+			.map(([state, n]) => t.fg(countColour[state], `${n} ${state}`))
+			.join(joiner)
+	);
 }
-
 function rank(s: ServiceRow): number {
 	return s.state === "down" ? 0 : s.state === "unknown" ? 1 : 2;
 }
 
-/** The panel above the editor. Stateless: it renders the payload it was given. */
+// ---------------------------------------------------------------------------
+// The panel above the editor
+// ---------------------------------------------------------------------------
+
+/**
+ * The panel above the editor. Stateless: it renders the payload it was
+ * given. A row too wide for its window sheds the label column first, then
+ * stacks label and state words onto continuation lines indented under the
+ * service id -- it wraps rather than truncates, so nothing a probe said can
+ * be cut into a different reading.
+ */
 class ServicePanel implements Component {
 	constructor(
 		private theme: Theme,
@@ -295,38 +413,70 @@ class ServicePanel implements Component {
 
 	render(width: number): string[] {
 		const t = this.theme;
-		const services = this.payload?.services ?? [];
 		if (!this.payload) {
-			return [truncateToWidth(t.fg("error", "  reactor: no service data -- try `reactor doctor`"), width)];
+			return [truncateToWidth(t.fg("error", "  ✗ reactor: no service data -- try `reactor doctor`"), width)];
 		}
+		// A tool that is not installed has no service to show -- reporting it
+		// would be a status for a thing that does not exist, which is the same
+		// reason the footer leaves it out.
+		const services = this.payload.services.filter((s) => s.status === "present");
 		if (!services.length) {
-			return [truncateToWidth(t.fg("dim", "  no catalogued tool declares a service probe"), width)];
+			const declared = this.payload.services.length > 0;
+			return [
+				truncateToWidth(
+					t.fg(
+						"dim",
+						declared ? "  nothing that declares a service is installed" : "  no catalogued tool declares a service probe",
+					),
+					width,
+				),
+			];
 		}
 
+		// The colour map spans the whole payload, not the rows: the footer and
+		// the panel must hand the same id the same colour, whether or not it is
+		// installed and therefore shown.
+		const colours = identityColours(this.payload.services);
 		const idWidth = Math.max(...services.map((s) => visibleWidth(s.id)));
 		// A label that repeats the id says nothing -- `adb  adb  2 devices`.
 		// The column disappears entirely when no service has anything to add.
-		const labelWidth = Math.max(...services.map((s) => visibleWidth(labelOf(s))));
+		const labelWidth = Math.max(0, ...services.map((s) => visibleWidth(labelOf(s))));
 		return [
-			truncateToWidth(t.bold(t.fg("accent", "  running")), width),
-			...services.map((s) => truncateToWidth(this.row(s, idWidth, labelWidth), width)),
+			truncateToWidth(t.bold(t.fg("accent", "  services")), width),
+			...services.flatMap((s) => this.rowLines(s, colours, idWidth, labelWidth, width)),
 		];
 	}
 
-	private row(s: ServiceRow, idWidth: number, labelWidth: number): string {
+	private rowLines(
+		s: ServiceRow,
+		colours: Map<string, ThemeColor>,
+		idWidth: number,
+		labelWidth: number,
+		width: number,
+	): string[] {
 		const t = this.theme;
-		// A tool that is not installed has no service state, and rendering it
-		// as "down" would send someone looking for a thing to restart.
-		const [glyph, colour, text] =
-			s.status !== "present"
-				? (["[ ]", "dim", "not installed"] as const)
-				: s.state === "up"
-					? (["[^]", "success", (s.detail ?? "up")] as const)
-					: s.state === "down"
-						? (["[v]", "error", "down"] as const)
-						: (["[?]", "dim", "unknown"] as const);
-		const label = labelWidth ? `${t.fg("muted", labelOf(s).padEnd(labelWidth))}  ` : "";
-		return `  ${t.fg(colour, glyph)} ${s.id.padEnd(idWidth)}  ${label}${t.fg(colour, text)}`;
+		const { glyph, colour, text } = stateDeco(s);
+		const head = `  ${t.fg(colour, glyph)} ${t.fg(colours.get(s.id) ?? "text", s.id.padEnd(idWidth))}`;
+		const stateText = t.fg(colour, text);
+
+		// The table line: icon, id, label column, state words.
+		if (labelWidth) {
+			const line = `${head}  ${t.fg("muted", labelOf(s).padEnd(labelWidth))}  ${stateText}`;
+			if (visibleWidth(line) <= width) return [line];
+		}
+		// Without the label column, the state words still fit beside the id.
+		const compact = `${head}  ${stateText}`;
+		if (visibleWidth(compact) <= width) return [compact];
+
+		// Stacked: whatever is left wraps under the id. The label keeps its
+		// own colour, the state words keep theirs, and wrapTextWithAnsi keeps
+		// both across the break.
+		const rest = labelOf(s) ? `${t.fg("muted", labelOf(s))}  ${stateText}` : stateText;
+		const lines = [truncateToWidth(head, width)];
+		for (const wrapped of wrapTextWithAnsi(rest, Math.max(8, width - 4))) {
+			lines.push(truncateToWidth(`    ${wrapped}`, width));
+		}
+		return lines;
 	}
 }
 

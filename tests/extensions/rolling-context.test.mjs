@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadExtension, makeContext, needsPi, withFixture } from "./harness.mjs";
+import { loadExtension, makeContext, needsPi, recordingTheme, withFixture } from "./harness.mjs";
 
 const EXT = "extensions/rolling-context/index.ts";
 
@@ -84,8 +84,9 @@ test("/rolling with no argument toggles", needsPi, () =>
 
 test("/rolling on and /rolling off set state explicitly rather than toggling", needsPi, () =>
 	withFixture({}, async (fixture) => {
+		const rec = recordingTheme;
 		const { extension, entries } = await loadExtension(EXT, fixture);
-		const { ctx, calls } = makeContext(fixture, { entries });
+		const { ctx, calls } = makeContext(fixture, { entries, theme: rec.theme });
 
 		await extension.commands.get("rolling").handler("on", ctx);
 		await extension.commands.get("rolling").handler("on", ctx);
@@ -97,11 +98,13 @@ test("/rolling on and /rolling off set state explicitly rather than toggling", n
 
 test("/rolling sets the footer status", needsPi, () =>
 	withFixture({}, async (fixture) => {
+		const rec = recordingTheme;
 		const { extension, entries } = await loadExtension(EXT, fixture);
-		const { ctx, calls } = makeContext(fixture, { entries });
+		const { ctx, calls } = makeContext(fixture, { entries, theme: rec.theme });
 
 		await extension.commands.get("rolling").handler("on", ctx);
-		assert.deepEqual(calls.status.at(-1), { key: "rolling-context", value: "rolling: on" });
+		assert.deepEqual(calls.status.at(-1), { key: "rolling-context", value: "· ⋯ rolling" });
+		assert.equal(rec.fgCalls.find((c) => c.text === "⋯")?.color, "accent");
 
 		await extension.commands.get("rolling").handler("off", ctx);
 		assert.deepEqual(calls.status.at(-1), { key: "rolling-context", value: undefined });
@@ -290,7 +293,7 @@ test("the enabled toggle survives a simulated reload", needsPi, () =>
 		const { ctx: ctx2, calls } = makeContext(fixture, { entries: first.entries });
 		await second.extension.handlers.get("session_start")[0]({}, ctx2);
 
-		assert.deepEqual(calls.status.at(-1), { key: "rolling-context", value: "rolling: on" });
+		assert.deepEqual(calls.status.at(-1), { key: "rolling-context", value: "· ⋯ rolling" });
 		const messages = [msg("user", "hello").message];
 		const result = await second.extension.handlers.get("context")[0]({ messages }, ctx2);
 		assert.deepEqual(result.messages, messages);

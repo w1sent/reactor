@@ -33,7 +33,7 @@
  * pi 0.85.1: agent-session.js:932 writes the chained prompt into
  * `this.systemPrompt`, which the context-handler ctx reads), so subtracting
  * the whole system prompt accounts for the manifest exactly, with no
- * coupling between the two extensions (ADR-0014: no shared modules). The
+ * coupling between the two extensions (ADR-0014: no shared state). The
  * split also removed this extension's only dependency on load order: pi
  * composes `before_agent_start` by chaining `event.systemPrompt`, and
  * chains `context` handlers in extension order -- which is the unsorted
@@ -53,8 +53,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { estimateTokens as estimateMessageTokens, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { glyph, lead } from "../lib/statusbar.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 // ============================================================================
@@ -188,7 +189,8 @@ export default function (pi: ExtensionAPI) {
 				state = normalizeState(entry.data);
 			}
 		}
-		ctx.ui.setStatus("rolling-context", isEnabled() ? "rolling: on" : undefined);
+		const t: Theme = ctx.ui.theme;
+		ctx.ui.setStatus("rolling-context", isEnabled() ? `${lead(t)}${glyph(t, "⋯")} rolling` : undefined);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -300,7 +302,8 @@ export default function (pi: ExtensionAPI) {
 			else next = !isEnabled();
 			state = { ...state, enabled: next };
 			pi.appendEntry(CUSTOM_TYPE, state);
-			ctx.ui.setStatus("rolling-context", next ? "rolling: on" : undefined);
+			const t: Theme = ctx.ui.theme;
+			ctx.ui.setStatus("rolling-context", next ? `${lead(t)}${glyph(t, "⋯")} rolling` : undefined);
 			ctx.ui.notify(`rolling-context ${next ? "enabled" : "disabled"}`, next ? "info" : "warning");
 		},
 	});

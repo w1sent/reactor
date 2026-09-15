@@ -3,7 +3,8 @@
 Tells the agent what RE tooling exists on this machine. One compact block —
 `## Available RE tools (this machine)` — appended to the system prompt: one
 line per *present and active* tool, with live service state where applicable,
-byte-stable so the prompt cache holds. Plus a footer entry (`RE <present>/<catalogued>`) and the answer to pi's
+byte-stable so the prompt cache holds. Plus a footer block (`🛠 <present>/<catalogued> tools`, the glyph in the
+anchor colour, failures as a red `✗`) and the answer to pi's
 `resources_discover`: the skill directories of the active, present tools.
 
 ```
@@ -18,7 +19,9 @@ command able to turn it back on. A failed probe keeps the last good block; a
 missing CLI is warned about once, then silent.
 
 `toolbox: false` in `<agent dir>/reactor.json` removes the injection, the
-footer and `/reactor` entirely, checked once at registration.
+footer and `/reactor` entirely, checked once at registration. Its footer
+block is the statusbar line's anchor: its key sorts first, and the other
+REactor blocks hang their separating `·` off it.
 
 The reasoning — why the CLI pre-renders the block, why it must be
 byte-stable, why everything shells out to `reactor` — is in

@@ -28,6 +28,23 @@ with a warning once the count exceeds the soft limit. It is inactive until a
 goal is set *and* the switch is on — in a fresh session the tool simply is not
 usable.
 
+## The goal row
+
+While the extension is on and the manifest has content, the manifest keeps one
+line of its own — directly above the footer, not a guest slot on the footer's
+shared status line:
+
+```
+◎ recover the stolen certificate from the firmware image · 2 steps
+```
+
+The glyph takes the theme's anchor colour, the goal is prose in the text
+colour, and the steps count is muted — a warning once the count passes the
+soft limit. A window too narrow for the whole row ellipsizes the goal before
+it touches the count. `update_steps` mid-turn updates the count; a session
+without a goal but with guidelines or steps shows `◎ manifest` in the row's
+place. Pausing (`/manifest off`) or clearing removes the row.
+
 The manifest block is injected on content only: no goal, no block, and an
 untouched session's system prompt stays byte-identical. Config (soft limit,
 clamp lengths, the derive call's session-tail character budget) lives in

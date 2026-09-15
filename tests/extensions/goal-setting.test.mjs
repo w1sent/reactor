@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadExtension, makeContext, needsPi, piAiCompat, withFixture } from "./harness.mjs";
+import { loadExtension, makeContext, needsPi, piAiCompat, piTui, recordingTheme, withFixture } from "./harness.mjs";
 
 const EXT = "extensions/goal-setting/index.ts";
 
@@ -21,9 +21,9 @@ async function started(fixture, ctxOptions = {}) {
 }
 
 /** Load the extension, run session_start, and set a goal. */
-async function withGoal(fixture, goal = "find the crash") {
+async function withGoal(fixture, goal = "find the crash", ctxOptions = {}) {
 	const loaded = await loadExtension(EXT, fixture);
-	const made = makeContext(fixture, { entries: loaded.entries });
+	const made = makeContext(fixture, { entries: loaded.entries, ...ctxOptions });
 	await loaded.extension.handlers.get("session_start")[0]({}, made.ctx);
 	await loaded.extension.commands.get("goal").handler(goal, made.ctx);
 	return { ...loaded, ...made };
@@ -488,121 +488,166 @@ test("/manifest with an unknown argument warns", needsPi, () =>
 	}));
 
 // ---------------------------------------------------------------------------
-// Footer indicator: on only while active AND set
+// The goal row: the manifest's own line above the footer
 // ---------------------------------------------------------------------------
 
 const lastStatus = (calls) => calls.status.at(-1);
+const lastWidget = (calls) => calls.widgets.at(-1);
+const rowOf = (calls, width = 100) => lastWidget(calls).lines(width);
 
-test("setting a goal shows a footer indicator with a truncated snippet", needsPi, () =>
+test("setting a goal shows its own row, not a footer entry", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { ctx, calls, extension } = await started(fixture);
 
 		await extension.commands.get("goal").handler("recover the stolen certificate key", ctx);
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: "goal: recover the stolen certificate key" });
+		// The footer entry is gone: a goal is prose, and prose gets its own
+		// line above the footer rather than a guest slot on a shared shelf.
+		assert.deepEqual(lastStatus(calls), { key: "goal-setting", value: undefined });
+		assert.equal(lastWidget(calls).options.placement, "belowEditor");
+		assert.deepEqual(rowOf(calls), ["◎ recover the stolen certificate key"]);
 	}));
 
-test("the indicator truncates a long goal", needsPi, () =>
+test("the row carries the number of steps set", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { ctx, calls, extension } = await started(fixture);
+		const { ctx, calls, extension } = await withGoal(fixture, "find the crash");
+		const tool = extension.tools.get("update_steps").definition;
 
-		await extension.commands.get("goal").handler("y".repeat(120), ctx);
+		await tool.execute(
+			"id",
+			{ steps: [{ summary: "image the disk", status: "done" }, { summary: "carve the mail", status: "todo" }] },
+			undefined,
+			undefined,
+			ctx,
+		);
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: `goal: ${"y".repeat(47)}…` });
+		assert.deepEqual(rowOf(calls), ["◎ find the crash · 2 steps"]);
 	}));
 
-test("clearing everything clears the footer; a fresh session shows nothing", needsPi, () =>
+test("a step count past the soft limit reads as a warning", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const { ctx, calls, extension } = await withGoal(fixture, "recover the key");
-		await extension.commands.get("goal").handler("clear", ctx);
+		const rec = recordingTheme;
+		const { ctx, calls, extension } = await withGoal(fixture, "find the crash", { theme: rec.theme });
+		const tool = extension.tools.get("update_steps").definition;
+		const steps = Array.from({ length: 21 }, (_, i) => ({ summary: `step ${i}`, status: "todo" }));
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: undefined });
+		await tool.execute("id", { steps }, undefined, undefined, ctx);
+
+		assert.deepEqual(rowOf(calls), ["◎ find the crash · 21 steps"]);
+		rec.fgCalls.length = 0;
+		rowOf(calls);
+		assert.equal(rec.fgCalls.find((c) => c.text === "21 steps")?.color, "warning");
 	}));
 
-test("guidelines-only sessions show the manifest indicator", needsPi, () =>
+test("a long goal is truncated in the row, and the count survives a narrow window", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, calls, extension } = await withGoal(fixture, "y".repeat(120));
+		const tool = extension.tools.get("update_steps").definition;
+		await tool.execute("id", { steps: [{ summary: "one", status: "todo" }] }, undefined, undefined, ctx);
+
+		// Generous on its own line: the old 48-char footer cap doubles. The
+		// count rides along.
+		assert.match(rowOf(calls, 200)[0], /^◎ y{95}… · 1 step$/);
+
+		// Narrow window: the goal ellipsizes before the count does.
+		const [narrow] = rowOf(calls, 40);
+		assert.match(narrow, /· 1 step$/);
+		assert.ok(piTui.visibleWidth(narrow) <= 40, JSON.stringify(narrow));
+	}));
+
+test("guidelines-only sessions show the manifest row", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { ctx, calls, extension } = await started(fixture);
 
 		await extension.commands.get("guidelines").handler("never touch prod", ctx);
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: "manifest: set" });
+		assert.deepEqual(rowOf(calls), ["◎ manifest"]);
 		await extension.commands.get("guidelines").handler("clear", ctx);
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: undefined });
+		assert.equal(lastWidget(calls).cleared, true);
 	}));
 
-test("a paused extension shows nothing in the footer, even with content", needsPi, () =>
+test("clearing the goal clears the row; a fresh session shows nothing", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, calls, extension } = await withGoal(fixture, "recover the key");
+		await extension.commands.get("goal").handler("clear", ctx);
+
+		assert.equal(lastWidget(calls).cleared, true);
+	}));
+
+test("a paused extension shows no row, even with content", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { ctx, calls, extension } = await withGoal(fixture, "recover the key");
 
 		await extension.commands.get("manifest").handler("off", ctx);
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: undefined });
+		assert.equal(lastWidget(calls).cleared, true);
 
 		await extension.commands.get("manifest").handler("on", ctx);
-		assert.match(calls.status.at(-1).value, /goal: recover the key/);
+		assert.match(rowOf(calls)[0], /◎ recover the key/);
 	}));
 
-test("/manifest clear clears the footer", needsPi, () =>
+test("/manifest clear clears the row", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { ctx, calls, extension } = await withGoal(fixture, "recover the key");
 
 		await extension.commands.get("manifest").handler("clear", ctx);
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: undefined });
+		assert.equal(lastWidget(calls).cleared, true);
 	}));
 
-test("derive updates the footer with the derived goal", needsPi, () =>
+test("derive updates the row with the derived goal", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { ctx, calls, extension } = await withDeriveRegistry(fixture, JSON.stringify({ goal: "derived from session" }));
 
 		await extension.commands.get("derive").handler("goal", ctx);
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: "goal: derived from session" });
+		assert.deepEqual(rowOf(calls), ["◎ derived from session"]);
 	}));
 
-test("session_start restores the footer from the session state", needsPi, () =>
+test("rpc hosts get the row as lines", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const first = await loadExtension(EXT, fixture);
-		const { ctx: ctx1 } = makeContext(fixture, { entries: first.entries });
-		await first.extension.handlers.get("session_start")[0]({}, ctx1);
-		await first.extension.commands.get("goal").handler("survives a reload", ctx1);
+		const { ctx, calls, extension } = await started(fixture, { mode: "rpc" });
 
-		const second = await loadExtension(EXT, fixture);
-		const { ctx: ctx2, calls } = makeContext(fixture, { entries: first.entries });
-		await second.extension.handlers.get("session_start")[0]({}, ctx2);
+		await extension.commands.get("goal").handler("find the crash", ctx);
 
-		assert.deepEqual(calls.status.at(-1), { key: "goal-setting", value: "goal: survives a reload" });
+		const widget = lastWidget(calls);
+		assert.deepEqual(widget.lines(), ["◎ find the crash"]);
+	}));
+
+test("rpc hosts cannot read module state, so update_steps must re-send the row", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, calls, extension } = await started(fixture, { mode: "rpc" });
+		await extension.commands.get("goal").handler("find the crash", ctx);
+		const tool = extension.tools.get("update_steps").definition;
+
+		await tool.execute("id", { steps: [{ summary: "carve", status: "todo" }] }, undefined, undefined, ctx);
+
+		// A string snapshot does not read module state at paint time -- the
+		// setWidget in the tool is what carries the new count to the host.
+		assert.deepEqual(lastWidget(calls).lines(), ["◎ find the crash · 1 step"]);
+	}));
+
+test("print mode touches no UI at all", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, calls, extension } = await started(fixture, { mode: "print" });
+
+		await extension.commands.get("goal").handler("find the crash", ctx);
+
+		assert.deepEqual([calls.status.length, calls.widgets.length], [0, 0]);
 	}));
 
 // ---------------------------------------------------------------------------
-// State survives a reload (session_start restores from the branch)
+// Colour
 // ---------------------------------------------------------------------------
 
-test("switch, goal, guidelines and steps survive a simulated reload", needsPi, () =>
+test("the row takes its glyph from the anchor colour, the count from muted", needsPi, () =>
 	withFixture({}, async (fixture) => {
-		const first = await loadExtension(EXT, fixture);
-		const { ctx: ctx1 } = makeContext(fixture, { entries: first.entries });
-		await first.extension.handlers.get("session_start")[0]({}, ctx1);
-		await first.extension.commands.get("goal").handler("recover the key", ctx1);
-		await first.extension.commands.get("guidelines").handler("be careful", ctx1);
-		const tool = first.extension.tools.get("update_steps").definition;
-		await tool.execute("id", { steps: [{ summary: "found the vault", status: "in progress" }] }, undefined, undefined, ctx1);
-		await first.extension.commands.get("manifest").handler("off", ctx1);
+		const rec = recordingTheme;
+		const { ctx, calls, extension } = await started(fixture, { theme: rec.theme });
 
-		// A fresh module instance -- what a `/reload` or a resumed session
-		// gets -- reading the same entries the first instance appended.
-		const second = await loadExtension(EXT, fixture);
-		const { ctx: ctx2, calls } = makeContext(fixture, { entries: first.entries });
-		await second.extension.handlers.get("session_start")[0]({}, ctx2);
-		await second.extension.commands.get("frame").handler("", ctx2);
+		await extension.commands.get("goal").handler("find the crash", ctx);
 
-		const frame = lastNotify(calls).message;
-		assert.match(frame, /goal: recover the key/);
-		assert.match(frame, /guidelines: be careful/);
-		assert.match(frame, /found the vault/);
-		assert.match(frame, /switch: off/);
-
-		// ...and the gate follows the restored switch state, not the default.
-		const tool2 = second.extension.tools.get("update_steps").definition;
-		const result = await tool2.execute("id", { steps: [{ summary: "x", status: "done" }] }, undefined, undefined, ctx2);
-		assert.match(result.content[0].text, /goal-setting is off/);
+		rec.fgCalls.length = 0;
+		rowOf(calls);
+		assert.equal(rec.fgCalls.find((c) => c.text === "◎")?.color, "accent");
 	}));
+

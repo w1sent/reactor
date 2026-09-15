@@ -468,7 +468,35 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
 }
 
 /**
+ * A theme whose `fg` records every call and returns the text unchanged, so a
+ * test can assert WHICH colour a segment got without putting ANSI (or marker
+ * text) into the rendered line. `fgCalls` accumulates; reset it with
+ * `theme.fgCalls.length = 0` between renders.
+ */
+export const recordingTheme = (() => {
+	const fgCalls = [];
+	return {
+		fgCalls,
+		theme: {
+			fg: (color, text) => {
+				fgCalls.push({ color, text });
+				return text;
+			},
+			bg: (_color, text) => text,
+			bold: (text) => text,
+			italic: (text) => text,
+			underline: (text) => text,
+			strikethrough: (text) => text,
+		},
+	};
+})();
+
+/**
  * A fake ExtensionContext, plus a record of everything the extension did to it.
+ *
+ * `theme` is what `ctx.ui.theme` and a widget factory's theme callback return;
+ * `plainTheme` keeps width assertions ANSI-free, `recordingTheme` is for
+ * colour assertions.
  *
  * `ui.custom` is the interesting one: it builds the component the way pi does
  * and parks the returned promise until the component calls `done`, so a test
@@ -523,6 +551,7 @@ export function makeContext(
 	{
 		mode = "tui",
 		tui = makeTui(),
+		theme = plainTheme,
 		entries = [],
 		branch = [],
 		model,
@@ -567,6 +596,10 @@ export function makeContext(
 			buildContextEntries: wholeBranch,
 		},
 		ui: {
+			// Real pi exposes the live theme here (interactive-mode.js); the
+			// widget factory below gets the same one, the way pi's real
+			// setWidget hands a theme to a component factory.
+			theme,
 			setStatus: (key, value) => calls.status.push({ key, value }),
 			clearStatus: (key) => calls.status.push({ key, value: undefined }),
 			notify: (message, level) => calls.notify.push({ message, level }),
@@ -579,7 +612,7 @@ export function makeContext(
 			setWidget: (key, content, options) => {
 				const lines =
 					typeof content === "function"
-						? (width = 100) => content(tui, plainTheme).render(width)
+						? (width = 100) => content(tui, theme).render(width)
 						: content === undefined
 							? undefined
 							: () => content;

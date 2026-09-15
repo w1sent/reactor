@@ -69,11 +69,22 @@ shim and the fake host; no test file stubs `reactor` itself.
   advertised, and that skills are withdrawn when their tool is. Then the failure
   modes, which are most of the extension: a failed probe keeps the last good
   block, a missing CLI is announced once rather than every turn, non-JSON output
-  and error payloads become a status line instead of an exception.
+  and error payloads become a status line instead of an exception — styled as
+  the statusbar's other blocks: `⌗ <present>/<catalogued> tools` under an
+  anchor-coloured glyph, failures as a red ✗.
+- **`goal-setting.test.mjs`** — the manifest row: its own line above the
+  footer, with the steps count (muted, warning past the soft limit), a goal
+  that ellipsizes before the count does on a narrow window, cleared and
+  paused states hiding the row, and the rpc path re-sending the row as a
+  string snapshot, since a snapshot cannot read module state at paint time.
 - **`status.test.mjs`** — that the footer says what is running and nothing
-  else: down services first, uninstalled ones left out, and counts instead of a
-  truncated number when the line will not fit. Plus the panel's lifecycle —
-  toggled, repainted on a turn while up, not drawn while hidden.
+  else, and that it reads at a glance: down services first, uninstalled ones
+  left out, state glyph and state words coloured by state, service ids
+  coloured by service from a rotation that never carries state meaning, the
+  same colour in footer and panel. Then the width ladder — details shed
+  first, then names, then counts, a number never cut into a different
+  number — and the panel wrapping instead of truncating. Plus the panel's
+  lifecycle — toggled, repainted on a turn while up, not drawn while hidden.
 - **`selector.test.mjs`** — that keystrokes produce the writes they claim to.
   The round trip is the one to keep: toggling a tool off and back on leaves
   `state.json` byte-identical, which is what makes the selector safe to browse

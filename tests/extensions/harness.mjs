@@ -500,14 +500,19 @@ export function makeTui({ rows = 40, columns = 120 } = {}) {
  */
 export const recordingTheme = (() => {
 	const fgCalls = [];
+	const bgCalls = [];
 	return {
 		fgCalls,
+		bgCalls,
 		theme: {
 			fg: (color, text) => {
 				fgCalls.push({ color, text });
 				return text;
 			},
-			bg: (_color, text) => text,
+			bg: (color, text) => {
+				bgCalls.push({ color, text });
+				return text;
+			},
 			bold: (text) => text,
 			italic: (text) => text,
 			underline: (text) => text,
@@ -653,7 +658,8 @@ export function makeContext(
 					throw new Error(`ctx.ui.custom called in mode "${mode}"`);
 				}
 				return new Promise((resolve) => {
-					const component = factory(tui, plainTheme, piTui.getKeybindings?.(), resolve);
+					// The theme follows the context option, the way pi's own custom call does.
+					const component = factory(tui, theme, piTui.getKeybindings?.(), resolve);
 					calls.overlay = { component, tui, options, render: (w) => component.render(w) };
 				});
 			},

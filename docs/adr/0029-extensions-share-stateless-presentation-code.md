@@ -1,8 +1,9 @@
 # Extensions share stateless presentation code; state stays in the cache
 
 `extensions/lib/` holds code any REactor extension may import — today, the
-statusbar vocabulary: whether the anchor block is on the line, the separator a
-block leads with, and the styling of an error. [ADR-0014](0014-extensions-share-the-cache-not-each-other.md)
+statusbar vocabulary (whether the anchor block is on the line, the separator a
+block leads with, the styling of an error) and the frame that sets every
+popup apart from the session output. [ADR-0014](0014-extensions-share-the-cache-not-each-other.md)
 ruled out shared modules between extensions; this ADR scopes that rule. What
 extensions still never share is **state** — probe results flow through
 `reactor` and `cache.json`, and anything a module holds at module scope stays

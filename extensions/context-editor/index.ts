@@ -44,6 +44,7 @@ import type {
 import { sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { frame } from "../lib/overlay.ts";
 import { getKeybindings, truncateToWidth } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -423,16 +424,15 @@ class LandscapeOverlay implements Component {
 
 	render(width: number): string[] {
 		const t = this.theme;
+		// The frame's side borders and margins; content is computed against
+		// the remainder so nothing clips through the border.
+		const inner = Math.max(8, width - 4);
 		if (this.detailFor !== undefined) {
 			const row = this.rows.find((r) => r.entryId === this.detailFor);
 			const lines = [
-				t.bold(t.fg("accent", `  [${row?.role}]`)),
-				"",
 				...(row?.body.split("\n").map((l) => `  ${l}`) ?? []),
-				"",
-				t.fg("dim", "  esc/enter back"),
 			];
-			return lines.map((l) => truncateToWidth(l, width));
+			return frame(t, width, { title: `[${row?.role}]`, lines: lines.map((l) => truncateToWidth(l, inner)), hint: "esc/enter back" });
 		}
 
 		const lines = [t.bold(`  context editor -- ${this.rows.length} entr${this.rows.length === 1 ? "y" : "ies"}, ${this.hidden.size} hidden`), ""];
@@ -443,11 +443,11 @@ class LandscapeOverlay implements Component {
 			const prefix = selected ? t.fg("accent", "→ ") : "  ";
 			const role = row.role.padEnd(11);
 			const snippet = t.fg(hidden ? "dim" : "muted", row.snippet || "(empty)");
-			lines.push(truncateToWidth(`${prefix}${box} ${selected ? t.fg("accent", role) : role} ${snippet}`, width));
+			lines.push(truncateToWidth(`${prefix}${box} ${selected ? t.fg("accent", role) : role} ${snippet}`, inner));
 		});
 		lines.push("");
-		lines.push(truncateToWidth(t.fg("dim", "  space hide/show · enter view · a apply · esc cancel"), width));
-		return lines;
+		// The key hints sit in the frame's bottom rule (extensions/lib/overlay.ts).
+		return frame(t, width, { title: "context editor", lines, hint: "space hide/show · enter view · a apply · esc cancel" });
 	}
 }
 

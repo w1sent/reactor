@@ -20,4 +20,4 @@ toolset: memory
 
 **Deliverables:** Memory findings, dumped processes and regions, in-memory IOCs and recovered secrets. Feeds Stages F, I, J, Q.
 
-Call `reactor_step_complete` once volatile evidence is extracted and cross-checked.
+Call `reactor_phase_complete` once volatile evidence is extracted and cross-checked.

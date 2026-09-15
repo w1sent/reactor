@@ -16,4 +16,4 @@ title: Stage L — Attribution / TTP Mapping
 
 **Deliverables:** ATT&CK technique layer, TTP profile, attribution assessment with confidence. Feeds Stages M, N.
 
-Call `reactor_step_complete` once the technique layer and the confidence-caveated assessment exist.
+Call `reactor_phase_complete` once the technique layer and the confidence-caveated assessment exist.

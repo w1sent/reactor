@@ -77,20 +77,21 @@ tool with no upstream skill at all is normal and simply relies on `--help`.
 _Avoid_: vendored skill, external skill, third-party doc.
 
 **Scenario**:
-A multi-step analysis workflow expressed as prompt templates — the shipped
+A multi-phase analysis workflow expressed as prompt templates — the shipped
 `investigation` scenario runs from scoping and evidence acquisition through
 triage, analysis, timeline, detection and reporting to lessons learned and
 analysis-derived tooling. The agent advances by calling
-`reactor_step_complete`, whose *return value is the next step's briefing*.
+`reactor_phase_complete`, whose *return value is the next phase's briefing*.
 Scenarios steer the agent's sequencing; like everything else in REactor they
-persuade rather than enforce.
+persuade rather than enforce. A scenario's stages are *phases* — distinct from
+the manifest's *steps* (see goal-setting).
 _Avoid_: workflow, pipeline, playbook, state machine.
 
-**Step briefing**:
-The text returned by `reactor_step_complete` — what the next step is, what it
+**Phase briefing**:
+The text returned by `reactor_phase_complete` — what the next phase is, what it
 should not do yet, and which tools and skills just became relevant. It is a tool
 result, not an injected message, so it costs nothing extra in context.
-_Avoid_: stage prompt, phase instruction.
+_Avoid_: stage prompt, step prompt.
 
 **Spine**:
 The non-optional chain every other feature builds on: catalogue → `reactor` CLI

@@ -21,4 +21,4 @@ toolset: triage
 
 **Deliverables:** Triage report, prioritised system/artifact list, initial IOCs and hypotheses. Feeds Stages D--I.
 
-Call `reactor_step_complete` once systems are ranked and initial hypotheses are on record.
+Call `reactor_phase_complete` once systems are ranked and initial hypotheses are on record.

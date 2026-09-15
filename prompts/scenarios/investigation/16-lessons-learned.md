@@ -14,4 +14,4 @@ title: Stage P — Lessons Learned
 
 **Deliverables:** Lessons-learned report, updated playbooks and detections, capability gap list. Feeds back into Stage A.
 
-Call `reactor_step_complete` once the review is written and its actions are listed.
+Call `reactor_phase_complete` once the review is written and its actions are listed.

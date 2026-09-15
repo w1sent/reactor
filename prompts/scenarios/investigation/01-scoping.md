@@ -21,4 +21,4 @@ toolset: forensics
 
 **Deliverables:** Collection plan, scope statement, volatility-ordered evidence source list, chain-of-custody template. Feeds Stage B.
 
-Call `reactor_step_complete` once the collection plan and scope statement exist.
+Call `reactor_phase_complete` once the collection plan and scope statement exist.

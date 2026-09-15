@@ -26,10 +26,11 @@
  * instructions instead of acting until it is useful: it is active while a
  * goal is set **and** the switch is on -- so in a session with no goal it is
  * simply inactive (the default), and `/manifest off` forces it off even when
- * a goal exists. Like everything else here it is registered as a plain tool,
- * not hidden via `pi.setActiveTools()` -- that list is shared across all
- * extensions, and ADR-0017 records why touching it for one tool's visibility
- * is a bad trade.
+ * a goal exists. Its *advertisement* follows that same gate: the extension
+ * withdraws it from the active tools list while the gate is closed and
+ * re-advertises it when the gate opens, so the tools list carries no
+ * standing invitation to a dead end. A stale list degrades to the gate
+ * message, never to a block (ADR-0007, ADR-0030).
  *
  * Per-session state (switch, goal, guidelines, steps) lives in the session
  * itself as a `custom` entry, restored on `session_start` by taking the
@@ -110,11 +111,34 @@ function hasGoal(): boolean {
 	return Boolean(state.goal?.trim());
 }
 
+/**
+ * Whether `update_steps` may act -- and, by the same predicate, whether it is
+ * advertised. One function serves both so the gate message and the tool's
+ * visibility can never disagree (ADR-0030).
+ */
+function toolUsable(): boolean {
+	return isEnabled() && hasGoal();
+}
+
 /** `update_steps` answers instead of acting unless both halves of its gate hold. */
 function toolGateMessage(): string | undefined {
 	if (!isEnabled()) return "goal-setting is off. Run /manifest on to enable it.";
 	if (!hasGoal()) return "update_steps is inactive until a session goal is set. Set one with /goal <text>.";
 	return undefined;
+}
+
+/**
+ * Advertise `update_steps` exactly while `toolUsable()` holds. The tool is
+ * registered once, always, so a stale list degrades to the gate message
+ * (ADR-0007); the advertisement is what follows the state (ADR-0030). A
+ * no-op transition is skipped -- same visibility, no prompt rebuild.
+ */
+function syncToolVisibility(pi: ExtensionAPI): void {
+	const active = pi.getActiveTools();
+	const has = active.includes("update_steps");
+	const wanted = toolUsable();
+	if (wanted === has) return;
+	pi.setActiveTools(wanted ? [...active, "update_steps"] : active.filter((n) => n !== "update_steps"));
 }
 
 // ============================================================================
@@ -446,6 +470,7 @@ async function runDerive(pi: ExtensionAPI, ctx: any, scope: "all" | "goal" | "gu
 		}
 		const applied = applyDerived(pi, parts);
 		refreshStatus(ctx);
+		syncToolVisibility(pi);
 		ctx.ui.notify(`derive: ${applied.join(", ")} -- /frame to review`, "info");
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -479,6 +504,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		loadSessionState(ctx.sessionManager);
 		refreshStatus(ctx);
+		syncToolVisibility(pi);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -502,6 +528,7 @@ export default function (pi: ExtensionAPI) {
 				state = { ...state, goal: undefined };
 				pi.appendEntry(CUSTOM_TYPE, state);
 				refreshStatus(ctx);
+				syncToolVisibility(pi);
 				ctx.ui.notify("goal cleared", "info");
 				return;
 			}
@@ -512,6 +539,7 @@ export default function (pi: ExtensionAPI) {
 			state = { ...state, goal: text };
 			pi.appendEntry(CUSTOM_TYPE, state);
 			refreshStatus(ctx);
+			syncToolVisibility(pi);
 			ctx.ui.notify(`goal set: ${text}`, "info");
 		},
 	});
@@ -559,6 +587,7 @@ export default function (pi: ExtensionAPI) {
 				state = { ...state, goal: undefined, guidelines: undefined, steps: [] };
 				pi.appendEntry(CUSTOM_TYPE, state);
 				refreshStatus(ctx);
+				syncToolVisibility(pi);
 				ctx.ui.notify("manifest cleared -- goal, guidelines and steps are gone", "info");
 				return;
 			}
@@ -573,6 +602,7 @@ export default function (pi: ExtensionAPI) {
 			state = { ...state, enabled: next };
 			pi.appendEntry(CUSTOM_TYPE, state);
 			refreshStatus(ctx);
+			syncToolVisibility(pi);
 			ctx.ui.notify(`goal-setting ${next ? "enabled" : "disabled"}`, next ? "info" : "warning");
 		},
 	});
@@ -611,7 +641,7 @@ export default function (pi: ExtensionAPI) {
 		name: "update_steps",
 		label: "Update Steps",
 		description:
-			"Overwrite the entire step list of the session manifest. Each step has a short conceptual summary (an investigative question or milestone, not a micro-action) and a 3-word status. Inactive until a session goal is set; returns instructions when it cannot act.",
+			"Overwrite the step list of the session manifest -- the manifest's own durable steps, unrelated to REactor scenarios. Each step has a short conceptual summary (an investigative question or milestone, not a micro-action) and a 3-word status. Requires a session goal (/goal); called without one it returns instructions instead of acting.",
 		parameters: Type.Object({
 			steps: Type.Array(
 				Type.Object({

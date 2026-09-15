@@ -25,4 +25,4 @@ title: Stage Q — Creating Analysis-Derived Tooling
 
 **Deliverables:** Tested tool, validation results, variant and limitation notes, usage documentation, safe-operation guidance.
 
-Call `reactor_step_complete` once the tool passes every ground-truth case and its documented scope matches its measured behaviour.
+Call `reactor_phase_complete` once the tool passes every ground-truth case and its documented scope matches its measured behaviour.

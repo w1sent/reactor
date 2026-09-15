@@ -22,4 +22,4 @@ toolset: debugging
 
 **Deliverables:** Unpacked artifact, recovered algorithm and protocol specifications, extracted configuration, code-level capability notes, detection-rule seed material. Feeds Stages J, K, Q.
 
-Call `reactor_step_complete` once the recovered logic answers the questions that triggered this stage.
+Call `reactor_phase_complete` once the recovered logic answers the questions that triggered this stage.

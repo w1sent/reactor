@@ -19,4 +19,4 @@ title: Stage N — Reporting / Publication
 
 **Deliverables:** Final report, executive brief, IOC and detection appendix. Feeds Stage O and the customer.
 
-Call `reactor_step_complete` once the report answers the scoping questions and every claim carries its evidence.
+Call `reactor_phase_complete` once the report answers the scoping questions and every claim carries its evidence.

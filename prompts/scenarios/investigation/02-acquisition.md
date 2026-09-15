@@ -21,4 +21,4 @@ toolset: forensics
 
 **Deliverables:** Verified images, extractions, memory dumps and captures with hashes and custody records. Feeds Stages C--H.
 
-Call `reactor_step_complete` once acquisition is verified -- hashes match, custody entries complete.
+Call `reactor_phase_complete` once acquisition is verified -- hashes match, custody entries complete.

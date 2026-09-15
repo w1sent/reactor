@@ -26,7 +26,10 @@ rolling-context's fade, and everything else that touches old messages.
 step a conceptual summary with a 3-word status, clamped to a length limit,
 with a warning once the count exceeds the soft limit. It is inactive until a
 goal is set *and* the switch is on — in a fresh session the tool simply is not
-usable.
+usable, and is not advertised either: the extension withdraws it from the
+active tools list while the gate is closed, so the list carries no invitation
+to a dead end ([ADR-0030](../../docs/adr/0030-gated-tools-advertise-by-state.md)).
+It is the manifest's own steps — unrelated to REactor scenarios.
 
 ## The goal row
 

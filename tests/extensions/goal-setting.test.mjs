@@ -636,6 +636,53 @@ test("print mode touches no UI at all", needsPi, () =>
 	}));
 
 // ---------------------------------------------------------------------------
+// Tool advertisement: update_steps is visible exactly while usable (ADR-0030)
+// ---------------------------------------------------------------------------
+
+test("a fresh session with no goal withdraws update_steps from the active list", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { activeToolWrites } = await started(fixture);
+
+		// Registered means advertised -- until the first sync finds no goal
+		// and withdraws it.
+		assert.equal(activeToolWrites.length, 1);
+		assert.ok(!activeToolWrites[0].includes("update_steps"));
+	}));
+
+test("setting a goal advertises update_steps; clearing it withdraws the tool", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, activeToolWrites, extension } = await started(fixture);
+
+		await extension.commands.get("goal").handler("find the crash", ctx);
+		assert.ok(activeToolWrites.at(-1).includes("update_steps"));
+
+		await extension.commands.get("goal").handler("clear", ctx);
+		assert.ok(!activeToolWrites.at(-1).includes("update_steps"));
+	}));
+
+test("/manifest off withdraws the tool even with the goal preserved", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, activeToolWrites, extension } = await withGoal(fixture);
+
+		await extension.commands.get("manifest").handler("off", ctx);
+		assert.ok(!activeToolWrites.at(-1).includes("update_steps"));
+
+		await extension.commands.get("manifest").handler("on", ctx);
+		assert.ok(activeToolWrites.at(-1).includes("update_steps"));
+	}));
+
+test("a transition that does not change visibility writes nothing", needsPi, () =>
+	withFixture({}, async (fixture) => {
+		const { ctx, activeToolWrites, extension } = await withGoal(fixture);
+		const before = activeToolWrites.length;
+
+		await extension.commands.get("guidelines").handler("never touch prod", ctx);
+
+		// The gate is goal-and-switch; guidelines move neither.
+		assert.equal(activeToolWrites.length, before);
+	}));
+
+// ---------------------------------------------------------------------------
 // Colour
 // ---------------------------------------------------------------------------
 

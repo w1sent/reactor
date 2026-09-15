@@ -20,4 +20,4 @@ toolset: dynamic
 
 **Deliverables:** Behavioural report, captured traffic, dropped artifacts, runtime IOCs, C2 details. Feeds Stages F, I, J.
 
-Call `reactor_step_complete` once behaviour is characterised -- or the refusal to run is itself documented.
+Call `reactor_phase_complete` once behaviour is characterised -- or the refusal to run is itself documented.

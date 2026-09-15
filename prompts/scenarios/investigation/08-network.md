@@ -18,4 +18,4 @@ toolset: network
 
 **Deliverables:** Network analysis report, C2 and exfiltration IOCs, extracted files, infrastructure fingerprints. Feeds Stages I, J, K.
 
-Call `reactor_step_complete` once C2 and exfiltration behaviour is characterised.
+Call `reactor_phase_complete` once C2 and exfiltration behaviour is characterised.

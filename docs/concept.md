@@ -161,13 +161,14 @@ Both are pure TUI over `reactor --format json`. Neither owns any logic.
 
 ### 4. Scenarios
 
-A scenario is a chain of steps — Markdown files under `prompts/scenarios/<id>/`,
-one per step, ordered by filename, read directly by `extensions/scenario/`
+A scenario is a chain of phases — Markdown files under `prompts/scenarios/<id>/`,
+one per phase, ordered by filename, read directly by `extensions/scenario/`
 rather than through pi's own prompt-command machinery
 ([ADR-0017](adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)). The
-agent advances by calling `reactor_step_complete(summary)`, and the tool's
-*return content is the next step's briefing* — what to do now, what not to do
-yet, which tools just became relevant. State rides in the tool result's
+agent advances by calling `reactor_phase_complete(summary)`, and the tool's
+*return content is the next phase's briefing* — what to do now, what not to do
+yet, which tools just became relevant. Phases are the scenario's own stages,
+distinct from the manifest's steps (goal-setting). State rides in the tool result's
 `details` field and in a `pi.appendEntry` record, both of which pi persists in
 the session without ever sending them to the model, and both are restored on
 `session_start` ([ADR-0009](adr/0009-scenarios-advance-by-tool-result.md)).

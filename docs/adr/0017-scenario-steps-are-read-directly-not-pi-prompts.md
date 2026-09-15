@@ -1,5 +1,11 @@
 # Scenario steps are read directly from prompts/scenarios/, not surfaced as pi prompt commands
 
+> Amended in part by
+> [ADR-0030](0030-gated-tools-advertise-by-state.md): `reactor_step_complete`
+> is now `reactor_phase_complete` (a scenario's stages are *phases*), and the
+> `setActiveTools` mechanics rejected below are used for advertisement at
+> state transitions. Registration remains once, always.
+
 Resolves the question ADR-0009 and `TODO.md` left open: scenario definitions
 are Markdown files with a two-field YAML-lite frontmatter (`title`, optional
 `toolset`), one file per step, ordered by filename, grouped one directory per

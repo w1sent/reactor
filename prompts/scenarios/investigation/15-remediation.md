@@ -17,4 +17,4 @@ title: Stage O — Remediation & Containment Recommendations
 
 **Deliverables:** Prioritised remediation and containment plan with decision thresholds. Feeds Stage P.
 
-Call `reactor_step_complete` once the plan is prioritised and its decision thresholds are explicit.
+Call `reactor_phase_complete` once the plan is prioritised and its decision thresholds are explicit.

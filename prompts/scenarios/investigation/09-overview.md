@@ -18,4 +18,4 @@ title: Stage I — Creating an Overview
 
 **Deliverables:** Overview/situation report, hypothesis list with confidence, gap analysis. Feeds Stages J, K, N.
 
-Call `reactor_step_complete` once the overview states what is known, what is not, and what to do next.
+Call `reactor_phase_complete` once the overview states what is known, what is not, and what to do next.

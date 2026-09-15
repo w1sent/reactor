@@ -1,11 +1,16 @@
 # scenario
 
-Multi-step analysis workflows, advanced by the agent itself. A scenario is a
+Multi-phase analysis workflows, advanced by the agent itself. A scenario is a
 directory of Markdown briefings under `prompts/scenarios/<id>/`; the agent
-calls `reactor_step_complete(summary)` when a step's work is done, and the
-tool's *return value is the next step's briefing* — what to do now, what not
+calls `reactor_phase_complete(summary)` when a phase's work is done, and the
+tool's *return value is the next phase's briefing* — what to do now, what not
 to start yet, which tools just became relevant. State survives `/reload` and
 resumed sessions.
+
+A scenario's stages are **phases** — distinct from the session manifest's
+**steps** (`update_steps`, goal-setting). The tool is registered always and
+advertised only while a scenario runs; reached for anyway, it explains itself
+([ADR-0030](../../docs/adr/0030-gated-tools-advertise-by-state.md)).
 
 The shipped scenario is `investigation`: seventeen stages from scoping and
 collection planning through triage, static, dynamic and deep analysis,

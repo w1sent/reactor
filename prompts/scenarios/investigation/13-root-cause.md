@@ -19,4 +19,4 @@ title: Stage M — Root Cause Analysis
 
 **Deliverables:** Root-cause findings and an enabling-conditions list. Feeds Stages N, O.
 
-Call `reactor_step_complete` once the vector is proven -- or the honest answer is that it cannot yet be proven.
+Call `reactor_phase_complete` once the vector is proven -- or the honest answer is that it cannot yet be proven.

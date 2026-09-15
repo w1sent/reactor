@@ -3,21 +3,22 @@
  *
  * An eager model finishes triage and immediately starts patching. It is not
  * wrong to be *capable* of that, but it skips the evidence-gathering that
- * would have made the patch correct. A scenario is a chain of steps -- triage,
+ * would have made the patch correct. A scenario is a chain of phases -- triage,
  * then static, then dynamic, then report -- and the agent advances by calling
- * `reactor_step_complete(summary)`. The tool's own *return content* is the
- * next step's briefing: no extra message, no extra turn boundary, and it
+ * `reactor_phase_complete(summary)`. The tool's own *return content* is the
+ * next phase's briefing: no extra message, no extra turn boundary, and it
  * arrives exactly where the model is already looking
  * (ADR-0009).
  *
- * Step definitions are Markdown files under `prompts/scenarios/<id>/`, read
- * directly rather than surfaced as pi prompt commands -- a bare step is not a
+ * Phase definitions are Markdown files under `prompts/scenarios/<id>/`, read
+ * directly rather than surfaced as pi prompt commands -- a bare phase is not a
  * useful thing to invoke on its own, since advancing is stateful and a slash
  * command has no memory of what came before (ADR-0017).
  *
- * `reactor_step_complete` is registered once, always -- not only while a
- * scenario is running -- so it costs one line in "Available tools" and never
- * touches the extension-wide active-tools list (ADR-0017). Calling it with no
+ * `reactor_phase_complete` is registered once, always, and advertised exactly
+ * while a scenario is running: the extension withdraws it from the active
+ * tools list when the scenario ends and re-advertises when one starts
+ * (ADR-0030). Calling it with no
  * scenario active is a normal, answered case, not an error path.
  */
 
@@ -48,6 +49,7 @@ const SCENARIOS_DIR = process.env.REACTOR_SCENARIOS_DIR
 const EXEC_TIMEOUT_MS = 20_000;
 
 const ENTRY_TYPE = "reactor-scenario";
+const TOOL_NAME = "reactor_phase_complete";
 
 interface Step {
 	title: string;
@@ -107,7 +109,7 @@ function loadSteps(scenarioId: string): Step[] {
 function briefing(steps: Step[], index: number): string {
 	const step = steps[index];
 	const title = step.title || `step ${index + 1}`;
-	return `## Step ${index + 1}/${steps.length}: ${title}\n\n${step.body}`;
+	return `## Phase ${index + 1}/${steps.length}: ${title}\n\n${step.body}`;
 }
 
 export default function scenario(pi: ExtensionAPI) {
@@ -138,6 +140,21 @@ export default function scenario(pi: ExtensionAPI) {
 	 * move to the next step (or end the scenario), and return what the model
 	 * -- or the message the command sends -- should see.
 	 */
+	/**
+	 * Advertise `reactor_phase_complete` exactly while a scenario is running.
+	 * The tool is registered once, always, so a stale list degrades to its own
+	 * "no scenario is active" explanation (ADR-0007); the advertisement is
+	 * what follows the state (ADR-0030). A no-op transition is skipped --
+	 * same visibility, no prompt rebuild.
+	 */
+	function syncToolVisibility(): void {
+		const active = pi.getActiveTools();
+		const has = active.includes(TOOL_NAME);
+		const wanted = state !== undefined;
+		if (wanted === has) return;
+		pi.setActiveTools(wanted ? [...active, TOOL_NAME] : active.filter((n) => n !== TOOL_NAME));
+	}
+
 	async function advance(ctx: ExtensionContext, summary: string): Promise<string> {
 		if (!state) return 'reactor: no scenario is active -- start one with `/reactor-scenario start <id>`.';
 
@@ -148,7 +165,8 @@ export default function scenario(pi: ExtensionAPI) {
 
 		if (nextIndex >= steps.length) {
 			persist(undefined);
-			return `reactor: scenario "${finishedId}" complete -- ${steps.length} step(s) done.`;
+			syncToolVisibility();
+			return `reactor: scenario "${finishedId}" complete -- ${steps.length} phase(s) done.`;
 		}
 
 		persist({ scenarioId: finishedId, stepIndex: nextIndex, summaries });
@@ -168,18 +186,20 @@ export default function scenario(pi: ExtensionAPI) {
 			}
 		}
 		state = found;
+		syncToolVisibility();
 	});
 
 	pi.registerTool({
-		name: "reactor_step_complete",
-		label: "Scenario: step complete",
+		name: TOOL_NAME,
+		label: "Scenario: phase complete",
 		description:
-			"Mark the current REactor scenario's step complete and receive the next step's briefing. " +
+			"Mark the current REactor scenario's phase complete and receive the next phase's briefing. " +
+			"Phases are the scenario's work stages -- unrelated to the session manifest's steps (update_steps). " +
 			"No-op with an explanatory result if no scenario is active.",
-		promptSnippet: "Advance the active REactor scenario once its current step is genuinely done",
+		promptSnippet: "Advance the active REactor scenario once its current phase is genuinely done",
 		promptGuidelines: [
-			"Call reactor_step_complete once a REactor scenario's current step is genuinely finished, " +
-				"with a summary of what you concluded -- not before, and not to narrate progress mid-step.",
+			"Call reactor_phase_complete once a REactor scenario's current phase is genuinely finished, " +
+				"with a summary of what you concluded -- not before, and not to narrate progress mid-phase.",
 		],
 		parameters: Type.Object({
 			summary: Type.String({
@@ -235,6 +255,7 @@ export default function scenario(pi: ExtensionAPI) {
 						return;
 					}
 					persist({ scenarioId: id, stepIndex: 0, summaries: [] });
+				syncToolVisibility();
 					await activateToolset(ctx, steps[0].toolset);
 					pi.sendMessage(
 						{ customType: ENTRY_TYPE, content: briefing(steps, 0), display: true },
@@ -266,6 +287,7 @@ export default function scenario(pi: ExtensionAPI) {
 					// The human is the better judge of whether a step is genuinely
 					// finished (ADR-0009); this bypasses the model entirely.
 					const text = await advance(ctx, rest.join(" ") || "(advanced manually)");
+					syncToolVisibility();
 					pi.sendMessage({ customType: ENTRY_TYPE, content: text, display: true }, { triggerTurn: true });
 					return;
 				}
@@ -277,6 +299,7 @@ export default function scenario(pi: ExtensionAPI) {
 					}
 					const id = state.scenarioId;
 					persist(undefined);
+					syncToolVisibility();
 					ctx.ui.notify(`reactor: stopped "${id}"`, "info");
 					return;
 				}

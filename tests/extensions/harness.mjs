@@ -378,6 +378,12 @@ export const STALE_CTX_MESSAGE =
  * see by calling it, plus a `guard` a paired `makeContext()` can share so
  * `ctx.reload()` poisons both at once (see `makeContext`).
  */
+/**
+ * The returned record also carries `activeToolWrites` -- every
+ * `pi.setActiveTools` call the extension made, in order -- and the runtime
+ * keeps a live `getActiveTools` view seeded with pi's base tools, so a gated
+ * tool's advertise-by-state logic is exercisable end to end (ADR-0030).
+ */
 export async function loadExtension(relativePath, fixture, { guard = { stale: false } } = {}) {
 	const loader = await import(
 		pathToFileURL(path.join(PI_DIST, "core/extensions/loader.js")).href
@@ -386,6 +392,17 @@ export async function loadExtension(relativePath, fixture, { guard = { stale: fa
 	const sent = [];
 	const entries = [];
 	const sentUserMessages = [];
+	// The active-tools list, the way a real session carries it: seeded with
+	// pi's base tools, preserved across the extension's writes, read back
+	// through getActiveTools -- which is what makes a gated tool's
+	// read-modify-write (ADR-0030) exercisable. Every write is recorded.
+	const activeTools = ["read", "bash", "edit", "write"];
+	const activeToolWrites = [];
+	runtime.getActiveTools = () => [...activeTools];
+	runtime.setActiveTools = (names) => {
+		activeToolWrites.push([...names]);
+		activeTools.splice(0, activeTools.length, ...names);
+	};
 	runtime.sendMessage = (message) => {
 		if (guard.stale) throw new Error(STALE_CTX_MESSAGE);
 		sent.push(message);
@@ -417,7 +434,15 @@ export async function loadExtension(relativePath, fixture, { guard = { stale: fa
 		runtime,
 	);
 	if (errors.length) throw new Error(errors.map((e) => e.error ?? e).join("; "));
-	return { extension: extensions[0], sent, entries, sentUserMessages, guard };
+	// pi adds newly registered tools to the active list
+	// (_refreshToolRegistry's newly-registered branch), so a gated tool starts
+	// advertised and the extension's first sync is an observable transition.
+	for (const ext of extensions) {
+		for (const name of ext.tools.keys()) {
+			if (!activeTools.includes(name)) activeTools.push(name);
+		}
+	}
+	return { extension: extensions[0], sent, entries, sentUserMessages, activeToolWrites, guard };
 }
 
 // ---------------------------------------------------------------------------

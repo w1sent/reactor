@@ -37,3 +37,4 @@ Write the ADR before implementing, not after.
 | [0027](0027-manual-install-oneliner-is-executed-only-under-explicit-flags.md) | The manual-install one-liner is executed only under explicit flags |
 | [0028](0028-every-tool-declares-its-source.md) | Every tool declares its source |
 | [0029](0029-extensions-share-stateless-presentation-code.md) | Extensions share stateless presentation code; state stays in the cache |
+| [0030](0030-gated-tools-advertise-by-state.md) | Gated tools advertise by state, and explain themselves when stale |

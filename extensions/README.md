@@ -30,7 +30,7 @@ the decisions.
 | [`tool-registry/`](tool-registry/README.md) | Advertises the machine's RE tools to the agent, in one registry block | `/reactor`, `/reactor-toolbox` | on* |
 | [`selector/`](selector/README.md) | Curate tools and toolsets in a two-pane overlay | `/reactor-tools` | on* |
 | [`status/`](status/README.md) | Live service state in the footer and a panel | `/reactor-status` | on |
-| [`scenario/`](scenario/README.md) | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_step_complete` | on |
+| [`scenario/`](scenario/README.md) | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_phase_complete` | on |
 | [`goal-setting/`](goal-setting/README.md) | The session manifest: goal, guidelines, self-maintained steps | `/goal`, `/guidelines`, `/manifest`, `/frame`, `/derive`; `clear` variants | on (rendered on content) |
 | [`history-tools/`](history-tools/README.md) | Line-addressed recovery over the session history | `history_index`/`_search`/`_read` | on |
 | [`rolling-context/`](rolling-context/README.md) | The fade: drops old messages instead of summarizing them | `/rolling` | off |
@@ -147,12 +147,10 @@ And one for the footer line every REactor extension writes into:
 
 And three for scenarios:
 
-- **`reactor_step_complete` is always registered**, whether or not a scenario
-  is running — calling it with none active is an answered case ("start one
-  with `/reactor-scenario start <id>`"), not an error. `pi.setActiveTools()`
-  could hide it between scenarios; rejected as touching a shared,
-  extension-wide list for one line in the system prompt
-  ([ADR-0017](../docs/adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)).
+- **`reactor_phase_complete` is registered once, always, and advertised while a
+  scenario runs** (ADR-0030): the visibility follows the state with
+  `setActiveTools`, and a stale list degrades to the tool's own "no scenario is
+  active" answer, never to a block.
 - **Steps are read with `node:fs`, not through `resources_discover`.** A raw
   step file is not a useful thing to invoke on its own — advancing is
   stateful, and a bare pi prompt command has no memory of which step came

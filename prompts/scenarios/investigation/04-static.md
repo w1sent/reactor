@@ -20,4 +20,4 @@ toolset: native
 
 **Deliverables:** Static analysis notes, extracted strings and structure data, candidate IOCs, packing status. Feeds Stages E and F.
 
-Call `reactor_step_complete` once static properties are catalogued and capability hypotheses are on record.
+Call `reactor_phase_complete` once static properties are catalogued and capability hypotheses are on record.

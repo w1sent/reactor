@@ -20,4 +20,4 @@ toolset: malware
 
 **Deliverables:** Machine-readable IOC set and tested detection rules with metadata and test results. Feeds Stages L, N and defensive operations.
 
-Call `reactor_step_complete` once every rule passes the sample set and the benign corpus.
+Call `reactor_phase_complete` once every rule passes the sample set and the benign corpus.

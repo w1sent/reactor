@@ -20,4 +20,4 @@ toolset: forensics
 
 **Deliverables:** Documented timeline and ATT&CK-mapped event sequence. Feeds Stages K, L, M, N.
 
-Call `reactor_step_complete` once the timeline is source-attributed and ATT&CK-mapped.
+Call `reactor_phase_complete` once the timeline is source-attributed and ATT&CK-mapped.

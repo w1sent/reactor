@@ -68,6 +68,8 @@ switches, its default state, and the reasoning behind it.
 tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
 toolsets.toml    Shipped toolset definitions — seeds the user's copy
 bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
+gui/             reactor-gui, the native frontend (Rust, gpui-kit) — spec in
+                 gui/SPEC.md, built by install.py when Rust is present
 extensions/      pi extensions (TypeScript): tool-registry, selector, status,
                  scenario, goal-setting, history-tools, rolling-context,
                  auto-continue, identity

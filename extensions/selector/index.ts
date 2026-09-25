@@ -28,6 +28,14 @@ import type {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { fuzzyFilter, getKeybindings, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { frame } from "../lib/overlay.ts";
+import {
+	buildPayload,
+	buildWidgetLines,
+	fallbackLines,
+	isGuiMode,
+	parseEventPayload,
+	widgetKey,
+} from "../lib/guiview.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -153,9 +161,119 @@ export default function selector(pi: ExtensionAPI) {
 		},
 	);
 
+	// The GUI's actions for the selector view (ADR-0032's inbound channel):
+	// a toggle runs the CLI and repaints the envelope with the recomputed
+	// activation -- the overlay's same data flow, minus the terminal (the
+	// payload is replaced wholesale by each mutation's response, ADR-0011).
+	pi.registerCommand("reactor-tools-event", {
+		description: "REactor: actions for the selector's GUI view (dispatched by reactor-gui)",
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			const event = parseEventPayload(args);
+			if (!event || event.view !== "selector") return;
+			if (event.action !== "toggle" || !event.row) return;
+
+			// The row id is `<kind>:<id>`: the payload encodes which pane the
+			// action came from, so one command serves both panes.
+			const [kind, ...rest] = event.row.split(":");
+			const id = rest.join(":");
+			const verb = kind === "toolset" ? "toolsets" : "tools";
+			const state = await reactor<StatePayload>(ctx, [verb, event.action, id]);
+			if (!state) {
+				ctx.ui.notify("reactor: could not reach the CLI -- try `reactor doctor`", "error");
+				return;
+			}
+			// Repaint: the CLI's response carries the recomputed state, so the
+			// whole view is re-rendered from it (the overlay's data rule).
+			await emitSelectorView(ctx, { refresh: false });
+		},
+	});
+
+	/** Fetch and emit the selector's view envelope (or clear it if the CLI is unreachable). */
+	async function emitSelectorView(
+		ctx: ExtensionCommandContext,
+		{ refresh }: { refresh: boolean },
+	): Promise<void> {
+		const [tools, toolsets, state] = await Promise.all([
+			refresh
+				? reactor<{ tools: ToolRow[] }>(ctx, ["tools", "list", "--refresh"])
+				: reactor<{ tools: ToolRow[] }>(ctx, ["tools", "list"]),
+			reactor<{ toolsets: ToolsetRow[] }>(ctx, ["toolsets", "list"]),
+			reactor<StatePayload>(ctx, ["state"]),
+		]);
+		if (!tools || !toolsets || !state) {
+			ctx.ui.setWidget(widgetKey("selector"), undefined);
+			ctx.ui.notify("reactor: could not reach the CLI -- try `reactor doctor`", "error");
+			return;
+		}
+		const active = state.active.length;
+		const payload = buildPayload({
+			view: "selector",
+			title: "Tools",
+			command: "/reactor-tools-event",
+			placement: "overlay",
+			footer: `${state.active.length} active · ${tools.tools.length} catalogued`,
+			body: {
+				table: {
+					columns: [
+						{ id: "tool", title: "Tool", width: 14 },
+						{ id: "state", title: "", width: 4 },
+						{ id: "desc", title: "Description", width: 60 },
+					],
+					rows: [
+						...toolsets.toolsets.map((toolset) => ({
+							id: `toolset:${toolset.id}`,
+							cells: {
+								tool: { text: toolset.id },
+								state: { text: toolset.active ? "●" : "○", color: toolset.active ? "success" : "muted" },
+								desc: { text: `toolset · ${toolset.desc}` },
+							},
+							actions: [
+								{ id: "toggle", label: toolset.active ? "Disable" : "Enable", disabled: false },
+							],
+						})),
+						...tools.tools.map((tool) => ({
+							id: `tool:${tool.id}`,
+							cells: {
+								tool: { text: tool.id },
+								state: {
+									text: tool.status === "present" ? "●" : tool.status === "absent" ? "○" : "?",
+									color:
+										tool.status === "present"
+											? "success"
+											: tool.status === "absent"
+												? "muted"
+												: "muted",
+								},
+								desc: { text: tool.desc },
+							},
+							actions: [
+								{
+									id: "toggle",
+									label: tool.active ? "Disable" : "Enable",
+									disabled: false,
+								},
+							],
+						})),
+					],
+				},
+			},
+		});
+		const fallback = fallbackLines(payload);
+		ctx.ui.setWidget(widgetKey("selector"), buildWidgetLines(payload, fallback));
+	}
+
 	pi.registerCommand("reactor-tools", {
 		description: "REactor: choose which tools the agent is told about",
 		handler: async (_args, ctx) => {
+			if (isGuiMode()) {
+				// The GUI contract (ADR-0032): the selector is a `table`
+				// envelope with per-row toggle actions. A live probe, not
+				// `--cached` -- opening the selector is a deliberate act, the
+				// same cold path the TUI overlay takes.
+				await emitSelectorView(ctx, { refresh: true });
+				return;
+			}
+
 			if (ctx.mode !== "tui") {
 				// `ctx.ui.custom` mounts a terminal component, so this is
 				// narrower than hasUI, which is also true for RPC. The CLI is

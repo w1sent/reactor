@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/reactor-rpc", "crates/reactor-cli", "crates/reactor-gui"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/longbridge/gpui-kit"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"

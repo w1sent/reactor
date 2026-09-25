@@ -1,0 +1,5 @@
+# Rust build output
+gui/target/
+target/
+# gpui-kit layout state written next to the binary while developing
+docks.json

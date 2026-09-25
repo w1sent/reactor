@@ -33,6 +33,7 @@ the decisions.
 | [`scenario/`](scenario/README.md) | Multi-step analysis workflows, advanced by the agent | `/reactor-scenario`, `reactor_phase_complete` | on |
 | [`goal-setting/`](goal-setting/README.md) | The session manifest: goal, guidelines, self-maintained steps | `/goal`, `/guidelines`, `/manifest`, `/frame`, `/derive`; `clear` variants | on (rendered on content) |
 | [`guide/`](guide/README.md) | A popup guide: the concept and the flows, for the person at the keyboard | `/guide` | on |
+| [`gui-bridge/`](gui-bridge/README.md) | The commands reactor-gui needs that pi's RPC itself does not carry | `/reactor-tree` (dispatched by reactor-gui) | on |
 | [`history-tools/`](history-tools/README.md) | Line-addressed recovery over the session history | `history_index`/`_search`/`_read` | on |
 | [`rolling-context/`](rolling-context/README.md) | The fade: drops old messages instead of summarizing them | `/rolling` | off |
 | [`auto-continue/`](auto-continue/README.md) | Resumes the agent after an automatic compaction | `/auto-continue` | off |
@@ -145,6 +146,19 @@ And one for the footer line every REactor extension writes into:
   `extensions/lib/statusbar.ts` — a block imports it rather than copying the
   pattern ([ADR-0029](../docs/adr/0029-extensions-share-stateless-presentation-code.md)),
   and `tests/extensions/statusbar.test.mjs` holds every block to the grammar.
+
+And one for the GUI contract
+([ADR-0032](../docs/adr/0032-the-gui-extends-pis-rpc-through-existing-channels-only.md)):
+
+- **Extension UI has three audiences, and the same view serves all of them.**
+  The TUI renders factories and `ctx.ui.custom()` overlays; a plain-RPC client
+  renders the readable fallback lines; reactor-gui parses the marker line and
+  renders natively. The vocabulary — detection (`REACTOR_GUI`), the envelope,
+  the event-command payloads — lives in `extensions/lib/guiview.ts`, stateless
+  like the statusbar vocabulary; the guide and the selector are the two
+  reference implementations, and
+  `tests/extensions/guiview.test.mjs` pins the wire format reactor-gui's Rust
+  tests mirror from the other side.
 
 And three for scenarios:
 

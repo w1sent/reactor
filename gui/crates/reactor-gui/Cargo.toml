@@ -1,0 +1,22 @@
+[package]
+name = "reactor-gui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "reactor-gui — the native REactor frontend (gui/SPEC.md)"
+
+[lib]
+name = "reactor_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reactor-gui"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "=0.6.0"
+reactor-rpc = { path = "../reactor-rpc" }
+reactor-cli = { path = "../reactor-cli" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow = "1"

@@ -18,6 +18,13 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { getKeybindings, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	buildPayload,
+	buildWidgetLines,
+	isGuiMode,
+	parseEventPayload,
+	widgetKey,
+} from "../lib/guiview.ts";
 import { frame } from "../lib/overlay.ts";
 
 /** The key hints, the frame's last line. */
@@ -378,9 +385,26 @@ class GuideOverlay implements Component {
 	}
 }
 
+const GUIDE_EVENT_COMMAND = "/guide-event";
+
 export default function guide(pi: ExtensionAPI) {
 	/** Page names for /guide <name>, the index included. */
 	const pageNames = () => Object.keys(PAGES);
+
+	// The GUI's actions for the guide view: only `close` today -- the guide
+	// carries no state worth mutating (§4.2's schema v1 needs nothing else).
+	pi.registerCommand("guide-event", {
+		description: "REactor: actions for the guide's GUI view (dispatched by reactor-gui)",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const parsed = parseEventPayload(args);
+			if (!parsed || parsed.command_view !== "guide") return;
+			if (parsed.action === "close") {
+				// The extension owns the view: closing clears its widget, and
+				// every other client simply loses the text block.
+				ctx.ui.setWidget(widgetKey("guide"), undefined);
+			}
+		},
+	});
 
 	pi.registerCommand("guide", {
 		description: "REactor: what this is, and the flows to drive it (/guide tools lists the tools)",
@@ -397,6 +421,34 @@ export default function guide(pi: ExtensionAPI) {
 			// index with a notice, so a typo never dead-ends.
 			const page = name ? (resolved ?? PAGES.tools) : OVERVIEW;
 			const notice = name && !resolved ? `no guide page for "${name}" -- the index follows` : undefined;
+
+			if (isGuiMode()) {
+				// The GUI contract (ADR-0032): the guide is a `detail` envelope.
+				// The body is the page as plain text -- the same lines the
+				// overlay would render, minus the frame -- and the fallback
+				// lines carry it for every other client. Opening the page
+				// again replaces the view; nothing here is agent-facing.
+				const bodyText = page.lines
+					.map((line) =>
+						line.kind === "flow"
+							? `${line.a ?? ""}  --  ${line.b ?? ""}`
+							: (line.text ?? ""),
+					)
+					.join("\n");
+				const lines: string[] = [];
+				if (notice) lines.push(notice, "");
+				lines.push(...bodyText.split("\n"));
+				const payload = buildPayload({
+					view: "guide",
+					title: `Guide — ${page.title}`,
+					command: GUIDE_EVENT_COMMAND,
+					placement: "overlay",
+					body: { detail: { body: bodyText } },
+					footer: notice ?? HINTS_TEXT,
+				});
+				ctx.ui.setWidget(widgetKey("guide"), buildWidgetLines(payload, lines));
+				return;
+			}
 
 			if (ctx.mode !== "tui") {
 				// The popup needs a terminal, like every overlay. Outside one,

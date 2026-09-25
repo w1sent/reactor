@@ -660,3 +660,61 @@ has to go through something outside the process
 
 **[docs]** `pi -e ./my-extension.ts` loads an extension from an arbitrary path.
 Extensions in auto-discovered locations hot-reload via `/reload`.
+
+## Facts for reactor-gui, verified against pi 0.87.0
+
+Established for the GUI specification ([`gui/SPEC.md`](../gui/SPEC.md)) by
+reading the shipped `dist/` of the npm-installed 0.87.0 — the same discipline
+as the sections above, newer version. Re-check on every pi bump.
+
+### RPC mode's command surface is closed
+
+**[verified]** `dist/modes/rpc/rpc-mode.js` — the command `switch` ends with
+`get_commands`; the `default` case answers `Unknown command: <type>`. There
+is **no `navigate_tree` command**. So the GUI's every capability must be a
+documented command or ride an existing channel
+([ADR-0032](adr/0032-the-gui-extends-pis-rpc-through-existing-channels-only.md)).
+
+### `setWidget` in RPC carries string lines only
+
+**[verified]** `rpc-mode.js`, `createExtensionUIContext`:
+`setWidget(key, content, options)` emits an `extension_ui_request` **only
+when `content` is `undefined` or an array of strings**; component factories
+are silently ignored. `setStatus`, `notify`, `setTitle`, `set_editor_text`
+are fire-and-forget requests; `select`/`confirm`/`input`/`editor` are
+dialog requests answered by `extension_ui_response`, and when the extension
+passed a `timeout`, pi resolves it agent-side (the GUI can ignore timeout
+handling). `ctx.mode` is `"rpc"`; `ctx.ui.custom()` returns `undefined`;
+theme APIs are stubs.
+
+### Extension commands via `prompt` are immediate and transcript-free
+
+**[verified]** `dist/core/agent-session.js`, `prompt()`:
+extension commands are handled **before** the streaming check — they execute
+immediately even while the agent streams, with no `streamingBehavior`
+required. When handled, pi returns "no prompt to send": **no user message is
+appended**, so a UI-event command invoked by the GUI cannot pollute the
+transcript or the model's context. `steer`/`follow_up` reject extension
+commands (`queue*` helpers throw) — events can never sit in a queue.
+
+### `navigateTree` is exposed to extension commands in RPC mode
+
+**[verified]** `rpc-mode.js` passes `commandContextActions` to
+`bindExtensions`, including `navigateTree: (targetId, options) =>
+session.navigateTree(...)`. `dist/core/extensions/runner.js` sets
+`context.navigateTree(...)` on the command context (also `waitForIdle`,
+`newSession`, `fork`, `switchSession`, `reload`). This is the bridge the
+`gui-bridge` extension's `/reactor-tree` rides, because RPC itself has no
+navigation command. Navigation rejects while an agent response, compaction,
+or another navigation is active — the GUI must disable it while streaming.
+
+### Sessions: shared store, resolved before mode dispatch, no locking
+
+**[verified]** `dist/core/session-manager.js`: sessions live at
+`~/.pi/agent/sessions/<safePath(cwd)>/`; **there is no file locking** — two
+processes may append to one session file. `dist/main.js`
+(`resolveSessionManager`): `--continue`, `--session`, `--session-id` are
+resolved **before** mode dispatch, so they work with `--mode rpc`;
+`--resume` is the interactive-only picker, which is why the GUI implements
+its own and passes `--session <path>`. Exclusive attach is therefore the
+GUI's own soft contract, not pi's.

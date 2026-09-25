@@ -60,10 +60,12 @@ async function withOverlay(fixture, body, { mode = "tui", rows = 40, args = "", 
 // Registration
 // ---------------------------------------------------------------------------
 
-test("registers /guide and nothing else", needsPi, () =>
+test("registers /guide and its GUI event command, nothing else", needsPi, () =>
 	withFixture({}, async (fixture) => {
 		const { extension } = await loadExtension(EXT, fixture);
-		assert.deepEqual([...extension.commands.keys()], ["guide"]);
+		// `guide-event` is the inbound channel of ADR-0032: reactor-gui
+		// dispatches the view's actions there through RPC `prompt`.
+		assert.deepEqual([...extension.commands.keys()], ["guide-event", "guide"]);
 		assert.deepEqual([...extension.tools.keys()], []);
 	}));
 

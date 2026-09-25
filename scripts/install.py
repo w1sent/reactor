@@ -14,6 +14,7 @@ Usage:
     python scripts/install.py --cli-dest PATH # somewhere other than ~/.local/bin/reactor
     python scripts/install.py --no-skills     # skip the network step
     python scripts/install.py --no-completions # skip the shell completion scripts
+    python scripts/install.py --no-gui        # skip building reactor-gui
     python scripts/install.py --dry-run       # say what would happen and stop
 
 Idempotent. Seeding never clobbers an existing config file: if yours differs
@@ -181,6 +182,64 @@ def install_completions(cli: Path, *, report: Report) -> None:
     report.note(f"zsh: add `fpath+=({zfunc})` before `compinit` in .zshrc if not already there")
 
 
+GUI_DEST = Path.home() / ".local" / "bin" / "reactor-gui"
+
+
+def install_gui(dest: Path, *, report: Report) -> None:
+    """Build reactor-gui and put it on PATH (ADR-0031).
+
+    Default on: the GUI is part of a checkout of this repo being a working
+    thing. Missing Rust is a warning, not a failure -- the CLI and extensions
+    finish the install unchanged (ADR-0031's graceful degrade). `cargo build`
+    is incremental, so re-running is cheap.
+    """
+    gui_dir = REPO_ROOT / "gui"
+    manifest = gui_dir / "Cargo.toml"
+    if not manifest.is_file():
+        report.note("reactor-gui: no gui/ workspace here; skipped")
+        return
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        report.warn(
+            "cargo not found -- skipping reactor-gui. Install Rust (rustup.rs) "
+            "and re-run to get the GUI; everything else is installed."
+        )
+        return
+
+    report.act(f"cargo build --release (gui/)")
+    if report.dry_run:
+        return
+    result = subprocess.run(
+        [cargo, "build", "--release"],
+        cwd=gui_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        report.warn("reactor-gui build failed; the rest is installed. Stderr follows:")
+        report.warn(result.stderr.strip()[-2000:] or "(no output)")
+        return
+    built = gui_dir / "target" / "release" / "reactor-gui"
+    if not built.is_file():
+        report.warn(f"{built}: cargo reported success but the binary is missing")
+        return
+
+    if dest.is_symlink() or dest.exists():
+        current = dest.resolve() if dest.is_symlink() else None
+        if current == built:
+            report.note(f"{dest} → {built} (already linked)")
+        else:
+            report.act(f"replace {dest}")
+            dest.unlink()
+            dest.symlink_to(built)
+    else:
+        report.act(f"install {dest}")
+        dest.symlink_to(built)
+
+    if str(dest.parent) not in (os.environ.get("PATH") or "").split(os.pathsep):
+        report.warn(f"{dest.parent} is not on your PATH")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__.split("\n\n")[0],
@@ -198,6 +257,8 @@ def main() -> int:
     p.add_argument("--no-skills", action="store_true", help="skip fetching upstream skills")
     p.add_argument("--no-completions", action="store_true",
                    help="skip installing bash/zsh/fish completion scripts")
+    p.add_argument("--no-gui", action="store_true",
+                   help="skip building reactor-gui (the Rust frontend)")
     p.add_argument("--dry-run", action="store_true", help="report what would happen and stop")
     args = p.parse_args()
 
@@ -210,6 +271,14 @@ def main() -> int:
 
     print("CLI")
     install_cli(args.cli_dest, copy=args.copy, report=report)
+
+    print("gui")
+    if args.no_gui:
+        report.note("skipped (--no-gui)")
+    elif args.dry_run:
+        report.note("skipped (--dry-run)")
+    else:
+        install_gui(GUI_DEST, report=report)
 
     print("config")
     seed_config(args.config_dir, report=report)

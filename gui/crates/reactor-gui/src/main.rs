@@ -46,6 +46,7 @@ fn main() {
                 reactor_gui::app::ComposerEsc,
                 None,
             )]);
+            install_menus(cx);
 
             match &launch.cwd {
                 Some(cwd) => {
@@ -62,6 +63,81 @@ fn main() {
                 None => WorkdirChooser::open(cx, launch),
             }
         });
+}
+
+/// The application menu: the named layouts, and a switch per dock.
+///
+/// One definition, two renderings — `cx.set_menus` drives the real menu bar
+/// on macOS, and `gpui_kit::component::menu::AppMenuBar` draws these same
+/// menus in-window on Windows and Linux, so neither platform gets a
+/// hand-rolled imitation of the other's.
+///
+/// Menu items dispatch actions rather than calling anything, which is what
+/// lets the window answer them: they land on `ReactorApp`'s root, alongside
+/// the model and thinking pickers (see its `Render`).
+fn install_menus(cx: &mut App) {
+    use reactor_gui::app::{ApplyLayoutAction, MainWindow, ToggleDockAction};
+    use reactor_gui::layout::{DockSide, LayoutPreset};
+
+    // Global handlers, not `.on_action` on some element: a native menu bar
+    // is application-wide, and `is_action_available` — what greys a menu
+    // item out — walks the *focused window's* dispatch tree. With no
+    // element-level handler for these two actions anywhere, every "Layout"
+    // item was permanently grey and inert regardless of focus (`MainWindow`'s
+    // doc has the rest of it).
+    cx.on_action(|action: &ApplyLayoutAction, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        let preset = action.preset;
+        // Deferred, not an immediate `cx.update_window`: a native menu click
+        // reaches this handler from inside that very window's own dispatch
+        // (`Window::dispatch_action`'s deferred callback runs global action
+        // listeners with the window's slot already taken out of `App` for
+        // the duration), so re-entering it here found "window not found"
+        // and silently swallowed by the `let _ =` this replaced — every
+        // click looked like it did nothing. `cx.defer` queues this for after
+        // that borrow ends, the same way gpui's own `dispatch_action` defers
+        // itself past the click handler that triggered it.
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.apply_layout(preset, window, cx));
+                }
+            });
+        });
+    });
+    cx.on_action(|action: &ToggleDockAction, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        let side = action.side;
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.toggle_dock(side, window, cx));
+                }
+            });
+        });
+    });
+
+    let mut items: Vec<MenuItem> = LayoutPreset::ALL
+        .iter()
+        .map(|preset| MenuItem::action(preset.label(), ApplyLayoutAction { preset: *preset }))
+        .collect();
+    items.push(MenuItem::Separator);
+    items.extend(DockSide::ALL.iter().map(|side| {
+        MenuItem::action(
+            format!("Show {}", side.label()),
+            ToggleDockAction { side: *side },
+        )
+    }));
+
+    cx.set_menus(vec![Menu {
+        name: "Layout".into(),
+        items,
+        disabled: false,
+    }]);
 }
 
 /// The workdir chooser (nothing passed, gui/SPEC.md §3): the left half lists

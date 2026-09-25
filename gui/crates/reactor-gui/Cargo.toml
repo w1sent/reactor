@@ -20,3 +20,4 @@ reactor-cli = { path = "../reactor-cli" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow = "1"
+portable-pty = "0.9.0"

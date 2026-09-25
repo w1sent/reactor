@@ -6,6 +6,7 @@
 pub mod app;
 pub mod console;
 pub mod contract;
+pub mod layout;
 pub mod panels;
 pub mod session;
 pub mod start;

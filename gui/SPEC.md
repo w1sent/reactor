@@ -327,28 +327,75 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
     `render_*` function here — every call site already renders whatever
     `render_content` returns, so nothing else changes when the catalogue of
     visualizations grows.
-- **Bottom dock — the console** (`reactor-gui/src/console.rs`): a general
-  command runner, not an install log. What the user types runs through their
-  shell (pipes and `&&` included); what the GUI sends runs directly. Output
-  streams in as it arrives and the same input box types back into the
-  running command, which is what makes an installer's `Proceed? [y/N]`
-  answerable. Reader threads and a channel, drained on the pump tick the RPC
-  client already runs — no second executor (§2's rule).
+- **Bottom dock — the console** (`reactor-gui/src/console.rs` for the pty
+  and ANSI handling, `ConsolePanel` in `reactor-gui/src/panels.rs` for the
+  UI): a general command runner, not an install log. What the user types
+  runs through their shell (pipes and `&&` included); what the GUI sends
+  runs directly. Output streams into the same scrollback the command was
+  typed into — one continuous area, not a separate input box floating above
+  a separate output pane — because that is what makes a running program's
+  own prompt (an installer's `Proceed? [y/N]`, a REPL) read naturally: the
+  answer appears right where the question was asked, the way a real
+  terminal works. A finished command is left to speak for itself in its own
+  output; nothing appends a synthetic "done" line once it exits
+  successfully (only a nonzero exit or a kill leaves a marker, since those
+  are facts the output alone would not otherwise show).
 
-  **No pty in v0.1, and what that costs.** stdin is a pipe, so a program
-  that checks `isatty()` sees a pipe and behaves accordingly. Pipe-level
-  interaction — the `[y/N]` class of question, which is what `reactor
-  install` actually asks — works; anything needing a real terminal does not.
-  The boundary is platform-shaped, not vague: `tools.toml`'s manager table
-  marks `sudo = true` on `pacman`, `apt`, `dnf`, `zypper`, `apk` and `port`,
-  and leaves `brew`, `uv`, `pipx`, `pip`, `cargo`, `go`, `npm` and the AUR
-  helpers without it. So **every Linux distro manager needs root and will
-  fail here, while a macOS/brew install path is unaffected** — which is also
-  why this did not surface in testing. It fails legibly rather than hanging
-  (`sudo: no tty present and no askpass program specified`). Lifting it is
-  staged in §9: a pty is not a dependency swap, because once `isatty()` is
-  true the *output* changes too — programs start emitting ANSI escapes, and
-  the line buffer has to learn to read them.
+  **The prompt is the scrollback's own last row**, not a control sitting
+  below it: `ConsolePanel`'s `MessageScroller` renders `lines.len() + 1`
+  rows, and the extra one past the real output is the live `InputState`
+  (full cursor/editing/IME support, just relocated) — so it scrolls with
+  the log and reads as its own next line, the way a terminal's cursor does,
+  rather than a search box bolted under a results pane. Being the list's
+  last row is not on its own enough to read that way: `Input`'s defaults are
+  a bordered, backgrounded box with its own gold focus ring, which kept
+  painting a visible search-box outline around the prompt regardless of
+  where it sat. `.appearance(false).bordered(false).focus_bordered(false)`,
+  plus matching the surrounding rows' font, size and zero padding, is what
+  actually makes it read as bare terminal text with a cursor rather than a
+  control embedded in the log. The whole log is
+  selectable: every span is its own `SelectableText::new(...)` participant,
+  ordered by line then position in it (`gpui_base::selectable_text`) — never
+  several spans sharing one `TextSelectionHandle` via `with_handle`, which
+  looked plausible (the type exists for exactly "several elements form one
+  document") but isn't: a handle is one hitbox and one run slot in the
+  window's selection state, keyed by the handle's entity id, so every span
+  after the first silently overwrote the one before it each frame and only
+  whichever span painted last was ever actually selectable — the bug behind
+  "selection works most of the time." Each span owning its participant
+  (`document_order` alone stitches them into one draggable selection) fixed
+  it.
+
+  Each `ConsolePanel` owns its session, buffer and polling loop itself
+  rather than sharing state through `ReactorApp` — the toolbar's *New*
+  button (or installing another tool) opens another, independent console
+  panel via `ReactorApp::open_console`, so several commands can run at once
+  without one's output interleaving into another's. Reader threads and a
+  channel per console, drained on each panel's own timer at the same cadence
+  the RPC pump uses — no second executor (§2's rule), just one per panel
+  instead of one shared by all.
+
+  **A pty, and what it is not.** Commands run on a pty, not pipes, because
+  a program asks `isatty()` before deciding how to behave: on a pipe `sudo`
+  refuses to prompt at all, which took out every Linux distro manager —
+  `tools.toml` marks `pacman`, `apt`, `dnf`, `zypper`, `apk` and `port` as
+  needing root, against `brew`, `uv`, `pipx`, `pip`, `cargo`, `go` and `npm`
+  which do not. The cost lands on the way back: a program talking to a
+  terminal emits escape sequences, so `console::AnsiReader` keeps the two
+  that carry meaning for a log — colour (mapped onto the theme's own
+  `red`/`green`/`yellow`/… hues, not xterm's) and the line-rewriting a
+  progress bar does —
+  and consumes the rest rather than printing it. It is deliberately not a
+  screen: no cursor addressing, no scroll regions, no alternate screen, so a
+  program that paints a UI (`vim`, `htop`) will not render. That is §9's
+  v0.3, and it is a different component wearing the same name.
+
+  `ConsoleBuffer` seals a line the GUI wrote itself (`push_line`, the `$
+  command` echo, an exit notice) so the next byte of the command's own
+  output starts a fresh line rather than extending it — `write` otherwise
+  always extends `lines.last_mut()` regardless of who finished it last, so
+  `whoami` followed by `user\n` rendered as one line, `whoamiuser`.
+
   - **Installing from the catalogue.** The Tools panel hides tools that are
     not installed — on a fresh machine that is most of the catalogue, and it
     buried the few the user has behind rows they cannot act on — behind a
@@ -365,6 +412,64 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
 - **Command palette**: `get_commands` + the prompt templates/skills it
   lists; invoking sends the `/command` through `prompt`.
 - **Dialogs**: native modals for `select/confirm/input/editor`.
+
+### 6.1 Layout: nothing is fixed furniture
+
+Every panel is draggable between docks and droppable onto another panel's
+tab bar — gpui-kit's dock does that once an area holds more than one tab
+group, so the console can sit wherever the transcript can, and any two
+panels can be stacked into one tabbed group. That "more than one tab group"
+clause is load-bearing, not incidental: gpui-base's
+`TabGroupContext::draggable` is `!is_locked() && !is_alone()`, and
+`is_alone()` means *no sibling group in the same split* — a dock or centre
+holding one lone tab group is undraggable no matter what the panel itself
+allows. Every preset below therefore pairs each used area with a sibling
+group (`layout::Panels::split`) rather than ever leaving one as a lone
+group, which is what makes every panel actually rearrangeable rather than
+only the ones that happened to land next to something else. `Focus` is the
+deliberate exception — showing the transcript alone with nothing else on
+screen is the point of it.
+
+The GUI's own contribution on top of that freedom is the way back:
+
+- **Named presets** (`reactor-gui/src/layout.rs`), each putting a *different*
+  panel in the centre, which is the plainest statement that the centre is
+  not owned by the transcript:
+  - **Default** — transcript paired with the session tree in the centre,
+    tools/toolsets paired with views on the right, console paired with
+    services along the bottom.
+  - **Focus** — the transcript alone, every dock gone.
+  - **Analysis** — console paired with the transcript in the centre,
+    catalogue and tree on the sides.
+  - **Catalogue** — tools/toolsets/views paired with the tree in the centre,
+    big enough to read descriptions rather than guess from ids.
+- **A `Layout` menu** carrying the presets and a switch per dock. Defined
+  once through `cx.set_menus`, which is the real menu bar on macOS and the
+  same menus drawn in-window by `AppMenuBar` on Windows and Linux. Because
+  that native menu bar has no window of its own, macOS validates and
+  dispatches its items through `App`-global action listeners, not the
+  focused window's dispatch path — so the handlers live behind
+  `cx.on_action` on `App` (not an element-scoped `.on_action`), reaching the
+  one window through a `MainWindow` global (`app.rs`) set when it opens: a
+  window handle plus a weak `ReactorApp` entity, recovered with
+  `cx.update_window`. An element-scoped handler alone left every item
+  permanently greyed out, since there was never a focused window for macOS
+  to ask.
+
+  That `cx.update_window` call is itself wrapped in `cx.defer`, not called
+  immediately: a menu click reaches the `App`-global handler from *inside*
+  that same window's own action dispatch (gpui's `Window::dispatch_action`
+  already takes its window's slot out of `App` for the duration), so calling
+  back into it right there found "window not found" — the slot was already
+  taken — and the discarded `Result` made every click look like it silently
+  did nothing. `cx.defer` queues the call for after that borrow ends, the
+  same way gpui's own `dispatch_action` defers itself past the click handler
+  that triggered it.
+- **Presets rearrange, they do not rebuild.** `layout::Panels` holds a handle
+  to each panel from startup, so switching keeps the console's scrollback,
+  the transcript's expanded thinking blocks and every scroll position —
+  state that lives inside those entities and would be silently thrown away
+  by constructing them afresh.
 
 ## 7. Theme
 
@@ -434,17 +539,16 @@ contract **with the selector and guide rebuilt on it as the two reference
 implementations**, the session tree panel with branch switching, workdir
 chooser + session picker, `/reload` stub, Ayu Dark theme.
 
-**v0.2** — **a pty behind the console, with minimal escape handling.**
-`portable-pty` for the tty itself, plus enough of an escape reader to keep
-output legible: SGR colour, and the cursor ops a progress bar uses (the `\r`
-redraw the buffer already does, plus erase-line). Everything else is
-dropped rather than rendered. That is the whole point of scoping it here —
-it buys the thing that is actually missing (root installs on Linux, §6)
-without committing to a terminal. The buffer stays a list of lines.
-
-Also v0.2: pi's own `bash`/`abort_bash` RPC surfaced in the same pane, HTML
-export (`export_html`), session labels + clone, steer gesture, "open session
-in new window" launcher, light theme, `LibClient` when the CLI port exists.
+**v0.2** — **shipped: a pty behind the console, with minimal escape
+handling** (`portable-pty`, plus `console::AnsiReader` for colour and the
+line-rewriting a progress bar does; everything else consumed, not printed),
+**the layout system** (§6.1), a merged input/output console with selectable
+text, and multiple independent console panels open at once. Still open: pi's
+own `bash`/`abort_bash`
+RPC surfaced in the same pane, HTML export (`export_html`), session labels +
+clone, steer gesture, "open session in new window" launcher, light theme,
+`LibClient` when the CLI port exists, and persisting a hand-arranged layout
+across launches (`DockAreaState` serializes; nothing writes it yet).
 
 **v0.3** — **full terminal emulation**, if and only if the console is ever
 asked to host a program that draws a screen (`vim`, `htop`, a curses

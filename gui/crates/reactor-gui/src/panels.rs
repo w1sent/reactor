@@ -9,7 +9,7 @@
 use serde_json::Value;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::base::{SelectableText, h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -140,6 +140,29 @@ fn install_row(
                 .tooltip("Run `reactor install` in the console")
                 .on_click(move |_, window, cx| on_install(window, cx)),
         )
+}
+
+/// Resolve an ANSI colour index against the theme.
+///
+/// The palette is already there and already curated: `base.red`, `.green`,
+/// `.yellow`, `.blue`, `.magenta`, `.cyan` are the six chromatic terminal
+/// colours in Ayu's own hues, so a command's output lands in the window's
+/// palette rather than importing xterm's. Black and white bend to the
+/// theme's own foreground/muted so neither disappears into the background,
+/// and the bright half reuses the same hues — this is a log, not a terminal
+/// that owes anyone sixteen distinguishable colours.
+fn ansi_color(index: Option<u8>, theme: &Theme) -> Option<gpui_kit::Hsla> {
+    let index = index?;
+    Some(match index % 8 {
+        0 => theme.muted_foreground,
+        1 => theme.red,
+        2 => theme.green,
+        3 => theme.yellow,
+        4 => theme.blue,
+        5 => theme.magenta,
+        6 => theme.cyan,
+        _ => theme.foreground,
+    })
 }
 
 /// The docked chrome every panel's [`Panel::title`] draws: an icon plus a
@@ -1056,14 +1079,19 @@ impl Render for ToolsPanel {
                 } else {
                     // Not installed: activating it would be a hint about a
                     // tool that is not there, so the row offers the thing
-                    // that would actually help — installing it, in the
-                    // console, where its questions can be answered.
+                    // that would actually help — opening a fresh terminal
+                    // already running the install, where its questions can
+                    // be answered.
                     let install_id = tool_id.clone();
-                    list = list.child(install_row(&tool_id, &theme, move |_window, cx| {
+                    list = list.child(install_row(&tool_id, &theme, move |window, cx| {
                         if let Some(app) = weak_app.upgrade() {
                             let id = install_id.clone();
                             app.update(cx, |app, cx| {
-                                app.console_run("reactor", vec!["install".into(), id], cx);
+                                app.open_console(
+                                    Some(("reactor".to_owned(), vec!["install".to_owned(), id])),
+                                    window,
+                                    cx,
+                                );
                             });
                         }
                     }));
@@ -1508,27 +1536,50 @@ impl Render for ExtensionViewsPanel {
 //
 // A general command runner, not an install log: anything typed here runs
 // through the user's shell, and `reactor install <id>` from the Tools panel
-// is simply one command the GUI sends in on the user's behalf. That is why
-// the input box does double duty — it starts a command when nothing is
-// running, and types into one when something is, which is how an installer's
-// "Proceed? [y/N]" gets answered (see `crate::console`).
+// opens its own console already running it. Each instance owns its own pty
+// session, output buffer and polling loop — nothing here reaches back into
+// `ReactorApp` except to open another console (`ReactorApp::open_console`)
+// and to refresh the catalogue once a command finishes — which is what lets
+// more than one of these exist side by side as tabs, each independent.
 // ---------------------------------------------------------------------------
+
+/// How often an idle-or-not console checks its session for new output.
+/// Matches `PUMP_TICK` in spirit — a console has nothing to synchronize with
+/// pi's own pump, so it keeps its own timer rather than borrowing one.
+const CONSOLE_POLL_TICK: std::time::Duration = std::time::Duration::from_millis(50);
 
 pub struct ConsolePanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
+    /// Given at construction rather than read from `app` on demand: a new
+    /// console is often built from inside an `app.update` (opening one from
+    /// the Tools panel, or the very first console at startup, built while
+    /// `ReactorApp` itself is still under construction) — reading the same
+    /// entity mid-update panics ("already being updated"), and the cwd never
+    /// changes for the life of a window anyway.
+    cwd: Option<std::path::PathBuf>,
     input: Entity<InputState>,
     scroller: Entity<MessageScrollerState>,
     last_line_count: usize,
+    buffer: crate::console::ConsoleBuffer,
+    session: Option<crate::console::ConsoleSession>,
+    /// The command currently running, shown as this console's tab title so
+    /// several of them are told apart at a glance instead of all reading
+    /// "Console".
+    command: Option<String>,
 }
 
 impl ConsolePanel {
+    /// `initial`, when given, is run immediately rather than leaving the
+    /// console at an idle prompt — how installing a catalogued tool opens a
+    /// terminal already running `reactor install <id>`.
     pub fn new(
         app: gpui_kit::WeakEntity<ReactorApp>,
+        cwd: Option<std::path::PathBuf>,
+        initial: Option<(String, Vec<String>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Run a command — Enter runs it"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("$"));
         cx.subscribe_in(
             &input,
             window,
@@ -1539,12 +1590,50 @@ impl ConsolePanel {
             },
         )
         .detach();
-        Self {
+
+        let mut this = Self {
             app,
+            cwd: cwd.clone(),
             input,
-            scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
+            // One row of "item count" more than lines held, always: the
+            // prompt is the scroller's own last row (render's doc), and even
+            // an empty console still shows one — the idle prompt.
+            scroller: cx.new(|cx| MessageScrollerState::new(1, cx)),
             last_line_count: 0,
+            buffer: crate::console::ConsoleBuffer::default(),
+            session: None,
+            command: None,
+        };
+
+        if let Some((program, args)) = initial {
+            let shown = std::iter::once(program.clone())
+                .chain(args.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            this.start(
+                shown,
+                crate::console::ConsoleSession::program(&program, &args, cwd),
+                cx,
+            );
         }
+
+        // Self-polling: every console owns its own timer, draining its own
+        // session on the same cadence `ReactorApp`'s RPC pump uses. Nothing
+        // routes through the app entity for this — the reason a second
+        // console's command cannot interleave into this one's buffer is
+        // that there is no shared state left for it to interleave into.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CONSOLE_POLL_TICK).await;
+                let alive = this.update(cx, |this, cx| this.poll(cx)).is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        this
     }
 
     /// Enter: run the line, or answer the command that is already running.
@@ -1553,22 +1642,96 @@ impl ConsolePanel {
         if line.trim().is_empty() {
             return;
         }
-        let Some(app) = self.app.upgrade() else {
-            return;
-        };
         // Cleared before dispatching, so a second Enter for the same
         // keystroke finds nothing to run (see `ReactorApp::send_composer`).
         self.input.update(cx, |state, cx| {
             state.set_value("", window, cx);
             state.focus(window, cx);
         });
-        app.update(cx, |app, cx| {
-            if app.console_busy() {
-                app.console_send(line, cx);
-            } else {
-                app.console_run_shell(line, cx);
+        if let Some(session) = self.session.as_mut() {
+            // Not echoed here: the pty's line discipline echoes what is
+            // written to it, so the answer already appears where the
+            // program asked for it. Echoing locally too would show it twice.
+            if let Err(e) = session.write_line(&line) {
+                self.buffer.push_line(format!("could not send: {e}"));
             }
-        });
+        } else {
+            let cwd = self.cwd.clone();
+            self.start(
+                line.clone(),
+                crate::console::ConsoleSession::shell(&line, cwd),
+                cx,
+            );
+        }
+        cx.notify();
+    }
+
+    fn start(
+        &mut self,
+        shown: String,
+        spawned: anyhow::Result<crate::console::ConsoleSession>,
+        cx: &mut Context<Self>,
+    ) {
+        self.buffer.push_line(format!("$ {shown}"));
+        match spawned {
+            Ok(session) => {
+                self.session = Some(session);
+                self.command = Some(shown);
+            }
+            Err(e) => self.buffer.push_line(format!("could not run: {e}")),
+        }
+        cx.notify();
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.session.as_mut() {
+            session.kill();
+            self.buffer.push_line("^C");
+        }
+        cx.notify();
+    }
+
+    fn clear(&mut self, cx: &mut Context<Self>) {
+        self.buffer.clear();
+        cx.notify();
+    }
+
+    /// Move whatever the running command has produced into the buffer, and
+    /// notice when it finishes.
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let before = self.buffer.lines().len();
+        let finished = session.drain(&mut self.buffer);
+        let grew = self.buffer.lines().len() != before;
+        let Some(code) = finished else {
+            if grew {
+                cx.notify();
+            }
+            return;
+        };
+        self.session = None;
+        self.command = None;
+        match code {
+            // Success stays silent, the way a shell does not announce that
+            // a command worked — only that it did not (the "[done]" noise
+            // this removed).
+            Some(0) => {}
+            Some(code) => self.buffer.push_line(format!("[exit {code}]")),
+            None => self.buffer.push_line("[killed]".to_owned()),
+        }
+        // A command that just finished may well have changed what is
+        // installed — an install certainly did, and a hand-typed `brew
+        // install` counts too. Re-reading the catalogue is cheap and keeps
+        // the Tools panel honest without the user knowing to refresh it.
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.refresh_catalogue(cx);
+                app.refresh_services(false, cx);
+            });
+        }
+        cx.notify();
     }
 }
 
@@ -1587,8 +1750,13 @@ impl gpui_kit::base::dock::Panel for ConsolePanel {
 }
 
 impl Panel for ConsolePanel {
+    /// Shows the running command rather than a fixed "Console" — the tab
+    /// label that tells several terminals apart from one another.
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::SquareTerminal, "Console")
+        panel_title_row(
+            IconName::SquareTerminal,
+            self.command.as_deref().unwrap_or("Console"),
+        )
     }
 
     fn toolbar_buttons(
@@ -1596,35 +1764,32 @@ impl Panel for ConsolePanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        let busy = self
-            .app
-            .upgrade()
-            .map(|app| app.read(cx).console_busy())
-            .unwrap_or(false);
-        let stop_app = self.app.clone();
-        let clear_app = self.app.clone();
+        let busy = self.session.is_some();
+        let new_app = self.app.clone();
         Some(vec![
+            Button::new("console-new")
+                .icon(IconName::Plus)
+                .ghost()
+                .small()
+                .tooltip("Open another terminal")
+                .on_click(move |_, window, cx| {
+                    if let Some(app) = new_app.upgrade() {
+                        app.update(cx, |app, cx| app.open_console(None, window, cx));
+                    }
+                }),
             Button::new("console-stop")
                 .icon(IconName::CircleStop)
                 .ghost()
                 .small()
                 .disabled(!busy)
                 .tooltip("Stop the running command")
-                .on_click(move |_, _window, cx| {
-                    if let Some(app) = stop_app.upgrade() {
-                        app.update(cx, |app, cx| app.console_stop(cx));
-                    }
-                }),
+                .on_click(cx.listener(|this, _, _window, cx| this.stop(cx))),
             Button::new("console-clear")
                 .icon(IconName::Eraser)
                 .ghost()
                 .small()
-                .tooltip("Clear the console")
-                .on_click(move |_, _window, cx| {
-                    if let Some(app) = clear_app.upgrade() {
-                        app.update(cx, |app, cx| app.console_clear(cx));
-                    }
-                }),
+                .tooltip("Clear this terminal")
+                .on_click(cx.listener(|this, _, _window, cx| this.clear(cx))),
         ])
     }
 }
@@ -1632,17 +1797,8 @@ impl Panel for ConsolePanel {
 impl Render for ConsolePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let (lines, busy, command) = match self.app.upgrade() {
-            Some(app) => {
-                let read = app.read(cx);
-                (
-                    read.console_buffer.lines().to_vec(),
-                    read.console_busy(),
-                    read.console_command.clone(),
-                )
-            }
-            None => (Vec::new(), false, None),
-        };
+        let lines = self.buffer.lines().to_vec();
+        let busy = self.session.is_some();
 
         // Same tail-following bookkeeping the transcript uses: output should
         // stay pinned to the newest line unless the user has scrolled away.
@@ -1654,70 +1810,115 @@ impl Render for ConsolePanel {
             });
         } else if new_len < self.last_line_count {
             self.scroller
-                .update(cx, |state, cx| state.reset(new_len, cx));
+                .update(cx, |state, cx| state.reset(new_len + 1, cx));
         } else {
             self.scroller.update(cx, |state, cx| state.remeasure(cx));
         }
         self.last_line_count = new_len;
 
-        let output = if lines.is_empty() {
-            v_flex()
-                .flex_1()
-                .min_h_0()
-                .items_center()
-                .justify_center()
-                .child(
-                    Label::new("run a command, or install a tool from the Tools panel")
-                        .text_color(theme.muted_foreground),
-                )
-                .into_any_element()
-        } else {
-            let row_theme = theme.clone();
-            MessageScroller::new("console-output", self.scroller.clone(), move |at, _, _| {
-                div()
-                    .font_family(row_theme.mono_font_family.clone())
-                    .text_size(row_theme.mono_font_size * 0.85)
-                    .text_color(row_theme.foreground)
-                    .child(lines[at].clone())
-            })
-            .with_row_style({
-                // The scroller spaces rows like chat messages; console lines
-                // are lines, and must sit directly under one another.
-                let mut style = gpui_kit::StyleRefinement::default();
-                style.padding.bottom = Some(px(0.).into());
-                style
-            })
-            .into_any_element()
-        };
+        let row_theme = theme.clone();
+        let input = self.input.clone();
+        let row_count = lines.len();
 
-        v_flex()
-            .size_full()
-            .child(div().flex_1().min_h_0().child(output))
-            .child(
-                h_flex()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .p_2()
-                    .gap_2()
-                    .items_center()
-                    // While a command runs the box is its stdin, so say so:
-                    // the same Enter means two different things.
-                    .when(busy, |el| {
-                        el.child(Spinner::new().small().color(theme.accent)).child(
-                            Label::new(command.unwrap_or_else(|| "running".to_owned()))
-                                .font_family(theme.mono_font_family.clone())
-                                .text_size(theme.font_size * 0.8)
-                                .text_color(theme.muted_foreground),
+        // The prompt is this scroller's own last row rather than a control
+        // bolted on below it — it reads as the log's own next line and moves
+        // with the scrollback exactly the way a real terminal's cursor does,
+        // instead of sitting in a separate area the user has to look away
+        // from the output to reach. It is still a real `InputState`
+        // underneath (full cursor/editing/IME support), not a hand-rolled
+        // text renderer: only where it sits changed.
+        let output = MessageScroller::new(
+            "console-output",
+            self.scroller.clone(),
+            move |at, _window, _cx| {
+                if at < row_count {
+                    // Every span is its own selectable run, ordered by line
+                    // then position in it — the plain `div().child(string)`
+                    // this replaced could not be selected or copied at all
+                    // (`TextSelectionLayer`, which `Root` already renders,
+                    // only picks up runs made of this). Each span gets its
+                    // own participant (`SelectableText::new`, not a document
+                    // shared via `with_handle`): a handle is one hitbox and
+                    // one run slot, so several spans sharing one clobbered
+                    // every span but whichever painted last each frame — the
+                    // bug behind "selection works most of the time".
+                    let mut row = h_flex()
+                        .id(("console-line", at))
+                        .font_family(row_theme.mono_font_family.clone())
+                        .text_size(row_theme.mono_font_size * 0.85);
+                    for (index, span) in lines[at].iter().enumerate() {
+                        let order = (at as u64) * 1000 + index as u64;
+                        let style = TextStyleRefinement {
+                            color: Some(
+                                ansi_color(span.color, &row_theme).unwrap_or(row_theme.foreground),
+                            ),
+                            font_weight: span.bold.then_some(gpui_kit::FontWeight::BOLD),
+                            ..Default::default()
+                        };
+                        row = row.child(
+                            SelectableText::new(("console-span", order), span.text.clone())
+                                .document_order(order)
+                                .text_style(style),
+                        );
+                    }
+                    row.into_any_element()
+                } else {
+                    h_flex()
+                        .id("console-prompt")
+                        .gap_1()
+                        .items_center()
+                        .font_family(row_theme.mono_font_family.clone())
+                        .text_size(row_theme.mono_font_size * 0.85)
+                        .child(
+                            Label::new("$")
+                                .font_family(row_theme.mono_font_family.clone())
+                                .text_size(row_theme.mono_font_size * 0.85)
+                                .text_color(if busy {
+                                    row_theme.accent
+                                } else {
+                                    row_theme.muted_foreground
+                                }),
                         )
-                    })
-                    .child(Input::new(&self.input).flex_1())
-                    .child(
-                        Button::new("console-submit")
-                            .primary()
-                            .small()
-                            .label(if busy { "Send" } else { "Run" })
-                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
-                    ),
-            )
+                        .child(
+                            // `appearance(false)` is load-bearing, not
+                            // cosmetic: `Input`'s default chrome is a
+                            // bordered, backgrounded box with its own focus
+                            // ring, which painted a visible search-box
+                            // outline around the prompt — this row still
+                            // looked like a control sitting in the
+                            // scrollback rather than the scrollback's own
+                            // text, even after moving it into the same list
+                            // as the output. Stripped, plus the font, size
+                            // and padding matched to a plain output row, it
+                            // reads as one more line of terminal text with a
+                            // cursor in it.
+                            Input::new(&input)
+                                .appearance(false)
+                                .bordered(false)
+                                .focus_bordered(false)
+                                .font_family(row_theme.mono_font_family.clone())
+                                .text_size(row_theme.mono_font_size * 0.85)
+                                .px_0()
+                                .py_0()
+                                .flex_1(),
+                        )
+                        .when(busy, |el| {
+                            el.child(Spinner::new().small().color(row_theme.accent))
+                        })
+                        .into_any_element()
+                }
+            },
+        )
+        .with_row_style({
+            // The scroller spaces rows like chat messages; console lines
+            // are lines, and must sit directly under one another.
+            let mut style = gpui_kit::StyleRefinement::default();
+            style.padding.bottom = Some(px(0.).into());
+            style
+        })
+        .flex_1()
+        .min_h_0();
+
+        v_flex().size_full().child(output)
     }
 }

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dock::{DockArea, DockLayout, DockPlacement, DockSkin, panel_handle};
+use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, panel_handle};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::status_bar::StatusBar;
@@ -112,6 +112,20 @@ pub struct SwitchBranchAction {
     pub entry_id: String,
 }
 
+/// A layout preset picked from the Layout menu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct ApplyLayoutAction {
+    pub preset: crate::layout::LayoutPreset,
+}
+
+/// Show or hide one dock, from the Layout menu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct ToggleDockAction {
+    pub side: crate::layout::DockSide,
+}
+
 /// An envelope view's dismiss — the extension clears its own widget.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
@@ -171,14 +185,32 @@ pub struct ReactorApp {
     pub queue_restored: Option<String>,
     /// The last error pi reported, if any.
     pub last_error: Option<String>,
-    /// Everything the console pane has shown since it was last cleared.
-    pub console_buffer: crate::console::ConsoleBuffer,
-    /// The command running in it, if one is.
-    console_session: Option<crate::console::ConsoleSession>,
-    /// What the running command is, for the pane's header.
-    pub console_command: Option<String>,
+    /// Handles to every panel, so a layout preset can rearrange them
+    /// without rebuilding them (`crate::layout`).
+    panels: crate::layout::Panels,
+    /// The preset last applied — what the Layout menu shows a tick beside.
+    pub layout: crate::layout::LayoutPreset,
     dock_area: Entity<DockArea>,
 }
+
+/// The window `ReactorApp` opened, and the app inside it.
+///
+/// Exists for the Layout menu's actions to reach a window from macOS's
+/// native menu bar, which is application-wide: `App::on_action`'s global
+/// handlers (the only ones a menu item's live enablement check —
+/// `is_action_available` — sees, since that walks the *focused* window's
+/// dispatch tree, and a menu bar has no window of its own to focus) get only
+/// `&mut App`, with no `Window` to hand `DockArea::set_dock` and friends,
+/// which require one. The app has exactly one window at a time
+/// (gui/SPEC.md §3), so a plain global is enough — this is not a
+/// multi-window registry.
+#[derive(Clone)]
+pub struct MainWindow {
+    pub handle: gpui_kit::AnyWindowHandle,
+    pub app: gpui_kit::WeakEntity<ReactorApp>,
+}
+
+impl gpui_kit::Global for MainWindow {}
 
 /// One entry of `get_commands` (gui/SPEC.md §6): invocable as `/name`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -243,6 +275,12 @@ impl ReactorApp {
                 crate::theme::install_ayu_dark(cx);
                 let app: Entity<ReactorApp> = cx.new(|cx| ReactorApp::new(window, cx, args));
                 app_entity = Some(app.clone());
+                // So the Layout menu's global action handlers (main.rs) can
+                // reach this window — see `MainWindow`'s doc.
+                cx.set_global(MainWindow {
+                    handle: window.window_handle(),
+                    app: app.downgrade(),
+                });
                 let root_view: gpui_kit::AnyView = app.into();
                 cx.new(|cx| Root::new(root_view, window, cx))
             },
@@ -313,57 +351,27 @@ impl ReactorApp {
 
         let weak_app = cx.weak_entity();
         let (dock_area, _skin) = DockSkin::dock_area("reactor-main", Some(1), window, cx);
-        let center = DockLayout::tabs().panel_view(
-            panel_handle(cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx))),
-            cx,
-        );
-        let left = DockLayout::tabs().panel_view(
-            panel_handle(cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx))),
-            cx,
-        );
-        let right = DockLayout::v_split()
-            .child(
-                DockLayout::tabs()
-                    .panel_view(
-                        panel_handle(cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx))),
-                        cx,
-                    )
-                    .panel_view(
-                        panel_handle(cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx))),
-                        cx,
-                    )
-                    .panel_view(
-                        panel_handle(
-                            cx.new(|cx| ExtensionViewsPanel::new(weak_app.clone(), window, cx)),
-                        ),
-                        cx,
-                    ),
-                None,
-            )
-            .child(
-                DockLayout::tabs().panel_view(
-                    panel_handle(cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx))),
-                    cx,
-                ),
-                Some(px(280.)),
-            );
-
-        let bottom = DockLayout::tabs().panel_view(
-            panel_handle(cx.new(|cx| ConsolePanel::new(weak_app.clone(), window, cx))),
-            cx,
-        );
-
-        dock_area.update(cx, |dock, cx| {
-            dock.set_center(center, window, cx);
-            for (placement, layout, size) in [
-                (DockPlacement::Left, left, px(300.)),
-                (DockPlacement::Right, right, px(380.)),
-                (DockPlacement::Bottom, bottom, px(220.)),
-            ] {
-                dock.set_dock(placement, layout, window, cx);
-                dock.set_dock_size(placement, size, window, cx);
-            }
-        });
+        // Built once and kept as handles: a layout preset rearranges these
+        // rather than building new panels, so switching never costs the
+        // console its scrollback or the transcript its scroll position
+        // (crate::layout).
+        let panels = crate::layout::Panels {
+            transcript: panel_handle(
+                cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx)),
+            ),
+            tree: panel_handle(cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx))),
+            tools: panel_handle(cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx))),
+            toolsets: panel_handle(cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx))),
+            views: panel_handle(
+                cx.new(|cx| ExtensionViewsPanel::new(weak_app.clone(), window, cx)),
+            ),
+            services: panel_handle(cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx))),
+            console: panel_handle(cx.new(|cx| {
+                ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx)
+            })),
+        };
+        let layout = crate::layout::LayoutPreset::Default;
+        layout.apply(&panels, &dock_area, window, cx);
 
         // Kill the child on app quit (gui/SPEC.md §3): pi handles SIGTERM with
         // its own cleanup, so the watchdog below is the fallback, not the path.
@@ -420,9 +428,8 @@ impl ReactorApp {
             session_file: None,
             queue_restored: None,
             last_error: None,
-            console_buffer: crate::console::ConsoleBuffer::default(),
-            console_session: None,
-            console_command: None,
+            panels,
+            layout,
             dock_area,
         }
     }
@@ -485,10 +492,6 @@ impl ReactorApp {
                         for incoming in drained {
                             app.ingest(incoming, cx);
                         }
-                        // The console rides the same tick: one timer for
-                        // everything that streams, rather than a second loop
-                        // keeping its own time.
-                        app.drain_console(cx);
                     })
                     .is_ok();
                 if !ok || disconnected {
@@ -769,122 +772,67 @@ impl ReactorApp {
         .detach();
     }
 
-    // -- the console --------------------------------------------------------
-
-    /// Whether a command is running — the pane's input sends to it instead of
-    /// starting a new one, and the Stop affordance is live.
-    pub fn console_busy(&self) -> bool {
-        self.console_session.is_some()
-    }
-
-    /// Run a line the user typed, through their shell so pipes and `&&`
-    /// behave as they would in a terminal.
-    pub fn console_run_shell(&mut self, line: String, cx: &mut Context<Self>) {
-        let cwd = self.cwd.clone();
-        self.start_console(
-            line.clone(),
-            crate::console::ConsoleSession::shell(&line, Some(cwd)),
-            cx,
-        );
-    }
-
-    /// Run a command the GUI built itself — `reactor install <id>` from the
-    /// Tools panel. Not routed through the shell: the arguments are already
-    /// separated and must not be re-split by quoting rules.
-    pub fn console_run(&mut self, program: &str, args: Vec<String>, cx: &mut Context<Self>) {
-        let cwd = self.cwd.clone();
-        let shown = std::iter::once(program.to_owned())
-            .chain(args.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        self.start_console(
-            shown,
-            crate::console::ConsoleSession::program(program, &args, Some(cwd)),
-            cx,
-        );
-    }
-
-    fn start_console(
+    /// Rearrange the window into a named preset (`crate::layout`).
+    pub fn apply_layout(
         &mut self,
-        shown: String,
-        spawned: std::io::Result<crate::console::ConsoleSession>,
+        preset: crate::layout::LayoutPreset,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.console_busy() {
-            // One command at a time: a second would interleave its output
-            // into the same pane with no way to tell which wrote what.
-            self.push_note("warning", "a command is already running");
-            return;
-        }
-        self.console_buffer.push_line(format!("$ {shown}"));
-        match spawned {
-            Ok(session) => {
-                self.console_session = Some(session);
-                self.console_command = Some(shown);
-            }
-            Err(e) => self.console_buffer.push_line(format!("could not run: {e}")),
-        }
+        preset.apply(&self.panels, &self.dock_area, window, cx);
+        self.layout = preset;
         cx.notify();
     }
 
-    /// Send a line to the running command's stdin — how an installer's
-    /// "Proceed? [y/N]" gets answered.
-    pub fn console_send(&mut self, line: String, cx: &mut Context<Self>) {
-        let Some(session) = self.console_session.as_mut() else {
-            return;
-        };
-        // Echoed because the command's own output will not contain it: the
-        // pane is a pipe, not a terminal echoing keystrokes.
-        self.console_buffer.push_line(format!("> {line}"));
-        if let Err(e) = session.write_line(&line) {
-            self.console_buffer
-                .push_line(format!("could not send: {e}"));
-        }
+    /// Show or hide one dock, from the Layout menu — the arrangement
+    /// otherwise unchanged.
+    pub fn toggle_dock(
+        &mut self,
+        side: crate::layout::DockSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::layout::toggle_dock(side, &self.dock_area, window, cx);
         cx.notify();
     }
 
-    pub fn console_stop(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = self.console_session.as_mut() {
-            session.kill();
-            self.console_buffer.push_line("^C");
-        }
-        cx.notify();
-    }
+    // -- the console --------------------------------------------------------
 
-    pub fn console_clear(&mut self, cx: &mut Context<Self>) {
-        self.console_buffer.clear();
-        cx.notify();
-    }
-
-    /// Move whatever the running command has produced into the pane, and
-    /// notice when it finishes.
-    fn drain_console(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.console_session.as_mut() else {
-            return;
-        };
-        let before = self.console_buffer.lines().len();
-        let finished = session.drain(&mut self.console_buffer);
-        let grew = self.console_buffer.lines().len() != before;
-        let Some(code) = finished else {
-            if grew {
-                cx.notify();
-            }
-            return;
-        };
-        self.console_session = None;
-        self.console_command = None;
-        self.console_buffer.push_line(match code {
-            Some(0) => "[done]".to_owned(),
-            Some(code) => format!("[exit {code}]"),
-            None => "[killed]".to_owned(),
+    /// Open a new terminal: another `ConsolePanel`, tabbed alongside any
+    /// that already exist.
+    ///
+    /// Each console now owns its own session, buffer and polling loop
+    /// (`crate::panels::ConsolePanel`) rather than `ReactorApp` holding one
+    /// singular console for the whole window — that ownership move is what
+    /// makes more than one terminal possible at all. `ReactorApp`'s only
+    /// remaining part in it is this: building one and giving it to the dock.
+    ///
+    /// Always targets the bottom dock, creating it if it does not currently
+    /// exist (`DockArea::add_panel_view` does that, and merges into whatever
+    /// tab group is already there otherwise) — so "another terminal" has one
+    /// predictable home regardless of which layout preset is active, rather
+    /// than a guess at "beside whichever console the click happened to be
+    /// near."
+    ///
+    /// `initial`, when given, is a command run immediately in the new
+    /// console rather than leaving it at an idle shell prompt — how
+    /// installing a catalogued tool opens its own terminal already running
+    /// `reactor install <id>`, so its plan, its questions and its failures
+    /// are all visible from the moment it exists.
+    pub fn open_console(
+        &mut self,
+        initial: Option<(String, Vec<String>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let weak_app = cx.weak_entity();
+        let cwd = Some(self.cwd.clone());
+        let panel =
+            cx.new(|cx| crate::panels::ConsolePanel::new(weak_app, cwd, initial, window, cx));
+        let handle = panel_handle(panel);
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(handle, DockPlacement::Bottom, None, window, cx);
         });
-        // A command that just finished may well have changed what is
-        // installed — an install certainly did, and a hand-typed `brew
-        // install` counts too. Re-reading the catalogue is cheap and keeps
-        // the Tools panel honest without the user knowing to refresh it.
-        self.refresh_catalogue(cx);
-        self.refresh_services(false, cx);
-        cx.notify();
     }
 
     // -- user actions -------------------------------------------------------

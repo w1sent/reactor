@@ -4,6 +4,7 @@
 //! without a window; `main.rs` is the thin binary shell.
 
 pub mod app;
+pub mod chrome;
 pub mod console;
 pub mod contract;
 pub mod layout;

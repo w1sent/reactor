@@ -20,13 +20,29 @@ pub fn to_string_pretty<T: Serialize>(value: &T) -> String {
     escape_non_ascii(raw)
 }
 
-/// `json.dumps(v, indent=2, sort_keys=True)`. Goes through [`Value`], whose map
-/// is a `BTreeMap`, so keys come out sorted at every depth. (A test pins this:
-/// enabling serde_json's `preserve_order` anywhere in the graph would silently
-/// change file bytes.)
+/// `json.dumps(v, indent=2, sort_keys=True)`: keys sorted at every depth.
+///
+/// Sorted explicitly. `Value`'s map is a `BTreeMap` only until any crate in the
+/// build graph enables serde_json's `preserve_order`, and cargo unifies features
+/// across a workspace — which is exactly what happened when the GUI joined this
+/// one, and `cache.json` came out in insertion order from inside the GUI. File
+/// bytes must not depend on who else is being compiled.
 pub fn to_string_sorted<T: Serialize>(value: &T) -> String {
     let value: Value = serde_json::to_value(value).expect("serializing a payload cannot fail");
-    to_string_pretty(&value)
+    to_string_pretty(&sorted(value))
+}
+
+fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            // Inserted in order: right for either map implementation.
+            Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
 }
 
 /// Non-ASCII can only occur inside string literals (serde emits pure ASCII for

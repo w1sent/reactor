@@ -1,19 +1,27 @@
-//! `ReactorClient` — the seam between the GUI and the `reactor` CLI.
+//! `ReactorClient` — the seam between the GUI and the catalogue.
 //!
 //! The GUI never parses `tools.toml` and never re-implements catalogue
-//! semantics ([ADR-0005](../../docs/adr/0005-reactor-cli-stdlib-python.md)):
-//! it asks the CLI — `--format json` where a payload is rendered on screen,
-//! plain text where it is prose (the registry block, detail pages). Today
-//! the answer comes from shelling out: the CLI owns the probe TTLs and
-//! `cache.json`, and the GUI adds no second probe policy
-//! ([ADR-0014](../../docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
-//! A future Rust port of the CLI lands as a sibling repo and drops in
-//! behind the same trait as a crate (gui/SPEC.md §5) — that is the whole
-//! point of the seam.
+//! semantics ([ADR-0005](../../docs/adr/0005-reactor-cli-stdlib-python.md)).
+//! It asks for facts and renders them, through one trait with two
+//! implementations ([ADR-0034](../../docs/adr/0034-reactor-cli-becomes-a-rust-library-with-a-binary.md)):
 //!
-//! Every payload struct tolerates unknown fields: the CLI's JSON contract
-//! may grow, and a GUI that hard-fails on a new field is a GUI that breaks
-//! on every CLI update.
+//! - [`LibClient`] calls `reactor-core` in-process — no process per panel
+//!   refresh. This is the default.
+//! - [`CliClient`] shells out to the `reactor` binary and parses
+//!   `--format json`. It is the debug fallback (`REACTOR_GUI_CLIENT=cli`): if
+//!   the two ever disagree, that is a bug at the library boundary, and being
+//!   able to run both is how it gets found. `crates/reactor-cli/tests/agree.rs`
+//!   runs them side by side.
+//!
+//! Both paths use the same probe TTLs and `cache.json`, so the GUI adds no
+//! second probe policy
+//! ([ADR-0014](../../docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
+//!
+//! Every payload struct tolerates unknown fields: the JSON contract may grow,
+//! and a GUI that hard-fails on a new field is a GUI that breaks on every
+//! update. [`LibClient`] hands core's reports to these same structs through
+//! their serialized form, so the GUI's view of the contract is one thing
+//! whichever path filled it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -178,6 +186,9 @@ pub enum Error {
     Parse { stdout: String, reason: String },
     /// The CLI did not answer in time; it was killed.
     Timeout,
+    /// `reactor-core` refused (bad catalogue, unknown tool, unwritable state):
+    /// the same message the CLI would have printed after `reactor:`.
+    Core(String),
 }
 
 impl std::fmt::Display for Error {
@@ -189,6 +200,7 @@ impl std::fmt::Display for Error {
             }
             Error::Parse { reason, .. } => write!(f, "unreadable reactor output: {reason}"),
             Error::Timeout => write!(f, "reactor timed out — try `reactor doctor`"),
+            Error::Core(message) => write!(f, "reactor: {message}"),
         }
     }
 }
@@ -205,6 +217,8 @@ impl std::error::Error for Error {}
 pub struct CliClient {
     pub program: String,
     pub cwd: Option<PathBuf>,
+    /// Extra environment for the child (`REACTOR_CONFIG_DIR`, in tests).
+    pub envs: Vec<(String, String)>,
 }
 
 impl CliClient {
@@ -212,6 +226,7 @@ impl CliClient {
         Self {
             program: "reactor".to_owned(),
             cwd,
+            envs: Vec::new(),
         }
     }
 
@@ -227,7 +242,8 @@ impl CliClient {
         cmd.args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .envs(self.envs.iter().map(|(k, v)| (k, v)));
         if let Some(cwd) = &self.cwd {
             cmd.current_dir(cwd);
         }
@@ -290,10 +306,18 @@ impl CliClient {
             None => return Err(Error::Timeout),
         }?;
         if !status.success() {
-            return Err(Error::Failed {
-                code: status.code(),
-                stderr: stderr_text,
-            });
+            // In `--format json` the CLI reports failure as `{"error": …}` on
+            // stdout and leaves stderr empty; surface that message rather than
+            // a blank "reactor failed".
+            let stderr = if stderr_text.trim().is_empty() {
+                serde_json::from_str::<Value>(&out)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or(stderr_text)
+            } else {
+                stderr_text
+            };
+            return Err(Error::Failed { code: status.code(), stderr });
         }
         Ok(out)
     }
@@ -372,6 +396,153 @@ impl ReactorClient for CliClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// LibClient
+// ---------------------------------------------------------------------------
+
+/// Calls `reactor-core` in-process: the same functions the `reactor` binary
+/// runs, without the process. `cwd` selects project-scoped activation state
+/// exactly as the CLI's working directory does.
+#[derive(Debug, Clone)]
+pub struct LibClient {
+    paths: reactor_core::Paths,
+}
+
+impl LibClient {
+    /// Config dir and shipped catalogue from the environment, like the CLI.
+    pub fn new(cwd: Option<PathBuf>) -> Self {
+        let mut paths = reactor_core::Paths::from_env();
+        paths.cwd = cwd.or(paths.cwd);
+        Self { paths }
+    }
+
+    /// Explicit paths — for tests and embedders that must not read the ambient
+    /// environment.
+    pub fn with_paths(paths: reactor_core::Paths) -> Self {
+        Self { paths }
+    }
+
+    /// A report as the `--format json` contract spells it, parsed into the
+    /// GUI's tolerant view of it. Going through the serialized form (not a
+    /// field-by-field copy) is what keeps this path and [`CliClient`] unable
+    /// to drift: there is one description of the payload, and it is the wire.
+    fn wire<R: reactor_core::Report, T: for<'de> Deserialize<'de>>(
+        done: reactor_core::Result<reactor_core::Done<R>>,
+    ) -> Result<T> {
+        let report = done.map_err(|e| Error::Core(e.to_string()))?.report;
+        let value = serde_json::to_value(reactor_core::report::Envelope {
+            schema: reactor_core::SCHEMA,
+            payload: &report,
+        })
+        .map_err(|e| Error::Core(e.to_string()))?;
+        serde_json::from_value(value).map_err(|e| Error::Parse {
+            reason: e.to_string(),
+            stdout: String::new(),
+        })
+    }
+}
+
+impl ReactorClient for LibClient {
+    fn tools(&self) -> Result<ToolsPayload> {
+        Self::wire(reactor_core::commands::tools_list(&self.paths, &Default::default()))
+    }
+
+    fn toolsets(&self) -> Result<ToolsetsPayload> {
+        Self::wire(reactor_core::commands::toolsets_list(&self.paths))
+    }
+
+    fn services(&self, refresh: bool) -> Result<ServicesPayload> {
+        let flags = reactor_core::commands::ProbeFlags { refresh, cached: false };
+        Self::wire(reactor_core::commands::services(&self.paths, flags))
+    }
+
+    fn state(&self) -> Result<StatePayload> {
+        Self::wire(reactor_core::commands::state(&self.paths))
+    }
+
+    fn tool_detail(&self, id: &str) -> Result<ToolDetailPayload> {
+        Self::wire(reactor_core::commands::tools_show(&self.paths, id, Default::default()))
+    }
+
+    fn registry(&self) -> Result<String> {
+        let done = reactor_core::commands::registry(&self.paths, Default::default())
+            .map_err(|e| Error::Core(e.to_string()))?;
+        // What `reactor registry` prints: the block and a newline.
+        Ok(format!("{}\n", done.report.block))
+    }
+
+    fn set_tool(&self, id: &str, enable: bool) -> Result<Value> {
+        let ids = [id.to_owned()];
+        Self::wire(reactor_core::commands::set_activation(&self.paths, &ids, true, Some(enable)))
+    }
+
+    fn set_toolset(&self, id: &str, enable: bool) -> Result<Value> {
+        let ids = [id.to_owned()];
+        Self::wire(reactor_core::commands::set_activation(&self.paths, &ids, false, Some(enable)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Client — the one the GUI holds
+// ---------------------------------------------------------------------------
+
+/// Which implementation the GUI is running on. A plain enum rather than a
+/// boxed trait object so it is `Clone` — panels clone the client into
+/// background tasks.
+#[derive(Debug, Clone)]
+pub enum Client {
+    Lib(LibClient),
+    Cli(CliClient),
+}
+
+/// `REACTOR_GUI_CLIENT=cli` selects the subprocess path.
+pub const CLIENT_ENV: &str = "REACTOR_GUI_CLIENT";
+
+impl Client {
+    /// The library, unless the environment asks for the CLI.
+    pub fn from_env(cwd: Option<PathBuf>) -> Self {
+        match std::env::var(CLIENT_ENV).as_deref() {
+            Ok("cli") => Client::Cli(CliClient::new(cwd)),
+            _ => Client::Lib(LibClient::new(cwd)),
+        }
+    }
+
+    /// For the status bar and bug reports: which path answered.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Client::Lib(_) => "lib",
+            Client::Cli(_) => "cli",
+        }
+    }
+}
+
+impl ReactorClient for Client {
+    fn tools(&self) -> Result<ToolsPayload> {
+        match self { Client::Lib(c) => c.tools(), Client::Cli(c) => c.tools() }
+    }
+    fn toolsets(&self) -> Result<ToolsetsPayload> {
+        match self { Client::Lib(c) => c.toolsets(), Client::Cli(c) => c.toolsets() }
+    }
+    fn services(&self, refresh: bool) -> Result<ServicesPayload> {
+        match self { Client::Lib(c) => c.services(refresh), Client::Cli(c) => c.services(refresh) }
+    }
+    fn state(&self) -> Result<StatePayload> {
+        match self { Client::Lib(c) => c.state(), Client::Cli(c) => c.state() }
+    }
+    fn tool_detail(&self, id: &str) -> Result<ToolDetailPayload> {
+        match self { Client::Lib(c) => c.tool_detail(id), Client::Cli(c) => c.tool_detail(id) }
+    }
+    fn registry(&self) -> Result<String> {
+        match self { Client::Lib(c) => c.registry(), Client::Cli(c) => c.registry() }
+    }
+    fn set_tool(&self, id: &str, enable: bool) -> Result<Value> {
+        match self { Client::Lib(c) => c.set_tool(id, enable), Client::Cli(c) => c.set_tool(id, enable) }
+    }
+    fn set_toolset(&self, id: &str, enable: bool) -> Result<Value> {
+        match self { Client::Lib(c) => c.set_toolset(id, enable), Client::Cli(c) => c.set_toolset(id, enable) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,10 +598,8 @@ mod tests {
     #[test]
     fn trait_is_object_safe() {
         fn assert_object_safe(_: &dyn ReactorClient) {}
-        assert_object_safe(&CliClient {
-            program: "reactor".into(),
-            cwd: None,
-        });
+        assert_object_safe(&CliClient::new(None));
+        assert_object_safe(&LibClient::new(None));
     }
 
     /// A live round trip against the real CLI — run manually, since CI may

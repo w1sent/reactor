@@ -3,8 +3,9 @@ name = "reactor-client"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "ReactorClient — the seam to the `reactor` CLI (today: shell-out, later: lib)"
+description = "ReactorClient — the seam to the catalogue: reactor-core in-process, or the `reactor` CLI as a debug fallback"
 
 [dependencies]
+reactor-core = { path = "../../../crates/reactor-core" }
 serde.workspace = true
 serde_json.workspace = true

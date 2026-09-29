@@ -298,8 +298,9 @@ fn json_escapes_non_ascii_the_way_pythons_ensure_ascii_does() {
 
 #[test]
 fn file_json_has_sorted_keys_at_every_depth() {
-    // Pinned because enabling serde_json's `preserve_order` anywhere in the
-    // dependency graph would silently reorder every state.json and cache.json.
+    // Pinned because serde_json's `preserve_order` is on for this very test
+    // binary (see Cargo.toml) — as it is inside the GUI — and would otherwise
+    // silently reorder every state.json and cache.json.
     let s = to_string_sorted(&serde_json::json!({"b": {"z": 1, "a": 2}, "a": [ {"y": 1, "x": 2} ]}));
     assert_eq!(s, "{\n  \"a\": [\n    {\n      \"x\": 2,\n      \"y\": 1\n    }\n  ],\n  \"b\": {\n    \"a\": 2,\n    \"z\": 1\n  }\n}");
 }

@@ -7,7 +7,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use reactor_core::commands::{self, DoctorFlags, ProbeFlags, ToolsListFlags};
 use reactor_core::config::{self, SetupOpts};
 use reactor_core::host::SystemHost;
@@ -349,8 +349,18 @@ fn run(cli: Cli) -> Result<i32, ReactorError> {
     })
 }
 
+/// argparse let a flag repeat with the last one winning, and callers rely on it:
+/// the GUI's client appends `--format json` to arguments that already carry it.
+/// clap rejects that by default, so every flag on every subcommand is told to
+/// override itself. (List-valued options such as `--tag` are untouched: those
+/// are declared to append.)
+fn tolerant(cmd: clap::Command) -> clap::Command {
+    cmd.args_override_self(true).mut_subcommands(tolerant)
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let matches = tolerant(Cli::command()).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let format = cli.format;
     match run(cli) {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),

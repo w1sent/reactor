@@ -220,17 +220,34 @@ Replace the GUI's per-panel subprocess with a direct call into
 
 ### 3 · `reactor-context`  *(reversible)*
 
-Lift the state machines and rendering out of the four stateful extensions into
-a crate, and have the pi extensions call into it rather than reimplement it —
-so the portable core runs in production *through pi* before any new loop
-exists.
+Port the state machines and rendering of the four stateful extensions into a
+crate, and prove the port faithful against the extensions themselves.
 
-- [ ] Manifest, identity, scenario, reporting state + deterministic rendering
-- [ ] Settings cascade (ADR-0038), global half only for now
-- [ ] The pi extensions become shims over it
+The plan first said the pi extensions would "become shims over it". They do not:
+[ADR-0040](docs/adr/0040-reactor-context-is-a-port-verified-against-the-extensions.md)
+records why — shims need the session-scoped CLI surface ADR-0035 rejects, or a
+WASM toolchain in the frozen half — and what replaces them: the extensions are
+driven through pi's own loader, what they say and do is captured, and the Rust
+must reproduce it byte for byte.
 
-**Gate:** the 281 extension tests pass with the shims in place; rendered blocks
-are byte-identical to today's.
+- [x] Manifest, identity, scenario, reporting state + deterministic rendering
+      (`crates/reactor-context`)
+- [x] Settings cascade (ADR-0038), global half only: `settings.json` and
+      `settings::resolve`
+- [x] The capture: `tests/extensions/golden/capture.mjs` → `tests/golden/*.json`
+      (4 components, 15 cases, 195 scripted operations, including every phase of
+      the shipped `investigation` scenario)
+- [x] ~~The pi extensions become shims over it~~ — replaced by the capture, above
+
+**Gate:**
+- [x] Rendered blocks are byte-identical to the extensions': the golden replays
+      pass for all four (`cargo test -p reactor-context`)
+- [x] The extension suite still passes — trivially, as they are untouched
+- [x] `capture.mjs --check` is clean, so the goldens are the extensions' present
+      behaviour
+- [ ] Open: **embedding the shipped scenarios.** `scenario::Scenario` reads a
+      directory; a bare binary has none. Phase 4 decides between compiling
+      `prompts/scenarios/` in (as `tools.toml` is) and a configured path.
 
 ### 4 · `reactor-agent`  *(the commitment)*
 

@@ -1,5 +1,13 @@
 # One `reactor` CLI, stdlib-only Python, and extensions shell out to it
 
+> **Superseded in part by
+> [ADR-0034](0034-reactor-cli-becomes-a-rust-library-with-a-binary.md):** the
+> CLI is reimplemented as a Rust library (`reactor-core`) with a thin binary
+> over it, so the GUI can link it instead of spawning it. Everything this ADR
+> decided *except the implementation language* holds and is strengthened —
+> one CLI, `--format json` as the machine contract, and nothing but the CLI
+> parsing the catalogue.
+
 REactor ships a single command, `reactor`, symlinked onto the user's `PATH`. It
 is Python with no third-party dependencies, following the same reasoning
 [ADR-0038 in the plugins repo](https://github.com/w1sent/bn-plugins/blob/main/docs/adr/0038-binja-cli-skill-frontend.md)

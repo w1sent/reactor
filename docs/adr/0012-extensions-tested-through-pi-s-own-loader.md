@@ -1,5 +1,11 @@
 # Extensions are tested through pi's own loader
 
+> **Narrowed by [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md):**
+> this remains how the pi extensions are tested, and they keep being tested
+> this way. It stops being the project's primary test surface once the
+> harness is Rust, and it applies only to the four extensions
+> [ADR-0035](0035-portable-surface-is-machine-facts.md) keeps maintained.
+
 Extension tests run on **`node --test`** with nothing installed, are written in
 plain ESM `.mjs`, and load the extension under test through **pi's own
 `loadExtensions`** — the same jiti instance, the same alias map, the same

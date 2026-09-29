@@ -1,5 +1,12 @@
 # context-editor forks a new session or filters the current one; it never rewrites history
 
+> **Constraint lifted by
+> [ADR-0036](0036-reactor-owns-its-session-store-format.md):** "never
+> rewrites" was imposed by pi owning the session file. REactor's own store is
+> append-only and keeps originals, so restoring a reduced range is a
+> supported operation rather than a rewrite. The rule below holds for the pi
+> flavor, where context-editor is frozen.
+
 `extensions/context-editor/` gives a person two ways to decide what the agent
 sees, on top of (and independent of) whatever `rolling-context/`'s automatic
 fade is doing: a *landscape* view (`/context-editor`) listing every

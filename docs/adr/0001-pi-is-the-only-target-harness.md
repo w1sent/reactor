@@ -1,5 +1,15 @@
 # pi is the only target harness
 
+> **Reversed by [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md):** the
+> harness is being rewritten in Rust over rig, and pi becomes one client of
+> the `reactor` CLI rather than the host REactor is built inside. The
+> reasoning below was correct while the whole product was a pi package — and
+> its closing note, that another harness means "a rewrite of the thin layer,
+> not of the project", is the move ADR-0033 makes. What does *not* survive is
+> the state-location consequence: the root moves from `~/.pi/reactor/` to
+> `~/.reactor/`, because the premise that put it under pi's tree is the one
+> being reversed.
+
 REactor targets pi and nothing else. Claude Code, Codex, OpenCode and DeepAgents
 are explicitly not targets, and portability to them is not a design constraint.
 

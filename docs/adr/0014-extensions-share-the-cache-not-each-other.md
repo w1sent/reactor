@@ -1,5 +1,10 @@
 # Extensions share probe results through the cache, never through each other
 
+> **Moot in the Rust harness
+> ([ADR-0033](0033-reactor-is-a-rust-project-on-rig.md)):** there is no
+> extension loader, so there are no separately-instantiated modules to drift
+> apart. The rule below governs the pi flavor, which keeps it.
+
 > Amended in part by
 > [ADR-0029](0029-extensions-share-stateless-presentation-code.md): extensions
 > may share *stateless* presentation code through `extensions/lib/`. The rule

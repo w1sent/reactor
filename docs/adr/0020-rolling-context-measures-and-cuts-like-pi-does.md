@@ -1,5 +1,12 @@
 # rolling-context measures tokens and cuts turns the same way pi's own compaction does
 
+> **Superseded by
+> [ADR-0037](0037-context-reduction-is-one-budget-manager.md):** measuring and
+> cutting the way pi does — and cancelling pi's proactive threshold compaction
+> to stop the two contradicting each other — was necessary while pi owned the
+> loop. The Rust harness owns both mechanisms, so there is one budget, one
+> decision point and nothing to cancel. Holds for the pi flavor as written.
+
 `extensions/rolling-context/`'s fade (the `context` handler) used to keep its
 own bookkeeping: a hand-rolled chars/4 estimate over a *separately serialized*
 copy of the session branch (built for the `history_index`/`_search`/`_read`

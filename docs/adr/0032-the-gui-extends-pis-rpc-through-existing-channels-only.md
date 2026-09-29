@@ -1,5 +1,11 @@
 # The GUI extends pi's RPC through existing channels only
 
+> **Retired by [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md):** the
+> GUI links the harness in-process, so there is no RPC protocol to extend and
+> no marker to smuggle through line 0 of a string widget. This ADR stands as
+> the record of what that ceiling cost, which is part of why ADR-0033 was
+> taken. It governs the GUI only while it still drives `pi --mode rpc`.
+
 When reactor's extensions run under reactor-gui, they get richer UI than
 pi's RPC protocol offers — but the extension rides **only** channels that
 already exist in pi's RPC mode, and every addition is invisible or harmless

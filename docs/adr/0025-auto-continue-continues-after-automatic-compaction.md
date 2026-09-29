@@ -1,5 +1,15 @@
 # auto-continue continues after automatic compaction, bounded, and never into pi's own retry
 
+> **Superseded by
+> [ADR-0037](0037-context-reduction-is-one-budget-manager.md):** the
+> *requirement* survives and becomes unconditional — the agent keeps working
+> across a context reduction without a human typing anything. The mechanism
+> does not: with the loop owned there is no turn to park, nothing is
+> dispatched at a settle point, and no synthetic `"continue"` user message is
+> injected. Two rules below carry over as loop invariants: the
+> consecutive-reduction budget, and never continuing after a *failed*
+> reduction. The rest is pi's shape.
+
 `extensions/auto-continue/` adds a toggleable behaviour on top of pi's
 compaction: when an *automatic* compaction ends the agent's turn, the
 extension sends the model a short user message (default `continue`) at

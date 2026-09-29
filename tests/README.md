@@ -36,6 +36,12 @@ It needs two things a bare Ubuntu box may not have:
 
 And a build first: `cargo build`, since the harness execs `target/{release,debug}/reactor`.
 
+`tests/extensions/golden/capture.mjs` is the bridge between the two: it drives four
+of the extensions through pi's own loader and records what they said and did into
+`crates/reactor-context/tests/golden/`, which `cargo test` then replays against the
+Rust port. `--check` fails if the goldens are stale
+([ADR-0040](../docs/adr/0040-reactor-context-is-a-port-verified-against-the-extensions.md)).
+
 ## What is actually being defended
 
 ### `crates/*/tests` — the CLI and core

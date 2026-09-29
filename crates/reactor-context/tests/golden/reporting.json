@@ -1,0 +1,1286 @@
+[
+  {
+    "name": "levels-and-enforcement",
+    "config": {
+      "level": 0,
+      "folder": "docs",
+      "stepThreshold": 2,
+      "maxReverts": 1,
+      "templatePath": "tpl.md"
+    },
+    "ops": [
+      {
+        "op": "prompt",
+        "prompt": "first",
+        "out": {
+          "appended": null,
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: off",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: off",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "on",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 0",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "second",
+        "out": {
+          "appended": "\n\n## Reporting mode\nDocument findings as you go in `docs/` -- short, factual, plainly written; cite where in the target each finding came from (file:line, function/address, packet #, timestamp, ...). See the `reactor-reporting` skill for structure and style.\nUse the report structure in `tpl.md`.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "level",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: level needs 0, 1, or 2",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "level 3",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: level needs 0, 1, or 2",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "level 1.5",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: level needs 0, 1, or 2",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "level 1",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 1",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true,
+              "level": 1
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 1, folder \"docs\", 2/2 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "context",
+        "out": {
+          "nag": "[reactor-reporting] 2 step(s) since `docs/` last changed (threshold 2). Stop and document your findings there now, per the reactor-reporting skill, before doing anything else.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "settled",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "level 2",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true,
+              "level": 2
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "context",
+        "out": {
+          "nag": "[reactor-reporting] 2 step(s) since `docs/` last changed (threshold 2). Stop and document your findings there now, per the reactor-reporting skill, before doing anything else.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "settled",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [
+            "/reactor-report-enforce"
+          ],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "enforce",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [
+            "second\n\n[reactor-reporting] You did not document your findings in docs/ before finishing that turn. Do it now, then continue."
+          ],
+          "navigated": [
+            "u1"
+          ],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "the resend",
+        "resend": true,
+        "out": {
+          "appended": "\n\n## Reporting mode\nDocument findings as you go in `docs/` -- short, factual, plainly written; cite where in the target each finding came from (file:line, function/address, packet #, timestamp, ...). See the `reactor-reporting` skill for structure and style.\nUse the report structure in `tpl.md`.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "settled",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: gave up reverting after 1 attempt(s) -- nagging instead. Document in docs/ to clear it.",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "settled",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "enforce",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [
+            "second\n\n[reactor-reporting] You did not document your findings in docs/ before finishing that turn. Do it now, then continue."
+          ],
+          "navigated": [
+            "u1"
+          ],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "a fresh instruction",
+        "out": {
+          "appended": "\n\n## Reporting mode\nDocument findings as you go in `docs/` -- short, factual, plainly written; cite where in the target each finding came from (file:line, function/address, packet #, timestamp, ...). See the `reactor-reporting` skill for structure and style.\nUse the report structure in `tpl.md`.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "settled",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "write",
+        "path": "docs/findings.md",
+        "content": "hello",
+        "mtime": 1000,
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2, folder \"docs\", 0/2 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "write",
+        "path": "docs/findings.md",
+        "content": "hello again",
+        "mtime": 2000,
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "write",
+        "path": "docs/sub/more.md",
+        "content": "x",
+        "mtime": 3000,
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "write",
+        "path": "docs/findings.md",
+        "content": "HELLO AGAIN",
+        "mtime": 4000,
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "context",
+        "out": {
+          "nag": "[reactor-reporting] 2 step(s) since `docs/` last changed (threshold 2). Stop and document your findings there now, per the reactor-reporting skill, before doing anything else.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "reset",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: counters reset",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2, folder \"docs\", 0/2 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "folder",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: folder needs a path, e.g. `folder report`",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "docs",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "folder   out   dir ",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: folder set to \"out dir\"",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2, folder \"out dir\", 0/2 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "after folder",
+        "out": {
+          "appended": "\n\n## Reporting mode\nDocument findings as you go in `out dir/` -- short, factual, plainly written; cite where in the target each finding came from (file:line, function/address, packet #, timestamp, ...). See the `reactor-reporting` skill for structure and style.\nUse the report structure in `tpl.md`.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "bogus",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: unknown subcommand \"bogus\" -- try on, off, level <0|1|2>, status, folder <path>, or reset",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "off",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: off",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": false,
+              "level": 2
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "tool_end",
+        "out": {
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "context",
+        "out": {
+          "nag": null,
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "off now",
+        "out": {
+          "appended": null,
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 0,
+            "folder": "out dir",
+            "stepThreshold": 2,
+            "maxReverts": 1,
+            "templatePath": "tpl.md"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "defaults",
+    "config": null,
+    "ops": [
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: off",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "on",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 0",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "p",
+        "out": {
+          "appended": "\n\n## Reporting mode\nDocument findings as you go in `report/` -- short, factual, plainly written; cite where in the target each finding came from (file:line, function/address, packet #, timestamp, ...). See the `reactor-reporting` skill for structure and style.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 0, folder \"report\", 0/8 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "level 2",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true,
+              "level": 2
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2, folder \"report\", 0/8 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "off",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: off",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": false,
+              "level": 2
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "on",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true,
+              "level": 2
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 2, folder \"report\", 0/8 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": null
+        }
+      }
+    ]
+  },
+  {
+    "name": "bad-config-values",
+    "config": {
+      "level": 7,
+      "folder": "   ",
+      "stepThreshold": -1,
+      "maxReverts": -2,
+      "templatePath": " "
+    },
+    "ops": [
+      {
+        "op": "report",
+        "args": "on",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 0",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "enabled": true
+            }
+          ],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 7,
+            "folder": "   ",
+            "stepThreshold": -1,
+            "maxReverts": -2,
+            "templatePath": " "
+          }
+        }
+      },
+      {
+        "op": "prompt",
+        "prompt": "p",
+        "out": {
+          "appended": "\n\n## Reporting mode\nDocument findings as you go in `report/` -- short, factual, plainly written; cite where in the target each finding came from (file:line, function/address, packet #, timestamp, ...). See the `reactor-reporting` skill for structure and style.",
+          "notify": [],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 7,
+            "folder": "   ",
+            "stepThreshold": -1,
+            "maxReverts": -2,
+            "templatePath": " "
+          }
+        }
+      },
+      {
+        "op": "report",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-reporting: on, level 0, folder \"report\", 0/8 step(s) since it last changed",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "userMessages": [],
+          "navigated": [],
+          "settings": {
+            "level": 7,
+            "folder": "   ",
+            "stepThreshold": -1,
+            "maxReverts": -2,
+            "templatePath": " "
+          }
+        }
+      }
+    ]
+  }
+]

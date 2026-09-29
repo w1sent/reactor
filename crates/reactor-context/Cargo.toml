@@ -1,0 +1,16 @@
+[package]
+name = "reactor-context"
+description = "REactor's session-scoped state machines and their deterministic text: manifest, identity, reporting, scenario. No model, no loop, no UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reactor-core = { path = "../reactor-core" }
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }

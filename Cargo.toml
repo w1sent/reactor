@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/reactor-core",
+    "crates/reactor-context",
     "crates/reactor-cli",
     "gui/crates/reactor-rpc",
     "gui/crates/reactor-client",
@@ -11,6 +12,7 @@ members = [
 # a bare `cargo build` / `cargo test` leaves it out. `-p reactor-gui` opts in.
 default-members = [
     "crates/reactor-core",
+    "crates/reactor-context",
     "crates/reactor-cli",
     "gui/crates/reactor-rpc",
     "gui/crates/reactor-client",

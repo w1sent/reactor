@@ -5704,6 +5704,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "reactor-context"
+version = "0.1.0"
+dependencies = [
+ "reactor-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "reactor-core"
 version = "0.1.0"
 dependencies = [

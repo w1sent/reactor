@@ -5602,7 +5602,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reactor-cli"
+name = "reactor-client"
 version = "0.1.0"
 dependencies = [
  "serde",

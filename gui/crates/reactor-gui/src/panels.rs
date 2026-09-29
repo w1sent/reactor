@@ -179,7 +179,7 @@ fn panel_title_row(icon: IconName, label: &str) -> impl IntoElement {
 
 /// A panel body's loading placeholder — shown while a `reactor` CLI round
 /// trip is in flight and no data has arrived yet (gui/SPEC.md §5). Every
-/// side panel that fetches through [`reactor_cli::ReactorClient`] uses this,
+/// side panel that fetches through [`reactor_client::ReactorClient`] uses this,
 /// so "nothing happened yet" and "still loading" never look the same.
 fn loading_row(label: &str, theme: &Theme) -> impl IntoElement {
     h_flex()

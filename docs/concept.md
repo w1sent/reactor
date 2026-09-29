@@ -74,13 +74,13 @@ see [ADR-0001](adr/0001-pi-is-the-only-target-harness.md).
 ```
       ┌──────────────────────────────────────────────────────────────┐
       │  this repo (pi package)                                      │
-      │    tools.toml  toolsets.toml  bin/reactor                    │
+      │    tools.toml  toolsets.toml  crates/ (the reactor binary)   │
       │    extensions/  skills/  prompts/  themes/                   │
       └───────────────┬──────────────────────────────────────────────┘
-                      │  scripts/install.py
+                      │  reactor setup
                       ▼
       ┌──────────────────────────────────────────────────────────────┐
-      │  ~/.pi/reactor/                                              │
+      │  ~/.reactor/                                                 │
       │    tools.toml      ← live catalogue, user-editable           │
       │    toolsets.toml   ← live toolsets, user-editable            │
       │    state.json      ← which tools/toolsets are active         │
@@ -106,7 +106,7 @@ Three things to notice about that diagram:
 2. **Extensions never parse the catalogue themselves.** They shell out to
    `reactor ... --format json`. Same discipline the project applies everywhere
    else, and it means the TUI can never disagree with the CLI.
-3. **The runtime catalogue lives in `~/.pi/reactor/`, not in the package.** The
+3. **The runtime catalogue lives in `~/.reactor/`, not in the package.** The
    package copy is a seed. This matters because pi's update path does
    `git reset --hard` followed by `git clean -fdx` on the installed package —
    anything the user edited inside the package directory would be destroyed on

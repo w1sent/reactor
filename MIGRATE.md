@@ -155,16 +155,40 @@ is in 4, and nothing forces it until 1–3 have proven the boundaries.
 Port the Python CLI to Rust as a library with a binary over it. Nothing else
 changes: pi runs, the extensions shell out, the GUI still spawns the CLI.
 
-- [ ] `reactor-core` crate: catalogue, probes, cache, activation, install,
-      skills fetch, registry rendering
-- [ ] `reactor-cli` binary, same subcommands, same flags
-- [ ] Shell completion generator carried over (ADR-0015)
-- [ ] State root `~/.pi/reactor/` → `~/.reactor/`, with a one-time move
-- [ ] `scripts/install.py` builds and installs the binary
+Python may stay in the repo as development tooling and inside skills; it may not
+be part of the executables or of installing them
+([ADR-0039](docs/adr/0039-the-executables-contain-no-python.md)) — which is why
+the installer goes too, not just the CLI.
 
-**Gate:** the 90 Python tests, ported, pass against the Rust binary; the
-registry byte-stability test passes; `npm test`'s extension suite is green
-against it unchanged.
+- [x] `reactor-core` crate: catalogue, probes, cache, activation, install,
+      skills fetch, registry rendering
+- [x] `reactor-cli` binary, same subcommands, same flags
+- [x] Shell completion generator carried over (ADR-0015)
+- [x] State root `~/.pi/reactor/` → `~/.reactor/`, with a one-time move
+- [x] `reactor setup` replaces `scripts/install.py`; the shipped catalogue is
+      compiled in; `cargo install` places the binary (ADR-0039)
+- [x] The extension harness execs the Rust binary
+- [x] `scripts/check-in-pi.mjs` puts the Rust build on `PATH` (it used to put `bin/`)
+- [ ] Building `reactor-gui` was a step of `install.py` and has no replacement
+      until the GUI joins the root workspace (phase 2); for now
+      `cargo install --path gui/crates/reactor-gui`
+- [ ] Delete `bin/reactor`, `tests/test_reactor.py`, `scripts/install.py` and
+      `scripts/parity.py` — after the gate below is green, not before, because
+      `parity.py` needs the original to diff against
+
+**Gate:**
+
+- [x] The 90 Python tests, ported, pass against the Rust binary (151 tests:
+      `cargo test`)
+- [x] The registry byte-stability test passes, against golden bytes captured
+      from the Python renderer
+- [x] `scripts/parity.py`: 150 commands and both cache directions byte-identical
+      to the Python CLI (the one deliberate difference, `doctor`'s
+      `platform.python` → `platform.reactor`, is normalised and recorded in
+      ADR-0039)
+- [ ] The extension suite (`node --test`, pi flavor) is green against the Rust binary, unchanged.
+      **Not yet run** — it needs pi and node, and neither was present where the
+      port was written.
 
 ### 2 · The GUI links the library  *(reversible)*
 

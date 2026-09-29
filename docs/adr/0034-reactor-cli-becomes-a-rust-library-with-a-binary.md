@@ -51,8 +51,11 @@ duplicated. The first is the cost above; the second is the drift
 - **Shell completion stays generated, not hand-written**
   ([ADR-0015](0015-shell-completion-generated-not-hand-written.md)) — the
   generator moves, the decision does not.
-- **`scripts/install.py` shrinks.** A built binary replaces the symlinked
-  script; seeding `~/.reactor/` and fetching upstream skills stay.
+- **`scripts/install.py` goes, and its job becomes `reactor setup`**
+  ([ADR-0039](0039-the-executables-contain-no-python.md)). A built binary
+  replaces the symlinked script; seeding `~/.reactor/`, fetching upstream skills
+  and writing completions stay, as the binary's own subcommand — an installer
+  that needs Python would put back the interpreter this ADR removes.
 
 ## Considered and rejected
 

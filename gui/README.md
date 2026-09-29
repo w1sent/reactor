@@ -14,7 +14,7 @@ Planned layout (from the spec, §8):
 
 ```
 crates/reactor-rpc    JSONL RPC client — commands, responses, events, UI sub-protocol
-crates/reactor-cli    ReactorClient trait + CliClient (shells out to `reactor --format json`)
+crates/reactor-client ReactorClient trait + CliClient (shells out to `reactor --format json`)
 crates/reactor-gui    the application
 ```
 

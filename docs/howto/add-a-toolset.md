@@ -8,7 +8,7 @@ at the top of `toolsets.toml`; this guide is the sequence.
 ## 0. Shipped copy vs. user copy
 
 The package's `toolsets.toml` is the seed, copied to
-`~/.pi/reactor/toolsets.toml` at install time. **User-defined toolsets go in
+`~/.reactor/toolsets.toml` at install time. **User-defined toolsets go in
 the installed copy** — the shipped one only gains a toolset when the change is
 meant for every REactor user, in which case edit the repo file and let
 `reactor diff-config` surface the difference on user machines

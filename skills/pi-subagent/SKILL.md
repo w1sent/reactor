@@ -98,7 +98,7 @@ pi -p -t bash,read "triage this binary: is it packed, what's the entry point, an
 reactor toolsets disable triage   # only if this changed the machine's default
 ```
 (`reactor tools`/`toolsets` activation is per-machine state in
-`~/.pi/reactor/state.json`, not per-invocation -- toggling it for a subagent
+`~/.reactor/state.json`, not per-invocation -- toggling it for a subagent
 toggles it for whoever runs `pi` next in the same environment too, until
 toggled back. Fine when the delegation's toolset already matches what the
 machine normally runs; worth restoring afterward when it does not.)

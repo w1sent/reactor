@@ -1,59 +1,69 @@
 # tests/
 
 ```bash
-npm test                                       # both suites
+cargo test                                     # the CLI and core
+cargo test -p reactor-core render              # one file of it
+cargo test the_block_is_byte_identical         # one test
 
-python3 tests/test_reactor.py                  # the CLI, verbose
-python3 tests/test_reactor.py TestRegistryDeterminism
-
-node --test "tests/extensions/*.test.mjs"      # the extensions
+node --test "tests/extensions/*.test.mjs"      # the extensions (needs `cargo build` first)
 node --test tests/extensions/selector.test.mjs
 ```
 
-Two suites, no runner to install in either language. The CLI's is stdlib
-`unittest` — the same reasoning that keeps the CLI stdlib-only
-([ADR-0005](../docs/adr/0005-reactor-cli-stdlib-python.md)). The extensions' is
-`node --test`, loading each extension through pi's own loader
-([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
+Two suites, no runner to install in either language: `cargo test` for the CLI
+and core, and `node --test` for the extensions, loading each extension through
+pi's own loader
+([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)). The
+extensions' harness execs the Rust binary — `$REACTOR_BIN`, else
+`target/release/reactor`, else `target/debug/reactor`.
 
-`bin/reactor` has no `.py` extension, so the Python suite imports it through
-`SourceFileLoader`. Nothing anywhere touches `~/.pi/reactor/`: the Python
-fixtures point the module's `CONFIG_DIR`/`PACKAGE_ROOT` globals at a temporary
-directory, and the extension fixtures do the same through
-`REACTOR_CONFIG_DIR` — which is also how the real CLI, spawned for real, ends up
-reading the fixture catalogue.
+Nothing anywhere touches `~/.reactor/`: the Rust fixtures point a `Paths` at a
+temporary directory, and the binary is spawned with `REACTOR_CONFIG_DIR` and a
+throwaway `HOME` — which is also how the extension fixtures make the real CLI
+read their fixture catalogue.
+
+`bin/reactor` (Python) and `scripts/parity.py` are migration scaffolding and the
+only Python here: `python3 scripts/parity.py` diffs the Rust binary against the
+original across ~150 commands, byte for byte, until both are deleted
+([ADR-0039](../docs/adr/0039-the-executables-contain-no-python.md)).
 
 ## What is actually being defended
 
-### `test_reactor.py` — the CLI
+### `crates/*/tests` — the CLI and core
 
-- **`TestRegistryDeterminism`** — the load-bearing one. Replacing the system
+`reactor-core/tests/` drives the library against fixture catalogues;
+`reactor-cli/tests/cli.rs` spawns the binary. Test names below are the Rust ones.
+
+- **`render.rs`: determinism and the golden block** — the load-bearing one. Replacing the system
   prompt invalidates the provider's cached prefix, so the rendered block must be
   byte-identical across turns when nothing about the machine changed, and must
   change when something did ([ADR-0006](../docs/adr/0006-registry-injected-into-system-prompt.md)).
   Both directions are asserted, plus the absence of anything time-derived — a
   timestamp or a probe duration slipping into the renderer would be invisible in
-  review and expensive forever. `TestJsonContract` repeats the same check across
-  two separate processes, so the cache path is covered too.
-- **`TestShippedConfig`** — runs the real `tools.toml` and `toolsets.toml`
+  review and expensive forever. `the_block_is_byte_identical_to_the_python_renderers`
+  pins the bytes against golden output captured from the renderer this one
+  replaced, and `cli.rs` repeats the determinism check across two separate
+  processes, so the cache path is covered too.
+- **`shipped.rs`** — runs the real `tools.toml` and `toolsets.toml`
   through the real loader: every `desc` inside its length budget, every install
   key either a declared package manager or `manual`, every `prefer` entry a
   manager that exists, no toolset selecting nothing, no toolset naming a tool or
   tag that does not exist. These are the mistakes that a hand-maintained
   catalogue actually accumulates.
-- **`TestJsonContract`** — `--format json` is the extensions' only interface, so
-  its shape is pinned by test rather than by convention. Also checks that an
+- **`cli.rs`, and its `golden/` directory** — `--format json` is the
+  extensions' only interface, so its shape is pinned by test rather than by
+  convention, and its bytes by golden files (non-ASCII escaping, key order and
+  all) captured from the Python CLI. Also checks that an
   unknown tool produces a JSON error and no traceback, and that `install` never
   runs anything without confirmation.
-- **`TestRecipeRanking`** — that an install key naming no known manager can
+- **`catalogue.rs`: recipe ranking** — that an install key naming no known manager can
   never become a command REactor runs
   ([ADR-0010](../docs/adr/0010-install-recipes-keyed-by-package-manager.md)).
-- **`TestOverrideEditing`** — that an activation edit is the *smallest* edit
+- **`catalogue.rs`: override editing** — that an activation edit is the *smallest* edit
   that produces the requested outcome, so toggling is not a way to accumulate
   pins ([ADR-0011](../docs/adr/0011-selector-edits-overrides-not-outcomes.md)).
-- **`TestServices`** — that a tool which is not installed reports `unknown`
+- **`probe.rs`: services** — that a tool which is not installed reports `unknown`
   rather than `down`, which is the one way this command can lie.
-- **`TestAtomicWrites`** — that the temp file a JSON write goes through is
+- **`probe.rs`: atomic writes** — that the temp file a JSON write goes through is
   per-process, since two `reactor` processes can be writing the cache at once
   ([ADR-0014](../docs/adr/0014-extensions-share-the-cache-not-each-other.md)).
 
@@ -96,7 +106,7 @@ shim and the fake host; no test file stubs `reactor` itself.
 ## Keeping the suites honest
 
 Both are checked by mutation, not just by running green: break the behaviour in
-`bin/reactor` or in an extension, confirm the intended test is the one that
+`reactor-core` or in an extension, confirm the intended test is the one that
 fails, revert. `scripts/verify-recipes.py` is the reason this is a habit here —
 it passed everything it was ever given until someone noticed
 `packages.debian.org` serves "No such package" with status 200. A test that
@@ -110,5 +120,7 @@ cannot fail is worse than no test, because it gets quoted as evidence.
 - **Types.** The extension tests are JavaScript and there is no `tsconfig.json`
   or `typescript` dependency in the package, so nothing here catches a wrong
   field name that an editor would.
-- **`scripts/install.py`**, which is verified by running it against the real
-  upstream repositories rather than by test.
+- **Upstream skill fetching over the network.** `reactor setup` and
+  `reactor skills fetch` are tested for what they do around a fetch (config
+  seeding, never clobbering, completions), not against real upstream
+  repositories.

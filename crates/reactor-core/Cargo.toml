@@ -1,0 +1,17 @@
+[package]
+name = "reactor-core"
+description = "The REactor catalogue: tool detection, activation, install recipes, skills. Files and subprocesses only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+regex.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+regex.workspace = true
+tempfile.workspace = true

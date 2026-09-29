@@ -15,7 +15,7 @@ _Avoid_: the harness, the framework, reactor-pi.
 `tools.toml` — the single source of truth for what tools REactor knows about:
 identity, one-line description, detection probe, service probe, per-platform
 install recipes, and the upstream skill source if the tool ships one. Shipped in
-this repo, copied to `~/.pi/reactor/tools.toml` at install time; the installed
+this repo, copied to `~/.reactor/tools.toml` at install time; the installed
 copy is the one everything reads at runtime.
 _Avoid_: registry (that is the injected block), manifest, tool database, index.
 
@@ -31,7 +31,7 @@ _Avoid_: integration, plugin, backend.
 **Toolset**:
 A named group of tools the user can activate or deactivate as a unit — `triage`,
 `android`, `firmware`. Predefined ones ship in `toolsets.toml`; the user edits
-their own copy at `~/.pi/reactor/toolsets.toml`. Activation is purely about what
+their own copy at `~/.reactor/toolsets.toml`. Activation is purely about what
 gets advertised to the agent; it never blocks anything.
 _Avoid_: profile, preset, bundle, workspace.
 
@@ -71,7 +71,7 @@ _Avoid_: instruction, hint, fallback (for either).
 **Upstream skill**:
 An Agent Skill written by a tool's own author (`bn`'s skill in the plugins repo,
 `ipsw-skill`) that REactor fetches at install time into
-`~/.pi/reactor/skills/<tool>/` rather than writing its own. The tool's author
+`~/.reactor/skills/<tool>/` rather than writing its own. The tool's author
 knows the tool best. A configured-but-unfetchable upstream skill is a warning; a
 tool with no upstream skill at all is normal and simply relies on `--help`.
 _Avoid_: vendored skill, external skill, third-party doc.

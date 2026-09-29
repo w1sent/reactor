@@ -434,7 +434,7 @@ mod tests {
     }
 
     /// A live round trip against the real CLI — run manually, since CI may
-    /// not have reactor installed: `cargo test -p reactor-cli -- --ignored`.
+    /// not have reactor installed: `cargo test -p reactor-client -- --ignored`.
     #[test]
     #[ignore = "needs `reactor` on PATH"]
     fn live_tools_list_round_trips() {

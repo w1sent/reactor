@@ -1,0 +1,6 @@
+[ ]  all     3  everything
+[ ]  static  1  static only
+[ ]  pair    2  explicit
+[ ]  narrow  1  two tags, one tool
+[ ]  miss    0  nothing carries both
+[ ]  plus    2  a tag, and one more by name

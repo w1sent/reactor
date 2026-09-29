@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "services": [
+    {
+      "id": "gamma",
+      "name": "Gamma",
+      "label": "gamma",
+      "state": "unknown",
+      "detail": null,
+      "status": "unknown",
+      "active": true
+    }
+  ],
+  "summary": {
+    "up": 0,
+    "down": 0,
+    "unknown": 1
+  }
+}

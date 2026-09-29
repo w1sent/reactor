@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "tools": [
+    {
+      "id": "alpha",
+      "name": "Alpha",
+      "desc": "does alpha things",
+      "source": "https://example.invalid/alpha",
+      "invoke": "alpha",
+      "tags": [
+        "static",
+        "python"
+      ],
+      "detect": {
+        "kind": "binary",
+        "value": "alpha"
+      },
+      "status": "unknown",
+      "path": null,
+      "version": null,
+      "active": true,
+      "override": null,
+      "service": null,
+      "skill": null
+    },
+    {
+      "id": "beta",
+      "name": "Beta",
+      "desc": "d\u00e9tecte les \u00e9chantillons \u2713 \ud83d\ude00 (non-ASCII on purpose)",
+      "source": "https://example.invalid/beta",
+      "invoke": "python3 -c 'import beta'",
+      "tags": [
+        "dynamic",
+        "python"
+      ],
+      "detect": {
+        "kind": "python_module",
+        "value": "beta"
+      },
+      "status": "unknown",
+      "path": null,
+      "version": null,
+      "active": true,
+      "override": null,
+      "service": null,
+      "skill": null
+    },
+    {
+      "id": "gamma",
+      "name": "Gamma",
+      "desc": "does gamma things",
+      "source": "https://example.invalid/gamma",
+      "invoke": "gamma",
+      "tags": [
+        "odd"
+      ],
+      "detect": {
+        "kind": "binary",
+        "value": "gamma"
+      },
+      "status": "unknown",
+      "path": null,
+      "version": null,
+      "active": true,
+      "override": null,
+      "service": null,
+      "skill": {
+        "source": "git+https://example.invalid/gamma-skill",
+        "path": "skill",
+        "ref": "main",
+        "fetched": false,
+        "dir": "<CFG>/skills/gamma",
+        "commit": null,
+        "fetched_at": null
+      }
+    }
+  ]
+}

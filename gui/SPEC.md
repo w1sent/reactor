@@ -514,7 +514,7 @@ worked" state looked identical):
 - `gui/` is a Cargo workspace inside this repo (ADR-0031):
   - `gui/crates/reactor-rpc` — JSONL client, serde types for commands,
     responses, events, extension UI requests.
-  - `gui/crates/reactor-cli` — `ReactorClient` + `CliClient`.
+  - `gui/crates/reactor-client` — `ReactorClient` + `CliClient`.
   - `gui/crates/reactor-gui` — the application.
 - `scripts/install.py` builds the GUI by default (`cargo build --release`,
   binary onto PATH like the CLI); when Rust is missing it prints a warning
@@ -523,7 +523,7 @@ worked" state looked identical):
   the CLI's `~/.pi/reactor/`, not in pi's `~/.pi/agent/`.
 - Tests: hermetic — `reactor-rpc`'s routing rules run against fixture lines
   with no child process (the routing rules are extracted from the reader
-  thread for exactly that), `reactor-cli` against the real CLI's JSON
+  thread for exactly that), `reactor-client` against the real CLI's JSON
   contracts plus a `#[ignore]`d live round trip, and the contract's wire
   format mirrored by `tests/extensions/guiview.test.mjs` from the extension
   side. Live-pi tests are `#[ignore]`d (run manually).

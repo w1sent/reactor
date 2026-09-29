@@ -169,9 +169,8 @@ the installer goes too, not just the CLI.
       compiled in; `cargo install` places the binary (ADR-0039)
 - [x] The extension harness execs the Rust binary
 - [x] `scripts/check-in-pi.mjs` puts the Rust build on `PATH` (it used to put `bin/`)
-- [ ] Building `reactor-gui` was a step of `install.py` and has no replacement
-      until the GUI joins the root workspace (phase 2); for now
-      `cargo install --path gui/crates/reactor-gui`
+- [x] Building `reactor-gui` was a step of `install.py`; it is now
+      `cargo install --git … reactor-gui` (phase 2 put the GUI in the root workspace)
 - [ ] Delete `bin/reactor`, `tests/test_reactor.py`, `scripts/install.py` and
       `scripts/parity.py` — after the gate below is green, not before, because
       `parity.py` needs the original to diff against
@@ -195,11 +194,30 @@ the installer goes too, not just the CLI.
 Replace the GUI's per-panel subprocess with a direct call into
 `reactor-core`. Still pi-backed, still RPC for the session itself.
 
-- [ ] GUI depends on `reactor-core`
-- [ ] Panels read the library; the subprocess path stays as a debug fallback
-- [ ] A check that both paths agree
+- [x] The GUI crates join the root workspace (one `Cargo.lock`, one place to
+      build); `default-members` leave `reactor-gui` out so a bare `cargo test`
+      does not need the native windowing stack
+- [x] `reactor-client` depends on `reactor-core`; `LibClient` answers every
+      `ReactorClient` method in-process
+- [x] The subprocess path stays as a debug fallback: `REACTOR_GUI_CLIENT=cli`
+- [x] A check that both paths agree: `crates/reactor-cli/tests/agree.rs`
+- [x] `CliClient` surfaces the CLI's JSON `error` instead of a blank failure
+- [x] `app.rs` holds a `Client` instead of a `CliClient` (builds; the window
+      launches on GNOME/Wayland)
+- [x] Window chrome: client-side title bar with controls, and the Layout menu
+      drawn in-window (`chrome.rs`) — neither was ever rendered on Linux
 
 **Gate:** the GUI behaves identically with the fallback on and off.
+- [x] Data path: `agree.rs` — every method, both probe orders, writes, errors
+- [x] Launched both ways under `strace -f -e execve`: the default spawns **no**
+      `reactor` process and still populates `cache.json`; `REACTOR_GUI_CLIENT=cli`
+      spawns `reactor services|tools list|toolsets list`; the two `cache.json`
+      files are identical up to timestamps (the first run was not: the GUI's
+      dependency graph enables `serde_json/preserve_order`, cargo unified it into
+      `reactor-core`, and file JSON lost its sorted keys — now sorted explicitly,
+      with the core tests built under that feature)
+- [x] Eyes on the panels with the fallback on and off — checked by hand:
+      identical, and window chrome and the Layout menu work
 
 ### 3 · `reactor-context`  *(reversible)*
 

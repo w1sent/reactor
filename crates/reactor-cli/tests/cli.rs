@@ -662,3 +662,24 @@ fn the_skill_paths_in_the_registry_are_sorted_and_only_for_present_tools() {
     let p = env.json(&["registry", "--cached"]).json();
     assert_eq!(p["skillPaths"], serde_json::json!([]));
 }
+
+// -- argparse compatibility ---------------------------------------------------
+
+#[test]
+fn a_repeated_flag_is_accepted_and_the_last_one_wins() {
+    // The GUI's client used to send `--format json --format json`; argparse
+    // allowed it, so callers depend on it.
+    let env = Env::shipped();
+    let out = env.run(&["services", "--format", "text", "--format", "json", "--cached", "--cached"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.json()["schema"], 1);
+}
+
+#[test]
+fn repeated_tags_still_accumulate() {
+    let env = Env::shipped();
+    let one = env.json(&["tools", "list", "--cached", "--tag", "static"]).json();
+    let two = env.json(&["tools", "list", "--cached", "--tag", "static", "--tag", "native"]).json();
+    let n = |v: &Value| v["tools"].as_array().unwrap().len();
+    assert!(n(&two) < n(&one), "a second --tag must narrow, not replace: {} vs {}", n(&two), n(&one));
+}

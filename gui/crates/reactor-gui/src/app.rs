@@ -26,7 +26,7 @@ use gpui_kit::{App, Entity, KeyBinding, Render, SharedString, Window, div, px};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use reactor_client::{CliClient, ReactorClient};
+use reactor_client::{Client, ReactorClient};
 use reactor_rpc::{Command, Incoming, RpcClient, SpawnConfig};
 
 use crate::contract::{self, View};
@@ -137,12 +137,12 @@ pub struct DismissViewAction {
 // ReactorApp — the root view
 // ---------------------------------------------------------------------------
 
-/// The one window's state: the pi child, the session view model, and the CLI
-/// client for the side panels (gui/SPEC.md §6).
+/// The one window's state: the pi child, the session view model, and the
+/// catalogue client for the side panels (gui/SPEC.md §5–§6).
 pub struct ReactorApp {
     pub cwd: PathBuf,
     client: Option<RpcClient>,
-    reactor: CliClient,
+    reactor: Client,
     pub session: Entity<Session>,
     pub composer: Entity<TextareaState>,
     /// Input/editor scratch states reused across extension dialogs — created
@@ -191,6 +191,8 @@ pub struct ReactorApp {
     /// The preset last applied — what the Layout menu shows a tick beside.
     pub layout: crate::layout::LayoutPreset,
     dock_area: Entity<DockArea>,
+    /// The in-window menu bar; `None` where the platform has a native one.
+    menu_bar: Option<Entity<gpui_kit::component::menu::AppMenuBar>>,
 }
 
 /// The window `ReactorApp` opened, and the app inside it.
@@ -265,10 +267,7 @@ impl ReactorApp {
         ));
         let mut app_entity: Option<Entity<ReactorApp>> = None;
         let _handle = cx.open_window(
-            gpui_kit::WindowOptions {
-                window_bounds: Some(bounds),
-                ..Default::default()
-            },
+            crate::chrome::window_options(bounds),
             |window, cx| {
                 // The theme rides the registry (gui/SPEC.md §7) before any
                 // component renders.
@@ -332,7 +331,9 @@ impl ReactorApp {
         let dialog_input = cx.new(|cx| InputState::new(window, cx).placeholder("…"));
         let dialog_editor = cx.new(|cx| TextareaState::new(window, cx));
         let cwd = args.cwd.clone();
-        let reactor = CliClient::new(Some(cwd.clone()));
+        // reactor-core in-process; `REACTOR_GUI_CLIENT=cli` runs the binary
+        // instead, as the debug fallback (ADR-0034).
+        let reactor = Client::from_env(Some(cwd.clone()));
 
         // Composer: Enter submits (queued as a follow-up while streaming) —
         // the send builds the prompt with pi's queueing contract (§6).
@@ -399,6 +400,7 @@ impl ReactorApp {
         }
 
         Self {
+            menu_bar: crate::chrome::menu_bar(cx),
             cwd,
             client: Some(client),
             reactor,
@@ -672,6 +674,13 @@ impl ReactorApp {
                 })
                 .await;
             this.update(cx, |app, cx| {
+                // A failure is said, not shown as an empty catalogue: with
+                // `REACTOR_GUI_CLIENT=cli` and no `reactor` on PATH, "nothing
+                // listed" would otherwise be indistinguishable from "nothing
+                // catalogued".
+                for failure in [tools.as_ref().err(), toolsets.as_ref().err()].into_iter().flatten().take(1) {
+                    app.push_note("error", format!("catalogue: {failure}"));
+                }
                 app.catalogue = tools.ok();
                 app.toolsets = toolsets.ok();
                 app.catalogue_loading = false;
@@ -690,8 +699,9 @@ impl ReactorApp {
                 .background_spawn(async move { ReactorClient::services(&reactor, refresh) })
                 .await;
             this.update(cx, |app, cx| {
-                if let Ok(payload) = services {
-                    app.services = Some(payload);
+                match services {
+                    Ok(payload) => app.services = Some(payload),
+                    Err(failure) => app.push_note("error", format!("services: {failure}")),
                 }
                 app.services_loading = false;
                 cx.notify();
@@ -1248,6 +1258,11 @@ impl Render for ReactorApp {
                     this.set_thinking(&action.level, cx);
                 }),
             )
+            .child(crate::chrome::title_bar(
+                format!("REactor — {}", self.cwd.display()),
+                self.menu_bar.as_ref(),
+                cx,
+            ))
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
             .when_some(notification_layer, |el, layer| el.child(layer))

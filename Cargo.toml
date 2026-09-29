@@ -1,8 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["crates/reactor-core", "crates/reactor-cli"]
-# gui/ is its own workspace until phase 2 links it against reactor-core.
-exclude = ["gui"]
+members = [
+    "crates/reactor-core",
+    "crates/reactor-cli",
+    "gui/crates/reactor-rpc",
+    "gui/crates/reactor-client",
+    "gui/crates/reactor-gui",
+]
+# reactor-gui pulls in a native windowing stack (fontconfig, xkbcommon, ...), so
+# a bare `cargo build` / `cargo test` leaves it out. `-p reactor-gui` opts in.
+default-members = [
+    "crates/reactor-core",
+    "crates/reactor-cli",
+    "gui/crates/reactor-rpc",
+    "gui/crates/reactor-client",
+]
 
 [workspace.package]
 version = "0.1.0"

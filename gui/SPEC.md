@@ -257,10 +257,11 @@ The coupling is why the GUI lives in this repo (ADR-0031):
 - `status/` stays as-is: the GUI builds its services panel from the CLI (§5),
   so the extension needs no envelope.
 
-## 5. Data panels: the CLI, through a seam
+## 5. Data panels: the catalogue, through a seam
 
-Side panels (catalogue, toolsets, services) come from the `reactor` CLI's
-`--format json` outputs, invoked by the GUI through a Rust trait:
+Side panels (catalogue, toolsets, services) come from `reactor-core`, asked
+through a Rust trait whose payloads are the `reactor` CLI's `--format json`
+contract:
 
 ```rust
 trait ReactorClient {
@@ -271,15 +272,27 @@ trait ReactorClient {
 }
 ```
 
-- **Today**: `CliClient` — shells out (std::process with a watchdog timeout
-  of 20s, the extensions' own backstop), no `--refresh` by default so the
-  CLI's own TTLs and `cache.json` decide freshness (ADR-0014 — the GUI adds
-  no second probe policy).
-- **Later**: a Rust port of the CLI lands as its own sibling repo (ADR-0002)
-  and is consumed as a crate behind the same trait (`LibClient`). The GUI
-  never parses `tools.toml` before that day and never after it.
+- **`LibClient` (default)** — calls `reactor-core` in-process (ADR-0034): no
+  process per panel refresh. Core's reports reach the payload structs through
+  their serialized form, so the GUI has one description of each payload — the
+  wire — whichever path filled it. No `--refresh` by default, so the shared
+  TTLs and `cache.json` decide freshness (ADR-0014 — no second probe policy).
+- **`CliClient` (debug fallback)** — shells out to `reactor` (std::process
+  with a watchdog timeout of 20s, the extensions' own backstop). Selected with
+  `REACTOR_GUI_CLIENT=cli`. If the two ever disagree that is a bug at the
+  library boundary; `crates/reactor-cli/tests/agree.rs` runs both side by side
+  over every method — reads in both probe orders, writes to identical config
+  dirs (state.json compared byte for byte), errors, project-scoped state.
+- The GUI holds a `Client` enum over the two (it must be `Clone` to move into
+  background tasks). The GUI never parses `tools.toml`.
 
 ## 6. The window
+
+**Chrome** (`chrome.rs`): the app requests client-side decorations and draws
+gpui-kit's `TitleBar` itself, with the Layout menu inside it via `AppMenuBar`
+on Linux/Windows (macOS keeps its native bar). gpui draws neither on its own:
+GNOME's Wayland session offers no server-side decorations, and `set_menus` is a
+native bar on macOS only — elsewhere it merely records the menus.
 
 Single window, gpui-kit (`gpui-kit = "0.6.0"` pinned), `DockArea` with a
 serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
@@ -511,14 +524,17 @@ worked" state looked identical):
 
 ## 8. Repository, install, tests
 
-- `gui/` is a Cargo workspace inside this repo (ADR-0031):
+- `gui/` holds the GUI's crates, which are members of the repo's root cargo
+  workspace (ADR-0031). The root `default-members` leave `reactor-gui` out —
+  its native windowing stack (fontconfig, xkbcommon, …) would make a bare
+  `cargo test` fail on a machine without it — so build it with `-p reactor-gui`:
   - `gui/crates/reactor-rpc` — JSONL client, serde types for commands,
     responses, events, extension UI requests.
-  - `gui/crates/reactor-client` — `ReactorClient` + `CliClient`.
+  - `gui/crates/reactor-client` — `ReactorClient`, `LibClient`, `CliClient`.
   - `gui/crates/reactor-gui` — the application.
-- `scripts/install.py` builds the GUI by default (`cargo build --release`,
-  binary onto PATH like the CLI); when Rust is missing it prints a warning
-  and finishes the rest of the install unchanged. `--skip-gui` opt-out.
+- Install: `cargo install --git https://github.com/w1sent/reactor reactor-gui`,
+  or `cargo install --path gui/crates/reactor-gui` from a checkout. (The old
+  `scripts/install.py` step is gone — ADR-0039.)
 - GUI-local config (recent workdirs) lives in `~/.pi/reactor-gui/` — not in
   the CLI's `~/.pi/reactor/`, not in pi's `~/.pi/agent/`.
 - Tests: hermetic — `reactor-rpc`'s routing rules run against fixture lines
@@ -527,7 +543,8 @@ worked" state looked identical):
   contracts plus a `#[ignore]`d live round trip, and the contract's wire
   format mirrored by `tests/extensions/guiview.test.mjs` from the extension
   side. Live-pi tests are `#[ignore]`d (run manually).
-  `npm test` and the python suite are untouched.
+  `reactor-client`'s `LibClient` is tested against the real binary by
+  `crates/reactor-cli/tests/agree.rs` (§5).
 
 ## 9. Scope
 
@@ -547,7 +564,7 @@ text, and multiple independent console panels open at once. Still open: pi's
 own `bash`/`abort_bash`
 RPC surfaced in the same pane, HTML export (`export_html`), session labels +
 clone, steer gesture, "open session in new window" launcher, light theme,
-`LibClient` when the CLI port exists, and persisting a hand-arranged layout
+and persisting a hand-arranged layout
 across launches (`DockAreaState` serializes; nothing writes it yet).
 
 **v0.3** — **full terminal emulation**, if and only if the console is ever

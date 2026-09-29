@@ -16,5 +16,6 @@ serde_json.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
+reactor-client = { path = "../../gui/crates/reactor-client" }
 tempfile.workspace = true
 serde_json.workspace = true

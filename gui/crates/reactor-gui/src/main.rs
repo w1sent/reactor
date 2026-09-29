@@ -69,7 +69,8 @@ fn main() {
 ///
 /// One definition, two renderings — `cx.set_menus` drives the real menu bar
 /// on macOS, and `gpui_kit::component::menu::AppMenuBar` draws these same
-/// menus in-window on Windows and Linux, so neither platform gets a
+/// menus in-window on Windows and Linux (`chrome::install_menus` feeds it;
+/// `set_menus` alone only records them there), so neither platform gets a
 /// hand-rolled imitation of the other's.
 ///
 /// Menu items dispatch actions rather than calling anything, which is what
@@ -133,11 +134,14 @@ fn install_menus(cx: &mut App) {
         )
     }));
 
-    cx.set_menus(vec![Menu {
-        name: "Layout".into(),
-        items,
-        disabled: false,
-    }]);
+    reactor_gui::chrome::install_menus(
+        cx,
+        vec![Menu {
+            name: "Layout".into(),
+            items,
+            disabled: false,
+        }],
+    );
 }
 
 /// The workdir chooser (nothing passed, gui/SPEC.md §3): the left half lists
@@ -157,10 +161,7 @@ impl WorkdirChooser {
             cx,
         ));
         let _ = cx.open_window(
-            gpui_kit::WindowOptions {
-                window_bounds: Some(bounds),
-                ..Default::default()
-            },
+            reactor_gui::chrome::window_options(bounds),
             |window, cx| {
                 // Wrap in `Root`, exactly like `ReactorApp::open`: `Root`'s
                 // own render is what actually applies the theme's
@@ -259,8 +260,9 @@ impl Render for WorkdirChooser {
             );
         }
 
-        v_flex()
-            .size_full()
+        v_flex().size_full().child(reactor_gui::chrome::title_bar("REactor", None, cx)).child(v_flex()
+            .flex_1()
+            .min_h_0()
             .p_4()
             .gap_4()
             .child(
@@ -318,7 +320,7 @@ impl Render for WorkdirChooser {
                                     })),
                             ),
                     ),
-            )
+            ))
     }
 }
 
@@ -352,10 +354,7 @@ impl SessionPicker {
             cx,
         ));
         let _ = cx.open_window(
-            gpui_kit::WindowOptions {
-                window_bounds: Some(bounds),
-                ..Default::default()
-            },
+            reactor_gui::chrome::window_options(bounds),
             |window, cx| {
                 // See `WorkdirChooser::open`'s comment: `Root` is what
                 // applies the theme's ambient text color to the window.
@@ -441,13 +440,20 @@ impl Render for SessionPicker {
         }
         v_flex()
             .size_full()
-            .gap_2()
+            .child(reactor_gui::chrome::title_bar("REactor", None, cx))
             .child(
-                h_flex().justify_between().child(
-                    Label::new("REactor — resume a session").text_size(theme.font_size * 1.2),
-                ),
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_2()
+                    .child(
+                        h_flex().justify_between().child(
+                            Label::new("REactor — resume a session")
+                                .text_size(theme.font_size * 1.2),
+                        ),
+                    )
+                    .child(div().flex_1().min_h_0().child(list)),
             )
-            .child(div().flex_1().min_h_0().child(list))
     }
 }
 

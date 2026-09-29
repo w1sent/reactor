@@ -48,7 +48,7 @@ whole membership is "search and JSON — worth adding back to any narrow set"
 are tight on purpose). Widening that toolset's stated meaning to also cover
 "delegate to another agent" would make its own `desc` a lie about what is
 inside it — the exact failure mode
-[`test_a_toolset_named_after_a_tag_selects_only_that_tag`](../../tests/test_reactor.py)
+[`a_toolset_named_after_a_tag_selects_only_that_tag`](../../crates/reactor-core/tests/shipped.rs)
 exists to catch, one level up from where that test looks. Agent delegation is
 its own kind of task, on the same footing as `network` or `firmware`; it gets
 its own toolset for the same reason those do.

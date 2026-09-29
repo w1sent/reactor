@@ -1065,8 +1065,8 @@ dnf    = "dnf install lnav"
 name    = "pi"
 desc    = "spin up a fresh, scoped subagent; non-interactive only (-p), never bare"
 source  = "https://github.com/earendil-works/pi"
-# Multi-word invoke is a usage example, not a command name (see bin/reactor's
-# _label()) -- and here the example is the point: bare `pi` wants a real
+# Multi-word invoke is a usage example, not a command name (see `_label` in
+# crates/reactor-core/src/render.rs) -- and here the example is the point: bare `pi` wants a real
 # terminal, which a Bash tool call does not have, so it hangs until the tool
 # timeout kills it. -p is what pi's own --help calls "non-interactive mode:
 # process prompt and exit" -- the one flag that both needs no TTY and exits

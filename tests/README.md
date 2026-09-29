@@ -21,10 +21,20 @@ temporary directory, and the binary is spawned with `REACTOR_CONFIG_DIR` and a
 throwaway `HOME` — which is also how the extension fixtures make the real CLI
 read their fixture catalogue.
 
-`bin/reactor` (Python) and `scripts/parity.py` are migration scaffolding and the
-only Python here: `python3 scripts/parity.py` diffs the Rust binary against the
-original across ~150 commands, byte for byte, until both are deleted
-([ADR-0039](../docs/adr/0039-the-executables-contain-no-python.md)).
+## Running the extension suite
+
+It needs two things a bare Ubuntu box may not have:
+
+- **A Node built with TypeScript support (22.18+).** The extensions are `.ts`
+  and the tests import them directly. Ubuntu's `nodejs` package is built
+  *without* it and fails every file with `ERR_NO_TYPESCRIPT`; use an official
+  build (fnm, nvm, or the tarball from nodejs.org).
+- **pi**, found through `PATH` — including pi's managed install, whose `pi` is a
+  shell wrapper (the harness reads `install/current-version` to find the
+  release). `REACTOR_PI_DIST` points at pi's `dist/` explicitly if that fails.
+  Without pi the suite skips, saying why.
+
+And a build first: `cargo build`, since the harness execs `target/{release,debug}/reactor`.
 
 ## What is actually being defended
 

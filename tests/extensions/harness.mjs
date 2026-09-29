@@ -57,7 +57,26 @@ function findPiDist() {
 		if (fs.existsSync(path.join(dir, "core/extensions/loader.js"))) return dir;
 		dir = path.dirname(dir);
 	}
-	return undefined;
+	return managedInstallDist(fs.realpathSync(resolved));
+}
+
+/** pi's managed install (`~/.pi/agent/bin/pi` is a shell wrapper, not a link into
+ * node_modules): the wrapper sits in `<agent>/bin`, and the release it runs is
+ * `<agent>/install/releases/<current-version>`. */
+function managedInstallDist(launcher) {
+	const agentDir = path.dirname(path.dirname(launcher));
+	try {
+		const version = fs.readFileSync(path.join(agentDir, "install/current-version"), "utf8").trim();
+		const dist = path.join(
+			agentDir,
+			"install/releases",
+			version,
+			"node_modules/@earendil-works/pi-coding-agent/dist",
+		);
+		return fs.existsSync(path.join(dist, "core/extensions/loader.js")) ? dist : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 const PI_DIST = findPiDist();
@@ -84,14 +103,19 @@ export const piTui = PI_DIST
 
 // pi-ai's compat surface (complete, registerFauxProvider). pi-ai is
 // ESM-only -- require.resolve cannot reach its "./compat" subpath, so this
-// resolves the file directly, exactly where pi's own loader imports it from.
-export const piAiCompat = PI_DIST
-	? await import(
-			pathToFileURL(
-				path.join(PI_DIST, "..", "node_modules/@earendil-works/pi-ai/dist/compat.js"),
-			).href
-		)
-	: {};
+// resolves the file directly. Where it lives depends on how npm laid pi out:
+// nested under pi-coding-agent's own node_modules (older installs), or hoisted
+// next to pi-coding-agent (pi 0.99's managed install). Try both, nearest first.
+function findPiAiCompat() {
+	const rel = "node_modules/@earendil-works/pi-ai/dist/compat.js";
+	const candidates = [
+		path.join(PI_DIST, "..", rel),
+		path.join(PI_DIST, "..", "..", "..", "..", rel),
+	];
+	return candidates.find((c) => fs.existsSync(c)) ?? candidates[0];
+}
+
+export const piAiCompat = PI_DIST ? await import(pathToFileURL(findPiAiCompat()).href) : {};
 
 // ---------------------------------------------------------------------------
 // The fixture catalogue

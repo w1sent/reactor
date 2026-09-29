@@ -25,7 +25,7 @@ The full schema comment block lives at the top of `tools.toml` and
 ## Where to edit
 
 The repo-root `tools.toml` / `toolsets.toml` are the **shipped seeds**. A user
-machine reads the installed copies at `~/.pi/reactor/` — never edit those in
+machine reads the installed copies at `~/.reactor/` — never edit those in
 the package tree on a user machine (pi's package update runs `git clean
 -fdx`). After an update, `reactor diff-config` shows the difference against
 installed copies and the user merges by hand.
@@ -65,7 +65,7 @@ These are the failure modes; the how-tos explain the reasoning.
 
 ```bash
 python3 scripts/verify-recipes.py    # install recipes against manager indexes
-python3 tests/test_reactor.py        # shipped-catalogue shape + CLI suite
+cargo test                           # shipped-catalogue shape + CLI suite
 reactor doctor                       # the tool appears, present or missing
 reactor registry                     # the block, as the agent sees it
 reactor toolsets enable <id>         # what a toolset activation advertises

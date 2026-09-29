@@ -1,0 +1,26 @@
+version = 1
+
+[toolset.all]
+desc = "everything"
+all  = true
+
+[toolset.static]
+desc = "static only"
+tags = ["static"]
+
+[toolset.pair]
+desc  = "explicit"
+tools = ["alpha", "gamma"]
+
+[toolset.narrow]
+desc = "two tags, one tool"
+tags = ["static", "python"]
+
+[toolset.miss]
+desc = "nothing carries both"
+tags = ["static", "dynamic"]
+
+[toolset.plus]
+desc  = "a tag, and one more by name"
+tags  = ["dynamic", "python"]
+tools = ["gamma"]

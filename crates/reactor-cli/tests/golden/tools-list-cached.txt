@@ -1,0 +1,3 @@
+[?]  alpha      does alpha things
+[?]  beta       détecte les échantillons ✓ 😀 (non-ASCII on purpose)
+[?]  gamma      does gamma things

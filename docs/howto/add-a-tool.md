@@ -10,7 +10,7 @@ guide is the sequence.
 ## 0. Where to edit
 
 `tools.toml` at the package root is the **shipped seed**. A user machine reads
-the installed copy at `~/.pi/reactor/tools.toml` — never edit that one in the
+the installed copy at `~/.reactor/tools.toml` — never edit that one in the
 package tree on a user machine (pi's package update runs `git clean -fdx`).
 Work here in the repo; after an update, `reactor diff-config` shows the
 difference against an installed copy and you merge by hand
@@ -73,8 +73,8 @@ reactor doctor          # the tool appears: present, with your desc
 reactor registry        # the block the agent sees — check the line, the
                         # invoke column, and that the block is unchanged
                         # for every other tool
-python3 tests/test_reactor.py   # TestShippedConfig checks the shipped
-                                # catalogue's shape, not its prose
+cargo test -p reactor-core --test shipped   # checks the shipped
+                                            # catalogue's shape, not its prose
 ```
 
 The registry block must stay byte-identical for an unchanged machine

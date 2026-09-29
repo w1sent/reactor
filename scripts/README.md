@@ -2,45 +2,50 @@
 
 Repo-management scripts.
 
-## `install.py`
+## Installing REactor — `reactor setup`, not a script
 
-The second half of installing REactor. `pi install git:…/reactor` gets the
-assets; this gets everything that is not a pi resource.
+There is no installer script. `scripts/install.py` was retired with the Python
+CLI ([ADR-0039](../docs/adr/0039-the-executables-contain-no-python.md)): an
+installer that needs Python would put back the interpreter the Rust binary
+removed. What it did is now two commands:
 
 ```bash
-python3 scripts/install.py                 # symlink the CLI, seed config, fetch skills
-python3 scripts/install.py --copy          # copy the CLI instead of symlinking
-python3 scripts/install.py --cli-dest PATH # somewhere other than ~/.local/bin/reactor
-python3 scripts/install.py --no-skills     # skip the network step
-python3 scripts/install.py --no-completions # skip installing shell completions
-python3 scripts/install.py --dry-run       # say what would happen and stop
+cargo install --git https://github.com/w1sent/reactor reactor-cli   # the binary, onto ~/.cargo/bin
+cargo install --path crates/reactor-cli   # ...or from a checkout you already have
+reactor setup                             # everything that is not a pi resource
+reactor setup --no-skills --no-completions --dry-run   # the switches
 ```
 
-What it does:
+`pi install git:…/reactor` gets the assets; `reactor setup` gets everything else:
 
-1. Symlink (or copy) `bin/reactor` onto `PATH`. Warns if the destination
-   directory is not actually on `PATH`.
-2. Seed `~/.pi/reactor/tools.toml` and `toolsets.toml` from the shipped copies —
-   **only if absent**. Never clobbers; if they exist and differ, it says so and
-   points at `reactor diff-config`
+1. Seed `~/.reactor/tools.toml` and `toolsets.toml` from the copies compiled into
+   the binary — **only if absent**. Never clobbers; if they exist and differ, it
+   says so and points at `reactor diff-config`
    ([ADR-0004](../docs/adr/0004-config-updates-via-plain-diff.md)).
-3. Create `~/.pi/reactor/state.json` if absent.
-4. Fetch configured upstream skills into `~/.pi/reactor/skills/<tool>/`, pinned
-   to the ref in the catalogue, recording source, ref, resolved commit and fetch
+2. Create `~/.reactor/state.json` if absent.
+3. Fetch configured upstream skills into `~/.reactor/skills/<tool>/`, pinned to
+   the ref in the catalogue, recording source, ref, resolved commit and fetch
    time in `.reactor-skill.json`
-   ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)). This step is
-   `reactor skills fetch` in a subprocess rather than a second implementation.
-5. Write bash, zsh, and fish completion scripts — each is `reactor completion
-   <shell>` in a subprocess, written to that shell's conventional per-user
-   completions directory ([ADR-0015](../docs/adr/0015-shell-completion-generated-not-hand-written.md)).
-   Unlike the config files, these are reactor's own generated output, so they
-   are overwritten unconditionally rather than preserved. zsh needs one manual
-   step it cannot do for you — adding `~/.zfunc` to `fpath` before `compinit` —
-   and it prints a reminder every run.
-6. Report. Warn **only** where a configured skill could not be fetched — a tool
+   ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)).
+4. Write bash, zsh, and fish completion scripts to each shell's conventional
+   per-user completions directory
+   ([ADR-0015](../docs/adr/0015-shell-completion-generated-not-hand-written.md)).
+   Unlike the config files these are reactor's own output, so they are
+   overwritten unconditionally. zsh needs one manual step — `~/.zfunc` on `fpath`
+   before `compinit` — and setup reminds you every run.
+5. Report. Warn **only** where a configured skill could not be fetched — a tool
    with no configured skill is the normal case and gets no warning.
 
-Idempotent; re-running is the supported way to update.
+Idempotent; re-running is the supported way to update. Building `reactor-gui`
+is no longer part of it: `cargo install --path gui/crates/reactor-gui` until the
+GUI joins the root workspace (MIGRATE.md phase 2).
+
+**Still here, until phase 1's gate is green** — `install.py` and `parity.py`,
+scaffolding rather than tools. `python3 scripts/parity.py [path/to/reactor]`
+runs ~150 commands through the Rust binary and the Python original against
+identical fixture directories and diffs stdout and exit codes byte for byte,
+then checks that each can read the other's `cache.json`. Delete both, with
+`bin/reactor`, when the extension suite is green.
 
 ## `verify-recipes.py`
 
@@ -50,7 +55,7 @@ not exist.
 
 ```bash
 scripts/verify-recipes.py                # the shipped tools.toml
-scripts/verify-recipes.py ~/.pi/reactor/tools.toml
+scripts/verify-recipes.py ~/.reactor/tools.toml
 ```
 
 A wrong recipe is worse than an absent one, because `reactor install` will run
@@ -109,7 +114,7 @@ stdout instead of being caught by an assertion that has to already know to
 look for it.
 
 Every run gets a fresh, throwaway `PI_CODING_AGENT_DIR`, `REACTOR_CONFIG_DIR`
-(empty, so `reactor` falls back to this checkout's own shipped
+(empty, so `reactor` falls back to its compiled-in
 `tools.toml`/`toolsets.toml`) and cwd — isolated from whatever is on the
 machine actually running it, and cleaned up after.
 
@@ -134,7 +139,7 @@ touching anything that calls `ctx.reload()`, `ctx.newSession()`,
 pi never builds anything, never initialises submodules, and runs
 `git clean -fdx` inside the installed package on every update
 ([ADR-0002](../docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md)).
-So the CLI symlink, the seeded config and the fetched skills all have to happen
+So the binary, the seeded config and the fetched skills all have to happen
 outside pi's package tree, by something pi does not manage.
 
 A `postinstall` hook in `package.json` *would* fire — pi does not pass

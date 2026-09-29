@@ -20,13 +20,13 @@
  *   scripts/check-in-pi.mjs "/reactor-status mute adb" "/reactor-status"
  *
  * Every run gets a fresh, throwaway PI_CODING_AGENT_DIR, REACTOR_CONFIG_DIR
- * (so it falls back to this repo's own shipped tools.toml/toolsets.toml, per
- * bin/reactor's own fallback -- no seeding needed) and cwd, isolated from
- * whatever is on the machine running this. `bin/reactor` from this checkout
- * goes on PATH ahead of anything else there.
+ * (so `reactor` falls back to its compiled-in tools.toml/toolsets.toml -- no
+ * seeding needed) and cwd, isolated from whatever is on the machine running
+ * this. `reactor` from this checkout's build (`cargo build`) goes on PATH ahead
+ * of anything else there.
  *
  * Exits non-zero, and prints every `extension_error` in full, if any command
- * made an extension throw. Otherwise exits 0. Not part of `npm test`: it
+ * made an extension throw. Otherwise exits 0. Not part of the test suites: it
  * spawns a real pi process per run (~2-3s for the default set) and needs
  * `pi` on PATH, the same reasoning that keeps `verify-recipes.py` out of the
  * fast suite.
@@ -130,6 +130,16 @@ const DEFAULT_COMMANDS = [
 	"/report off",
 ];
 
+/** The directory holding this checkout's built `reactor` (release first). */
+function reactorBinDir() {
+	for (const profile of ["release", "debug"]) {
+		const dir = path.join(REPO_ROOT, "target", profile);
+		if (fs.existsSync(path.join(dir, "reactor"))) return dir;
+	}
+	console.error(`no reactor binary under ${path.join(REPO_ROOT, "target")}: run \`cargo build\` first`);
+	process.exit(2);
+}
+
 const commands = process.argv.slice(2);
 const toRun = commands.length ? commands : DEFAULT_COMMANDS;
 
@@ -141,7 +151,7 @@ const env = {
 	...process.env,
 	PI_CODING_AGENT_DIR: agentDir,
 	REACTOR_CONFIG_DIR: reactorDir,
-	PATH: `${path.join(REPO_ROOT, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
+	PATH: `${reactorBinDir()}${path.delimiter}${process.env.PATH ?? ""}`,
 };
 
 function cleanup() {

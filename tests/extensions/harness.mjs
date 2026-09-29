@@ -7,8 +7,11 @@
  * gets (docs/adr/0012). Only the host side is faked: the context, its `ui`, and
  * the TUI/theme/done triple that `ctx.ui.custom` hands a component.
  *
- * `reactor` is not faked. A shim on PATH execs the real `bin/reactor` against a
- * throwaway REACTOR_CONFIG_DIR, or reproduces one named failure mode.
+ * `reactor` is not faked. A shim on PATH execs the real Rust binary against a
+ * throwaway REACTOR_CONFIG_DIR, or reproduces one named failure mode. The
+ * binary is `$REACTOR_BIN` if set, else `target/release/reactor` or
+ * `target/debug/reactor` (whichever exists, release first) -- `cargo build`
+ * first.
  */
 
 import { execFileSync } from "node:child_process";
@@ -19,6 +22,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../..");
+
+/** The `reactor` the shim execs. Fails loudly: a missing build is not a skip. */
+function reactorBinary() {
+	if (process.env.REACTOR_BIN) return process.env.REACTOR_BIN;
+	for (const profile of ["release", "debug"]) {
+		const candidate = path.join(REPO_ROOT, "target", profile, "reactor");
+		if (fs.existsSync(candidate)) return candidate;
+	}
+	throw new Error(`no reactor binary: run \`cargo build\` in ${REPO_ROOT} or set REACTOR_BIN`);
+}
 
 // ---------------------------------------------------------------------------
 // Locating pi
@@ -252,7 +265,7 @@ export class Fixture {
 				"  missing) exit 1 ;;",
 				"  garbage) printf 'this is not json\\n' ;;",
 				`  error)   printf '{"error":"probe exploded"}\\n' ;;`,
-				`  *) exec ${JSON.stringify(path.join(REPO_ROOT, "bin", "reactor"))} "$@" ;;`,
+				`  *) exec ${JSON.stringify(reactorBinary())} "$@" ;;`,
 				"esac",
 				"",
 			].join("\n"),

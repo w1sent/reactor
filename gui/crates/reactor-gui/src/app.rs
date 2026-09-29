@@ -3,7 +3,7 @@
 //!
 //! The GUI holds no facts: the transcript renders what pi streams
 //! ([`crate::session::Session`]), the side panels render what the `reactor`
-//! CLI answers ([`reactor_cli::ReactorClient`]), and extension views render
+//! CLI answers ([`reactor_client::ReactorClient`]), and extension views render
 //! the envelopes of [ADR-0032](../../docs/adr/0032-the-gui-extends-pis-rpc-through-existing-channels-only.md).
 //! Panels are views over one state object — stateless presentation, per the
 //! ADR-0029 discipline.
@@ -26,7 +26,7 @@ use gpui_kit::{App, Entity, KeyBinding, Render, SharedString, Window, div, px};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use reactor_cli::{CliClient, ReactorClient};
+use reactor_client::{CliClient, ReactorClient};
 use reactor_rpc::{Command, Incoming, RpcClient, SpawnConfig};
 
 use crate::contract::{self, View};
@@ -164,9 +164,9 @@ pub struct ReactorApp {
     /// `get_available_thinking_levels`.
     pub thinking_levels: Vec<String>,
     /// Side-panel data, from the CLI (gui/SPEC.md §5).
-    pub catalogue: Option<reactor_cli::ToolsPayload>,
-    pub toolsets: Option<reactor_cli::ToolsetsPayload>,
-    pub services: Option<reactor_cli::ServicesPayload>,
+    pub catalogue: Option<reactor_client::ToolsPayload>,
+    pub toolsets: Option<reactor_client::ToolsetsPayload>,
+    pub services: Option<reactor_client::ServicesPayload>,
     /// Whether a `reactor tools`/`toolsets --format json` round trip is in
     /// flight — the Tools/Toolsets panels' loading indicator (gui/SPEC.md
     /// §5). One flag for both: they share the one fetch.

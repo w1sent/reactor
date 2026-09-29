@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/reactor-core", "crates/reactor-cli"]
+# gui/ is its own workspace until phase 2 links it against reactor-core.
+exclude = ["gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1", features = ["preserve_order"] }
+regex = "1"
+libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

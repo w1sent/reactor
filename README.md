@@ -28,7 +28,7 @@ the pi package is not going away, it is narrowing to the toolbox.
 ## The idea in one screen
 
 ```
-                    ~/.pi/reactor/tools.toml         (the catalogue)
+                    ~/.reactor/tools.toml            (the catalogue)
                               │
               ┌───────────┬───┴───────┬───────────┐
               ▼           ▼           ▼           ▼
@@ -74,12 +74,17 @@ switches, its default state, and the reasoning behind it.
 ## Layout
 
 ```
-tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
+tools.toml       Shipped tool catalogue — seeds ~/.reactor/tools.toml
 toolsets.toml    Shipped toolset definitions — seeds the user's copy
-bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
+crates/          Rust: `reactor-core` (catalogue, probes, activation, install,
+                 skills — files and subprocesses only) and `reactor-cli`, the
+                 `reactor` binary over it (ADR-0034)
+bin/             The Python original of the CLI, kept only as the oracle for
+                 scripts/parity.py until it is deleted (ADR-0039)
 gui/             reactor-gui, the native frontend (Rust, gpui-kit) — spec in
-                 gui/SPEC.md, built by install.py when Rust is present; the
-                 frontend the Rust harness is being built behind (MIGRATE.md)
+                 gui/SPEC.md, its own cargo workspace until it links
+                 reactor-core (MIGRATE.md phase 2); the frontend the Rust
+                 harness is being built behind
 extensions/      pi extensions (TypeScript): tool-registry, selector, status,
                  scenario, goal-setting, history-tools, rolling-context,
                  auto-continue, identity
@@ -89,8 +94,9 @@ themes/          pi themes
                  ^ all three are discovered by pi from their directory name;
                    docs/package-resources.md covers them, and no doc may live
                    inside them (pi would register it as a resource)
-scripts/         install.py and repo-management scripts
-tests/           stdlib unittest for the CLI, node --test for the extensions
+scripts/         repo-management scripts (Python is fine here — ADR-0039)
+tests/           cargo test for the CLI and core (crates/*/tests), node --test
+                 for the extensions
 docs/            Concept, ADRs, HOWTOs, reference notes
 ```
 
@@ -102,24 +108,29 @@ repositories with their own release cycles, referenced by the catalogue. See
 
 ```bash
 pi install git:github.com/<you>/reactor   # assets: extensions, skills, prompts
-python3 scripts/install.py                # CLI onto PATH, seed ~/.pi/reactor/
+cargo install --git https://github.com/w1sent/reactor reactor-cli   # the `reactor` binary, onto ~/.cargo/bin
+reactor setup                             # seed ~/.reactor/, fetch skills, completions
 reactor doctor                            # what is missing, and how to get it
 reactor install yara                      # opt-in, does it for you
 ```
 
 Two steps because `pi install` never builds anything, never initialises
 submodules, and runs `git clean -fdx` inside the package on every update — so
-the CLI symlink, the seeded config and the fetched upstream skills have to live
+the binary, the seeded config and the fetched upstream skills have to live
 outside pi's package tree. See
 [ADR-0002](docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md).
 
-Requires Python 3.11+ (`tomllib`). Nothing else — the CLI imports no
-third-party package by design.
+Already cloned? `cargo install --path crates/reactor-cli` does the same from
+the checkout. Either way it needs a Rust toolchain ([rustup.rs](https://rustup.rs))
+to build, and nothing to run: the binary is static, the
+shipped catalogue is compiled into it, and no Python is involved in installing
+or running REactor ([ADR-0039](docs/adr/0039-the-executables-contain-no-python.md)).
+`reactor setup` is idempotent and never clobbers your `tools.toml`; re-running
+it is the way to update.
 
 ```bash
-npm test                                  # both suites, nothing to install
-python3 tests/test_reactor.py             # the CLI alone, 73 tests
-node --test "tests/extensions/*.test.mjs" # the extensions alone, 123 tests
+cargo test                                # core + CLI, 151 tests
+cargo build && node --test "tests/extensions/*.test.mjs"   # pi flavor; needs node and pi
 ```
 
 The extension half needs pi on `PATH` and skips without it: it loads each
@@ -156,9 +167,8 @@ What moves any of it forward is real use, not another round of building;
 deferred ideas are deliberately not tracked in these files (the reasoning
 lives in git history and the ADRs).
 
-The spine works end to end: the catalogue, the `reactor` CLI, the installer
-(symlinks the CLI, seeds `~/.pi/reactor/`, fetches upstream skills, installs
-completions), the toolsets and scenarios, and the four RE-focused extensions —
+The spine works end to end: the catalogue, the `reactor` CLI, `reactor setup`
+(seeds `~/.reactor/`, fetches upstream skills, installs completions), the toolsets and scenarios, and the four RE-focused extensions —
 tool-registry, selector, status, scenario.
 
 Eight general-purpose extensions ship alongside them, switched independently of
@@ -183,5 +193,5 @@ the catalogue:
 - `guide`, a popup for the person at the keyboard: the concept and the flows,
   one `/guide` away.
 
-`npm test` covers all of it: 90 tests on the CLI, 281 driving the extensions
+`cargo test` and the extension suite cover all of it: 151 tests on the CLI and core, 281 driving the extensions
 against pi's own loader.

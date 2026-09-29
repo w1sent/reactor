@@ -19,7 +19,7 @@
  *
  * Usage:  node scripts/install-check.mjs
  * Exits non-zero if any expected UI event is missing or any `extension_error`
- * appears. Spawns one real pi process (~3s); not part of `npm test`, same
+ * appears. Spawns one real pi process (~3s); not part of the test suites, same
  * reasoning as `check-in-pi.mjs`.
  */
 

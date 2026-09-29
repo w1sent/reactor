@@ -9,3 +9,6 @@ dist/
 # is not part of the repo and does not travel with a clone.
 .claude/settings.local.json
 .reactor/
+
+# Rust build output (the root workspace; gui/ has its own until phase 2)
+target/

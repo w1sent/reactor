@@ -23,7 +23,7 @@ as a decision that needs justifying.
 The order of preference is
 [ADR-0008](adr/0008-aggregate-upstream-skills.md):
 
-1. the tool author's own skill, fetched at install into `~/.pi/reactor/skills/`
+1. the tool author's own skill, fetched at install into `~/.reactor/skills/`
 2. `<tool> --help` / `man <tool>`, read by the agent on demand
 3. a skill here — only where neither of the above suffices
 
@@ -77,7 +77,7 @@ bind a skill to activation state.
 > extension's `resources_discover`. So a skill here loads whether or not its
 > tools are present or active, and `requires` is currently documentation.
 >
-> Only *fetched upstream* skills in `~/.pi/reactor/skills/<tool>/` are gated
+> Only *fetched upstream* skills in `~/.reactor/skills/<tool>/` are gated
 > today, because those are handed to pi by the extension. Gating this directory
 > too would mean moving these skills out of the package's conventional layout
 > and serving them from `resources_discover` as well. That is a real change and

@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 gpui-kit = "=0.6.0"
 reactor-rpc = { path = "../reactor-rpc" }
-reactor-cli = { path = "../reactor-cli" }
+reactor-client = { path = "../reactor-client" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow = "1"

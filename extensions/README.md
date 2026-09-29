@@ -277,7 +277,7 @@ node --test "tests/extensions/*.test.mjs"
 All twelve are driven through **pi's own loader**
 ([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 For the four RE-tool extensions that means the **real** CLI too — `pi.exec`
-is pi's, and the `reactor` it finds on `PATH` is a shim over `bin/reactor`
+is pi's, and the `reactor` it finds on `PATH` is a shim over the Rust binary
 pointed at a fixture catalogue; `goal-setting/`, `history-tools/`,
 `rolling-context/`, `context-editor/` and `reporting/` never call `reactor`
 at all, so their tests exercise pi's own history/session/context APIs (or,
@@ -294,7 +294,7 @@ than guessing at a delay.
 `scenario.test.mjs` adds one more: `REACTOR_SCENARIOS_DIR` isolates the state
 machine's tests from this package's own shipped `prompts/scenarios/investigation/`,
 the same way `REACTOR_CONFIG_DIR` isolates everything else from
-`~/.pi/reactor/`. One test runs that real shipped scenario end to end and
+`~/.reactor/`. One test runs that real shipped scenario end to end and
 checks its *shape* — seventeen steps, each with its own title — rather than its
 exact prose, the way `TestShippedConfig` does for the catalogue in the Python
 suite.

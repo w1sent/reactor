@@ -1,0 +1,3 @@
+## Available RE tools (this machine)
+
+None. No catalogued RE tool was detected on this machine -- run `reactor doctor` to see what is missing and how to install it.

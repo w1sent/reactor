@@ -1,5 +1,12 @@
 # Deactivation is soft: context management, not enforcement
 
+> **Extended by [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md):** the
+> "enforcement would be theatre" argument below is what the Rust harness
+> cites for declining to build a permission, approval or sandbox model at
+> all. It does not weaken when moved from *what the agent is told* to *what
+> the agent runs*; containment is the user's VM or container, and is
+> documented as such.
+
 Deactivating a tool or a toolset removes it from the injected registry and hides
 its skills and prompt templates. It does not block anything. If the agent invokes
 a deactivated tool anyway, the tool runs.

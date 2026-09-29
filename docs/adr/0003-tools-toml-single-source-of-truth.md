@@ -1,5 +1,10 @@
 # `tools.toml` is the single source of truth, and it lives in `~/.pi/reactor/`
 
+> **Amended by [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md):** the
+> single-source-of-truth decision holds unchanged; the path moves from
+> `~/.pi/reactor/tools.toml` to `~/.reactor/tools.toml` now that pi is no
+> longer the host ([ADR-0001](0001-pi-is-the-only-target-harness.md)).
+
 Everything REactor knows about a tool lives in one catalogue entry: identity, the
 one-line description that appears in the registry, detection and version probes,
 service probe, per-platform install recipes, tags, and the upstream skill source

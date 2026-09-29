@@ -6,6 +6,14 @@
 > are their own extensions now, with their own commands, switches and config
 > files. What remains here under this ADR's reasoning is the fade and
 > `/rolling`.
+>
+> **Superseded in full by
+> [ADR-0037](0037-context-reduction-is-one-budget-manager.md):** the fade is
+> no longer a standalone, independently-switched alternative to compaction.
+> It is one of two strategies in a budget manager that owns both, applied by
+> entry kind. The reasoning below for why a general-purpose context mechanism
+> belongs in this repo at all still holds, and applies to the Rust harness
+> unchanged.
 
 `extensions/rolling-context/` is an existing, working pi extension — an
 alternative to pi's own summarization-based compaction, for models with a

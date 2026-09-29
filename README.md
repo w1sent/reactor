@@ -16,6 +16,15 @@ See `CONTEXT.md` for the project glossary, `docs/concept.md` for the idea in
 full, `docs/adr/` for the decisions behind it, and `extensions/README.md` for
 the extension inventory — what each one does, its switches, its default state.
 
+**REactor is migrating off pi.** The harness is being rewritten in Rust over
+[rig](https://rig.rs/), with `reactor-gui` as its frontend; pi becomes one
+client of the `reactor` CLI rather than the host. [`MIGRATE.md`](MIGRATE.md)
+is the plan — what the end state is, what survives, and the order it happens
+in — and [ADR-0033](docs/adr/0033-reactor-is-a-rust-project-on-rig.md) through
+[ADR-0038](docs/adr/0038-settings-resolve-global-then-session.md) are the
+decisions. Everything described below is what runs today, and keeps running:
+the pi package is not going away, it is narrowing to the toolbox.
+
 ## The idea in one screen
 
 ```
@@ -69,7 +78,8 @@ tools.toml       Shipped tool catalogue — seeds ~/.pi/reactor/tools.toml
 toolsets.toml    Shipped toolset definitions — seeds the user's copy
 bin/             The `reactor` CLI (stdlib-only Python, symlinked onto PATH)
 gui/             reactor-gui, the native frontend (Rust, gpui-kit) — spec in
-                 gui/SPEC.md, built by install.py when Rust is present
+                 gui/SPEC.md, built by install.py when Rust is present; the
+                 frontend the Rust harness is being built behind (MIGRATE.md)
 extensions/      pi extensions (TypeScript): tool-registry, selector, status,
                  scenario, goal-setting, history-tools, rolling-context,
                  auto-continue, identity
@@ -118,10 +128,25 @@ runs ([ADR-0012](docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)).
 
 ## Scope
 
-REactor targets pi and only pi. It is not a portable skill collection; if
-another harness becomes interesting, the tool repositories are reused and a new
-flavor of REactor is built for it. See
-[ADR-0001](docs/adr/0001-pi-is-the-only-target-harness.md).
+REactor was built as a pi package and targeted pi alone
+([ADR-0001](docs/adr/0001-pi-is-the-only-target-harness.md)). That is being
+reversed ([ADR-0033](docs/adr/0033-reactor-is-a-rust-project-on-rig.md)), along
+the line ADR-0001 itself drew: the tool repositories are reused unchanged, and
+a new flavor of REactor is built against a harness it owns.
+
+The line the migration settles on
+([ADR-0035](docs/adr/0035-portable-surface-is-machine-facts.md)) is **the
+toolbox, not the workflow**. What any harness gets, through the `reactor` CLI,
+is machine facts — what RE tooling exists here, whether it is installed,
+whether its services are up, how to install what is missing, and which subset
+to advertise. What stays REactor's own is the session half: the manifest,
+identity, scenarios, context management and the session tree, which need a GUI
+to be worth using and a loop REactor controls to be buildable at all.
+
+For pi specifically that means `tool-registry`, `selector`, `status` and
+`scenario` stay maintained against the CLI, and the seven workflow extensions
+are frozen at what they do today — still working, still tested, no longer
+developed.
 
 ## Status
 

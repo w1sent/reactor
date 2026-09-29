@@ -1,5 +1,13 @@
 # Extension toggles live in their own file next to pi's settings, not inside settings.json
 
+> **Superseded for the Rust harness by
+> [ADR-0038](0038-settings-resolve-global-then-session.md):** settings resolve
+> global default then session override, out of one `settings.json`. The
+> one-file-per-extension pattern below was right for pi, whose extensions load
+> in isolation and share no state; without an extension loader
+> ([ADR-0033](0033-reactor-is-a-rust-project-on-rig.md)) that premise is gone.
+> `reactor.json` keeps working, unchanged, for the pi flavor.
+
 Two independent, off-by-default-on toggles:
 
 - **`toolbox`** (`tool-registry/` + `selector/`) — `false` removes both

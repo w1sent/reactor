@@ -1,5 +1,14 @@
 # rolling-context splits into goal-setting, history-tools and the fade
 
+> **Carried forward by
+> [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md) as crate boundaries:**
+> the split below is the right one and survives — the manifest, the history
+> tools and the fade are separate concerns. In Rust they separate as
+> `reactor-context` (the manifest) and the budget manager
+> ([ADR-0037](0037-context-reduction-is-one-budget-manager.md)) rather than as
+> independently-loaded extensions, and the load-order caution disappears with
+> the loader.
+
 `extensions/rolling-context/` was one 815-line extension carrying three
 features with different audiences and different reasons to exist: the
 **manifest** (goal, guidelines, agent-maintained steps, `update_steps`,

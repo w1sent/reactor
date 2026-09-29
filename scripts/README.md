@@ -40,13 +40,6 @@ Idempotent; re-running is the supported way to update. Building `reactor-gui`
 is no longer part of it: `cargo install --path gui/crates/reactor-gui` until the
 GUI joins the root workspace (MIGRATE.md phase 2).
 
-**Still here, until phase 1's gate is green** — `install.py` and `parity.py`,
-scaffolding rather than tools. `python3 scripts/parity.py [path/to/reactor]`
-runs ~150 commands through the Rust binary and the Python original against
-identical fixture directories and diffs stdout and exit codes byte for byte,
-then checks that each can read the other's `cache.json`. Delete both, with
-`bin/reactor`, when the extension suite is green.
-
 ## `verify-recipes.py`
 
 Checks every `[tool.*.install]` recipe in the catalogue against its package

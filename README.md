@@ -79,8 +79,6 @@ toolsets.toml    Shipped toolset definitions — seeds the user's copy
 crates/          Rust: `reactor-core` (catalogue, probes, activation, install,
                  skills — files and subprocesses only) and `reactor-cli`, the
                  `reactor` binary over it (ADR-0034)
-bin/             The Python original of the CLI, kept only as the oracle for
-                 scripts/parity.py until it is deleted (ADR-0039)
 gui/             reactor-gui, the native frontend (Rust, gpui-kit) — spec in
                  gui/SPEC.md, its own cargo workspace until it links
                  reactor-core (MIGRATE.md phase 2); the frontend the Rust

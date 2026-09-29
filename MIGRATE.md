@@ -171,9 +171,9 @@ the installer goes too, not just the CLI.
 - [x] `scripts/check-in-pi.mjs` puts the Rust build on `PATH` (it used to put `bin/`)
 - [x] Building `reactor-gui` was a step of `install.py`; it is now
       `cargo install --git … reactor-gui` (phase 2 put the GUI in the root workspace)
-- [ ] Delete `bin/reactor`, `tests/test_reactor.py`, `scripts/install.py` and
-      `scripts/parity.py` — after the gate below is green, not before, because
-      `parity.py` needs the original to diff against
+- [x] Deleted `bin/reactor`, `tests/test_reactor.py`, `scripts/install.py` and
+      `scripts/parity.py` once the gate below was green (`parity.py` needed the
+      original to diff against, so it went last)
 
 **Gate:**
 
@@ -185,9 +185,8 @@ the installer goes too, not just the CLI.
       to the Python CLI (the one deliberate difference, `doctor`'s
       `platform.python` → `platform.reactor`, is normalised and recorded in
       ADR-0039)
-- [ ] The extension suite (`node --test`, pi flavor) is green against the Rust binary, unchanged.
-      **Not yet run** — it needs pi and node, and neither was present where the
-      port was written.
+- [x] The extension suite (`node --test`, pi flavor) is green against the Rust
+      binary: 301 pass, 0 skipped, on pi 0.99.1 and Node 24
 
 ### 2 · The GUI links the library  *(reversible)*
 

@@ -111,6 +111,9 @@ pub struct ReactorApp {
     pub composer: Entity<TextareaState>,
     /// Notifications: the popups, and the history behind the bell.
     pub notifier: crate::notifications::Notifier,
+    /// Notifications not yet shown as popups, and the popups showing with when they go.
+    pending_toasts: Vec<(u64, crate::notifications::Level, String)>,
+    live_toasts: Vec<(u64, std::time::Instant)>,
     /// The history popup, while it is open.
     pub notices: Option<crate::notices_ui::NoticesUi>,
     /// The models the picker offers (`provider/name`).
@@ -212,6 +215,9 @@ pub fn bind_keys(cx: &mut App) {
 
 /// How many completions the popup lists.
 pub const SLASH_ROWS: usize = 8;
+
+/// Marks the popups this app pushes, so they can be taken down by id.
+struct NoticeKind;
 
 /// The window `ReactorApp` opened, and the app inside it.
 ///
@@ -349,6 +355,8 @@ impl ReactorApp {
             session,
             composer,
             notifier: crate::notifications::Notifier::default(),
+            pending_toasts: Vec::new(),
+            live_toasts: Vec::new(),
             notices: None,
             models,
             catalogue: None,
@@ -508,39 +516,75 @@ impl ReactorApp {
         cx.notify();
     }
 
-    /// Tell the person something: a popup in the corner for `ui.notice_seconds`, and a line in
-    /// the history behind the bell. `kind` is `info`, `warning` or `error`.
+    /// Tell the person something: a popup (gpui-kit's notification, for `ui.notice_seconds`) and
+    /// a line in the history behind the bell. `kind` is `info`, `warning` or `error`.
     pub fn push_note(&mut self, kind: impl Into<SharedString>, message: impl Into<SharedString>) {
         let level = crate::notifications::Level::from_kind(&kind.into());
+        let message = message.into().to_string();
         let now = chrono::Local::now();
         let (date, time) = (now.format("%Y-%m-%d").to_string(), now.format("%H:%M:%S").to_string());
-        let timeout = Duration::from_secs(u64::from(self.ui.notice_seconds));
-        self.notifier.push(level, message.into().to_string(), date, time, std::time::Instant::now(), timeout);
+        let id = self.notifier.push(level, message.clone(), date, time);
+        self.pending_toasts.push((id, level, message));
     }
 
-    /// The popups expire on a clock of their own, so they go even when nothing else happens.
+    /// Show what is waiting as popups, and take down the ones whose time has come. Popups need a
+    /// window to be pushed into, which `push_note` does not have, so a clock does this
+    /// (`start_notice_clock`). The component's own auto-hide is a fixed 5 s, so popups are pushed
+    /// without it and removed here at the configured time.
+    fn flush_toasts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::notifications::Level;
+        use gpui_kit::component::WindowExt as _;
+        use gpui_kit::component::notification::Notification;
+        let timeout = Duration::from_secs(u64::from(self.ui.notice_seconds));
+        let now = std::time::Instant::now();
+        let settings = self.settings_window;
+
+        for (id, level, message) in std::mem::take(&mut self.pending_toasts) {
+            let note = || {
+                let n = match level {
+                    Level::Error => Notification::error(message.clone()),
+                    Level::Warning => Notification::warning(message.clone()),
+                    Level::Info => Notification::info(message.clone()),
+                };
+                n.id1::<NoticeKind>(id as usize).autohide(false)
+            };
+            window.push_notification(note(), cx);
+            if let Some(h) = settings {
+                let _ = h.update(cx, |_, w, cx| w.push_notification(note(), cx));
+            }
+            self.live_toasts.push((id, now + timeout));
+        }
+
+        let (due, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.live_toasts).into_iter().partition(|(_, deadline)| *deadline <= now);
+        self.live_toasts = live;
+        for (id, _) in due {
+            window.remove_notification1::<NoticeKind>(id as usize, cx);
+            if let Some(h) = settings {
+                let _ = h.update(cx, |_, w, cx| w.remove_notification1::<NoticeKind>(id as usize, cx));
+            }
+        }
+    }
+
+    /// The clock that shows and takes down popups.
     fn start_notice_clock(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(250)).await;
-                let alive = this
-                    .update(cx, |app, cx| {
-                        if app.notifier.expire(std::time::Instant::now()) {
-                            cx.notify();
-                        }
-                    })
-                    .is_ok();
-                if !alive {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                if this.upgrade().is_none() {
                     break;
                 }
+                let main = cx.update(|cx| cx.try_global::<MainWindow>().cloned());
+                let Some(main) = main else { continue };
+                let _ = cx.update(|cx| {
+                    let _ = cx.update_window(main.handle, |_, window, cx| {
+                        if let Some(app) = main.app.upgrade() {
+                            app.update(cx, |app, cx| app.flush_toasts(window, cx));
+                        }
+                    });
+                });
             }
         })
         .detach();
-    }
-
-    pub fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.notifier.dismiss(id);
-        cx.notify();
     }
 
     /// Open the notification history, or close it if it is open.
@@ -1715,7 +1759,6 @@ impl Render for ReactorApp {
             .when_some(self.render_palette(cx), |el, palette| el.child(palette))
             .when_some(crate::inspect_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::notices_ui::history(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
-            .when_some(crate::notices_ui::toasts(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(notification_layer, |el, layer| el.child(layer))
             .when_some(dialog_layer, |el, layer| el.child(layer))
     }

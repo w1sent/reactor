@@ -14,7 +14,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::label::Label;
-use gpui_kit::component::marker::{Marker, MarkerContent, MarkerLoadingStyle};
+use gpui_kit::component::marker::{Marker, MarkerContent, MarkerIcon, MarkerLoadingStyle};
 use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::spinner::Spinner;
@@ -440,6 +440,14 @@ fn render_item(
                     )
                 })
         }
+        ChatItem::Stats { date, time, duration_ms, tokens, stream_ms } => {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            div()
+                .px_2()
+                .text_color(theme.muted_foreground)
+                .text_size(theme.font_size * 0.8)
+                .child(crate::session::stats_label(date, time, *duration_ms, *tokens, *stream_ms, &today))
+        }
         ChatItem::Error { message } => v_flex()
             .px_2()
             .child(
@@ -495,15 +503,16 @@ impl Render for TranscriptPanel {
         let (tool_family, tool_size) = ui.text(Slot::Tools, &theme);
         let (prompt_family, prompt_size) = ui.text(Slot::Prompt, &theme);
         let tool_style = ToolStyle { family: tool_family, size: tool_size, max_chars: ui.tool_output_chars };
-        let (items, hidden, phase, queued, last_error) = match self.app.upgrade() {
+        let (items, hidden, phase, scheduled, last_error, run) = match self.app.upgrade() {
             Some(app) => {
                 let session = app.read(cx).session.read(cx);
                 (
                     session.items.clone(),
                     session.hidden.clone(),
                     session.phase,
-                    session.follow_up.len(),
+                    session.follow_up.clone(),
                     session.last_error.clone(),
+                    session.run.as_ref().map(|r| (r.elapsed(std::time::Instant::now()), r.tokens())),
                 )
             }
             None => Default::default(),
@@ -610,10 +619,34 @@ impl Render for TranscriptPanel {
                     .with_loading_style(MarkerLoadingStyle::Shimmer)
                     .with_shimmer_style(ShimmerStyle::new().highlight_color(theme.foreground))
                     .text_color(theme.muted_foreground)
-                    .content(MarkerContent::new().text(label)),
+                    .content(MarkerContent::new().text(match run {
+                        // How long this prompt has run and what it has streamed so far.
+                        Some((elapsed, tokens)) if tokens > 0 => format!("{label} · {} · {tokens} tokens", crate::session::format_duration(elapsed.as_millis() as u64)),
+                        Some((elapsed, _)) => format!("{label} · {}", crate::session::format_duration(elapsed.as_millis() as u64)),
+                        None => label.to_string(),
+                    })),
             )
         });
-        let queue_label = (queued > 0).then(|| format!("{queued} queued"));
+        // Messages scheduled to run right after this prompt, each a marker: what they say, and
+        // (on hover) how to bring them back into the input.
+        let scheduled_markers: Vec<_> = scheduled
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let first = text.lines().next().unwrap_or("");
+                let shown: String = if first.chars().count() > 90 { first.chars().take(90).chain(std::iter::once('…')).collect() } else { first.to_string() };
+                crate::hints::tip(
+                    div().id(("scheduled", i)).px_3().py_1().child(
+                        Marker::new()
+                            .id(("scheduled-marker", i))
+                            .text_color(theme.muted_foreground)
+                            .icon(MarkerIcon::new().child(Icon::new(IconName::Clock).small()))
+                            .content(MarkerContent::new().text(format!("scheduled: {shown}"))),
+                    ),
+                    "Runs right after the current prompt. Press ↑ in the empty prompt to bring it back and change it.",
+                )
+            })
+            .collect();
 
         // The `/` completion popup, above the input: the ranked commands for what has been
         // typed. Keys (up/down/Enter/Tab/Esc) reach it through the `SlashPopup` key context.
@@ -665,13 +698,13 @@ impl Render for TranscriptPanel {
                             .tooltip(if phase == AgentPhase::Idle {
                                 "Enter sends · Shift+Enter starts a new line · / lists commands · Ctrl+P opens the palette"
                             } else {
-                                "The agent is working: Enter queues this as a follow-up for when it is done"
+                                "The agent is working: Enter schedules this to run right after, and ↑ in the empty prompt brings it back"
                             })
                             .primary()
                             .label(if phase == AgentPhase::Idle {
                                 "Send"
                             } else {
-                                "Follow up"
+                                "Schedule"
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(app) = this.app.upgrade() {
@@ -689,11 +722,7 @@ impl Render for TranscriptPanel {
                                     app.update(cx, |app, cx| app.interrupt(window, cx));
                                 }
                             })),
-                    )
-
-                    .when_some(queue_label, |el, label| {
-                        el.child(Label::new(label).text_color(cx.theme().accent))
-                    }),
+                    ),
             );
 
         let mut panel = v_flex()
@@ -705,7 +734,8 @@ impl Render for TranscriptPanel {
                     .font_family(body_family)
                     .text_size(body_size)
                     .child(div().flex_1().min_h_0().child(transcript))
-                    .children(running),
+                    .children(running)
+                    .children(scheduled_markers),
             )
             .child(composer);
 

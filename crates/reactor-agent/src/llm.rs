@@ -312,26 +312,45 @@ pub struct LlmSummarizer<L> {
 
 impl<L: Llm> crate::budget::Summarizer for LlmSummarizer<L> {
     async fn summarize(&self, req: crate::budget::SummaryRequest) -> Result<String> {
-        let reply = self
-            .llm
-            .complete(
-                LlmRequest {
-                    system: req.system,
-                    messages: vec![Msg::User { text: req.transcript }],
-                    tools: vec![],
-                    max_tokens: Some(req.max_tokens),
-                },
-                &mut |_| {},
-            )
-            .await?;
-        Ok(reply
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+        // The notes are asked to stay short (`req.max_tokens` is what the budget plans for), but
+        // the output limit is far wider: a reasoning model spends part of it thinking first, and
+        // with only the notes' length to spend it can end with thinking and no notes at all.
+        let system = format!("{} Keep the notes under about {} words.", req.system, req.max_tokens * 3 / 4);
+        let mut limit = req.max_tokens.saturating_mul(4).max(4096);
+        let mut attempt = 0;
+        loop {
+            let reply = self
+                .llm
+                .complete(
+                    LlmRequest { system: system.clone(), messages: vec![Msg::User { text: req.transcript.clone() }], tools: vec![], max_tokens: Some(limit) },
+                    &mut |_| {},
+                )
+                .await?;
+            let text = reply
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.trim().is_empty() {
+                return Ok(text);
+            }
+            let thinking: usize = reply.blocks.iter().map(|b| if let Block::Thinking { text, .. } = b { text.chars().count() } else { 0 }).sum();
+            // Only thinking: it ran out of room before the notes. Once more, with a lot more.
+            if thinking > 0 && attempt == 0 {
+                attempt += 1;
+                limit = limit.saturating_mul(3);
+                continue;
+            }
+            let what = if thinking > 0 { format!("only thinking ({thinking} characters) and no notes") } else { "nothing at all".to_string() };
+            let cost = reply.usage.map(|u| format!(", {} output tokens", u.output_tokens)).unwrap_or_default();
+            return Err(crate::error::Error::Model(format!(
+                "the summarizer returned {what} (stop: {}{cost}). If the model has a small context window, the text to summarize may not have fitted: set the window and reserve in Settings → Context",
+                reply.stop.as_deref().unwrap_or("unknown")
+            )));
+        }
     }
 }

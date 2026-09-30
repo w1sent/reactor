@@ -8,6 +8,7 @@
 //! a resumed session and a live one build the same rows (SPEC.md §2).
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use reactor_agent::agent::Event;
 use reactor_agent::context::{SessionState, active_reductions, hidden_by};
@@ -31,6 +32,90 @@ pub enum ChatItem {
     Reduction { entry: u64, mode: String, trigger: String, covers: usize, before: u64, after: u64, active: bool, summary: Option<String> },
     /// Something went wrong that the person should see.
     Error { message: String },
+    /// What a finished prompt cost: when it finished, how long it took, what it streamed.
+    Stats { date: String, time: String, duration_ms: u64, tokens: u64, stream_ms: u64 },
+}
+
+/// The key of the log entry a finished prompt's statistics are kept under.
+pub const STATS_KEY: &str = "turn_stats";
+
+/// The prompt that is running now: when it began, and what it has streamed so far.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Run {
+    started: Instant,
+    /// Output tokens the provider has reported for finished rounds.
+    reported_tokens: u64,
+    /// Characters streamed in the round in flight, which the provider has not counted yet.
+    round_chars: u64,
+    /// When the round in flight began and last streamed.
+    round_span: Option<(Instant, Instant)>,
+    /// Time spent streaming in finished rounds.
+    streamed: Duration,
+}
+
+impl Run {
+    pub fn new(now: Instant) -> Run {
+        Run { started: now, reported_tokens: 0, round_chars: 0, round_span: None, streamed: Duration::ZERO }
+    }
+
+    /// Some text or thinking streamed in.
+    pub fn delta(&mut self, chars: usize, now: Instant) {
+        self.round_chars += chars as u64;
+        self.round_span = Some(match self.round_span {
+            Some((first, _)) => (first, now),
+            None => (now, now),
+        });
+    }
+
+    /// The provider reported a finished round's output tokens: its count replaces the estimate.
+    pub fn usage(&mut self, output_tokens: u64) {
+        self.reported_tokens += output_tokens;
+        self.round_chars = 0;
+        if let Some((first, last)) = self.round_span.take() {
+            self.streamed += last - first;
+        }
+    }
+
+    /// Tokens streamed so far: the provider's count for finished rounds, and four characters to
+    /// a token for the round in flight.
+    pub fn tokens(&self) -> u64 {
+        self.reported_tokens + self.round_chars.div_ceil(4)
+    }
+
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started)
+    }
+
+    /// Time spent actually streaming: what tokens per second is measured over, so a long tool
+    /// run does not make the model look slow.
+    pub fn stream_time(&self) -> Duration {
+        self.streamed + self.round_span.map(|(first, last)| last - first).unwrap_or_default()
+    }
+}
+
+/// `850ms`, `12s`, `1m 12s`, `1h 02m`.
+pub fn format_duration(ms: u64) -> String {
+    let secs = ms / 1000;
+    match secs {
+        0 => format!("{ms}ms"),
+        1..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
+        _ => format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60),
+    }
+}
+
+/// The line under a finished prompt. The date is added for a prompt from another day.
+pub fn stats_label(date: &str, time: &str, duration_ms: u64, tokens: u64, stream_ms: u64, today: &str) -> String {
+    let mut out = format!("finished {}{time} · took {}", if date == today { String::new() } else { format!("{date} ") }, format_duration(duration_ms));
+    if tokens > 0 {
+        out.push_str(&format!(" · {tokens} tokens"));
+        // Over the time spent streaming when there is enough of it to measure, else the whole.
+        let over = if stream_ms >= 200 { stream_ms } else { duration_ms };
+        if over > 0 {
+            out.push_str(&format!(" · {:.1} tokens/s", tokens as f64 * 1000.0 / over as f64));
+        }
+    }
+    out
 }
 
 /// Where in the turn cycle the agent is — drives the composer's mode (send vs queue) and
@@ -62,6 +147,8 @@ pub struct Session {
     pub context_percent: Option<u64>,
     pub phase: AgentPhase,
     pub last_error: Option<String>,
+    /// The prompt running now.
+    pub run: Option<Run>,
     // -- live, not yet in the store --
     live_text: String,
     live_thinking: String,
@@ -136,6 +223,11 @@ impl Session {
                     active: active.contains(&e.id),
                     summary: r.summary.clone(),
                 }),
+                Kind::Custom { key, data } if key == STATS_KEY => {
+                    let text = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                    let number = |k: &str| data.get(k).and_then(Value::as_u64).unwrap_or(0);
+                    self.items.push(ChatItem::Stats { date: text("date"), time: text("time"), duration_ms: number("duration_ms"), tokens: number("tokens"), stream_ms: number("stream_ms") });
+                }
                 Kind::Session { .. } | Kind::Custom { .. } | Kind::Restore { .. } | Kind::Label { .. } => {}
             }
             if hidden.contains_key(&e.id) {
@@ -156,6 +248,9 @@ impl Session {
     pub fn apply(&mut self, event: &Event, store: &Store) {
         match event {
             Event::Text(delta) => {
+                if let Some(run) = &mut self.run {
+                    run.delta(delta.chars().count(), Instant::now());
+                }
                 self.live_text.push_str(delta);
                 match self.items.last_mut() {
                     Some(ChatItem::AssistantText { text, streaming: true }) => text.push_str(delta),
@@ -163,6 +258,9 @@ impl Session {
                 }
             }
             Event::Thinking(delta) => {
+                if let Some(run) = &mut self.run {
+                    run.delta(delta.chars().count(), Instant::now());
+                }
                 self.live_thinking.push_str(delta);
                 match self.items.iter_mut().rev().find(|i| matches!(i, ChatItem::Thinking { streaming: true, .. })) {
                     Some(ChatItem::Thinking { text, .. }) => text.push_str(delta),
@@ -193,7 +291,12 @@ impl Session {
                 self.live_thinking.clear();
                 self.live_tools.clear();
             }
-            Event::ToolCallStarted { .. } | Event::ToolStart { .. } | Event::ToolEnd { .. } | Event::Usage(_) | Event::Reduced { .. } | Event::Notice(_) => {}
+            Event::Usage(usage) => {
+                if let Some(run) = &mut self.run {
+                    run.usage(usage.output_tokens);
+                }
+            }
+            Event::ToolCallStarted { .. } | Event::ToolStart { .. } | Event::ToolEnd { .. } | Event::Reduced { .. } | Event::Notice(_) => {}
         }
     }
 
@@ -395,5 +498,58 @@ mod tests {
         assert_eq!(items[0].1, "◎ crack the license check · 1 step");
         assert_eq!(items[1].1, "@ publisher");
         assert_eq!(items[2].1, "¶ reporting · strict");
+    }
+
+    #[test]
+    fn durations_read_naturally() {
+        assert_eq!(format_duration(850), "850ms");
+        assert_eq!(format_duration(12_400), "12s");
+        assert_eq!(format_duration(72_000), "1m 12s");
+        assert_eq!(format_duration(3_720_000), "1h 02m");
+    }
+
+    #[test]
+    fn a_run_counts_the_providers_tokens_for_finished_rounds_and_estimates_the_one_in_flight() {
+        let t0 = Instant::now();
+        let mut run = Run::new(t0);
+        run.delta(400, t0 + Duration::from_secs(1));
+        assert_eq!(run.tokens(), 100, "four characters to a token until the provider says");
+        run.usage(120);
+        assert_eq!(run.tokens(), 120, "the provider's count replaces the estimate");
+        run.delta(40, t0 + Duration::from_secs(5));
+        assert_eq!(run.tokens(), 130, "and the next round is estimated on top");
+        assert_eq!(run.elapsed(t0 + Duration::from_secs(9)), Duration::from_secs(9));
+    }
+
+    #[test]
+    fn streaming_time_leaves_out_the_time_between_rounds() {
+        let t0 = Instant::now();
+        let mut run = Run::new(t0);
+        run.delta(10, t0 + Duration::from_secs(1));
+        run.delta(10, t0 + Duration::from_secs(3));
+        run.usage(5); // the round streamed for 2 s
+        // a tool ran for a minute, then a second round streamed for 1 s
+        run.delta(10, t0 + Duration::from_secs(63));
+        run.delta(10, t0 + Duration::from_secs(64));
+        assert_eq!(run.stream_time(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn the_annotation_says_when_how_long_and_how_fast() {
+        let line = stats_label("2026-10-01", "14:03:12", 72_000, 850, 25_000, "2026-10-01");
+        assert_eq!(line, "finished 14:03:12 · took 1m 12s · 850 tokens · 34.0 tokens/s");
+        let other_day = stats_label("2026-09-30", "23:59:01", 5_000, 0, 0, "2026-10-01");
+        assert_eq!(other_day, "finished 2026-09-30 23:59:01 · took 5s", "the date for another day, and no rate without tokens");
+    }
+
+    #[test]
+    fn a_stats_entry_in_the_log_becomes_a_row_after_the_reply() {
+        let (_d, mut s) = store();
+        s.append(Kind::User { text: "go".into() }).unwrap();
+        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "done".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::Custom { key: STATS_KEY.into(), data: json!({"date": "2026-10-01", "time": "14:03:12", "duration_ms": 5000, "tokens": 40, "stream_ms": 2000}) }).unwrap();
+        let mut session = Session::new();
+        session.rebuild(&s);
+        assert!(matches!(session.items.last(), Some(ChatItem::Stats { tokens: 40, duration_ms: 5000, .. })), "{:?}", session.items);
     }
 }

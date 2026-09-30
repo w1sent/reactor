@@ -135,8 +135,10 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
     render collapsed; tool calls are cards (name, args, streamed output,
     result, error state). Reductions render as cards with *undo*; rows a
     reduction hides from the model are dimmed.
-  - Composer: multi-line text area. `Enter` sends (or queues a follow-up while
-    the agent works); `Shift+Enter` newline; `Esc` interrupts; an explicit
+  - Composer: multi-line text area. `Enter` sends (or, while the agent works,
+    *schedules* the message to run right after the current prompt: each scheduled message shows as a
+    marker at the foot of the transcript, and `↑` in the empty prompt brings the latest one back into
+    the input to change and send again); `Shift+Enter` newline; `Esc` interrupts; an explicit
     Interrupt button cancels the turn. `↑` with the cursor on the prompt's top line puts the previous message you sent into the input (the text that was there is kept), and `↓` on the bottom line moves forward again, ending on that text; anywhere else the arrows just move the cursor. So an interrupted message is one `↑` away, ready to edit and send again. `/`-commands (`COMMANDS` in `app.rs`) run
     in the app. The model picker is in the status bar; context % is measured from
     the request the agent would send next.
@@ -238,6 +240,17 @@ a setting is changed, where something is saved — is a **tooltip** on the eleme
 (`hints::tip`), or, where there is nothing to hover (a heading, a whole popup), an **(i) button**
 that opens the text when clicked (`hints::info_button`). Empty states, errors and confirmations are
 feedback, not commentary, and stay as short text.
+
+### 6.0d Timing a prompt
+
+While a prompt runs, the marker at the foot of the transcript also shows how long it has been
+running and how many tokens it has streamed so far: the provider's own count for each finished model
+round, and four characters to a token for the round still streaming. When the prompt finishes, a line
+under its result says when it finished, how long it took, how many tokens it streamed and at what rate
+(`finished 14:03:12 · took 1m 12s · 850 tokens · 34.0 tokens/s`; the date is added for another day).
+The rate is measured over the time spent streaming, so a long tool run does not make the model look
+slow. The line is kept in the session log (`turn_stats`), so a resumed session shows it too. A prompt
+that was interrupted or failed is not annotated.
 
 ### 6.0c Notifications
 

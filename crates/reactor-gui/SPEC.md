@@ -266,7 +266,7 @@ its **source**: the base prompt, identity, tool registry, skills, manifest, repo
 scenario phase, the tool definitions, then the messages — yours, the model's, tool results,
 reduction stand-ins and any reporting reminder. The chips above the list total the estimated tokens
 per source and filter by it; the (i) beside a piece says where it comes from and how to change it.
-*Copy all* puts the whole request on the clipboard.
+*Copy all* puts the whole request on the clipboard. The popup is gpui-kit's dialog (the library draws the backdrop, handles focus and closes on Esc or a click outside).
 
 ### 6.0 Commands: the palette and the `/` popup
 

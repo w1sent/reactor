@@ -65,8 +65,6 @@ actions!(
         ClosePalette,
         /// Open the settings window (Cmd+, / Ctrl+,, or the Commands menu).
         OpenSettings,
-        /// Esc in the context-window popup.
-        CloseInspect,
         /// Esc in the notification history.
         CloseNotices,
         /// Up in the prompt, on its top line: the previous message you sent.
@@ -194,7 +192,6 @@ pub fn bind_keys(cx: &mut App) {
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-p", OpenPalette, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
-        KeyBinding::new("escape", CloseInspect, Some("ReactorInspect")),
         KeyBinding::new("escape", CloseNotices, Some("ReactorNotices")),
         // The prompt: up on its top line and down on its bottom line walk through the messages
         // sent before; anywhere else the handlers decline and the input moves its cursor.
@@ -853,9 +850,11 @@ impl ReactorApp {
 
     // -- the context window ------------------------------------------------------------------
 
-    /// Open the context-window popup, or close it if it is open.
+    /// Open the context-window popup, or close it if it is open. It is gpui-kit's dialog: the
+    /// library draws the backdrop, handles focus, and closes on Esc or a click outside.
     pub fn toggle_inspect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.inspect.is_some() {
+        use gpui_kit::component::WindowExt as _;
+        if self.inspect.is_some() && window.has_active_dialog(cx) {
             self.close_inspect(window, cx);
             return;
         }
@@ -863,16 +862,22 @@ impl ReactorApp {
             self.push_note("error", "the agent is not running");
             return;
         };
-        self.palette = None;
-        let focus = cx.focus_handle();
-        self.inspect = Some(crate::inspect_ui::InspectUi { data: None, loading: true, error: None, selected: 0, filter: None, focus: focus.clone() });
+        self.inspect = Some(crate::inspect_ui::InspectUi { data: None, loading: true, error: None, selected: 0, filter: None });
         backend.inspect();
-        // After this frame renders: a view that is not in the tree yet cannot take focus.
-        window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            let weak = weak.clone();
+            let height = window.viewport_size().height * 0.72;
+            dialog.w(px(1040.)).margin_top(px(32.)).close_button(false).content(move |content, _window, cx| content.child(crate::inspect_ui::view(&weak, height, cx)))
+        });
         cx.notify();
     }
 
     pub fn close_inspect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        if window.has_active_dialog(cx) {
+            window.close_dialog(cx);
+        }
         if self.inspect.take().is_some() {
             self.composer.update(cx, |state, cx| state.focus(window, cx));
             cx.notify();
@@ -1726,7 +1731,6 @@ impl Render for ReactorApp {
             .on_action(cx.listener(|this, _: &SlashAccept, window, cx| this.accept_slash(window, cx)))
             .on_action(cx.listener(|this, _: &SlashDismiss, _window, cx| this.slash_dismiss(cx)))
             .on_action(cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &CloseInspect, window, cx| this.close_inspect(window, cx)))
             .on_action(cx.listener(|this, _: &CloseNotices, window, cx| this.close_notices(window, cx)))
             .on_action(cx.listener(|this, _: &ComposerEsc, window, cx| {
                 // Esc closes the palette wherever focus is — this is the handler every Esc
@@ -1740,10 +1744,6 @@ impl Render for ReactorApp {
                         return;
                     }
                     this.palette = None;
-                }
-                if this.inspect.is_some() {
-                    this.close_inspect(window, cx);
-                    return;
                 }
                 if this.notices.is_some() {
                     this.close_notices(window, cx);
@@ -1761,7 +1761,6 @@ impl Render for ReactorApp {
             ))
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
-            .when_some(crate::inspect_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::notices_ui::history(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(notification_layer, |el, layer| el.child(layer))
             .when_some(dialog_layer, |el, layer| el.child(layer))

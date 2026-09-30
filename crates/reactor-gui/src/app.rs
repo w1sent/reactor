@@ -246,7 +246,7 @@ impl ReactorApp {
             TextareaState::new(window, cx)
                 .auto_grow(1, 8)
                 .submit_on_enter(true)
-                .placeholder("Prompt — Enter sends (queues while the agent works), Shift+Enter newline, / for commands, Ctrl+P palette")
+                .placeholder("Prompt…")
         });
         let cwd = args.cwd.clone();
 
@@ -1342,9 +1342,6 @@ impl ReactorApp {
         for (_, text) in &statuses {
             left = left.child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child(text.clone()));
         }
-        if statuses.is_empty() {
-            left = left.child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child("no goal, identity or scenario set — /help"));
-        }
 
         let models = self.models.clone();
         let mut right = h_flex().gap_2().items_center();
@@ -1404,7 +1401,7 @@ impl ReactorApp {
         let commands = PaletteList::new(&list)
             .filterable(false)
             .items(items)
-            .placeholder("Type a command — Enter runs it, Esc closes")
+            .placeholder("Type a command")
             .max_h(px(380.))
             .on_query(move |query, _window, cx| {
                 on_query.update(cx, |app, cx| app.palette_query(query, cx)).ok();

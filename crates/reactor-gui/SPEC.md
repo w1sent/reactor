@@ -231,6 +231,14 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
   lists; invoking sends the `/command` through `prompt`.
 - **Dialogs**: native modals for `select/confirm/input/editor`.
 
+### 6.0 Explaining without clutter
+
+The window carries data and controls, not prose. Anything that *explains* — what a bar means, how
+a setting is changed, where something is saved — is a **tooltip** on the element it is about
+(`hints::tip`), or, where there is nothing to hover (a heading, a whole popup), an **(i) button**
+that opens the text when clicked (`hints::info_button`). Empty states, errors and confirmations are
+feedback, not commentary, and stay as short text.
+
 ### 6.0 Commands: the palette and the `/` popup
 
 Every user-facing feature is a **slash command** — `ReactorApp::run_command` is the one

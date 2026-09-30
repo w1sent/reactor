@@ -76,11 +76,6 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
 
     // -- fonts --
     let mut fonts = v_flex().gap_2();
-    fonts = fonts.child(
-        Label::new("Family is an installed font's name; empty is the default. Size is in pixels.")
-            .text_color(muted)
-            .text_size(small),
-    );
     for (slot, input) in &state.inputs {
         let slot = *slot;
         let (_, effective) = ui.text(slot, &theme);
@@ -100,16 +95,21 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
                 .gap_2()
                 .items_center()
                 .child(div().w(px(190.)).child(Label::new(slot.label())))
-                .child(div().flex_1().child(Input::new(input)))
+                .child(crate::hints::tip(
+                    div().id(("font-family", slot as usize)).flex_1().child(Input::new(input)),
+                    "An installed font's name, then Enter. Empty is the default.",
+                ))
                 .child(Button::new(("size-minus", slot as usize)).label("−").small().on_click(step(-1.0, w_minus)))
-                .child(
+                .child(crate::hints::tip(
                     div()
+                        .id(("font-size", slot as usize))
                         .w(px(34.))
                         .flex()
                         .justify_center()
                         .text_color(if chosen { theme.foreground } else { muted })
                         .child(format!("{}", f32::from(effective).round())),
-                )
+                    if chosen { "Size in pixels" } else { "Size in pixels — the default" },
+                ))
                 .child(Button::new(("size-plus", slot as usize)).label("+").small().on_click(step(1.0, w_plus)))
                 .child(Button::new(("font-reset", slot as usize)).label("reset").small().ghost().on_click(move |_, window, cx| {
                     w_reset.update(cx, |app, cx| app.reset_font(slot, window, cx)).ok();
@@ -162,11 +162,13 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
             h_flex()
                 .gap_2()
                 .items_center()
-                .child(div().w(px(260.)).child(Label::new("Tool output shown in the transcript (characters)")))
+                .child(crate::hints::tip(
+                    div().id("output-label").w(px(260.)).child(Label::new("Tool output shown in the transcript (characters)")),
+                    "Only what the transcript shows is cut. The session log keeps all of it.",
+                ))
                 .child(Button::new("output-less").label("−").small().on_click(output_step(false, w_less)))
                 .child(div().w(px(56.)).flex().justify_center().child(format!("{output}")))
-                .child(Button::new("output-more").label("+").small().on_click(output_step(true, w_more)))
-                .child(Label::new("the session keeps it all").text_color(muted).text_size(small)),
+                .child(Button::new("output-more").label("+").small().on_click(output_step(true, w_more))),
         )
         .child(h_flex().gap_2().items_center().child(div().w(px(260.)).child(Label::new("Layout a window opens with"))).child(layouts));
 
@@ -208,7 +210,15 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
             h_flex()
                 .justify_between()
                 .items_center()
-                .child(Label::new("Settings").text_size(theme.font_size * 1.3))
+                .child(
+                    h_flex().gap_1().items_center().child(Label::new("Settings").text_size(theme.font_size * 1.3)).child(crate::hints::info_button(
+                        "settings-info",
+                        match state.tab {
+                            Tab::Model => "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is in the Context panel and `/context`.",
+                            _ => "Saved in ~/.reactor/gui.json, as you change them. The agent's own settings — models, the context budget — are under Model, in the Context panel, and `/context`.",
+                        },
+                    )),
+                )
                 .child(
                     h_flex()
                         .gap_2()
@@ -231,15 +241,7 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
         )
         .child(tabs)
         .child(body)
-        .children(state.notice.clone().map(|n| Label::new(n).text_color(theme.accent).text_size(small)))
-        .child(
-            Label::new(match state.tab {
-                Tab::Model => "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is in the Context panel and `/context`.",
-                _ => "Saved in ~/.reactor/gui.json. The agent's own settings — models, the context budget — are under Model, the Context panel and `/context`.",
-            })
-            .text_color(muted)
-            .text_size(small),
-        );
+        .children(state.notice.clone().map(|n| Label::new(n).text_color(theme.accent).text_size(small)));
 
     Some(
         div()
@@ -282,12 +284,12 @@ fn model_tab(state: &SettingsUi, weak: &gpui_kit::WeakEntity<ReactorApp>, theme:
         );
     }
     let variable = key_variable(&state.provider);
-    let key_line = if state.provider == "ollama" {
-        format!("{} runs locally; {variable} overrides its address.", state.provider)
+    let (key_text, key_ok, key_help) = if state.provider == "ollama" {
+        ("local".to_string(), true, format!("Ollama runs on this machine and needs no key. {variable} overrides its address."))
     } else if std::env::var_os(variable).is_some() {
-        format!("{variable} is set.")
+        (format!("{variable} set"), true, format!("REactor reads the key from {variable} in the environment; it is never stored."))
     } else {
-        format!("{variable} is not set — REactor reads the key from the environment, so set it before starting the GUI.")
+        (format!("{variable} not set"), false, format!("REactor reads the key from {variable} in the environment and never stores it. Set it before starting the GUI."))
     };
 
     let action = |id: &'static str, label: &'static str, weak: gpui_kit::WeakEntity<ReactorApp>, run: fn(&mut ReactorApp, &mut Context<ReactorApp>)| {
@@ -298,7 +300,7 @@ fn model_tab(state: &SettingsUi, weak: &gpui_kit::WeakEntity<ReactorApp>, theme:
 
     let mut listed = v_flex().gap_1();
     if state.models.is_empty() {
-        listed = listed.child(Label::new("none — the picker offers only the current model").text_color(muted).text_size(small));
+        listed = listed.child(Label::new("none").text_color(muted).text_size(small));
     }
     for spec in &state.models {
         let (w_use, w_default, w_remove) = (weak.clone(), weak.clone(), weak.clone());
@@ -337,11 +339,14 @@ fn model_tab(state: &SettingsUi, weak: &gpui_kit::WeakEntity<ReactorApp>, theme:
                 .gap_2()
                 .items_center()
                 .child(Label::new("Default model").text_color(muted))
-                .child(div().font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).child(state.default_model.clone().unwrap_or_else(|| "none — pick one in the status bar each time".into()))),
+                .child(div().font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).child(state.default_model.clone().unwrap_or_else(|| "none".into()))),
         )
         .child(Label::new("Provider").text_color(muted).text_size(small))
         .child(providers)
-        .child(Label::new(key_line).text_color(muted).text_size(small))
+        .child(crate::hints::tip(
+            div().id("key-status").text_color(if key_ok { muted } else { theme.warning }).text_size(small).child(key_text),
+            key_help,
+        ))
         .child(Label::new("Model name").text_color(muted).text_size(small))
         .child(Input::new(&state.model_input))
         .child(

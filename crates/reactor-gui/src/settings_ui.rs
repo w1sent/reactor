@@ -140,6 +140,18 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
             .ok();
         }
     };
+    let (w_notice_less, w_notice_more) = (weak.clone(), weak.clone());
+    let notice_step = move |up: bool, weak: gpui_kit::WeakEntity<ReactorApp>| {
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            weak.update(cx, |app, cx| {
+                let now = app.ui.notice_seconds;
+                let step = if now < 10 { 1 } else { 5 };
+                let next = if up { now + step } else { now.saturating_sub(step) };
+                app.update_ui(|ui| ui.notice_seconds = next, cx);
+            })
+            .ok();
+        }
+    };
     let mut layouts = h_flex().gap_1();
     for preset in LayoutPreset::ALL {
         let active = ui.start_layout() == preset;
@@ -169,6 +181,18 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
                 .child(Button::new("output-less").label("−").small().on_click(output_step(false, w_less)))
                 .child(div().w(px(56.)).flex().justify_center().child(format!("{output}")))
                 .child(Button::new("output-more").label("+").small().on_click(output_step(true, w_more))),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(crate::hints::tip(
+                    div().id("notice-label").w(px(260.)).child(Label::new("Notification popups stay (seconds)")),
+                    "Every notification is also kept behind the bell in the title bar.",
+                ))
+                .child(Button::new("notice-less").label("−").small().on_click(notice_step(false, w_notice_less)))
+                .child(div().w(px(56.)).flex().justify_center().child(format!("{}", ui.notice_seconds)))
+                .child(Button::new("notice-more").label("+").small().on_click(notice_step(true, w_notice_more))),
         )
         .child(h_flex().gap_2().items_center().child(div().w(px(260.)).child(Label::new("Layout a window opens with"))).child(layouts));
 

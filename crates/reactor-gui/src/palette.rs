@@ -91,6 +91,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::fixed("layout", "Window", Required, "Apply a window layout", "/layout default | focus | analysis | catalogue"),
         Entry::fixed("dock", "Window", Required, "Show or hide a dock", "/dock left | right | bottom"),
         Entry::fixed("console", "Window", Optional, "Open a console", "/console [command]"),
+        Entry::fixed("notifications", "Window", None, "Show notifications", "the history behind the bell, newest first"),
         Entry::fixed("palette", "Window", None, "Open the command palette", "Ctrl+P / Cmd+P"),
         Entry::fixed("settings", "Window", None, "Settings: fonts, sizes and behaviour", "Ctrl+, / Cmd+,"),
         Entry::fixed("quit", "Window", None, "Quit REactor", "closes the window"),

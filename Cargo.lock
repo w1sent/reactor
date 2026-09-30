@@ -5830,6 +5830,7 @@ name = "reactor-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "gpui-kit",
  "portable-pty",
  "reactor-agent",

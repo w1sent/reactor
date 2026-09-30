@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{Entity, MouseButton, SharedString, div, px};
@@ -24,16 +24,20 @@ pub enum Tab {
     Fonts,
     Behaviour,
     Model,
+    Context,
+    Tools,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Fonts, Tab::Behaviour, Tab::Model];
+    pub const ALL: [Tab; 5] = [Tab::Fonts, Tab::Behaviour, Tab::Model, Tab::Context, Tab::Tools];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Fonts => "Fonts",
             Tab::Behaviour => "Behaviour",
             Tab::Model => "Model",
+            Tab::Context => "Context",
+            Tab::Tools => "Tools",
         }
     }
 }
@@ -53,6 +57,53 @@ pub struct SettingsUi {
     /// What `settings.json` holds now: the default model, and the picker's list.
     pub default_model: Option<String>,
     pub models: Vec<String>,
+    /// The context tab: which layer it edits, that layer as stored, and a field per number.
+    pub context_scope: ContextScope,
+    pub context_layer: reactor_context::settings::ContextSettings,
+    pub context_inputs: Vec<(CtxField, Entity<InputState>)>,
+}
+
+/// Which layer of the context settings the Context tab edits (ADR-0038).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextScope {
+    /// `settings.json`: what every new session starts with.
+    Default,
+    /// This session only.
+    Session,
+}
+
+/// The context settings that are typed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtxField {
+    Window,
+    Reserve,
+    Pct,
+    Keep,
+    Summarizer,
+}
+
+impl CtxField {
+    pub const ALL: [CtxField; 5] = [CtxField::Window, CtxField::Reserve, CtxField::Pct, CtxField::Keep, CtxField::Summarizer];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CtxField::Window => "Context window",
+            CtxField::Reserve => "Reserve",
+            CtxField::Pct => "Reduce at",
+            CtxField::Keep => "Keep",
+            CtxField::Summarizer => "Summarizer",
+        }
+    }
+
+    pub fn help(self) -> &'static str {
+        match self {
+            CtxField::Window => "In tokens: how much the model can take in. Not asked of the provider: set it for your model. Accepts 200000 or 200k.",
+            CtxField::Reserve => "In tokens: headroom kept free for the model's reply. Usable context is the window minus this. 8000 or 8k.",
+            CtxField::Pct => "In percent of the usable window, 1–100: a reduction starts once the context passes this share.",
+            CtxField::Keep => "In percent of the usable window, 1–99: a reduction goes down to this share, keeping the newest work.",
+            CtxField::Summarizer => "The model that writes summaries, as provider/name. Empty: the session's own model.",
+        }
+    }
 }
 
 /// The environment variable each provider's key is read from.
@@ -210,13 +261,34 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
                 }),
         );
     }
+    let (w_fonts, w_behaviour) = (weak.clone(), weak.clone());
+    let fonts = fonts.child(
+        Button::new("fonts-reset")
+            .label("Reset fonts")
+            .small()
+            .tooltip("Every font and size on this tab goes back to the theme's own")
+            .on_click(move |_, window, cx| {
+                w_fonts.update(cx, |app, cx| app.reset_fonts(window, cx)).ok();
+            }),
+    );
+    let behaviour = behaviour.child(
+        Button::new("behaviour-reset")
+            .label("Reset behaviour")
+            .small()
+            .tooltip("Every option on this tab goes back to its standard value")
+            .on_click(move |_, _window, cx| {
+                w_behaviour.update(cx, |app, cx| app.reset_behaviour(cx)).ok();
+            }),
+    );
     let body = match state.tab {
         Tab::Fonts => fonts.into_any_element(),
         Tab::Behaviour => behaviour.into_any_element(),
+        Tab::Tools => tools_tab(app, &weak),
         Tab::Model => model,
+        Tab::Context => context_tab(app, state, &weak, &theme),
     };
 
-    let (w_all, w_close, w_scrim, w_promote) = (weak.clone(), weak.clone(), weak.clone(), weak);
+    let (w_close, w_scrim) = (weak.clone(), weak.clone());
     let card = v_flex()
         .id("settings-card")
         .w(px(720.))
@@ -238,26 +310,16 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
                     h_flex().gap_1().items_center().child(Label::new("Settings").text_size(theme.font_size * 1.3)).child(crate::hints::info_button(
                         "settings-info",
                         match state.tab {
-                            Tab::Model => "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is in the Context panel and `/context`.",
-                            _ => "Saved in ~/.reactor/gui.json, as you change them. The agent's own settings — models, the context budget — are under Model, in the Context panel, and `/context`.",
+                            Tab::Model => "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is on the Context tab.",
+                Tab::Context => "The default is saved in ~/.reactor/settings.json; a session's own values are kept in that session. Each value is used from the first place that sets it: this session, then the default, then a built-in guess.",
+                            Tab::Tools => "Activation is kept per session, with the machine default in ~/.reactor/state.json.",
+                            _ => "Saved in ~/.reactor/gui.json, as you change them, for every session. The agent's own settings are on the Model and Context tabs.",
                         },
                     )),
                 )
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(
-                            Button::new("settings-promote")
-                                .label("Make current settings the default")
-                                .small()
-                                .tooltip("This session's model, context settings and tool activation become what new sessions start with. Fonts and behaviour here are already saved for every session.")
-                                .on_click(move |_, _window, cx| {
-                                    w_promote.update(cx, |app, cx| app.promote_session(cx)).ok();
-                                }),
-                        )
-                        .child(Button::new("settings-reset-all").label("Reset fonts and behaviour").small().on_click(move |_, window, cx| {
-                            w_all.update(cx, |app, cx| app.reset_ui(window, cx)).ok();
-                        }))
                         .child(Button::new("settings-close").label("Close").small().primary().on_click(move |_, window, cx| {
                             w_close.update(cx, |app, cx| app.close_settings(window, cx)).ok();
                         })),
@@ -379,7 +441,19 @@ fn model_tab(state: &SettingsUi, weak: &gpui_kit::WeakEntity<ReactorApp>, theme:
                 .child(action("model-default", "Set as default", weak.clone(), |app, cx| app.set_typed_model(ModelUse::Default, cx)))
                 .child(action("model-now", "Use in this session", weak.clone(), |app, cx| app.set_typed_model(ModelUse::Now, cx)))
                 .child(action("model-list", "Add to picker list", weak.clone(), |app, cx| app.set_typed_model(ModelUse::List, cx)))
-                .child(action("model-clear", "Clear default", weak.clone(), |app, cx| app.set_default_model(None, cx))),
+                .child(action("model-clear", "Clear default", weak.clone(), |app, cx| app.set_default_model(None, cx)))
+                .child(
+                    Button::new("model-promote")
+                        .label("Make session model the default")
+                        .small()
+                        .tooltip("The model this session is using now becomes the default for new sessions")
+                        .on_click({
+                            let weak = weak.clone();
+                            move |_, _window, cx| {
+                                weak.update(cx, |app, cx| app.promote_model(cx)).ok();
+                            }
+                        }),
+                ),
         )
         .child(Label::new("Models in the picker").text_color(muted).text_size(small))
         .child(listed)
@@ -392,4 +466,148 @@ pub enum ModelUse {
     Default,
     Now,
     List,
+}
+
+/// The Context tab: the budget settings of the agent, for the default or for this session.
+fn context_tab(app: &ReactorApp, state: &SettingsUi, weak: &gpui_kit::WeakEntity<ReactorApp>, theme: &gpui_kit::component::Theme) -> gpui_kit::AnyElement {
+    let muted = theme.muted_foreground;
+    let layer = &state.context_layer;
+    let session = state.context_scope == ContextScope::Session;
+
+    let mut scope = h_flex().gap_1().items_center().child(Label::new("Edit").text_color(muted)).child(crate::hints::info_button(
+        "ctx-info",
+        if session {
+            "These values apply to this session only. An empty field uses the default; the grey value in it is what this session uses now."
+        } else {
+            "These values are the default for new sessions. An empty field uses a built-in guess for the provider; the grey value in it is what this session uses now."
+        },
+    ));
+    for (label, which) in [("Default for new sessions", ContextScope::Default), ("This session only", ContextScope::Session)] {
+        let weak = weak.clone();
+        scope = scope.child(
+            Button::new(SharedString::from(format!("ctx-scope-{label}")))
+                .label(label)
+                .small()
+                .when(state.context_scope == which, |b| b.primary())
+                .on_click(move |_, window, cx| {
+                    weak.update(cx, |app, cx| app.context_scope(which, window, cx)).ok();
+                }),
+        );
+    }
+
+    // -- mode --
+    let mut modes = h_flex().gap_1().items_center();
+    for mode in reactor_context::settings::CONTEXT_MODES {
+        let weak = weak.clone();
+        modes = modes.child(
+            Button::new(SharedString::from(format!("ctx-mode-{mode}")))
+                .label(mode)
+                .small()
+                .when(layer.mode.as_deref() == Some(mode), |b| b.primary())
+                .on_click(move |_, _w, cx| {
+                    weak.update(cx, |app, cx| app.context_set_mode(Some(mode), cx)).ok();
+                }),
+        );
+    }
+    let w_mode = weak.clone();
+    let effective = app.context.as_ref().map(|c| c.mode.clone()).unwrap_or_default();
+    let mode_row = h_flex()
+        .gap_2()
+        .items_center()
+        .child(crate::hints::tip(
+            div().id("ctx-mode-label").w(px(250.)).child(Label::new("Reduction mode")),
+            "auto: summarize, and drop what can be recovered. fade: drop old messages, leaving stubs. compact: summarize old messages.",
+        ))
+        .child(modes)
+        .child(
+            Button::new("ctx-mode-reset")
+                .label("inherit")
+                .small()
+                .ghost()
+                .tooltip(if layer.mode.is_none() { format!("Not set here; this session uses {effective}") } else { format!("Clear it; this session would use {effective} or the default") })
+                .on_click(move |_, _w, cx| {
+                    w_mode.update(cx, |app, cx| app.context_set_mode(None, cx)).ok();
+                }),
+        );
+
+    let mut body = v_flex().gap_2().child(scope).child(mode_row);
+    for (field, input) in &state.context_inputs {
+        let field = *field;
+        let weak = weak.clone();
+        body = body.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(crate::hints::tip(div().id(("ctx-label", field as usize)).w(px(250.)).child(Label::new(field.label())), field.help()))
+                .child(div().flex_1().child(Input::new(input)))
+                .child(Button::new(("ctx-reset", field as usize)).label("inherit").small().ghost().on_click(move |_, window, cx| {
+                    weak.update(cx, |app, cx| app.context_reset(field, window, cx)).ok();
+                })),
+        );
+    }
+    let (w_all, w_promote) = (weak.clone(), weak.clone());
+    body.child(
+        h_flex().gap_2().items_center().child(
+            Button::new("ctx-promote")
+                .label("Make session settings the default")
+                .small()
+                .tooltip("This session's context values become the default for new sessions, and the session goes back to inheriting")
+                .on_click(move |_, window, cx| {
+                    w_promote.update(cx, |app, cx| app.context_promote(window, cx)).ok();
+                }),
+        ).child(
+            Button::new("ctx-reset-all")
+                .label(if session { "Use the defaults" } else { "Reset to built-in defaults" })
+                .small()
+                .tooltip(if session {
+                    "Drop every value this session set: it uses the default again."
+                } else {
+                    "Clear the default's own values: new sessions use the built-in guess for their provider, the standard thresholds and the auto mode."
+                })
+                .on_click(move |_, window, cx| {
+                    w_all.update(cx, |app, cx| app.context_reset_all(window, cx)).ok();
+                }),
+        ),
+    )
+    .into_any_element()
+}
+
+/// The Tools tab: which tools and toolsets the agent is told about, for this session or for the
+/// machine. (Toggling individual tools is in the Tools panel and `/tool`.)
+fn tools_tab(app: &ReactorApp, weak: &gpui_kit::WeakEntity<ReactorApp>) -> gpui_kit::AnyElement {
+    let session = app.activation_scope.as_deref() == Some("session");
+    let (w_promote, w_inherit) = (weak.clone(), weak.clone());
+    v_flex()
+        .gap_3()
+        .child(
+            h_flex().gap_1().items_center().child(Label::new(if session { "This session has its own activation" } else { "Using the machine default" })).child(crate::hints::info_button(
+                "tools-info",
+                "Toggling a tool or toolset starts a session-only override of the machine's default. Make it the default for new sessions, or drop it to use the default again. Individual tools are toggled in the Tools panel or with /tool.",
+            )),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("tools-promote")
+                        .label("Make session activation the default")
+                        .small()
+                        .disabled(!session)
+                        .tooltip("This session's tools and toolsets become the default for new sessions")
+                        .on_click(move |_, _window, cx| {
+                            w_promote.update(cx, |app, cx| app.tools_promote(cx)).ok();
+                        }),
+                )
+                .child(
+                    Button::new("tools-inherit")
+                        .label("Use the default activation")
+                        .small()
+                        .disabled(!session)
+                        .tooltip("Drop this session's override: it uses the machine default again")
+                        .on_click(move |_, _window, cx| {
+                            w_inherit.update(cx, |app, cx| app.tools_inherit(cx)).ok();
+                        }),
+                ),
+        )
+        .into_any_element()
 }

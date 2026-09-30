@@ -298,6 +298,23 @@ impl Backend {
         Ok(())
     }
 
+    /// The two stored layers of the context settings: (the default's, this session's).
+    pub fn context_layers(&self) -> (ContextSettings, ContextSettings) {
+        self.agent.context_layers()
+    }
+
+    /// Store exactly this as the default's layer (`global`) or this session's.
+    pub fn replace_context_layer(&self, global: bool, layer: ContextSettings) -> std::result::Result<(), String> {
+        if global {
+            self.agent.set_global_context(layer).map_err(|e| e.to_string())?;
+        } else {
+            self.agent.set_session_context(&layer).map_err(|e| e.to_string())?;
+        }
+        self.sync_summarizer();
+        self.refresh_context();
+        Ok(())
+    }
+
     pub fn inherit_context(&self) -> std::result::Result<(), String> {
         self.agent.set_session_context(&ContextSettings::default()).map_err(|e| e.to_string())?;
         self.sync_summarizer();

@@ -307,7 +307,20 @@ so a fresh install looks as it always did and *reset* clears a field.
   type a model name, then *Set as default*, *Use in this session* or *Add to picker list*. The
   picker's list (`models`) is editable here too. API keys are read from the environment, never stored.
 
-The popup has one tab per kind: Fonts, Behaviour, Model. The context budget is separate: the
+- **Context** — the agent's context budget: reduction mode, the window in tokens (REactor does not ask
+  the provider for it: set it for your model), the reserve for the reply, when a reduction starts and
+  how far it goes (percentages of the usable window), and the summarizer model. A switch chooses the
+  layer edited: the **default** (`settings.json`, for new sessions) or **this session only**. An empty
+  field inherits, and *Use the defaults* / *Reset to built-in defaults* clear the layer — a session
+  back to the default, the default back to the built-in values.
+
+- **Tools** — whether this session has its own tool activation, with *Make session activation the
+  default* and *Use the default activation*.
+
+The popup has one tab per kind: Fonts, Behaviour, Model, Context, Tools. Each tab has its own reset
+and, where a session can differ from the default (Model, Context, Tools), its own *make this session's
+… the default* — a button acts on its tab only. Fonts and behaviour are not per session: they are
+saved for every session as they change. The context budget is separate: the
 Context panel and `/context`.
 
 ### 6.1 Layout: nothing is fixed furniture

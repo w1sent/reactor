@@ -39,223 +39,73 @@ first-class way to run REactor, byte for byte as it is today.
 
 ## 1. What it is, and is not
 
-- **A second frontend, not a replacement.** TUI mode is untouched; a session
-  started in the GUI is a normal pi session file, resumable from the terminal.
-- **A GUI for the person at the keyboard.** It does not change what the agent
-  is told (that is the registry's job, unchanged), does not add tools, does
-  not parse `tools.toml` (ADR-0005 holds inside the GUI too — the CLI is the
-  only source of catalogue facts).
-- **Pi-coupled at exactly one seam**: the documented RPC protocol and the
-  extension UI sub-protocol. Nothing private, nothing patched, no fork of pi.
+> **Rewritten for phase 5 of the migration** ([ADR-0042](../docs/adr/0042-the-gui-hosts-the-agent-in-process.md)).
+> Through phase 4 this GUI drove `pi --mode rpc`; it now hosts the Rust agent
+> (`reactor-agent`) in its own process. §§1–4 below describe that; §§5–10 are
+> unchanged unless they say otherwise. The old RPC transport and the extension-view
+> contract are gone (history: ADR-0032).
 
-## 2. Transport: RPC mode
+- **The frontend of the Rust harness.** One process: gpui on the main thread, the agent
+  on its own tokio runtime, no child process.
+- **A GUI for the person at the keyboard.** It does not change what the agent is told
+  (the registry's job), does not add tools, does not parse `tools.toml` (ADR-0005: the
+  catalogue comes from `reactor-core`).
+- **No pi.** Nothing in a GUI session starts or talks to pi. A pi flavor of REactor still
+  exists as a separate, maintained package; the GUI does not use it.
 
-`pi --mode rpc`, one child process per GUI launch, JSONL over stdin/stdout,
-driven from Rust with serde — a dedicated reader thread and a
-mutex-guarded writer, deliberately no async runtime (one reader thread and a
-linear protocol need nothing more, and the GUI crate stays free of an
-executor war with gpui's own). Why RPC and not the alternatives:
+## 2. Transport: in process
 
-- **SDK** embeds pi in a Node.js process; the GUI is Rust. Bridging Node is
-  just RPC with a heavier middle.
-- **JSON mode** (`--mode json`) is one-shot print: no input channel, no
-  abort, no model control. Not an interactive frontend.
-- **Embedded terminal** (rendering pi's TUI inside a terminal widget) would
-  keep every TUI feature but yields a terminal in a window, not native
-  panels. Recorded as a fallback shape, deliberately not built.
+`reactor-gui` links `reactor-agent`, `reactor-context` and `reactor-core`. `Backend`
+(`src/backend.rs`) owns a multi-thread tokio runtime and the `Agent`; gpui's executor never
+runs agent work.
 
-**Client rules:**
+- **Events** flow agent → GUI over a `std::sync::mpsc` channel (`UiEvent`), drained by a
+  50 ms pump on the UI thread. Streaming deltas, tool progress, reductions, turn end, and
+  context measurements all arrive this way.
+- **Commands** flow GUI → agent by method call on `Backend` (`prompt`, `cancel`,
+  `set_model`, `preview`, `reduce_now`, `restore`, `switch_branch`, …); results come back
+  as `UiEvent`s. Turn cancellation is a `CancellationToken`.
+- **The transcript is a pure function of the store's current branch** (`Session::rebuild`)
+  plus live streaming buffers (`Session::apply`); ending a turn rebuilds from the store,
+  so what is on screen and what is on disk cannot drift.
+- **Models** come from `settings.models` (`provider/name` specs) and `/model provider/name`.
+  There is no thinking-level picker (dropped in phase 5).
+- The catalogue panels use `Client::for_session` — `reactor-core` in process, with the
+  session's paths so activation edits land in the session's scope (§3).
 
-- Framing: split records on `\n` only, strip one trailing `\r`. Never use a
-  Unicode-aware line splitter (pi's docs warn about `U+2028`/`U+2029` in
-  strings — the JSON payload may contain them).
-- Correlate commands by `id`; responses are
-  `{type:"response", command, success, …data|error}`.
-- Events stream asynchronously; `message_end.message` is authoritative,
-  `message_update` deltas are assembled by `contentIndex` (never render a
-  partial as final).
-- Dialog requests (`extension_ui_request` with method
-  `select|confirm|input|editor`) must be answered with a matching
-  `extension_ui_response` on stdin; timeouts are handled agent-side (pi
-  auto-resolves), so the GUI may simply respond whenever the user does.
-- Keep reading promptly: pi watches stdout backpressure.
+## 3. Session model: REactor's own store
 
-**Version floor: pi 0.87.0.** At startup the GUI checks `pi --version`,
-refuses below the floor with a clear message, and runs a `get_state` smoke
-test. Unknown event types never crash: they render as raw JSON in a debug
-view. Protocol drift is a documented risk (same discipline as
-`docs/pi-api-notes.md` — re-verify the RPC surface on every pi bump).
+Sessions are `reactor-agent` stores (ADR-0036): `~/.reactor/sessions/<id>/session.jsonl`.
+The GUI is bound to one session per window; branching moves the head within it.
 
-## 3. Session model: pi's own, one session per launch
-
-The GUI does **not** switch, fork, or create sessions at runtime. A GUI
-process is bound to exactly one session, chosen at launch exactly the way
-`pi` chooses one; the launch flags pass through:
-
-| launch | pi child |
+| launch | effect |
 |---|---|
-| `reactor-gui <dir>` | `pi --mode rpc` in that cwd (new session) |
-| bare `reactor-gui` | **workdir chooser** first (below), then the above |
-| `-c` / `--continue` | forwarded — pi continues the recent session |
-| `-r` / `--resume` | **native session picker** (below), then `--session <path>` |
-| `--session <path\|id>` | forwarded |
-| `--fork <path\|id>` | forwarded — fork-then-open, pi's own `--fork` semantics |
-| `--no-session` | forwarded — ephemeral scratch session |
-| `--name` | forwarded |
+| `reactor-gui <dir>` | new session in that cwd |
+| bare `reactor-gui` | **workdir chooser**, then the above |
+| `-c` / `--continue` | the newest session for the cwd |
+| `-r` / `--resume` | **session picker** over the store, then that session |
+| `--session <dir>` | that session |
+| `--model provider/name` | start on that model |
 
-- **Workdir chooser** (nothing passed): a startup panel — left half lists
-  frequently used folders (the GUI's own recents, see §8), right half is a
-  directory picker. Choosing one spawns the child with that cwd.
-- **Session picker** (`-r`): pi's `--resume` picker is interactive-only, so
-  the GUI implements its own: it scans the shared store
-  (`~/.pi/agent/sessions/<encoded-cwd>/`) and reads header lines — the same
-  store, the same files, no pi dependency for listing — then spawns
-  `pi --mode rpc --session <path>`. (`--continue`/`--session` are resolved by
-  pi before mode dispatch, so they work in RPC mode; verified, see notes.)
-- **Shared store, soft exclusivity.** pi has no session-file locking (verified)
-  and REactor will not bolt one on. The GUI keeps its session exclusively
-  *by contract*: one attached frontend per session file; concurrent writes by
-  another pi process show up as leaf drift and are warned about, not fought.
-- The child is killed when the window closes (pi handles SIGTERM cleanly).
+- **Session-scoped activation** (ADR-0042). Tool/toolset toggles write
+  `<session dir>/activation.json`, and the panels show whether the session overrides the
+  machine default. *make default* promotes the session's state to `state.json`;
+  *inherit* removes the override.
+- **Context settings** cascade the same way (ADR-0038): built-in → `~/.reactor/settings.json`
+  → the session. The Context panel shows each value's origin, previews a reduction, runs
+  one now, lists reductions in force with *undo*, and can make the session's values the
+  default. Dimmed transcript rows are hidden from the model by a reduction.
+- **Tree.** Read from the store; *Continue from here* switches the head to a final
+  assistant reply.
+- One attached frontend per session directory, by contract (no locking).
 
-## 4. The extension UI contract (GUI mode)
+## 4. The extension UI contract — retired
 
-The problem: reactor's extensions already draw UI in the TUI (the selector's
-two-pane curator, the guide's pages, the status panel) through
-`ctx.ui.custom()` and widget factories — both are TUI-only and degrade over
-RPC. The GUI must render extension UI natively, and future extensions must
-have a way to get UI into the GUI, without touching pi and without breaking
-any other pi client.
-
-**The contract: reactor-specific, additive, and transparent — it rides only
-channels that already exist in pi's RPC.** Nothing we send is an unknown
-command; nothing another client receives is unrenderable.
-
-### 4.1 Handshake
-
-The GUI spawns pi with `REACTOR_GUI=1` in the environment. Extensions read
-`process.env.REACTOR_GUI` once at registration. Detection matrix:
-
-| mode | what the extension sees | behaviour |
-|---|---|---|
-| TUI | `ctx.mode === "tui"` | factories, `ctx.ui.custom()` overlays — **unchanged** |
-| RPC, no GUI | `ctx.mode === "rpc"`, no env | text fallbacks — **unchanged** (other clients keep working) |
-| RPC, GUI | env set | envelope views + event commands (below) |
-
-### 4.2 Outbound: the view envelope
-
-A view is a `setWidget` whose payload carries a marker line, JSON, and a
-human-readable fallback:
-
-```
-ctx.ui.setWidget("reactor:selector", [
-  "REACTOR-GUI-VIEW v1 " + JSON.stringify(payload),
-  "…one or more readable lines…",        // fallback for every other client
-])
-```
-
-- Key form: `reactor:<viewId>`. The GUI recognizes the envelope by the
-  marker prefix on line 0; every other client renders the fallback lines —
-  transparency by construction, because RPC `setWidget` is string-arrays-only
-  (verified — factories are silently ignored, so text is the only carrier).
-- The fallback lines are mandatory and must be useful on their own (a
-  client that cannot parse the envelope still shows a correct table).
-- Clearing: `setWidget(key, undefined)`.
-
-**Payload, schema v1** — deliberately minimal; nothing ships that the two
-reference implementations don't need:
-
-```json
-{
-  "v": 1,
-  "view": "selector",                       // viewId
-  "title": "Tools",
-  "command": "/reactor-tools-event",        // the event command for actions
-  "placement": "overlay",                   // "overlay" | "side"
-  "table": {
-    "columns": [
-      { "id": "tool",  "title": "Tool", "width": 16 },
-      { "id": "state", "title": "",    "width": 4  }
-    ],
-    "rows": [
-      { "id": "bn",
-        "cells": { "tool":  { "text": "bn" },
-                   "state": { "text": "●", "color": "success" } },
-        "actions": [ { "id": "toggle", "label": "Toggle", "disabled": false } ] }
-    ]
-  },
-  "footer": "9 active · 12 catalogued"
-}
-```
-
-- Primitives v1: `table` | `list` | `detail` (title + markdown body). Per-row
-  `actions`, optional `footer`. No nested views, no free-form components —
-  an extension that needs more proposes schema v2.
-- `color` values use **pi's theme vocabulary** (`text`, `accent`, `dim`,
-  `muted`, `success`, `error`, `warning`, …) — mapped GUI-side through the
-  same token table as the theme (§7), so payload colors and window colors
-  can never disagree.
-- `placement`: `overlay` = a sheet over the transcript (selector, guide —
-  matching today's TUI overlay semantics); `side` = a panel in the right
-  dock.
-
-### 4.3 Inbound: per-extension event commands
-
-User actions go back as **extension commands invoked through RPC `prompt`**:
-the GUI sends `{"type":"prompt","message":"/reactor-tools-event <json>"}`.
-Verified properties that make this the right channel:
-
-- extension commands execute immediately, even mid-stream (handled before
-  the streaming check);
-- the command leaves **no transcript entry** — pi returns "no prompt to
-  send", so UI actions never pollute the model's context;
-- commands cannot be queued via `steer`/`follow_up`, so events always run
-  promptly.
-
-Each extension registers its own event command (no shared dispatcher —
-extensions share no state, ADR-0014) and advertises it in the envelope's
-`command` field, so the GUI never guesses. The handler performs the action
-(usually via the `reactor` CLI through `pi.exec`, ADR-0005) and repaints a
-fresh envelope. Open→act→repaint is one code path; there is no second
-protocol.
-
-### 4.4 Statelessness — the GUI holds no facts
-
-The GUI renders what the envelope says and keeps only scroll/viewport. Tool
-activation state, service state, guide page — all live in the extension and
-the CLI/cache, exactly as ADR-0029 rules for the TUI. Re-render and refresh
-are the same operation: send a new envelope.
-
-### 4.5 Blocking input stays on pi's native dialogs
-
-`ctx.ui.select/confirm/input/editor` already translate to
-`extension_ui_request`/`extension_ui_response`; the GUI renders these as
-native modals and answers on stdin. No envelope for dialogs — the existing
-protocol is already good.
-
-### 4.6 The tree bridge
-
-pi's `/tree` is interactive-only and RPC has no `navigate_tree` command
-(verified — the command switch ends at `get_commands`), but pi wires
-`ctx.navigateTree(targetId)` into extension command contexts in RPC mode.
-`extensions/gui-bridge/` registers `/reactor-tree <entryId>` calling it —
-the session tree panel's "switch branch" action, transparent (in the TUI the
-builtin `/tree` already exists; the command is harmless there and works too).
-While the agent streams or compacts, navigation rejects (pi's own rule); the
-GUI disables the action during streaming.
-
-### 4.7 Who changes on the reactor side
-
-The coupling is why the GUI lives in this repo (ADR-0031):
-
-- `extensions/lib/guiview.ts` — stateless helpers (ADR-0029 pattern): build
-  envelope JSON + fallback lines, detect GUI mode.
-- `selector/`, `guide/` — a GUI-mode branch: envelope view instead of
-  `ctx.ui.custom()`; their event commands; the same reactor-CLI calls behind
-  the actions as behind the TUI keys.
-- `extensions/gui-bridge/` — the tree command (and future GUI-only bridges).
-- `status/` stays as-is: the GUI builds its services panel from the CLI (§5),
-  so the extension needs no envelope.
+The `setWidget` envelope, per-extension event commands, and the tree bridge existed so pi
+extensions could draw in the GUI. With no pi host they have no sender. `contract.rs`,
+`views.rs` and the Views panel are deleted. The extensions' own TUI rendering and their
+tests (`tests/extensions/`) belong to the pi flavor and are untouched. The `/guide`
+walkthrough is not ported yet.
 
 ## 5. Data panels: the catalogue, through a seam
 
@@ -528,21 +378,14 @@ worked" state looked identical):
   workspace (ADR-0031). The root `default-members` leave `reactor-gui` out —
   its native windowing stack (fontconfig, xkbcommon, …) would make a bare
   `cargo test` fail on a machine without it — so build it with `-p reactor-gui`:
-  - `gui/crates/reactor-rpc` — JSONL client, serde types for commands,
-    responses, events, extension UI requests.
   - `gui/crates/reactor-client` — `ReactorClient`, `LibClient`, `CliClient`.
   - `gui/crates/reactor-gui` — the application.
 - Install: `cargo install --git https://github.com/w1sent/reactor reactor-gui`,
   or `cargo install --path gui/crates/reactor-gui` from a checkout. (The old
   `scripts/install.py` step is gone — ADR-0039.)
-- GUI-local config (recent workdirs) lives in `~/.pi/reactor-gui/` — not in
+- GUI-local config (recent workdirs) lives in `~/.reactor/gui.json` — not in
   the CLI's `~/.pi/reactor/`, not in pi's `~/.pi/agent/`.
-- Tests: hermetic — `reactor-rpc`'s routing rules run against fixture lines
-  with no child process (the routing rules are extracted from the reader
-  thread for exactly that), `reactor-client` against the real CLI's JSON
-  contracts plus a `#[ignore]`d live round trip, and the contract's wire
-  format mirrored by `tests/extensions/guiview.test.mjs` from the extension
-  side. Live-pi tests are `#[ignore]`d (run manually).
+- Tests: hermetic — `backend` (tree rows, context view, session listing) and `session` (store → transcript) test without a window; `reactor-client` against the real CLI's JSON contracts.
   `reactor-client`'s `LibClient` is tested against the real binary by
   `crates/reactor-cli/tests/agree.rs` (§5).
 

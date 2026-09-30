@@ -126,6 +126,82 @@ impl Default for ReportingSettings {
     }
 }
 
+/// How the context budget behaves (ADR-0037), as one *layer*: every field is optional,
+/// and a field that is absent means "the layer below decides". The layers are the
+/// built-in defaults (`reactor-agent`'s `BudgetConfig::new`), then the global
+/// `settings.json`, then a session's own override (ADR-0038) — the same type at both of
+/// the two stored layers, combined with [`ContextSettings::over`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSettings {
+    /// `auto`, `fade` or `compact`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Reduce once the context passes this fraction of `window - reserve`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pct: Option<f64>,
+    /// Reduce down to this fraction of it: the keep window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<f64>,
+    /// Headroom for the reply, in tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve: Option<u64>,
+    /// The context window in tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+    /// The model that writes summaries (`provider/name`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summarizer: Option<String>,
+}
+
+pub const CONTEXT_MODES: [&str; 3] = ["auto", "fade", "compact"];
+
+impl ContextSettings {
+    /// Read a stored layer, keeping only what has the right shape.
+    pub fn normalize(raw: &Value) -> ContextSettings {
+        let Some(r) = raw.as_object() else { return ContextSettings::default() };
+        ContextSettings {
+            mode: r.get("mode").and_then(Value::as_str).filter(|m| CONTEXT_MODES.contains(m)).map(str::to_string),
+            pct: number(r.get("pct")).filter(|p| *p > 0.0 && *p <= 1.0),
+            keep: number(r.get("keep")).filter(|k| *k > 0.0 && *k < 1.0),
+            reserve: number(r.get("reserve")).filter(|n| *n >= 0.0 && n.fract() == 0.0).map(|n| n as u64),
+            window: number(r.get("window")).filter(|n| *n > 0.0 && n.fract() == 0.0).map(|n| n as u64),
+            summarizer: r.get("summarizer").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == ContextSettings::default()
+    }
+
+    /// This layer over `below`: each field is this layer's where it has one, else
+    /// `below`'s — [`resolve`]'s rule, per field.
+    pub fn over(&self, below: &ContextSettings) -> ContextSettings {
+        ContextSettings {
+            mode: self.mode.clone().or_else(|| below.mode.clone()),
+            pct: self.pct.or(below.pct),
+            keep: self.keep.or(below.keep),
+            reserve: self.reserve.or(below.reserve),
+            window: self.window.or(below.window),
+            summarizer: self.summarizer.clone().or_else(|| below.summarizer.clone()),
+        }
+    }
+
+    /// Where each field of `self.over(global)` comes from — what a UI shows beside a
+    /// setting so the cascade is never the confusing kind of magic.
+    pub fn origins(&self) -> [(&'static str, Origin); 6] {
+        let o = |set: bool| if set { Origin::Session } else { Origin::Default };
+        [
+            ("mode", o(self.mode.is_some())),
+            ("pct", o(self.pct.is_some())),
+            ("keep", o(self.keep.is_some())),
+            ("reserve", o(self.reserve.is_some())),
+            ("window", o(self.window.is_some())),
+            ("summarizer", o(self.summarizer.is_some())),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -136,6 +212,11 @@ pub struct Settings {
     pub manifest: ManifestSettings,
     pub identity: IdentitySettings,
     pub reporting: ReportingSettings,
+    pub context: ContextSettings,
+    /// Models to offer in a picker, as `provider/name`.
+    pub models: Vec<String>,
+    /// The model a new session starts on.
+    pub default_model: Option<String>,
 }
 
 impl Default for Settings {
@@ -146,6 +227,9 @@ impl Default for Settings {
             manifest: ManifestSettings::default(),
             identity: IdentitySettings::default(),
             reporting: ReportingSettings::default(),
+            context: ContextSettings::default(),
+            models: Vec::new(),
+            default_model: None,
         }
     }
 }
@@ -193,6 +277,14 @@ impl Settings {
                     user.iter().filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string()))),
                 );
             }
+        }
+
+        if let Some(Value::Array(ms)) = root.get("models") {
+            s.models = ms.iter().filter_map(|v| v.as_str().filter(|m| m.contains('/')).map(str::to_string)).collect();
+        }
+        s.default_model = root.get("defaultModel").and_then(Value::as_str).filter(|m| m.contains('/')).map(str::to_string);
+        if let Some(c) = root.get("context") {
+            s.context = ContextSettings::normalize(c);
         }
 
         if let Some(r) = root.get("reporting").and_then(Value::as_object) {

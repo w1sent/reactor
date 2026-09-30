@@ -283,11 +283,18 @@ without the operator working around the harness.
 
 ### 5 · The GUI switches backends
 
-- [ ] Session, transcript, composer and tree read the Rust harness
-- [ ] Reduction preview and undo
-- [ ] Settings scope visible in the UI (session vs default)
-- [ ] `reactor-rpc` retired; `gui/SPEC.md` §2 rewritten
-- [ ] pi shims published and pinned for the maintained four
+- [x] Session, transcript, composer and tree read the Rust harness
+- [x] Reduction preview and undo (Context panel; dimmed rows; *undo* per reduction)
+- [x] Settings scope visible in the UI (session vs default), for tools and context
+- [x] `reactor-rpc` retired; `gui/SPEC.md` §§1–4 rewritten ([ADR-0042](docs/adr/0042-the-gui-hosts-the-agent-in-process.md))
+- [ ] pi shims published and pinned for the maintained four — **not done**: needs a
+      release tag and a publish step only the maintainer can do; the extension suite
+      (301 tests) passes against the tree as it stands
+- [ ] Visual check by the operator (the gate's "no `pi --mode rpc` process" is verified
+      here by process list; panels are compile- and unit-tested only)
+
+Regressions accepted in this phase: no thinking-level picker; extension views and
+`/guide` retired from the GUI; models come from `settings.models` or `/model`.
 
 **Gate:** no `pi --mode rpc` process in a GUI session, and the pi flavor still
 passes its own suite.

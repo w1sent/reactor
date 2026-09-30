@@ -25,6 +25,9 @@ pub enum AnyLlm {
     Gemini(RigLlm<GeminiModel>),
     OpenRouter(RigLlm<OpenRouterModel>),
     Ollama(RigLlm<OllamaModel>),
+    /// No model chosen yet. Every call says so, rather than the session being unable to
+    /// open until a model is configured — a window can open and offer a picker.
+    Missing(String),
 }
 
 /// The providers by name, for `--help` and error messages.
@@ -69,6 +72,7 @@ impl Llm for AnyLlm {
             AnyLlm::Gemini(m) => m.complete(req, on_delta).await,
             AnyLlm::OpenRouter(m) => m.complete(req, on_delta).await,
             AnyLlm::Ollama(m) => m.complete(req, on_delta).await,
+            AnyLlm::Missing(why) => Err(Error::Model(why.clone())),
         }
     }
 
@@ -79,6 +83,7 @@ impl Llm for AnyLlm {
             AnyLlm::Gemini(m) => m.name(),
             AnyLlm::OpenRouter(m) => m.name(),
             AnyLlm::Ollama(m) => m.name(),
+            AnyLlm::Missing(_) => "none".to_string(),
         }
     }
 }

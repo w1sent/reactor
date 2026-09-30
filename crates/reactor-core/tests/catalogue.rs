@@ -404,3 +404,81 @@ fn http_source_is_rejected_by_the_loader() {
     let e = load_catalogue(&fx.paths).unwrap_err();
     assert!(e.to_string().contains("https"), "{e}");
 }
+
+// -- session scope (ADR-0038) --------------------------------------------------------
+
+mod session_scope {
+    use super::*;
+    use reactor_core::commands::{clear_session_state, make_session_state_default, set_activation, state as state_report};
+
+    fn with_session(fx: &Fx) -> reactor_core::Paths {
+        fx.paths.clone().with_session_state(fx.dir.path().join("session-activation.json"))
+    }
+
+    #[test]
+    fn a_session_with_no_override_inherits_the_machine_state() {
+        let fx = Fx::new();
+        fx.state(&["static"], &[], &[]).save().unwrap();
+        let paths = with_session(&fx);
+        let st = state_report(&paths).unwrap().report;
+        assert_eq!(st.scope.as_str(), "machine");
+        assert_eq!(st.state.toolsets, ["static"]);
+    }
+
+    #[test]
+    fn a_toggle_in_a_session_writes_the_session_and_leaves_the_machine_alone() {
+        let fx = Fx::new();
+        fx.state(&["static"], &[], &[]).save().unwrap();
+        let machine_before = std::fs::read_to_string(fx.dir.path().join("state.json")).unwrap();
+        let paths = with_session(&fx);
+
+        let done = set_activation(&paths, &ids(&["pair"]), false, Some(true)).unwrap();
+        assert_eq!(done.report.path, fx.dir.path().join("session-activation.json").display().to_string());
+
+        // Seeded from what applied (`static`), then edited: both are on for this session.
+        let st = state_report(&paths).unwrap().report;
+        assert_eq!(st.scope.as_str(), "session");
+        assert_eq!(st.state.toolsets, ["pair", "static"]);
+        // The machine state is byte-for-byte what it was.
+        assert_eq!(std::fs::read_to_string(fx.dir.path().join("state.json")).unwrap(), machine_before);
+        // And another session, with no override, still sees the machine's.
+        assert_eq!(state_report(&fx.paths).unwrap().report.state.toolsets, ["static"]);
+    }
+
+    #[test]
+    fn two_sessions_do_not_share_activation() {
+        let fx = Fx::new();
+        let a = fx.paths.clone().with_session_state(fx.dir.path().join("a.json"));
+        let b = fx.paths.clone().with_session_state(fx.dir.path().join("b.json"));
+        set_activation(&a, &ids(&["static"]), false, Some(true)).unwrap();
+        set_activation(&b, &ids(&["pair"]), false, Some(true)).unwrap();
+        assert_eq!(state_report(&a).unwrap().report.state.toolsets, ["static"]);
+        assert_eq!(state_report(&b).unwrap().report.state.toolsets, ["pair"]);
+    }
+
+    #[test]
+    fn making_the_session_the_default_promotes_it_to_the_machine_state() {
+        let fx = Fx::new();
+        let paths = with_session(&fx);
+        assert!(make_session_state_default(&paths).is_err(), "nothing of its own to promote yet");
+
+        set_activation(&paths, &ids(&["narrow"]), false, Some(true)).unwrap();
+        let done = make_session_state_default(&paths).unwrap().report;
+        assert_eq!(done.state.toolsets, ["narrow"]);
+        // Now a fresh session inherits it.
+        assert_eq!(state_report(&fx.paths).unwrap().report.state.toolsets, ["narrow"]);
+        assert_eq!(state_report(&fx.paths).unwrap().report.scope.as_str(), "machine");
+    }
+
+    #[test]
+    fn clearing_the_session_override_goes_back_to_inheriting() {
+        let fx = Fx::new();
+        fx.state(&["static"], &[], &[]).save().unwrap();
+        let paths = with_session(&fx);
+        set_activation(&paths, &ids(&["pair"]), false, Some(true)).unwrap();
+        assert_eq!(state_report(&paths).unwrap().report.scope.as_str(), "session");
+        clear_session_state(&paths).unwrap();
+        clear_session_state(&paths).unwrap(); // idempotent
+        assert_eq!(state_report(&paths).unwrap().report.scope.as_str(), "machine");
+    }
+}

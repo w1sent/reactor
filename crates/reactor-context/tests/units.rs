@@ -127,7 +127,7 @@ fn saving_round_trips_and_writes_sorted_keys() {
     let text = fs::read_to_string(Settings::path(&paths)).unwrap();
     assert!(text.ends_with("}\n"));
     let top: Vec<&str> = text.lines().filter(|l| l.starts_with("  \"")).map(|l| l.trim().split('"').nth(1).unwrap()).collect();
-    assert_eq!(top, ["hiddenServices", "identity", "manifest", "reporting", "toolbox"], "keys are sorted");
+    assert_eq!(top, ["context", "defaultModel", "hiddenServices", "identity", "manifest", "models", "reporting", "toolbox"], "keys are sorted");
 }
 
 #[test]
@@ -307,4 +307,78 @@ fn the_shipped_scenarios_load_and_name_only_real_toolsets() {
 fn an_unreadable_scenarios_directory_lists_nothing() {
     assert!(scenario::list_scenarios(Path::new("/definitely/not/here")).is_empty());
     assert!(scenario::load_steps(Path::new("/definitely/not/here"), "x").is_empty());
+}
+
+// -- context settings and the model list ---------------------------------------------------
+
+mod context_settings {
+    use reactor_context::settings::{ContextSettings, Origin, Settings};
+    use serde_json::json;
+
+    #[test]
+    fn nothing_is_set_until_someone_sets_it() {
+        // The built-in defaults live in the budget manager; a layer only says what it changes.
+        assert!(Settings::default().context.is_empty());
+    }
+
+    #[test]
+    fn global_context_settings_load_leniently() {
+        let s = Settings::from_json(&json!({
+            "context": { "mode": "fade", "pct": 0.8, "keep": 2.0, "reserve": "lots", "window": 32000, "summarizer": "ollama/small" },
+            "models": ["ollama/qwen", "no-slash", 3, "anthropic/claude"],
+            "defaultModel": "ollama/qwen",
+        }));
+        assert_eq!(s.context.mode.as_deref(), Some("fade"));
+        assert_eq!(s.context.pct, Some(0.8));
+        assert_eq!(s.context.keep, None, "keep must be a fraction below 1");
+        assert_eq!(s.context.reserve, None, "wrong shape is unset, not a default");
+        assert_eq!(s.context.window, Some(32_000));
+        assert_eq!(s.context.summarizer.as_deref(), Some("ollama/small"));
+        assert_eq!(s.models, ["ollama/qwen", "anthropic/claude"], "only provider/name specs");
+        assert_eq!(s.default_model.as_deref(), Some("ollama/qwen"));
+        assert_eq!(Settings::from_json(&json!({"context": {"mode": "bogus"}})).context.mode, None);
+    }
+
+    #[test]
+    fn a_session_layer_wins_field_by_field_and_reports_where_each_came_from() {
+        let global = ContextSettings { mode: Some("auto".into()), window: Some(32_000), pct: Some(0.8), ..Default::default() };
+        let session = ContextSettings::normalize(&json!({ "mode": "fade", "reserve": 4096, "summarizer": "ollama/small" }));
+        let eff = session.over(&global);
+        assert_eq!((eff.mode.as_deref(), eff.reserve), (Some("fade"), Some(4096)));
+        assert_eq!(eff.pct, Some(0.8), "everything the session does not set comes from the global");
+        assert_eq!(eff.window, Some(32_000));
+        assert_eq!(eff.summarizer.as_deref(), Some("ollama/small"));
+        assert_eq!(eff.keep, None, "and what neither sets is left to the built-in default");
+
+        let origins: std::collections::HashMap<_, _> = session.origins().into_iter().collect();
+        assert_eq!(origins["mode"], Origin::Session);
+        assert_eq!(origins["reserve"], Origin::Session);
+        assert_eq!(origins["pct"], Origin::Default);
+        assert_eq!(origins["window"], Origin::Default);
+    }
+
+    #[test]
+    fn an_empty_layer_changes_nothing() {
+        let g = ContextSettings { pct: Some(0.7), ..Default::default() };
+        assert_eq!(ContextSettings::default().over(&g), g);
+        assert_eq!(ContextSettings::normalize(&json!(null)), ContextSettings::default());
+        // Out-of-range values are dropped, not applied.
+        assert!(ContextSettings::normalize(&json!({"pct": 5, "keep": 0, "mode": "x", "reserve": -1})).is_empty());
+    }
+
+    #[test]
+    fn context_and_models_survive_a_save_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = reactor_core::Paths::new(dir.path(), reactor_core::paths::Shipped::Embedded);
+        let mut s = Settings::default();
+        s.context.mode = Some("compact".into());
+        s.context.window = Some(65_536);
+        s.models = vec!["ollama/qwen".into()];
+        s.default_model = Some("ollama/qwen".into());
+        s.save(&paths).unwrap();
+        assert_eq!(Settings::load(&paths), s);
+        // Unset fields are not written at all.
+        let text = std::fs::read_to_string(Settings::path(&paths)).unwrap();
+        assert!(!text.contains("\"pct\""), "{text}");
+    }
 }

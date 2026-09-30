@@ -42,7 +42,7 @@ pub struct Panels {
     pub tree: Arc<dyn PanelView>,
     pub tools: Arc<dyn PanelView>,
     pub toolsets: Arc<dyn PanelView>,
-    pub views: Arc<dyn PanelView>,
+    pub context: Arc<dyn PanelView>,
     pub services: Arc<dyn PanelView>,
     pub console: Arc<dyn PanelView>,
 }
@@ -184,7 +184,7 @@ impl LayoutPreset {
                 panels.split(&[&panels.console], &[&panels.transcript], px(480.), cx)
             }
             LayoutPreset::Catalogue => panels.split(
-                &[&panels.tools, &panels.toolsets, &panels.views],
+                &[&panels.tools, &panels.toolsets, &panels.context],
                 &[&panels.tree],
                 px(280.),
                 cx,
@@ -200,7 +200,7 @@ impl LayoutPreset {
                 Some((
                     panels.split(
                         &[&panels.tools, &panels.toolsets],
-                        &[&panels.views],
+                        &[&panels.context],
                         px(240.),
                         cx,
                     ),
@@ -216,7 +216,7 @@ impl LayoutPreset {
                 Some((
                     panels.split(
                         &[&panels.tools, &panels.toolsets],
-                        &[&panels.views],
+                        &[&panels.context],
                         px(240.),
                         cx,
                     ),

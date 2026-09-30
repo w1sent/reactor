@@ -15,9 +15,18 @@ path = "src/main.rs"
 
 [dependencies]
 gpui-kit = "=0.6.0"
-reactor-rpc = { path = "../reactor-rpc" }
 reactor-client = { path = "../reactor-client" }
+reactor-agent = { path = "../../../crates/reactor-agent" }
+reactor-context = { path = "../../../crates/reactor-context" }
+reactor-core = { path = "../../../crates/reactor-core" }
+# The agent is async (rig is); it runs on its own runtime on background threads,
+# never on gpui's executor (docs/adr/0042).
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
 serde.workspace = true
 serde_json.workspace = true
 anyhow = "1"
 portable-pty = "0.9.0"
+
+[dev-dependencies]
+tempfile = "3"

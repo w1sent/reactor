@@ -17,6 +17,8 @@ use crate::paths::Paths;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
+    /// This session's own override (ADR-0038).
+    Session,
     Machine,
     Project,
     Default,
@@ -25,6 +27,7 @@ pub enum Scope {
 impl Scope {
     pub fn as_str(self) -> &'static str {
         match self {
+            Scope::Session => "session",
             Scope::Machine => "machine",
             Scope::Project => "project",
             Scope::Default => "default",
@@ -100,10 +103,13 @@ pub fn project_state_path(start: &Path) -> Option<PathBuf> {
 }
 
 pub fn load_state(paths: &Paths) -> Result<State> {
+    // A session override, where one has been written, wins over everything.
+    let session = paths.session_state.clone().filter(|p| p.is_file());
     let project = paths.cwd.as_deref().and_then(project_state_path);
-    let (path, scope) = match project {
-        Some(p) => (p, Scope::Project),
-        None => (paths.state_file(), Scope::Machine),
+    let (path, scope) = match (session, project) {
+        (Some(s), _) => (s, Scope::Session),
+        (None, Some(p)) => (p, Scope::Project),
+        (None, None) => (paths.state_file(), Scope::Machine),
     };
     if !path.is_file() {
         return Ok(State::empty(paths.state_file(), Scope::Default));

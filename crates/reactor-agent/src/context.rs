@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::entry::{Block, EntryId, Kind, Reduction};
 use crate::store::Store;
+use reactor_context::settings::ContextSettings;
 use reactor_context::{identity, manifest, reporting, scenario};
 
 /// A message as the loop and the model seam handle it — ours, not rig's.
@@ -191,12 +192,15 @@ pub struct SessionState {
     pub identity: identity::State,
     pub reporting: reporting::SessionState,
     pub scenario: Option<scenario::State>,
+    /// This session's own layer of the context settings (ADR-0038).
+    pub context: ContextSettings,
 }
 
 pub const KEY_MANIFEST: &str = "manifest";
 pub const KEY_IDENTITY: &str = "identity";
 pub const KEY_REPORTING: &str = "reporting";
 pub const KEY_SCENARIO: &str = "scenario";
+pub const KEY_CONTEXT: &str = "context";
 
 impl SessionState {
     pub fn load(store: &Store) -> SessionState {
@@ -207,6 +211,7 @@ impl SessionState {
                 KEY_MANIFEST => s.manifest = manifest::State::normalize(data),
                 KEY_IDENTITY => s.identity = identity::State::normalize(data),
                 KEY_REPORTING => s.reporting = reporting::SessionState::normalize(data),
+                KEY_CONTEXT => s.context = ContextSettings::normalize(data),
                 KEY_SCENARIO => s.scenario = serde_json::from_value(data.clone()).ok().filter(|_: &scenario::State| !data.is_null()),
                 _ => {}
             }

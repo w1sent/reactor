@@ -1,22 +1,22 @@
-//! The application window: one session, one pi child, the docked layout of
-//! gui/SPEC.md §6.
+//! The application window: one session, the agent running in this process, the docked
+//! layout of gui/SPEC.md §6.
 //!
-//! The GUI holds no facts: the transcript renders what pi streams
-//! ([`crate::session::Session`]), the side panels render what the `reactor`
-//! CLI answers ([`reactor_client::ReactorClient`]), and extension views render
-//! the envelopes of [ADR-0032](../../docs/adr/0032-the-gui-extends-pis-rpc-through-existing-channels-only.md).
-//! Panels are views over one state object — stateless presentation, per the
-//! ADR-0029 discipline.
+//! The GUI holds no facts. The transcript is the session store rendered
+//! ([`crate::session::Session`]); the side panels render what `reactor-core` answers
+//! ([`reactor_client::ReactorClient`]) and what the agent reports ([`crate::backend`]).
+//! Panels are views over this one state object — stateless presentation, per the ADR-0029
+//! discipline. There is no child process and no protocol: the agent is a library call
+//! (ADR-0033, docs/adr/0042).
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::base::h_flex;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, panel_handle};
-use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Root, Sizable as _};
@@ -24,27 +24,36 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{App, Entity, KeyBinding, Render, SharedString, Window, div, px};
 use serde::Deserialize;
-use serde_json::{Value, json};
 
+use reactor_agent::entry::{EntryId, Mode};
 use reactor_client::{Client, ReactorClient};
-use reactor_rpc::{Command, Incoming, RpcClient, SpawnConfig};
+use reactor_context::settings::{ContextSettings, Settings};
 
-use crate::contract::{self, View};
-use crate::panels::{
-    ConsolePanel, ExtensionViewsPanel, ServicesPanel, ToolsPanel, ToolsetsPanel, TranscriptPanel,
-    TreePanel,
-};
-use crate::session::{AgentPhase, ChatItem, Session};
-use crate::views;
+use crate::backend::{Backend, ContextView, PlanView, StartOptions, TreeRow, UiEvent};
+use crate::panels::{ConsolePanel, ContextPanel, ServicesPanel, ToolsPanel, ToolsetsPanel, TranscriptPanel, TreePanel};
+use crate::session::{AgentPhase, ChatItem, Session, status_items};
 
-/// How long one RPC round trip may take from the UI thread. pi answers every
-/// command eventually; the bound keeps a wedged child from freezing a panel.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// How often the event pump drains the child's channel (gui/SPEC.md §2).
+/// How often the event pump drains the backend's channel (gui/SPEC.md §2).
 const PUMP_TICK: Duration = Duration::from_millis(50);
-/// How much of a tool card's output the transcript renders before it sheds
-/// the tail (the raw/debug view keeps the rest, gui/SPEC.md §2).
+/// How much of a tool card's output the transcript renders before it sheds the tail
+/// (the whole of it is in the session and `history_read` reaches it).
 pub const TOOL_OUTPUT_MAX_CHARS: usize = 2000;
+
+/// The commands the composer understands, for its hint and the `/help` line.
+pub const COMMANDS: &[(&str, &str)] = &[
+    ("goal", "set the session goal (/goal clear)"),
+    ("guidelines", "set session guidelines (/guidelines clear)"),
+    ("manifest", "on | off | clear the manifest"),
+    ("frame", "show the manifest"),
+    ("identity", "select or write the working persona"),
+    ("report", "reporting on | off | level <0-2> | status"),
+    ("reactor-scenario", "list | start <id> | status | next | stop"),
+    ("model", "switch model: /model provider/name"),
+    ("preview", "what a context reduction would do  [auto|fade|compact]"),
+    ("reduce", "reduce the context now  [auto|fade|compact]"),
+    ("undo", "undo the latest reduction"),
+    ("help", "this list"),
+];
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -53,63 +62,18 @@ pub const TOOL_OUTPUT_MAX_CHARS: usize = 2000;
 actions!(
     reactor_gui,
     [
-        /// Esc, per pi's interactive semantics: clear the queue, then abort.
+        /// Esc: interrupt the running turn, restoring anything queued into the composer.
         ComposerEsc,
-        /// Refresh the catalogue and services panels (`reactor` round trips).
+        /// Refresh the catalogue and services panels.
         RefreshReactor,
-        /// Reload extensions — a `/reload` prompt through RPC `prompt`.
-        ReloadExtensions,
-        /// Kill the pi child and respawn it — the GUI's restart affordance.
-        RestartAgent,
     ]
 );
 
-/// Model picked from the header dropdown.
+/// Model picked from the status bar's dropdown (`provider/name`).
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
 pub struct SelectModelAction {
-    pub provider: String,
-    pub model_id: String,
-}
-
-/// Thinking level picked from the header dropdown.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = reactor_gui, no_json)]
-pub struct SelectThinkingAction {
-    pub level: String,
-}
-
-/// A catalogue row's enable/disable — the selector's mutation, through the
-/// CLI (gui/SPEC.md §5).
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = reactor_gui, no_json)]
-pub struct ToggleToolAction {
-    pub id: String,
-    pub enable: bool,
-}
-
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = reactor_gui, no_json)]
-pub struct ToggleToolsetAction {
-    pub id: String,
-    pub enable: bool,
-}
-
-/// An envelope view's action — dispatched as the view's own event command
-/// through RPC `prompt` (ADR-0032's inbound channel).
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = reactor_gui, no_json)]
-pub struct UiEventAction {
-    pub command: String,
-    pub payload: String,
-}
-
-/// The session tree's branch switch — through the tree bridge
-/// (gui/SPEC.md §4.6), disabled while the agent streams.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = reactor_gui, no_json)]
-pub struct SwitchBranchAction {
-    pub entry_id: String,
+    pub spec: String,
 }
 
 /// A layout preset picked from the Layout menu.
@@ -126,67 +90,39 @@ pub struct ToggleDockAction {
     pub side: crate::layout::DockSide,
 }
 
-/// An envelope view's dismiss — the extension clears its own widget.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = reactor_gui, no_json)]
-pub struct DismissViewAction {
-    pub view_id: String,
-}
-
 // ---------------------------------------------------------------------------
 // ReactorApp — the root view
 // ---------------------------------------------------------------------------
 
-/// The one window's state: the pi child, the session view model, and the
-/// catalogue client for the side panels (gui/SPEC.md §5–§6).
+/// The one window's state.
 pub struct ReactorApp {
     pub cwd: PathBuf,
-    client: Option<RpcClient>,
+    /// `None` only when the agent could not start; the window opens anyway and says why.
+    backend: Option<Arc<Backend>>,
     reactor: Client,
     pub session: Entity<Session>,
     pub composer: Entity<TextareaState>,
-    /// Input/editor scratch states reused across extension dialogs — created
-    /// once at startup, because entity creation needs a window.
-    pub dialog_input: Entity<InputState>,
-    pub dialog_editor: Entity<TextareaState>,
-    /// Extension views (the envelopes of ADR-0032), most recent last.
-    pub views: Vec<View>,
-    /// Extension dialogs awaiting an answer (`select|confirm|input|editor`),
-    /// oldest first — rendered as native modals, answered with the request's
-    /// id (gui/SPEC.md §4.5).
-    pub dialogs: VecDeque<reactor_rpc::ExtensionUiRequest>,
-    /// Transient `ctx.ui.notify` toasts, most recent last.
+    /// Transient toasts, most recent last.
     pub notifications: Vec<(String, String)>,
-    /// `get_commands` — the command menu's feed (gui/SPEC.md §6).
-    pub commands: Vec<CommandInfo>,
-    /// `get_available_models` — the header picker's feed: provider, id, name.
-    pub models: Vec<ModelInfo>,
-    /// `get_available_thinking_levels`.
-    pub thinking_levels: Vec<String>,
-    /// Side-panel data, from the CLI (gui/SPEC.md §5).
+    /// The models the picker offers (`provider/name`).
+    pub models: Vec<String>,
+    /// Side-panel data, from `reactor-core`.
     pub catalogue: Option<reactor_client::ToolsPayload>,
     pub toolsets: Option<reactor_client::ToolsetsPayload>,
     pub services: Option<reactor_client::ServicesPayload>,
-    /// Whether a `reactor tools`/`toolsets --format json` round trip is in
-    /// flight — the Tools/Toolsets panels' loading indicator (gui/SPEC.md
-    /// §5). One flag for both: they share the one fetch.
+    /// Where the current activation comes from: `session`, `project`, `machine` or `default`.
+    pub activation_scope: Option<String>,
     pub catalogue_loading: bool,
-    /// Whether a `reactor services --format json` round trip is in flight.
     pub services_loading: bool,
-    /// `get_tree` — the session tree panel's feed.
-    pub tree: Option<Value>,
-    /// Whether a `get_tree` RPC round trip is in flight.
-    pub tree_loading: bool,
-    pub leaf_id: Option<String>,
-    /// The session file (from `get_state`), for the window title.
-    pub session_file: Option<String>,
-    /// Queue text restored on Esc-interrupt (gui/SPEC.md §6) — surfaced as a
-    /// notification in v0.1, since setting the composer needs a window.
-    pub queue_restored: Option<String>,
-    /// The last error pi reported, if any.
-    pub last_error: Option<String>,
-    /// Handles to every panel, so a layout preset can rearrange them
-    /// without rebuilding them (`crate::layout`).
+    /// The session tree, and where its tip is.
+    pub tree: Vec<TreeRow>,
+    pub leaf_id: Option<EntryId>,
+    /// The context panel's feed, and the preview last asked for.
+    pub context: Option<ContextView>,
+    pub preview: Option<PlanView>,
+    /// A manual reduction or preview is in flight.
+    pub context_busy: bool,
+    scenarios_dir: PathBuf,
     panels: crate::layout::Panels,
     /// The preset last applied — what the Layout menu shows a tick beside.
     pub layout: crate::layout::LayoutPreset,
@@ -197,15 +133,10 @@ pub struct ReactorApp {
 
 /// The window `ReactorApp` opened, and the app inside it.
 ///
-/// Exists for the Layout menu's actions to reach a window from macOS's
-/// native menu bar, which is application-wide: `App::on_action`'s global
-/// handlers (the only ones a menu item's live enablement check —
-/// `is_action_available` — sees, since that walks the *focused* window's
-/// dispatch tree, and a menu bar has no window of its own to focus) get only
-/// `&mut App`, with no `Window` to hand `DockArea::set_dock` and friends,
-/// which require one. The app has exactly one window at a time
-/// (gui/SPEC.md §3), so a plain global is enough — this is not a
-/// multi-window registry.
+/// Exists for the Layout menu's actions to reach a window from macOS's native menu bar,
+/// which is application-wide: `App::on_action`'s global handlers get only `&mut App`,
+/// with no `Window` to hand `DockArea::set_dock` and friends. The app has exactly one
+/// window at a time (gui/SPEC.md §3), so a plain global is enough.
 #[derive(Clone)]
 pub struct MainWindow {
     pub handle: gpui_kit::AnyWindowHandle,
@@ -214,285 +145,170 @@ pub struct MainWindow {
 
 impl gpui_kit::Global for MainWindow {}
 
-/// One entry of `get_commands` (gui/SPEC.md §6): invocable as `/name`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct CommandInfo {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub source: Option<String>,
-}
-
-/// `get_available_models`' model, as the GUI displays it.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelInfo {
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-}
-
-/// The `clear_queue` response payload: the queue texts to restore — the
-/// interactive-Esc behavior of gui/SPEC.md §6.
-#[derive(Debug, Clone, Deserialize)]
-struct QueueText {
-    #[serde(default, rename = "steering")]
-    steering: Vec<String>,
-    #[serde(default, rename = "followUp")]
-    follow_up: Vec<String>,
-}
-
 impl ReactorApp {
-    /// Open the main window: theme, dock, pi child, event pump — in the
-    /// order the spec's §6 anatomy needs.
+    /// Open the main window: theme, dock, agent, event pump — in the order the spec's §6
+    /// anatomy needs.
     pub fn open(cx: &mut App, args: &crate::start::ResolvedLaunch) -> anyhow::Result<()> {
         cx.bind_keys(vec![KeyBinding::new("escape", ComposerEsc, None)]);
 
-        // Record the workdir as recent here, not only on the chooser's own
-        // "Open session" button: this is the one choke point every launch
-        // path funnels through (a positional cwd on the command line, the
-        // chooser, the session picker), so it is the only place that can
-        // never miss a launch (the bug: recents stayed empty for anyone who
-        // always launches `reactor-gui <dir>` directly, gui/SPEC.md §8).
+        // Record the workdir as recent here: this is the one choke point every launch path
+        // funnels through (a positional cwd, the chooser, the session picker).
         let mut config = crate::start::GuiConfig::load();
         config.push_workdir(&args.cwd);
 
-        let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(
-            None,
-            gpui_kit::size(px(1420.), px(920.)),
-            cx,
-        ));
+        let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(None, gpui_kit::size(px(1420.), px(920.)), cx));
         let mut app_entity: Option<Entity<ReactorApp>> = None;
-        let _handle = cx.open_window(
-            crate::chrome::window_options(bounds),
-            |window, cx| {
-                // The theme rides the registry (gui/SPEC.md §7) before any
-                // component renders.
-                crate::theme::install_ayu_dark(cx);
-                let app: Entity<ReactorApp> = cx.new(|cx| ReactorApp::new(window, cx, args));
-                app_entity = Some(app.clone());
-                // So the Layout menu's global action handlers (main.rs) can
-                // reach this window — see `MainWindow`'s doc.
-                cx.set_global(MainWindow {
-                    handle: window.window_handle(),
-                    app: app.downgrade(),
-                });
-                let root_view: gpui_kit::AnyView = app.into();
-                cx.new(|cx| Root::new(root_view, window, cx))
-            },
-        )?;
+        let _handle = cx.open_window(crate::chrome::window_options(bounds), |window, cx| {
+            crate::theme::install_ayu_dark(cx);
+            let app: Entity<ReactorApp> = cx.new(|cx| ReactorApp::new(window, cx, args));
+            app_entity = Some(app.clone());
+            cx.set_global(MainWindow { handle: window.window_handle(), app: app.downgrade() });
+            let root_view: gpui_kit::AnyView = app.into();
+            cx.new(|cx| Root::new(root_view, window, cx))
+        })?;
         cx.activate(true);
 
-        // The pump bridges reactor-rpc's reader thread into entity updates —
-        // gui/SPEC.md §2.
         let app = app_entity.expect("window's root view was built");
         app.update(cx, |app, cx| {
             app.start_pump(cx);
-            app.refresh_models(cx);
-            app.refresh_commands(cx);
-            app.refresh_tree(cx);
             app.refresh_catalogue(cx);
             app.refresh_services(false, cx);
-            // Only a resumed/continued/forked session has pre-existing
-            // history to backfill. Calling this unconditionally raced the
-            // live event stream for a brand-new session: `get_entries`'
-            // round trip could return *after* the first turn had already
-            // streamed in live, and its entries — now including that same
-            // turn, freshly flushed to the session file — were appended a
-            // second time, duplicating the assistant's reply (and its
-            // thinking block) verbatim in the transcript.
-            if args.launch_args.resumes_existing_session() {
-                app.load_entries(cx);
+            app.refresh_tree(cx);
+            app.refresh_statuses(cx);
+            if let Some(b) = &app.backend {
+                b.refresh_context();
             }
-            app.load_state(cx);
         });
-
         Ok(())
     }
 
-    fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        args: &crate::start::ResolvedLaunch,
-    ) -> Self {
-        let _weak_app = cx.weak_entity();
+    fn new(window: &mut Window, cx: &mut Context<Self>, args: &crate::start::ResolvedLaunch) -> Self {
         let session = cx.new(|_| Session::new());
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 8)
                 .submit_on_enter(true)
-                .placeholder(
-                    "Prompt — Enter sends (follow-up while streaming), Shift+Enter newline",
-                )
+                .placeholder("Prompt — Enter sends (queues while the agent works), Shift+Enter newline, /help for commands")
         });
-        let dialog_input = cx.new(|cx| InputState::new(window, cx).placeholder("…"));
-        let dialog_editor = cx.new(|cx| TextareaState::new(window, cx));
         let cwd = args.cwd.clone();
-        // reactor-core in-process; `REACTOR_GUI_CLIENT=cli` runs the binary
-        // instead, as the debug fallback (ADR-0034).
-        let reactor = Client::from_env(Some(cwd.clone()));
 
-        // Composer: Enter submits (queued as a follow-up while streaming) —
-        // the send builds the prompt with pi's queueing contract (§6).
-        cx.subscribe_in(
-            &composer,
-            window,
-            |this, _composer, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift, .. } = event {
-                    if !*shift {
-                        this.send_composer(window, cx);
-                    }
-                }
-            },
-        )
+        // Composer: Enter submits (queued while a turn runs).
+        cx.subscribe_in(&composer, window, |this, _composer, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { shift, .. } = event
+                && !*shift
+            {
+                this.send_composer(window, cx);
+            }
+        })
         .detach();
 
         let weak_app = cx.weak_entity();
         let (dock_area, _skin) = DockSkin::dock_area("reactor-main", Some(1), window, cx);
-        // Built once and kept as handles: a layout preset rearranges these
-        // rather than building new panels, so switching never costs the
-        // console its scrollback or the transcript its scroll position
-        // (crate::layout).
+        // Built once and kept as handles: a layout preset rearranges these rather than
+        // building new panels, so switching never costs the console its scrollback or the
+        // transcript its scroll position (crate::layout).
         let panels = crate::layout::Panels {
-            transcript: panel_handle(
-                cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx)),
-            ),
+            transcript: panel_handle(cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx))),
             tree: panel_handle(cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx))),
             tools: panel_handle(cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx))),
             toolsets: panel_handle(cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx))),
-            views: panel_handle(
-                cx.new(|cx| ExtensionViewsPanel::new(weak_app.clone(), window, cx)),
-            ),
+            context: panel_handle(cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx))),
             services: panel_handle(cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx))),
-            console: panel_handle(cx.new(|cx| {
-                ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx)
-            })),
+            console: panel_handle(cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx))),
         };
         let layout = crate::layout::LayoutPreset::Default;
         layout.apply(&panels, &dock_area, window, cx);
 
-        // Kill the child on app quit (gui/SPEC.md §3): pi handles SIGTERM with
-        // its own cleanup, so the watchdog below is the fallback, not the path.
-        let (client, startup_error) = Self::spawn_pi(cx, args);
-        let quit_client = client.clone();
-        cx.on_app_quit(move |_, _| {
-            quit_client.shutdown();
-            async {}
-        })
-        .detach();
-
-        if let Some(message) = startup_error {
-            cx.spawn(async move |this, cx| {
-                this.update(cx, |app, cx| {
-                    app.session.update(cx, |session, _| {
-                        session.last_error = Some(message.clone());
-                        session.items.push(ChatItem::Error {
-                            message: message.clone(),
-                        });
-                    });
-                })
-                .ok();
-            })
-            .detach();
+        // The agent. A failure to start is shown, not fatal: the window stays open.
+        let opts = StartOptions {
+            cwd: cwd.clone(),
+            resume: args.resume_dir(&reactor_core::Paths::from_env()),
+            model: args.launch_args.model.clone(),
+        };
+        let (backend, startup_error) = match Backend::start(opts) {
+            Ok(b) => (Some(Arc::new(b)), None),
+            Err(e) => (None, Some(format!("could not start the agent: {e}"))),
+        };
+        let reactor = match &backend {
+            Some(b) => Client::for_session(b.paths.clone(), Some(cwd.clone())),
+            None => Client::from_env(Some(cwd.clone())),
+        };
+        if let Some(b) = &backend {
+            // A resumed session's transcript is its log.
+            let store = b.store();
+            session.update(cx, |s, _| {
+                s.rebuild(&store.lock().unwrap());
+                s.model = Some(b.model()).filter(|m| !m.is_empty());
+            });
         }
+        if let Some(message) = startup_error {
+            session.update(cx, |s, _| {
+                s.last_error = Some(message.clone());
+                s.items.push(ChatItem::Error { message });
+            });
+        }
+
+        let scenarios_dir = crate::backend::find_bundled("prompts/scenarios").unwrap_or_else(|| PathBuf::from("prompts/scenarios"));
+        let models = backend.as_ref().map(|b| b.models()).unwrap_or_default();
+        let tree = backend.as_ref().map(|b| b.tree()).unwrap_or_default();
+        let leaf_id = backend.as_ref().map(|b| b.store().lock().unwrap().head());
 
         Self {
             menu_bar: crate::chrome::menu_bar(cx),
             cwd,
-            client: Some(client),
+            backend,
             reactor,
             session,
             composer,
-            dialog_input,
-            dialog_editor,
-            views: Vec::new(),
-            dialogs: std::collections::VecDeque::new(),
             notifications: Vec::new(),
-            commands: Vec::new(),
-            models: Vec::new(),
-            thinking_levels: Vec::new(),
+            models,
             catalogue: None,
             toolsets: None,
             services: None,
-            // Set once here rather than left to default-false: `open()`
-            // kicks off the first fetch of each right after construction, so
-            // a panel's first-ever render should already say "loading",
-            // never a beat of "no data" first (the missing-loading-indicator
-            // bug this fixes).
+            activation_scope: None,
+            // Set once here rather than left to default-false: `open()` kicks off the
+            // first fetch of each right after construction, so a panel's first-ever
+            // render already says "loading", never a beat of "no data" first.
             catalogue_loading: true,
             services_loading: true,
-            tree: None,
-            tree_loading: true,
-            leaf_id: None,
-            session_file: None,
-            queue_restored: None,
-            last_error: None,
+            tree,
+            leaf_id,
+            context: None,
+            preview: None,
+            context_busy: false,
+            scenarios_dir,
             panels,
             layout,
             dock_area,
         }
     }
 
-    /// Spawn `pi --mode rpc` with the launch flags and the handshake
-    /// (gui/SPEC.md §3). Failures surface as an error item — the GUI stays
-    /// open and shows why it cannot reach pi, `reactor doctor` being the
-    /// follow-up (gui/SPEC.md §8).
-    fn spawn_pi(
-        _cx: &mut Context<Self>,
-        args: &crate::start::ResolvedLaunch,
-    ) -> (RpcClient, Option<String>) {
-        let config = SpawnConfig {
-            program: None,
-            args: args.launch_args.pi_args(),
-            cwd: Some(args.cwd.clone()),
-            env: vec![("REACTOR_GUI".to_owned(), "1".to_owned())],
-        };
-        match RpcClient::spawn(&config) {
-            Ok(client) => (client, None),
-            Err(e) => {
-                let message = format!("could not start pi: {e}");
-                // A dead client: all sends fail, the event channel closes at
-                // once — the GUI renders the failure and stays open.
-                let dead = RpcClient::connect(
-                    std::io::BufReader::new(std::io::empty()),
-                    Box::new(std::io::sink()),
-                    None,
-                );
-                (dead, Some(message))
-            }
-        }
-    }
-
-    /// The event pump (gui/SPEC.md §2): drain the child's channel every tick
-    /// and ingest. A poll loop, not a blocking recv — the pump future runs on
-    /// gpui's foreground executor and only ever sleeps on a background timer.
+    /// The event pump (gui/SPEC.md §2): drain the backend's channel every tick and ingest.
+    /// A poll loop, not a blocking recv — the pump future runs on gpui's foreground
+    /// executor and only ever sleeps on a background timer.
     fn start_pump(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let Some(receiver) = client.take_receiver() else {
+        let Some(receiver) = self.backend.as_ref().and_then(|b| b.take_events()) else {
             return;
         };
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(PUMP_TICK).await;
-                let mut drained: Vec<Incoming> = Vec::new();
+                let mut drained: Vec<UiEvent> = Vec::new();
                 let mut disconnected = false;
-                while let Ok(incoming) = receiver.try_recv() {
-                    drained.push(incoming);
-                }
-                if let Err(mpsc::TryRecvError::Disconnected) = receiver.try_recv() {
-                    // The sender is dropped and the channel drained — the
-                    // child is gone.
-                    disconnected = true;
+                loop {
+                    match receiver.try_recv() {
+                        Ok(e) => drained.push(e),
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
                 }
                 let ok = this
                     .update(cx, |app, cx| {
-                        for incoming in drained {
-                            app.ingest(incoming, cx);
+                        for e in drained {
+                            app.ingest(e, cx);
                         }
                     })
                     .is_ok();
@@ -504,185 +320,119 @@ impl ReactorApp {
         .detach();
     }
 
-    /// Ingest one incoming line: the session view model learns, the contract
-    /// layer learns (dialogs, views, notifications) — gui/SPEC.md §4.4 (the
-    /// GUI holds no facts beyond the render).
-    fn ingest(&mut self, incoming: Incoming, cx: &mut Context<Self>) {
-        if let Incoming::ExtensionUiRequest(ref request) = incoming {
-            use reactor_rpc::UiMethod;
-            match &request.method {
-                UiMethod::Notify {
-                    message,
-                    notify_type,
-                } => {
-                    self.push_note(notify_type.clone(), message.clone());
-                    cx.notify();
-                    return;
+    /// Ingest one backend event: the session view model learns, and what a panel shows
+    /// that is derived from the store (tree, statuses, context) is recomputed.
+    fn ingest(&mut self, event: UiEvent, cx: &mut Context<Self>) {
+        use reactor_agent::agent::Event;
+        let Some(backend) = self.backend.clone() else { return };
+        match event {
+            UiEvent::Agent(e) => {
+                match &e {
+                    Event::Notice(n) => self.push_note("warning", n.clone()),
+                    Event::Reduced { mode, trigger, before_tokens, after_tokens, .. } => self.push_note(
+                        "info",
+                        format!("context reduced ({mode:?}, {}): ~{before_tokens} → ~{after_tokens} tokens", crate::backend::trigger_label(*trigger)),
+                    ),
+                    _ => {}
                 }
-                UiMethod::Select { .. }
-                | UiMethod::Confirm { .. }
-                | UiMethod::Input { .. }
-                | UiMethod::Editor { .. } => {
-                    self.dialogs.push_back(request.clone());
-                    cx.notify();
-                    return;
+                let store = backend.store();
+                self.session.update(cx, |s, _| s.apply(&e, &store.lock().unwrap()));
+                if matches!(e, Event::Appended(_)) {
+                    self.refresh_tree(cx);
+                    self.refresh_statuses(cx);
                 }
-                UiMethod::SetWidget {
-                    widget_key,
-                    widget_lines,
-                    ..
-                } => {
-                    // The envelope contract (ADR-0032): a `reactor:` widget
-                    // with a marker line is a view; anything else is a plain
-                    // text widget rendered above the composer.
-                    let lines: &[String] =
-                        widget_lines.as_ref().map(|l| l.as_slice()).unwrap_or(&[]);
-                    if widget_key.starts_with(contract::KEY_PREFIX) {
-                        if let Some(view) = View::parse(widget_key, lines) {
-                            self.views.retain(|v| v.view_id != view.view_id);
-                            self.views.push(view);
-                        }
-                        cx.notify();
-                        return;
+            }
+            UiEvent::TurnEnded(result) => {
+                backend.turn_finished();
+                let store = backend.store();
+                self.session.update(cx, |s, _| s.end_turn(&store.lock().unwrap()));
+                let ok = result.is_ok();
+                match result {
+                    Ok(_) => {}
+                    Err(e) if e == "cancelled" => self.push_note("info", "interrupted"),
+                    Err(e) => self.session.update(cx, |s, _| {
+                        s.last_error = Some(e.clone());
+                        s.items.push(ChatItem::Error { message: e });
+                    }),
+                }
+                self.refresh_tree(cx);
+                self.refresh_statuses(cx);
+                backend.refresh_context();
+                // Messages typed while it ran go next, oldest first.
+                if ok && let Some(next) = self.session.update(cx, |s, _| (!s.follow_up.is_empty()).then(|| s.follow_up.remove(0))) {
+                    self.start_turn(next, cx);
+                }
+            }
+            UiEvent::Reduced(result) => {
+                self.context_busy = false;
+                let store = backend.store();
+                self.session.update(cx, |s, _| {
+                    s.phase = AgentPhase::Idle;
+                    s.rebuild(&store.lock().unwrap());
+                });
+                match result {
+                    Ok(id) => self.push_note("info", format!("reduced (#{id}) — undo it from the Context panel")),
+                    Err(e) => self.push_note("error", e),
+                }
+                self.refresh_tree(cx);
+            }
+            UiEvent::Preview(result) => {
+                self.context_busy = false;
+                match result {
+                    Ok(p) => self.preview = Some(p),
+                    Err(e) => {
+                        self.preview = None;
+                        self.push_note("warning", e);
                     }
                 }
-                _ => {}
             }
-        }
-        self.session
-            .update(cx, |session, _| session.ingest(&incoming));
-        // A settled agent is the moment to re-pull the tree (gui/SPEC.md §6).
-        if let Incoming::Event(reactor_rpc::Event::AgentSettled) = incoming {
-            self.refresh_tree(cx);
+            UiEvent::Context(view) => {
+                self.session.update(cx, |s, _| s.context_percent = Some(view.percent()));
+                self.context = Some(view);
+            }
         }
         cx.notify();
     }
 
-    fn push_note(&mut self, kind: impl Into<SharedString>, message: impl Into<SharedString>) {
-        self.notifications
-            .push((kind.into().to_string(), message.into().to_string()));
+    pub fn push_note(&mut self, kind: impl Into<SharedString>, message: impl Into<SharedString>) {
+        self.notifications.push((kind.into().to_string(), message.into().to_string()));
         if self.notifications.len() > 3 {
             self.notifications.remove(0);
         }
     }
 
-    // -- fetches ------------------------------------------------------------
+    // -- derived data ------------------------------------------------------------------------
 
-    pub fn refresh_models(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let thinking_client = client.clone();
-        cx.spawn(async move |this, cx| {
-            let models = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::GetAvailableModels, REQUEST_TIMEOUT)
-                })
-                .await;
-            let levels = cx
-                .background_spawn(async move {
-                    thinking_client
-                        .request_timeout(Command::GetAvailableThinkingLevels, REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                if let Ok(response) = models {
-                    app.models = response
-                        .data
-                        .and_then(|d| d.get("models").cloned())
-                        .and_then(|m| serde_json::from_value::<Vec<ModelInfo>>(m).ok())
-                        .unwrap_or_default();
-                }
-                if let Ok(response) = levels {
-                    app.thinking_levels = response
-                        .data
-                        .and_then(|d| d.get("levels").cloned())
-                        .and_then(|l| serde_json::from_value::<Vec<String>>(l).ok())
-                        .unwrap_or_default();
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    pub fn refresh_tree(&mut self, _cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend {
+            self.tree = b.tree();
+            self.leaf_id = Some(b.store().lock().unwrap().head());
+        }
     }
 
-    pub fn refresh_commands(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let response = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::GetCommands, REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                if let Ok(response) = response {
-                    app.commands = response
-                        .data
-                        .and_then(|d| d.get("commands").cloned())
-                        .and_then(|c| serde_json::from_value::<Vec<CommandInfo>>(c).ok())
-                        .unwrap_or_default();
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    pub fn refresh_tree(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        self.tree_loading = true;
-        cx.spawn(async move |this, cx| {
-            let response = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::GetTree, REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                if let Ok(response) = response {
-                    if response.success {
-                        app.tree = response.data.clone();
-                        app.leaf_id = response
-                            .data
-                            .and_then(|d| d.get("leafId").cloned())
-                            .and_then(|l| l.as_str().map(str::to_owned));
-                    }
-                }
-                app.tree_loading = false;
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    /// The status bar's left side, from the session's state modules.
+    pub fn refresh_statuses(&mut self, cx: &mut Context<Self>) {
+        let Some(b) = self.backend.clone() else { return };
+        let (state, settings) = (b.session_state(), Settings::load(&b.paths));
+        let items = status_items(&state, &settings, &self.scenarios_dir);
+        self.session.update(cx, |s, _| s.statuses = items);
     }
 
     pub fn refresh_catalogue(&mut self, cx: &mut Context<Self>) {
         let reactor = self.reactor.clone();
         self.catalogue_loading = true;
         cx.spawn(async move |this, cx| {
-            let (tools, toolsets) = cx
-                .background_spawn(async move {
-                    (
-                        ReactorClient::tools(&reactor),
-                        ReactorClient::toolsets(&reactor),
-                    )
-                })
+            let (tools, toolsets, state) = cx
+                .background_spawn(async move { (ReactorClient::tools(&reactor), ReactorClient::toolsets(&reactor), ReactorClient::state(&reactor)) })
                 .await;
             this.update(cx, |app, cx| {
-                // A failure is said, not shown as an empty catalogue: with
-                // `REACTOR_GUI_CLIENT=cli` and no `reactor` on PATH, "nothing
-                // listed" would otherwise be indistinguishable from "nothing
-                // catalogued".
+                // A failure is said, not shown as an empty catalogue.
                 for failure in [tools.as_ref().err(), toolsets.as_ref().err()].into_iter().flatten().take(1) {
                     app.push_note("error", format!("catalogue: {failure}"));
                 }
                 app.catalogue = tools.ok();
                 app.toolsets = toolsets.ok();
+                app.activation_scope = state.ok().and_then(|s| s.scope);
                 app.catalogue_loading = false;
                 cx.notify();
             })
@@ -695,9 +445,7 @@ impl ReactorApp {
         let reactor = self.reactor.clone();
         self.services_loading = true;
         cx.spawn(async move |this, cx| {
-            let services = cx
-                .background_spawn(async move { ReactorClient::services(&reactor, refresh) })
-                .await;
+            let services = cx.background_spawn(async move { ReactorClient::services(&reactor, refresh) }).await;
             this.update(cx, |app, cx| {
                 match services {
                     Ok(payload) => app.services = Some(payload),
@@ -711,307 +459,235 @@ impl ReactorApp {
         .detach();
     }
 
-    /// History: a resumed session's transcript comes from the session file
-    /// (`get_entries`), since the event stream only carries new activity
-    /// (gui/SPEC.md §2).
-    pub fn load_entries(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let response = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::GetEntries { since: None }, REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                if let Ok(response) = response {
-                    let entries = response
-                        .data
-                        .and_then(|d| d.get("entries").cloned())
-                        .and_then(|e| serde_json::from_value::<Vec<Value>>(e).ok())
-                        .unwrap_or_default();
-                    app.session.update(cx, |session, _| {
-                        for entry in entries {
-                            session.ingest_entry(&entry);
-                        }
-                    });
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    pub fn load_state(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let response = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::GetState, REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                if let Ok(response) = response {
-                    if let Some(data) = &response.data {
-                        app.session.update(cx, |session, _| {
-                            session.session_file = data
-                                .get("sessionFile")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                            session.model =
-                                data.get("model").filter(|m| !m.is_null()).and_then(|m| {
-                                    let provider = m.get("provider").and_then(Value::as_str)?;
-                                    let id = m.get("id").and_then(Value::as_str)?;
-                                    Some(format!("{provider}/{id}"))
-                                });
-                            session.thinking_level = data
-                                .get("thinkingLevel")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                        });
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// Rearrange the window into a named preset (`crate::layout`).
-    pub fn apply_layout(
-        &mut self,
-        preset: crate::layout::LayoutPreset,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn apply_layout(&mut self, preset: crate::layout::LayoutPreset, window: &mut Window, cx: &mut Context<Self>) {
         preset.apply(&self.panels, &self.dock_area, window, cx);
         self.layout = preset;
         cx.notify();
     }
 
-    /// Show or hide one dock, from the Layout menu — the arrangement
-    /// otherwise unchanged.
-    pub fn toggle_dock(
-        &mut self,
-        side: crate::layout::DockSide,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Show or hide one dock, from the Layout menu.
+    pub fn toggle_dock(&mut self, side: crate::layout::DockSide, window: &mut Window, cx: &mut Context<Self>) {
         crate::layout::toggle_dock(side, &self.dock_area, window, cx);
         cx.notify();
     }
 
     // -- the console --------------------------------------------------------
 
-    /// Open a new terminal: another `ConsolePanel`, tabbed alongside any
-    /// that already exist.
-    ///
-    /// Each console now owns its own session, buffer and polling loop
-    /// (`crate::panels::ConsolePanel`) rather than `ReactorApp` holding one
-    /// singular console for the whole window — that ownership move is what
-    /// makes more than one terminal possible at all. `ReactorApp`'s only
-    /// remaining part in it is this: building one and giving it to the dock.
-    ///
-    /// Always targets the bottom dock, creating it if it does not currently
-    /// exist (`DockArea::add_panel_view` does that, and merges into whatever
-    /// tab group is already there otherwise) — so "another terminal" has one
-    /// predictable home regardless of which layout preset is active, rather
-    /// than a guess at "beside whichever console the click happened to be
-    /// near."
-    ///
-    /// `initial`, when given, is a command run immediately in the new
-    /// console rather than leaving it at an idle shell prompt — how
-    /// installing a catalogued tool opens its own terminal already running
-    /// `reactor install <id>`, so its plan, its questions and its failures
-    /// are all visible from the moment it exists.
-    pub fn open_console(
-        &mut self,
-        initial: Option<(String, Vec<String>)>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Open a new terminal: another `ConsolePanel`, tabbed alongside any that already
+    /// exist, in the bottom dock (created if need be). `initial`, when given, is a command
+    /// run immediately — how installing a catalogued tool opens its own terminal already
+    /// running `reactor install <id>`.
+    pub fn open_console(&mut self, initial: Option<(String, Vec<String>)>, window: &mut Window, cx: &mut Context<Self>) {
         let weak_app = cx.weak_entity();
         let cwd = Some(self.cwd.clone());
-        let panel =
-            cx.new(|cx| crate::panels::ConsolePanel::new(weak_app, cwd, initial, window, cx));
+        let panel = cx.new(|cx| crate::panels::ConsolePanel::new(weak_app, cwd, initial, window, cx));
         let handle = panel_handle(panel);
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(handle, DockPlacement::Bottom, None, window, cx);
         });
     }
 
-    // -- user actions -------------------------------------------------------
+    // -- turns --------------------------------------------------------------
 
-    /// Enter in the composer: send when idle, queue a follow-up while
-    /// streaming (gui/SPEC.md §6).
+    /// Enter in the composer: a `/command`, a prompt when idle, a queued follow-up while
+    /// a turn runs.
     ///
-    /// Clears the field *before* sending, not after: gpui-component's
-    /// textarea can dispatch one `Enter` keystroke to more than one action
-    /// listener (its own key context plus an ambient one both matching the
-    /// same action), which was reaching this function twice for a single
-    /// keystroke — the "prompt sent twice" bug. Clearing first makes the
-    /// function idempotent against that: a second call reads the
-    /// already-emptied field and returns at the guard above, instead of
-    /// reading the same text again and sending it a second time.
+    /// Clears the field *before* sending: gpui-component's textarea can dispatch one
+    /// `Enter` to more than one action listener, which reached this function twice for a
+    /// single keystroke (the "prompt sent twice" bug). Clearing first makes it idempotent.
     pub fn send_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().to_string();
-        if text.trim().is_empty() {
+        let text = text.trim().to_string();
+        if text.is_empty() {
             return;
         }
-        let Some(client) = self.client.clone() else {
-            return;
-        };
         self.composer.update(cx, |state, cx| {
             state.set_value("", window, cx);
             state.focus(window, cx);
         });
-        let streaming = self.session.read(cx).phase != AgentPhase::Idle;
-        let command = Command::Prompt {
-            message: text.clone(),
-            images: Vec::new(),
-            streaming_behavior: if streaming {
-                Some("followUp".to_owned())
-            } else {
-                None
+        if let Some(cmd) = text.strip_prefix('/') {
+            self.run_command(cmd, cx);
+        } else if self.session.read(cx).phase != AgentPhase::Idle {
+            self.session.update(cx, |s, _| s.follow_up.push(text));
+            cx.notify();
+        } else {
+            self.start_turn(text, cx);
+        }
+    }
+
+    fn start_turn(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            self.push_note("error", "the agent is not running");
+            return;
+        };
+        self.session.update(cx, |s, _| {
+            s.phase = AgentPhase::Working;
+            s.last_error = None;
+        });
+        backend.prompt(text);
+        cx.notify();
+    }
+
+    /// A `/command` from the composer.
+    fn run_command(&mut self, cmd: &str, cx: &mut Context<Self>) {
+        let (name, args) = cmd.split_once(char::is_whitespace).map(|(n, a)| (n, a.trim())).unwrap_or((cmd, ""));
+        let Some(backend) = self.backend.clone() else {
+            self.push_note("error", "the agent is not running");
+            return;
+        };
+        let mode = || match args {
+            "fade" => Mode::Fade,
+            "auto" => Mode::Auto,
+            _ => Mode::Compact,
+        };
+        match name {
+            "help" => {
+                let lines: Vec<String> = COMMANDS.iter().map(|(n, d)| format!("/{n} — {d}")).collect();
+                self.push_note("info", lines.join("\n"));
+            }
+            "model" => self.set_model(args, cx),
+            "preview" => self.preview_reduction(mode(), cx),
+            "reduce" => self.reduce_now(mode(), cx),
+            "undo" => match backend.agent.reductions().last().map(|r| r.entry) {
+                Some(id) => self.restore_reduction(id, cx),
+                None => self.push_note("info", "no reduction in force"),
             },
-        };
-        if client.send(command.to_value()).is_err() {
-            // The pipe to pi is gone — restore what the user typed rather
-            // than silently discarding it.
-            self.composer.update(cx, |state, cx| {
-                state.set_value(&text, window, cx);
-            });
-        }
-    }
-
-    /// Interrupt: `clear_queue` then `abort` — the RPC-documented interactive
-    /// Esc behavior, with the queue text restored into the composer
-    /// (gui/SPEC.md §6).
-    pub fn interrupt(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let abort_client = client.clone();
-        cx.spawn(async move |this, cx| {
-            let cleared = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::ClearQueue, REQUEST_TIMEOUT)
-                })
-                .await;
-            let queue_text: Option<String> = cleared
-                .ok()
-                .and_then(|r| r.data)
-                .and_then(|d| serde_json::from_value::<QueueText>(d).ok())
-                .map(|q| {
-                    q.steering
-                        .into_iter()
-                        .chain(q.follow_up)
-                        .collect::<Vec<_>>()
-                })
-                .map(|texts| texts.join("\n"))
-                .filter(|t| !t.is_empty());
-            let _ = abort_client.send(json!({ "type": "abort" }));
-            this.update(cx, |app, cx| {
-                if let Some(text) = queue_text {
-                    app.queue_restored = Some(text);
-                }
-                app.push_note("info", "interrupted — queue cleared");
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Run an envelope view's action — the inbound channel of ADR-0032:
-    /// extension commands via RPC `prompt`, immediate and transcript-free
-    /// (verified in pi 0.87.0; see "Facts for reactor-gui" in pi-api-notes).
-    pub fn run_ui_event(&mut self, command: String, payload: String, _cx: &mut Context<Self>) {
-        if let Some(client) = self.client.clone() {
-            let _ =
-                client.send(json!({ "type": "prompt", "message": format!("{command} {payload}") }));
-        }
-    }
-
-    pub fn set_model(&mut self, provider: &str, model_id: &str, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let provider = provider.to_owned();
-        let model_id = model_id.to_owned();
-        cx.spawn(async move |this, cx| {
-            let response = cx
-                .background_spawn(async move {
-                    client
-                        .request_timeout(Command::SetModel { provider, model_id }, REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                match response {
-                    Ok(response) => {
-                        if let Some(data) = &response.data {
-                            app.session.update(cx, |session, _| {
-                                session.model = Some(format!(
-                                    "{}/{}",
-                                    data.get("provider").and_then(Value::as_str).unwrap_or(""),
-                                    data.get("id").and_then(Value::as_str).unwrap_or("")
-                                ));
-                            });
-                        }
+            other => match backend.command(other, args) {
+                Ok(result) => {
+                    for n in result.notices {
+                        self.push_note(match n.level {
+                            reactor_context::Level::Info => "info",
+                            reactor_context::Level::Warning => "warning",
+                            reactor_context::Level::Error => "error",
+                        }, n.message);
                     }
-                    Err(e) => app.push_note("error", e.to_string()),
+                    self.refresh_statuses(cx);
+                    self.refresh_catalogue(cx);
+                    backend.refresh_context();
+                    // A scenario opens with its briefing as the first turn.
+                    if let Some(text) = result.trigger_turn {
+                        self.start_turn(text, cx);
+                    }
                 }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+                Err(e) => self.push_note("error", e),
+            },
+        }
+        cx.notify();
     }
 
-    pub fn set_thinking(&mut self, level: &str, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let level = level.to_owned();
-        cx.spawn(async move |this, cx| {
-            let response = cx
-                .background_spawn(async move {
-                    client.request_timeout(Command::SetThinkingLevel(level), REQUEST_TIMEOUT)
-                })
-                .await;
-            this.update(cx, |app, cx| {
-                match response {
-                    Ok(response) => {
-                        app.session.update(cx, |session, _| {
-                            session.thinking_level = response
-                                .data
-                                .and_then(|d| d.get("level").cloned())
-                                .and_then(|l| l.as_str().map(str::to_owned));
-                        });
-                    }
-                    Err(e) => app.push_note("error", e.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    /// Interrupt: cancel the turn, and give anything queued back to the composer.
+    pub fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else { return };
+        backend.cancel();
+        let queued = self.session.update(cx, |s, _| std::mem::take(&mut s.follow_up));
+        if !queued.is_empty() {
+            let text = queued.join("\n");
+            self.composer.update(cx, |state, cx| state.set_value(&text, window, cx));
+        }
+        self.push_note("info", "interrupting…");
+        cx.notify();
     }
+
+    pub fn set_model(&mut self, spec: &str, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else { return };
+        match backend.set_model(spec) {
+            Ok(()) => {
+                self.session.update(cx, |s, _| s.model = Some(spec.to_string()));
+                self.models = backend.models();
+                backend.refresh_context();
+                self.push_note("info", format!("model: {spec}"));
+            }
+            Err(e) => self.push_note("error", e),
+        }
+        cx.notify();
+    }
+
+    // -- context ---------------------------------------------------------------------------------
+
+    pub fn preview_reduction(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend {
+            self.context_busy = true;
+            self.preview = None;
+            b.preview(mode);
+        }
+        cx.notify();
+    }
+
+    pub fn reduce_now(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else { return };
+        if self.session.read(cx).phase != AgentPhase::Idle {
+            self.push_note("warning", "wait for the agent to finish, or interrupt it");
+            return;
+        }
+        self.context_busy = true;
+        self.preview = None;
+        self.session.update(cx, |s, _| s.phase = AgentPhase::Compacting);
+        backend.reduce_now(mode);
+        cx.notify();
+    }
+
+    pub fn restore_reduction(&mut self, entry: EntryId, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else { return };
+        match backend.restore(entry) {
+            Ok(()) => {
+                let store = backend.store();
+                self.session.update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
+                self.preview = None;
+                self.push_note("info", format!("restored #{entry}"));
+            }
+            Err(e) => self.push_note("error", e),
+        }
+        cx.notify();
+    }
+
+    /// Change one field of this session's context settings.
+    pub fn set_context(&mut self, layer: ContextSettings, cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend
+            && let Err(e) = b.set_session_context(layer)
+        {
+            self.push_note("error", e);
+        }
+        self.preview = None;
+        cx.notify();
+    }
+
+    /// Drop this session's overrides: everything inherits the default again.
+    pub fn inherit_context(&mut self, cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend
+            && let Err(e) = b.inherit_context()
+        {
+            self.push_note("error", e);
+        }
+        cx.notify();
+    }
+
+    /// "Make this the default": this session's settings become the global ones.
+    pub fn make_context_default(&mut self, cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend {
+            match b.make_context_default() {
+                Ok(()) => self.push_note("info", "these settings are now the default for new sessions"),
+                Err(e) => self.push_note("error", e),
+            }
+        }
+        cx.notify();
+    }
+
+    // -- activation ------------------------------------------------------------------------------
 
     pub fn toggle_tool(&mut self, id: &str, enable: bool, cx: &mut Context<Self>) {
         let reactor = self.reactor.clone();
         let id = id.to_owned();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { ReactorClient::set_tool(&reactor, &id, enable) })
-                .await;
+            let result = cx.background_spawn(async move { ReactorClient::set_tool(&reactor, &id, enable) }).await;
             this.update(cx, |app, cx| match result {
-                Ok(_) => app.refresh_catalogue(cx),
+                Ok(_) => {
+                    app.refresh_catalogue(cx);
+                    app.refresh_statuses(cx);
+                    if let Some(b) = &app.backend {
+                        b.refresh_context();
+                    }
+                }
                 Err(e) => app.push_note("error", e.to_string()),
             })
             .ok();
@@ -1023,11 +699,14 @@ impl ReactorApp {
         let reactor = self.reactor.clone();
         let id = id.to_owned();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { ReactorClient::set_toolset(&reactor, &id, enable) })
-                .await;
+            let result = cx.background_spawn(async move { ReactorClient::set_toolset(&reactor, &id, enable) }).await;
             this.update(cx, |app, cx| match result {
-                Ok(_) => app.refresh_catalogue(cx),
+                Ok(_) => {
+                    app.refresh_catalogue(cx);
+                    if let Some(b) = &app.backend {
+                        b.refresh_context();
+                    }
+                }
                 Err(e) => app.push_note("error", e.to_string()),
             })
             .ok();
@@ -1035,196 +714,103 @@ impl ReactorApp {
         .detach();
     }
 
-    pub fn reload_extensions(&mut self, cx: &mut Context<Self>) {
-        if let Some(client) = self.client.clone() {
-            let _ = client.send(json!({ "type": "prompt", "message": "/reload" }));
-        }
-        cx.notify();
+    /// "Make this the default": copy this session's activation to the machine's.
+    pub fn make_activation_default(&mut self, cx: &mut Context<Self>) {
+        let Some(paths) = self.backend.as_ref().map(|b| b.paths.clone()) else { return };
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { reactor_core::commands::make_session_state_default(&paths).map(|_| ()) }).await;
+            this.update(cx, |app, cx| {
+                match result {
+                    Ok(()) => app.push_note("info", "this session's tools are now the default for new sessions"),
+                    Err(e) => app.push_note("warning", e.to_string()),
+                }
+                app.refresh_catalogue(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
-    /// Branch switch — the tree bridge of gui/SPEC.md §4.6: an extension
-    /// command through `prompt`, which calls `ctx.navigateTree`. Rejects
-    /// while streaming, so the affordance is disabled then (§4.6).
-    pub fn switch_branch(&mut self, entry_id: &str, cx: &mut Context<Self>) {
-        self.run_ui_event(
-            "/reactor-tree".to_owned(),
-            json!({ "entryId": entry_id }).to_string(),
-            cx,
-        );
+    /// Drop this session's activation override: it inherits the machine's again.
+    pub fn inherit_activation(&mut self, cx: &mut Context<Self>) {
+        let Some(paths) = self.backend.as_ref().map(|b| b.paths.clone()) else { return };
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { reactor_core::commands::clear_session_state(&paths) }).await;
+            this.update(cx, |app, cx| {
+                if let Err(e) = result {
+                    app.push_note("error", e.to_string());
+                }
+                app.refresh_catalogue(cx);
+                if let Some(b) = &app.backend {
+                    b.refresh_context();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
-    /// Dismiss an envelope view: the GUI-side overlay goes away and the
-    /// extension is told to clear its widget (it owns the view, §4.4).
-    pub fn dismiss_view(&mut self, view_id: &str, cx: &mut Context<Self>) {
-        if let Some(view) = self.views.iter().find(|v| v.view_id == view_id).cloned() {
-            let payload = contract::event_command("", &view.view_id, "close", None);
-            let payload = payload
-                .split_once(' ')
-                .map(|(_, payload)| payload.to_owned())
-                .unwrap_or_default();
-            self.run_ui_event(view.command.clone(), payload, cx);
+    // -- the tree --------------------------------------------------------------------------------
+
+    /// Continue from another branch's reply. Disabled while the agent works.
+    pub fn switch_branch(&mut self, entry: EntryId, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else { return };
+        match backend.switch_branch(entry) {
+            Ok(()) => {
+                let store = backend.store();
+                self.session.update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
+                self.refresh_tree(cx);
+                self.refresh_statuses(cx);
+                backend.refresh_context();
+            }
+            Err(e) => self.push_note("warning", e),
         }
-        self.views.retain(|v| v.view_id != view_id);
         cx.notify();
     }
 }
 
 impl ReactorApp {
-    /// The status bar (gui/SPEC.md §6): extension statuses left (key-sorted,
-    /// the `0-reactor` anchor leads), model · thinking · context% right.
-    fn render_status_bar(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// The status bar (gui/SPEC.md §6): what the manifest, identity, reporting and scenario
+    /// are doing on the left; model and context use on the right.
+    fn render_status_bar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.session.read(cx);
         let statuses = session.statuses.clone();
         let model = session.model.clone();
-        let thinking = session.thinking_level.clone();
+        let percent = session.context_percent;
 
         let mut left = h_flex().gap_3().items_center();
-        for (key, text) in &statuses {
-            left = left.child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child(format!("{key}: {text}")),
-            );
+        for (_, text) in &statuses {
+            left = left.child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child(text.clone()));
         }
         if statuses.is_empty() {
-            left = left.child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child("no extensions reporting"),
-            );
+            left = left.child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child("no goal, identity or scenario set — /help"));
         }
 
-        // Model and thinking-level pickers — `SelectModelAction`/
-        // `SelectThinkingAction` and `set_model`/`set_thinking` already
-        // existed; nothing ever built the menu that dispatches them; the
-        // status bar showed the current value as inert text with no way to
-        // change it (the "missing model selection" gap this fixes).
         let models = self.models.clone();
-        let thinking_levels = self.thinking_levels.clone();
-
         let mut right = h_flex().gap_2().items_center();
+        if let Some(p) = percent {
+            right = right.child(
+                div()
+                    .text_color(if p >= 90 { cx.theme().warning } else { cx.theme().muted_foreground })
+                    .text_size(cx.theme().font_size * 0.85)
+                    .child(format!("context {p}%")),
+            );
+        }
         right = right.child(
             Button::new("model-picker")
                 .ghost()
                 .small()
-                .label(model.unwrap_or_else(|| "model".to_owned()))
+                .label(model.unwrap_or_else(|| "no model".to_owned()))
                 .disabled(models.is_empty())
                 .dropdown_menu(move |mut menu, _window, _cx| {
-                    for info in &models {
-                        let label = if info.name.is_empty() {
-                            format!("{}/{}", info.provider, info.id)
-                        } else {
-                            info.name.clone()
-                        };
-                        menu = menu.menu(
-                            label,
-                            Box::new(SelectModelAction {
-                                provider: info.provider.clone(),
-                                model_id: info.id.clone(),
-                            }),
-                        );
-                    }
-                    menu
-                }),
-        );
-        right = right.child(
-            Button::new("thinking-picker")
-                .ghost()
-                .small()
-                .label(thinking.unwrap_or_else(|| "thinking".to_owned()))
-                .disabled(thinking_levels.is_empty())
-                .dropdown_menu(move |mut menu, _window, _cx| {
-                    for level in &thinking_levels {
-                        menu = menu.menu(
-                            level.clone(),
-                            Box::new(SelectThinkingAction {
-                                level: level.clone(),
-                            }),
-                        );
+                    for spec in &models {
+                        menu = menu.menu(spec.clone(), Box::new(SelectModelAction { spec: spec.clone() }));
                     }
                     menu
                 }),
         );
 
         StatusBar::new().left(left).right(right)
-    }
-
-    /// The one overlay-placed extension view (if any), floated over the
-    /// whole workspace — today's selector/guide semantics under the
-    /// envelope contract (gui/SPEC.md §4.2's "overlay" placement matches the
-    /// TUI's existing overlay behavior for those two extensions). A
-    /// side-placed view docks in [`crate::panels::ExtensionViewsPanel`]
-    /// instead; both share [`crate::views::render_content`].
-    fn render_overlay(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let view = self
-            .views
-            .iter()
-            .find(|v| v.placement == contract::Placement::Overlay)
-            .cloned()?;
-        let theme = cx.theme().clone();
-        let weak = cx.weak_entity();
-        let dismiss_view_id = view.view_id.clone();
-        let dispatch_view = view.clone();
-
-        Some(
-            div()
-                .id("view-overlay-backdrop")
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(gpui_kit::black().opacity(0.6))
-                .child(
-                    v_flex()
-                        .id("view-overlay")
-                        .w(px(640.))
-                        .max_h(px(560.))
-                        .bg(theme.background)
-                        .border_1()
-                        .border_color(theme.border)
-                        .rounded_lg()
-                        .child(views::view_chrome(&view, {
-                            let weak = weak.clone();
-                            move |_window, cx| {
-                                if let Some(app) = weak.upgrade() {
-                                    app.update(cx, |app, cx| {
-                                        app.dismiss_view(&dismiss_view_id, cx)
-                                    });
-                                }
-                            }
-                        }))
-                        .child(
-                            div()
-                                .id("view-overlay-body")
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_y_scroll()
-                                .child(views::render_content(
-                                    &view.content,
-                                    &theme,
-                                    move |action, row, _window, cx| {
-                                        if let Some(app) = weak.upgrade() {
-                                            let (command, payload) =
-                                                dispatch_view.dispatch(action, row);
-                                            app.update(cx, |app, cx| {
-                                                app.run_ui_event(command, payload, cx)
-                                            });
-                                        }
-                                    },
-                                )),
-                        )
-                        .when_some(view.footer.clone(), |el, footer| {
-                            el.child(views::view_footer(&footer, &theme))
-                        }),
-                ),
-        )
     }
 }
 
@@ -1237,7 +823,6 @@ impl Render for ReactorApp {
         // Root's overlay layers: notifications, dialogs (§6).
         let notification_layer = Root::render_notification_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
-        let view_overlay = self.render_overlay(cx);
 
         div()
             .id("reactor-workspace")
@@ -1245,28 +830,20 @@ impl Render for ReactorApp {
             .flex()
             .flex_col()
             .relative()
-            // The status bar's model/thinking pickers dispatch these actions
-            // from a `PopupMenu`, which bubbles them up the dispatch tree —
-            // this is the ancestor that answers them.
-            .on_action(
-                cx.listener(|this, action: &SelectModelAction, _window, cx| {
-                    this.set_model(&action.provider, &action.model_id, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, action: &SelectThinkingAction, _window, cx| {
-                    this.set_thinking(&action.level, cx);
-                }),
-            )
-            .child(crate::chrome::title_bar(
-                format!("REactor — {}", self.cwd.display()),
-                self.menu_bar.as_ref(),
-                cx,
-            ))
+            // The status bar's model picker dispatches this from a `PopupMenu`, which
+            // bubbles up the dispatch tree — this is the ancestor that answers it.
+            .on_action(cx.listener(|this, action: &SelectModelAction, _window, cx| {
+                this.set_model(&action.spec, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ComposerEsc, window, cx| {
+                if this.session.read(cx).phase == AgentPhase::Working {
+                    this.interrupt(window, cx);
+                }
+            }))
+            .child(crate::chrome::title_bar(format!("REactor — {}", self.cwd.display()), self.menu_bar.as_ref(), cx))
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
             .when_some(notification_layer, |el, layer| el.child(layer))
             .when_some(dialog_layer, |el, layer| el.child(layer))
-            .when_some(view_overlay, |el, layer| el.child(layer))
     }
 }

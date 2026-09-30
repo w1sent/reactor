@@ -255,6 +255,17 @@ pub struct ToolStyle {
     pub max_chars: usize,
 }
 
+/// The background of a whole entry: what you said is a shade lighter than the window, what the
+/// agent produced is the window's own. Errors bring their own colour.
+fn entry_background(item: &ChatItem, theme: &gpui_kit::component::Theme) -> Option<gpui_kit::Hsla> {
+    match item {
+        // An absolute lift: `lighten` scales, and a near-black window has nothing to scale.
+        ChatItem::User { .. } => Some(gpui_kit::Hsla { l: (theme.background.l + 0.04).min(1.0), ..theme.background }),
+        ChatItem::Error { .. } => None,
+        _ => Some(theme.background),
+    }
+}
+
 fn render_item(
     index: usize,
     item: &ChatItem,
@@ -265,19 +276,8 @@ fn render_item(
     restore: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
 ) -> gpui_kit::Div {
     match item {
-        ChatItem::User { text } => v_flex()
-            .gap_1()
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(theme.secondary)
-                    .text_color(theme.secondary_foreground)
-                    .child(Label::new("you")),
-            )
-            .child(div().px_2().child(text.clone()))
-            .into(),
+        // Who said it is the entry's background (`entry_background`), not a label.
+        ChatItem::User { text } => div().px_2().child(text.clone()),
         ChatItem::AssistantText { text, streaming } => {
             let streaming = *streaming;
             div()
@@ -312,14 +312,19 @@ fn render_item(
                                         .small()
                                         .text_color(theme.muted_foreground),
                                 )
-                                .child(
-                                    Label::new(if *streaming {
-                                        "thinking…"
-                                    } else {
-                                        "thinking"
-                                    })
-                                    .text_color(theme.muted_foreground),
-                                ),
+                                .child(if *streaming {
+                                    // Still thinking: the library's shimmer sweeps over the word.
+                                    div()
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            gpui_kit::component::shimmer::ShimmerText::new("thinking…")
+                                                .id(("thinking-shimmer", index))
+                                                .highlight_color(theme.foreground),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    Label::new("thinking").text_color(theme.muted_foreground).into_any_element()
+                                }),
                         )
                         .content(
                             div().child(
@@ -376,7 +381,8 @@ fn render_item(
                         .text_color(theme.muted_foreground)
                         .font_family(tools.family.clone())
                         .text_size(tools.size)
-                        .child(short_args(args)),
+                        // Selectable, and whole: what is copied is the command as it ran.
+                        .child(SelectableText::new(("tool-command", index), command_text(args)).document_order(index as u64 * 10)),
                 )
                 .when(!output.is_empty(), |el| {
                     el.child(
@@ -389,7 +395,11 @@ fn render_item(
                             })
                             .font_family(tools.family.clone())
                             .text_size(tools.size)
-                            .child(output),
+                            .child(
+                                SelectableText::new(("tool-output", index), output)
+                                    .document_order(index as u64 * 10 + 1)
+                                    .text_style(TextStyleRefinement { color: Some(if *is_error { theme.danger } else { theme.foreground }), ..Default::default() }),
+                            ),
                     )
                 })
                 .when(*is_error, |el| el.border_l_2().border_color(colour))
@@ -447,24 +457,17 @@ fn render_item(
     }
 }
 
-fn short_args(args: &Value) -> String {
-    let rendered = match args {
+/// The command a tool call ran, as text: a shell command as typed, a string as it is, other
+/// arguments as compact JSON.
+fn command_text(args: &Value) -> String {
+    match args {
         Value::String(s) => s.clone(),
-        Value::Object(o) => {
-            if let Some(command) = o.get("command").and_then(Value::as_str) {
-                command.to_owned()
-            } else {
-                serde_json::to_string(args).unwrap_or_default()
-            }
-        }
+        Value::Object(o) => match o.get("command").and_then(Value::as_str) {
+            Some(command) => command.to_owned(),
+            None => serde_json::to_string(args).unwrap_or_default(),
+        },
         _ => String::new(),
-    };
-    let mut rendered = rendered.replace('\n', " ");
-    if rendered.len() > 120 {
-        rendered.truncate(120);
-        rendered.push('…');
     }
-    rendered
 }
 
 impl Focusable for TranscriptPanel {
@@ -576,11 +579,17 @@ impl Render for TranscriptPanel {
                         toggle_thinking.clone(),
                         restore.clone(),
                     );
+                    let row = match entry_background(&items[index], &render_theme) {
+                        Some(background) => row.bg(background).px_2().py_2(),
+                        None => row.px_2().py_1(),
+                    };
                     // What a reduction has taken out of the model's context stays on screen,
                     // dimmed: the log keeps everything, and so does the transcript.
                     if dim_reduced && hidden.contains(&index) { row.opacity(0.45) } else { row }
                 },
             )
+            // Entries touch: each has its own background, and the gap between rows is a hair.
+            .with_row_style(gpui_kit::StyleRefinement::default().px_0().pb_0p5())
             .with_bottom_fade(theme.background)
             .into_any_element()
         };

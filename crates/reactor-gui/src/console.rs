@@ -172,10 +172,10 @@ impl ConsoleSession {
             }
         }
 
-        if self.exit.is_none() {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                self.exit = Some(Some(status.exit_code() as i32));
-            }
+        if self.exit.is_none()
+            && let Ok(Some(status)) = self.child.try_wait()
+        {
+            self.exit = Some(Some(status.exit_code() as i32));
         }
         // Both halves have to be true: the process is gone and nothing is
         // still in flight behind it.

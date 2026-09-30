@@ -32,7 +32,7 @@ impl PromptHistory {
     }
 
     /// Step back from `current` (what the prompt holds now). `None` when there is nothing older.
-    pub fn prev(&mut self, current: &str) -> Option<&str> {
+    pub fn back(&mut self, current: &str) -> Option<&str> {
         let next = match self.pos {
             None => {
                 if self.items.is_empty() {
@@ -49,7 +49,7 @@ impl PromptHistory {
     }
 
     /// Step forward: the next message, then the draft. `None` when not walking.
-    pub fn next(&mut self) -> Option<String> {
+    pub fn forward(&mut self) -> Option<String> {
         let at = self.pos?;
         if at + 1 < self.items.len() {
             self.pos = Some(at + 1);
@@ -80,47 +80,47 @@ mod tests {
     #[test]
     fn up_walks_back_through_what_was_sent_and_stops_at_the_oldest() {
         let mut h = h(&["one", "two", "three"]);
-        assert_eq!(h.prev(""), Some("three"));
-        assert_eq!(h.prev("three"), Some("two"));
-        assert_eq!(h.prev("two"), Some("one"));
-        assert_eq!(h.prev("one"), None, "nothing older");
+        assert_eq!(h.back(""), Some("three"));
+        assert_eq!(h.back("three"), Some("two"));
+        assert_eq!(h.back("two"), Some("one"));
+        assert_eq!(h.back("one"), None, "nothing older");
         assert!(h.is_walking());
     }
 
     #[test]
     fn down_walks_forward_and_ends_on_what_was_being_typed() {
         let mut h = h(&["one", "two"]);
-        h.prev("half a thought");
-        h.prev("two");
-        assert_eq!(h.next().as_deref(), Some("two"));
-        assert_eq!(h.next().as_deref(), Some("half a thought"), "the draft comes back");
+        h.back("half a thought");
+        h.back("two");
+        assert_eq!(h.forward().as_deref(), Some("two"));
+        assert_eq!(h.forward().as_deref(), Some("half a thought"), "the draft comes back");
         assert!(!h.is_walking());
-        assert_eq!(h.next(), None, "down does nothing when not walking");
+        assert_eq!(h.forward(), None, "down does nothing when not walking");
     }
 
     #[test]
     fn the_draft_is_the_text_at_the_moment_of_the_first_step_back() {
         let mut h = h(&["one"]);
-        h.prev("first draft");
-        h.next();
-        h.prev("second draft");
-        assert_eq!(h.next().as_deref(), Some("second draft"));
+        h.back("first draft");
+        h.forward();
+        h.back("second draft");
+        assert_eq!(h.forward().as_deref(), Some("second draft"));
     }
 
     #[test]
     fn sending_ends_the_walk_and_a_repeat_is_kept_once() {
         let mut h = h(&["one", "two"]);
-        h.prev("");
+        h.back("");
         h.remember("two");
         assert!(!h.is_walking());
-        assert_eq!(h.prev(""), Some("two"));
-        assert_eq!(h.prev("two"), Some("one"), "sending `two` again did not add a second `two`");
+        assert_eq!(h.back(""), Some("two"));
+        assert_eq!(h.back("two"), Some("one"), "sending `two` again did not add a second `two`");
     }
 
     #[test]
     fn an_empty_history_has_nothing_to_show() {
         let mut h = h(&[]);
-        assert_eq!(h.prev("x"), None);
+        assert_eq!(h.back("x"), None);
         assert!(h.is_empty() && !h.is_walking());
     }
 }

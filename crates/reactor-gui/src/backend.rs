@@ -438,7 +438,7 @@ pub struct ContextView {
 
 impl ContextView {
     pub fn percent(&self) -> u64 {
-        if self.hard == 0 { 0 } else { (self.used * 100 / self.hard).min(999) }
+        (self.used * 100).checked_div(self.hard).map_or(0, |p| p.min(999))
     }
 }
 
@@ -529,7 +529,7 @@ pub fn list_sessions(paths: &Paths, cwd: Option<&Path>) -> Vec<SessionSummary> {
             Some(SessionSummary { dir: path, cwd: session_cwd, first_prompt: first_user, started_ms: ts, entries: store.len() })
         })
         .collect();
-    out.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
+    out.sort_by_key(|s| std::cmp::Reverse(s.started_ms));
     out
 }
 

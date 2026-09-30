@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/reactor-core",
     "crates/reactor-context",
+    "crates/reactor-agent",
     "crates/reactor-cli",
     "gui/crates/reactor-rpc",
     "gui/crates/reactor-client",
@@ -13,6 +14,7 @@ members = [
 default-members = [
     "crates/reactor-core",
     "crates/reactor-context",
+    "crates/reactor-agent",
     "crates/reactor-cli",
     "gui/crates/reactor-rpc",
     "gui/crates/reactor-client",

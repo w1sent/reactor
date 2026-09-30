@@ -10,7 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Theme};
 use gpui_kit::prelude::*;
-use gpui_kit::{FocusHandle, Hsla, MouseButton, SharedString, div, px, relative};
+use gpui_kit::{App, Hsla, SharedString, div, px, relative};
 
 use reactor_agent::inspect::{ContextPreview, Origin, Section};
 
@@ -25,7 +25,6 @@ pub struct InspectUi {
     pub selected: usize,
     /// Only pieces from this source, when set.
     pub filter: Option<Origin>,
-    pub focus: FocusHandle,
 }
 
 /// How much of one piece the text pane draws; Copy always takes all of it.
@@ -58,11 +57,16 @@ fn badge(origin: Origin, theme: &Theme) -> impl IntoElement {
         .child(div().text_color(c).text_size(theme.font_size * 0.85).child(origin.label()))
 }
 
-pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mut Context<ReactorApp>) -> Option<impl IntoElement> {
-    let state = app.inspect.as_ref()?;
+/// The popup's contents, for its dialog. The dialog builds this again on every frame, so it reads
+/// the app's current state each time; `height` is what the lists may fill.
+pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, cx: &mut App) -> gpui_kit::AnyElement {
+    let Some(app) = weak.upgrade() else { return div().into_any_element() };
+    let app = app.read(cx);
+    let Some(state) = app.inspect.as_ref() else { return div().into_any_element() };
+    let weak = weak.clone();
     let theme = cx.theme().clone();
     let muted = theme.muted_foreground;
-    let (w_refresh, w_copy, w_close, w_scrim) = (weak.clone(), weak.clone(), weak.clone(), weak.clone());
+    let (w_refresh, w_copy, w_close) = (weak.clone(), weak.clone(), weak.clone());
 
     let header = h_flex()
         .justify_between()
@@ -217,39 +221,5 @@ pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mu
         }
     };
 
-    let card = v_flex()
-        .id("inspect-card")
-        .w(px(1040.))
-        .max_w_full()
-        .h(relative(0.88))
-        .gap_3()
-        .p_4()
-        .rounded_lg()
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.popover)
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(header)
-        .child(body);
-
-    Some(
-        div()
-            .id("inspect-scrim")
-            .key_context("ReactorInspect")
-            .track_focus(&state.focus)
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .occlude()
-            .bg(theme.background.opacity(0.6))
-            .flex()
-            .justify_center()
-            .items_start()
-            .pt(px(32.))
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                w_scrim.update(cx, |app, cx| app.close_inspect(window, cx)).ok();
-            })
-            .child(card),
-    )
+    v_flex().key_context("ReactorInspect").h(height).gap_3().child(header).child(body).into_any_element()
 }

@@ -57,5 +57,5 @@ toolset exists to back a stage of `prompts/scenarios/investigation/`, wire it
 there and re-run the scenario shape test:
 
 ```bash
-node --test tests/extensions/scenario.test.mjs
+cargo test -p reactor-context
 ```

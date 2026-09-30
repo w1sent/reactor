@@ -1,8 +1,6 @@
-node_modules/
 __pycache__/
 *.pyc
 .venv/
-dist/
 
 # Local, machine-specific and never shared. These are ignored by many people's
 # global gitignore, which is exactly why they belong here too: a global ignore
@@ -10,5 +8,8 @@ dist/
 .claude/settings.local.json
 .reactor/
 
-# Rust build output (the root workspace; gui/ has its own until phase 2)
+# Rust build output
 target/
+
+# gpui-kit layout state written next to the binary while developing
+docks.json

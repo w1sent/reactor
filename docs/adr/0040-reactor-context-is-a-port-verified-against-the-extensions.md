@@ -52,6 +52,9 @@ time the replay ran:
   regenerated only by `tests/extensions/golden/capture.mjs`, which needs pi and a
   Node with TypeScript support like the extension suite does, and are committed so
   that `cargo test` needs neither.
+  *(Since [ADR-0043](0043-the-pi-flavor-is-removed-from-the-tree.md) the script and the
+  extensions exist only in git history, at commit `014a9b8`; the goldens are now plain
+  fixtures.)*
 - **Effects are data.** A command returns what it did to the world — an entry to
   append, a toolset to enable, a settings file to write — for the caller to
   perform. That is what lets the crate stay ignorant of a session store that does

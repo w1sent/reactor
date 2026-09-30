@@ -11,7 +11,7 @@ guide is the sequence.
 
 `tools.toml` at the package root is the **shipped seed**. A user machine reads
 the installed copy at `~/.reactor/tools.toml` — never edit that one in the
-package tree on a user machine (pi's package update runs `git clean -fdx`).
+repo checkout on a user machine (a reinstall can overwrite it).
 Work here in the repo; after an update, `reactor diff-config` shows the
 difference against an installed copy and you merge by hand
 ([ADR-0004](../adr/0004-config-updates-via-plain-diff.md)).

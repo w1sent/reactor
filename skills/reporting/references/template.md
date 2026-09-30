@@ -2,8 +2,8 @@
   Default skeletons for the reactor-reporting skill: one for summary.md, one
   for each findings/<topic>.md page. Edit this file directly to change the
   shape every report follows -- there is no code behind it, the agent just
-  reads whatever is here. Point the reactor-reporting extension's
-  `templatePath` config at a different file instead of editing this one if
+  reads whatever is here. Point the reporting `templatePath` setting (settings.json)
+  at a different file instead of editing this one if
   you want to keep this default around, and give that file both skeletons
   below, since the skill expects both.
 -->

@@ -1,6 +1,6 @@
 //! Deterministic text. The registry block is injected into the system prompt,
 //! so it is rendered here — in one language, under test — rather than by any
-//! extension: same machine state → byte-identical string. Nothing time-derived
+//! other component: same machine state → byte-identical string. Nothing time-derived
 //! may enter [`render_registry`]'s output (ADR-0006).
 
 use crate::catalogue::DetectKind;

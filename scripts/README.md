@@ -12,11 +12,11 @@ removed. What it did is now two commands:
 ```bash
 cargo install --git https://github.com/w1sent/reactor reactor-cli   # the binary, onto ~/.cargo/bin
 cargo install --path crates/reactor-cli   # ...or from a checkout you already have
-reactor setup                             # everything that is not a pi resource
+reactor setup                             # seed config, skills, completions
 reactor setup --no-skills --no-completions --dry-run   # the switches
 ```
 
-`pi install git:…/reactor` gets the assets; `reactor setup` gets everything else:
+`reactor setup` does the rest:
 
 1. Seed `~/.reactor/tools.toml` and `toolsets.toml` from the copies compiled into
    the binary — **only if absent**. Never clobbers; if they exist and differ, it
@@ -37,8 +37,7 @@ reactor setup --no-skills --no-completions --dry-run   # the switches
    with no configured skill is the normal case and gets no warning.
 
 Idempotent; re-running is the supported way to update. Building `reactor-gui`
-is no longer part of it: `cargo install --path gui/crates/reactor-gui` until the
-GUI joins the root workspace (MIGRATE.md phase 2).
+is not part of it: `cargo install --path crates/reactor-gui`.
 
 ## `verify-recipes.py`
 
@@ -63,7 +62,7 @@ executed, so there is nothing to verify
 A declared manager with no checker in this script is itself reported, so adding
 a manager cannot silently opt out of verification.
 
-Deliberately **not** part of `tests/`: the test suite is offline and runs in
+Deliberately **not** part of `cargo test`: the test suite is offline and runs in
 about a second, and this is neither. Run it when you touch an install table.
 
 Two failure modes to keep in mind when adding a checker. It must be able to say
@@ -80,62 +79,3 @@ runtime package-availability probing ADR-0010 rejects. The cost that made
 probing wrong — a network round trip per candidate per tool, on a user's
 machine, to refine a recommendation they are about to read — is not a cost here,
 because it is paid once by whoever edits the catalogue.
-
-## `check-in-pi.mjs`
-
-Drives a **real** `pi --mode rpc` process, with every REactor extension loaded
-the way pi actually loads them, over the documented RPC protocol
-(`docs/rpc.md`), and watches for `extension_error` events.
-
-```bash
-scripts/check-in-pi.mjs                                   # the default smoke set
-scripts/check-in-pi.mjs "/reactor-status mute adb" "/reactor-status"
-```
-
-Exists because `tests/extensions/*.test.mjs` — for all that it runs through
-pi's own *loader* against the real CLI
-([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)) —
-is still a mock host underneath: `ctx` and `pi` are fakes this repo
-maintains. `/reactor-toolbox off` shipped with a real bug the mocked `ctx`
-could not have caught until `harness.mjs` grew a `guard` simulating it after
-the fact — pi invalidates a captured `ctx`/`pi` the instant `await
-ctx.reload()` resolves, and the handler used `ctx` again right after
-(`docs/pi-api-notes.md`). This script is the check that needs no simulation:
-a `/name` prompt over RPC runs the real extension command directly (no LLM
-call, no API key needed), and a thrown error surfaces as `extension_error` on
-stdout instead of being caught by an assertion that has to already know to
-look for it.
-
-Every run gets a fresh, throwaway `PI_CODING_AGENT_DIR`, `REACTOR_CONFIG_DIR`
-(empty, so `reactor` falls back to its compiled-in
-`tools.toml`/`toolsets.toml`) and cwd — isolated from whatever is on the
-machine actually running it, and cleaned up after.
-
-Each command is sent and its own RPC `response` awaited (matched by `id`)
-before the next one goes out — not a fixed delay. This matters beyond
-pacing: `ctx.reload()` invalidates a whole extension instance, not just the
-handler that called it, so two commands from the *same* extension file
-genuinely in flight at once can race a reload from one against the other's
-still-suspended `await` — a real way to hit the same `extension_error`, but a
-different bug from the ordering-within-one-handler kind this script was
-written for (`docs/pi-api-notes.md`). Waiting for each response is what real
-usage already does by construction, so it is what this script does too.
-
-Deliberately **not** part of `tests/`, for the same reason as
-`verify-recipes.py`: it spawns a real process (~2–3 s for the default set)
-and needs `pi` on `PATH`, not stdlib-offline-in-a-second. Run it after
-touching anything that calls `ctx.reload()`, `ctx.newSession()`,
-`ctx.fork()`, or `ctx.switchSession()` — the class of bug it exists to catch.
-
-## Why installation is two steps
-
-pi never builds anything, never initialises submodules, and runs
-`git clean -fdx` inside the installed package on every update
-([ADR-0002](../docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md)).
-So the binary, the seeded config and the fetched skills all have to happen
-outside pi's package tree, by something pi does not manage.
-
-A `postinstall` hook in `package.json` *would* fire — pi does not pass
-`--ignore-scripts` on package installs — and was rejected: it would run on every
-install and every update, and would put network fetches and filesystem writes in
-front of pi's startup.

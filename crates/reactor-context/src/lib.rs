@@ -16,10 +16,10 @@
 //! what keeps this crate ignorant of the session store that does not exist yet
 //! ([ADR-0036](../../docs/adr/0036-reactor-owns-its-session-store-format.md)).
 //!
-//! The pi extensions are frozen and stay as they are (ADR-0035); they are the
-//! *specification* here. `crates/reactor-context/tests/golden/` holds what they
-//! actually said and did, captured by `tests/extensions/golden/capture.mjs`, and
-//! these modules must reproduce it byte for byte.
+//! The former pi extensions (ADR-0035) were the *specification* here.
+//! `crates/reactor-context/tests/golden/` holds what they actually said and did,
+//! captured by `tests/extensions/golden/capture.mjs` (git history, commit `014a9b8`),
+//! and these modules must reproduce it byte for byte.
 
 pub mod identity;
 pub mod manifest;

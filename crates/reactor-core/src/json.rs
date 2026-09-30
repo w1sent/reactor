@@ -69,7 +69,7 @@ fn escape_non_ascii(s: String) -> String {
 /// Atomic write of a sorted-key JSON file with a trailing newline.
 ///
 /// The temp name carries the pid because two processes can be here at once:
-/// every extension shells out on its own and shares nothing but this cache
+/// every process (CLI, agent, GUI) runs on its own and shares nothing but this cache
 /// (ADR-0014). The rename is atomic, so a reader never sees half a file — but a
 /// *shared* temp name lets two writers interleave into it and then rename the
 /// mixture, publishing a state that was never anyone's.

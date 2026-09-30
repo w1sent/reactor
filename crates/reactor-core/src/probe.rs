@@ -1,4 +1,4 @@
-//! Detection and service probing, with a cache the extensions share (ADR-0014).
+//! Detection and service probing, with a cache the CLI, agent and GUI share (ADR-0014).
 //!
 //! Results carry no timing information: rendering must be byte-stable across
 //! turns when nothing about the machine changed (ADR-0006). A probe that times

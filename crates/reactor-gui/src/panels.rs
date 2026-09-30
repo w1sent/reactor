@@ -590,7 +590,7 @@ impl Render for TranscriptPanel {
         // works) — the subscription lives on ReactorApp, the view here.
         let phase_label = match phase {
             AgentPhase::Idle => "idle",
-            AgentPhase::Working => "working — Enter queues a follow-up",
+            AgentPhase::Working => "working",
             AgentPhase::Compacting => "reducing the context…",
         };
         let queue_label = (queued > 0).then(|| format!("{queued} queued"));
@@ -625,7 +625,7 @@ impl Render for TranscriptPanel {
                         .child(div().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(entry.detail.clone())),
                 );
             }
-            list.child(div().px_2().text_color(theme.muted_foreground).text_size(theme.font_size * 0.75).child("↑↓ choose · Enter or Tab take it · Esc close"))
+            list
         });
 
         let composer = v_flex()
@@ -642,6 +642,11 @@ impl Render for TranscriptPanel {
                     .child(div().flex_1().font_family(prompt_family).text_size(prompt_size).child(Textarea::new(&self.composer)))
                     .child(
                         Button::new("send")
+                            .tooltip(if phase == AgentPhase::Idle {
+                                "Enter sends · Shift+Enter starts a new line · / lists commands · Ctrl+P opens the palette"
+                            } else {
+                                "The agent is working: Enter queues this as a follow-up for when it is done"
+                            })
                             .primary()
                             .label(if phase == AgentPhase::Idle {
                                 "Send"
@@ -1030,7 +1035,7 @@ impl Render for ToolsPanel {
                         .pt_1()
                         .text_color(theme.muted_foreground)
                         .text_size(theme.font_size * 0.8)
-                        .child(format!("{hidden} not installed — show them to install",)),
+                        .child(format!("{hidden} not installed")),
                 );
             }
         } else if loading {
@@ -1059,11 +1064,14 @@ fn scope_header(app: &gpui_kit::WeakEntity<ReactorApp>, scope: Option<&str>, the
         .pt_2()
         .gap_2()
         .items_center()
-        .child(
-            Label::new(if session { "this session overrides the default" } else { "using the machine default" })
-                .text_color(theme.muted_foreground)
-                .text_size(theme.font_size * 0.8),
-        )
+        .child(crate::hints::tip(
+            div().id("activation-scope").text_color(theme.muted_foreground).text_size(theme.font_size * 0.8).child(if session { "this session" } else { "machine default" }),
+            if session {
+                "This session has its own tool activation, which overrides the machine default. Make it the default for new sessions, or inherit the default again."
+            } else {
+                "Toggling a tool here starts a session-only override; the machine default is left alone."
+            },
+        ))
         .when(session, |row| {
             row.child(Button::new("act-default").label("make default").small().on_click(move |_, _w, cx| {
                 if let Some(app) = a.upgrade() {
@@ -1442,23 +1450,20 @@ impl Render for ContextPanel {
                         .child(Label::new("In the next request"))
                         .child(Label::new(format!("{}%", view.percent())).text_color(theme.muted_foreground)),
                 )
-                .child(
+                .child(crate::hints::tip(
                     div()
+                        .id("context-bar")
                         .relative()
                         .h(px(8.))
                         .rounded_full()
                         .bg(theme.secondary)
                         .child(div().h_full().rounded_full().bg(bar_colour).w(relative(fraction)))
                         .child(div().absolute().top_0().bottom_0().w(px(2.)).left(relative(trigger_at)).bg(theme.foreground.opacity(0.6))),
-                )
-                .child(
-                    Label::new(format!(
+                    format!(
                         "~{} of {} usable tokens ({} window − {} reserved). The mark is where reduction starts.",
                         view.used, view.hard, view.window, view.reserve
-                    ))
-                    .text_color(theme.muted_foreground)
-                    .text_size(theme.font_size * 0.8),
-                ),
+                    ),
+                )),
         );
 
         // -- settings --
@@ -1486,7 +1491,12 @@ impl Render for ContextPanel {
         body = body.child(
             v_flex()
                 .gap_2()
-                .child(Label::new("Settings"))
+                .child(
+                    h_flex().gap_1().items_center().child(Label::new("Settings")).child(crate::hints::info_button(
+                        "context-settings-info",
+                        "Change one with /context <mode|window|reserve|pct|keep|summarizer> <value>, or use the mode buttons. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
+                    )),
+                )
                 .child(h_flex().gap_1().child(mode_button("auto", "auto")).child(mode_button("fade", "fade")).child(mode_button("compact", "compact")))
                 .child(setting("mode", view.mode.clone(), "mode"))
                 .child(setting("window", view.window.to_string(), "window"))
@@ -1494,11 +1504,6 @@ impl Render for ContextPanel {
                 .child(setting("reduce at", format!("{:.0}%", view.pct * 100.0), "pct"))
                 .child(setting("keep", format!("{:.0}%", view.keep * 100.0), "keep"))
                 .child(setting("summarizer", view.summarizer.clone().unwrap_or_else(|| "the session's model".into()), "summarizer"))
-                .child(
-                    Label::new("Change one with /context <mode|window|reserve|pct|keep|summarizer> <value>.")
-                        .text_color(theme.muted_foreground)
-                        .text_size(theme.font_size * 0.8),
-                )
                 .child({
                     let (app_a, app_b) = (self.app.clone(), self.app.clone());
                     h_flex()
@@ -1572,7 +1577,7 @@ impl Render for ContextPanel {
         // -- reductions in force --
         let mut in_force = v_flex().gap_1().child(Label::new("In force"));
         if view.reductions.is_empty() {
-            in_force = in_force.child(Label::new("none — the model sees the whole session").text_color(theme.muted_foreground).text_size(theme.font_size * 0.85));
+            in_force = in_force.child(Label::new("none").text_color(theme.muted_foreground).text_size(theme.font_size * 0.85));
         }
         for r in &view.reductions {
             let (entry, app) = (r.entry, self.app.clone());

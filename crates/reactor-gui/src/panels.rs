@@ -495,13 +495,12 @@ impl Render for TranscriptPanel {
         let (tool_family, tool_size) = ui.text(Slot::Tools, &theme);
         let (prompt_family, prompt_size) = ui.text(Slot::Prompt, &theme);
         let tool_style = ToolStyle { family: tool_family, size: tool_size, max_chars: ui.tool_output_chars };
-        let (items, hidden, notifications, phase, queued, last_error) = match self.app.upgrade() {
+        let (items, hidden, phase, queued, last_error) = match self.app.upgrade() {
             Some(app) => {
                 let session = app.read(cx).session.read(cx);
                 (
                     session.items.clone(),
                     session.hidden.clone(),
-                    app.read(cx).notifications.clone(),
                     session.phase,
                     session.follow_up.len(),
                     session.last_error.clone(),
@@ -629,7 +628,7 @@ impl Render for TranscriptPanel {
         });
 
         let composer = v_flex()
-            .when(slash_open, |el| el.key_context("SlashPopup"))
+            .key_context(if slash_open { "PromptComposer SlashPopup" } else { "PromptComposer" })
             .border_t_1()
             .border_color(cx.theme().border)
             .p_2()
@@ -683,30 +682,6 @@ impl Render for TranscriptPanel {
             .size_full()
             .child(div().flex_1().min_h_0().font_family(body_family).text_size(body_size).child(transcript))
             .child(composer);
-
-        // Transient extension toasts above the status bar (§4.5's `notify`).
-        if !notifications.is_empty() {
-            let mut toasts = v_flex().absolute().bottom_12().right_4().gap_1();
-            for (kind, message) in notifications {
-                let colour = match kind.as_str() {
-                    "error" => cx.theme().danger,
-                    "warning" => cx.theme().warning,
-                    _ => cx.theme().accent,
-                };
-                toasts = toasts.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(cx.theme().popover)
-                        .text_color(colour)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .child(message),
-                );
-            }
-            panel = panel.child(div().absolute().inset_0().overflow_hidden().child(toasts));
-        }
 
         if let Some(error) = last_error {
             panel = panel.child(

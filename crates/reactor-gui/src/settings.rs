@@ -73,15 +73,20 @@ pub struct UiSettings {
     pub dim_reduced: bool,
     /// The layout a window opens with: `default`, `focus`, `analysis` or `catalogue`.
     pub start_layout: String,
+    /// How long a notification popup stays, in seconds.
+    pub notice_seconds: u32,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        UiSettings { fonts: BTreeMap::new(), tool_output_chars: 2000, expand_thinking: false, dim_reduced: true, start_layout: "default".into() }
+        UiSettings { fonts: BTreeMap::new(), tool_output_chars: 2000, expand_thinking: false, dim_reduced: true, start_layout: "default".into(), notice_seconds: 6 }
     }
 }
 
 /// How much tool output may be shown: the bounds the settings accept.
+/// How long a notification popup may stay, in seconds.
+pub const NOTICE_SECONDS: std::ops::RangeInclusive<u32> = 1..=120;
+
 pub const OUTPUT_CHARS: std::ops::RangeInclusive<usize> = 200..=50_000;
 
 impl UiSettings {
@@ -118,6 +123,7 @@ impl UiSettings {
         }
         self.fonts.retain(|_, p| *p != FontPref::default());
         self.tool_output_chars = self.tool_output_chars.clamp(*OUTPUT_CHARS.start(), *OUTPUT_CHARS.end());
+        self.notice_seconds = self.notice_seconds.clamp(*NOTICE_SECONDS.start(), *NOTICE_SECONDS.end());
         if crate::layout::LayoutPreset::ALL.iter().all(|p| !p.label().eq_ignore_ascii_case(&self.start_layout)) {
             self.start_layout = "default".into();
         }
@@ -183,7 +189,7 @@ mod tests {
     fn a_fresh_install_changes_nothing() {
         let s = UiSettings::default();
         assert!(s.fonts.is_empty());
-        assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"fonts":{},"tool_output_chars":2000,"expand_thinking":false,"dim_reduced":true,"start_layout":"default"}"#);
+        assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"fonts":{},"tool_output_chars":2000,"expand_thinking":false,"dim_reduced":true,"start_layout":"default","notice_seconds":6}"#);
     }
 
     #[test]

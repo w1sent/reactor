@@ -69,6 +69,12 @@ actions!(
         CloseSettings,
         /// Esc in the context-window popup.
         CloseInspect,
+        /// Esc in the notification history.
+        CloseNotices,
+        /// Up in the prompt, on its top line: the previous message you sent.
+        HistoryPrev,
+        /// Down in the prompt, on its bottom line: the next message.
+        HistoryNext,
     ]
 );
 
@@ -105,8 +111,10 @@ pub struct ReactorApp {
     reactor: Client,
     pub session: Entity<Session>,
     pub composer: Entity<TextareaState>,
-    /// Transient toasts, most recent last.
-    pub notifications: Vec<(String, String)>,
+    /// Notifications: the popups, and the history behind the bell.
+    pub notifier: crate::notifications::Notifier,
+    /// The history popup, while it is open.
+    pub notices: Option<crate::notices_ui::NoticesUi>,
     /// The models the picker offers (`provider/name`).
     pub models: Vec<String>,
     /// Side-panel data, from `reactor-core`.
@@ -138,6 +146,8 @@ pub struct ReactorApp {
     usage: Usage,
     /// The `/` completion popup over the composer.
     pub slash: SlashUi,
+    /// What the person has sent, for up/down in the prompt.
+    prompt_history: crate::prompt_history::PromptHistory,
     /// Fonts and behaviour (`crate::settings`).
     pub ui: crate::settings::UiSettings,
     /// The context-window popup, while it is open.
@@ -179,6 +189,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("escape", CloseSettings, Some("ReactorSettings > Input")),
         KeyBinding::new("escape", CloseInspect, Some("ReactorInspect")),
+        KeyBinding::new("escape", CloseNotices, Some("ReactorNotices")),
+        // The prompt: up on its top line and down on its bottom line walk through the messages
+        // sent before; anywhere else the handlers decline and the input moves its cursor.
+        // Defined before the popup's bindings, which win while the popup is open.
+        KeyBinding::new("up", HistoryPrev, Some("PromptComposer > Input")),
+        KeyBinding::new("down", HistoryNext, Some("PromptComposer > Input")),
         // `SlashPopup > Input`: the text input, while the popup is open above it. Deeper than
         // the popup alone, so these win over the input's own up/down/enter/tab/escape.
         KeyBinding::new("up", SlashUp, Some("SlashPopup > Input")),
@@ -234,6 +250,7 @@ impl ReactorApp {
         let app = app_entity.expect("window's root view was built");
         app.update(cx, |app, cx| {
             app.start_pump(cx);
+            app.start_notice_clock(cx);
             app.refresh_catalogue(cx);
             app.refresh_services(false, cx);
             app.refresh_tree(cx);
@@ -314,6 +331,12 @@ impl ReactorApp {
         let models = backend.as_ref().map(|b| b.models()).unwrap_or_default();
         let tree = backend.as_ref().map(|b| b.tree()).unwrap_or_default();
         let leaf_id = backend.as_ref().map(|b| b.store().lock().unwrap().head());
+        // A resumed session brings its earlier messages with it.
+        let prompt_history = backend
+            .as_ref()
+            .map(|b| b.store().lock().unwrap().branch().into_iter().filter_map(|e| if let reactor_agent::entry::Kind::User { text } = &e.kind { Some(text.clone()) } else { None }).collect::<Vec<String>>())
+            .map(crate::prompt_history::PromptHistory::from_messages)
+            .unwrap_or_default();
 
         Self {
             menu_bar: crate::chrome::menu_bar(cx),
@@ -322,7 +345,8 @@ impl ReactorApp {
             reactor,
             session,
             composer,
-            notifications: Vec::new(),
+            notifier: crate::notifications::Notifier::default(),
+            notices: None,
             models,
             catalogue: None,
             toolsets: None,
@@ -345,6 +369,7 @@ impl ReactorApp {
             palette: None,
             usage: crate::start::GuiConfig::load().command_usage,
             slash: SlashUi::default(),
+            prompt_history,
             ui,
             inspect: None,
             settings: None,
@@ -477,11 +502,64 @@ impl ReactorApp {
         cx.notify();
     }
 
+    /// Tell the person something: a popup in the corner for `ui.notice_seconds`, and a line in
+    /// the history behind the bell. `kind` is `info`, `warning` or `error`.
     pub fn push_note(&mut self, kind: impl Into<SharedString>, message: impl Into<SharedString>) {
-        self.notifications.push((kind.into().to_string(), message.into().to_string()));
-        if self.notifications.len() > 3 {
-            self.notifications.remove(0);
+        let level = crate::notifications::Level::from_kind(&kind.into());
+        let now = chrono::Local::now();
+        let (date, time) = (now.format("%Y-%m-%d").to_string(), now.format("%H:%M:%S").to_string());
+        let timeout = Duration::from_secs(u64::from(self.ui.notice_seconds));
+        self.notifier.push(level, message.into().to_string(), date, time, std::time::Instant::now(), timeout);
+    }
+
+    /// The popups expire on a clock of their own, so they go even when nothing else happens.
+    fn start_notice_clock(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(250)).await;
+                let alive = this
+                    .update(cx, |app, cx| {
+                        if app.notifier.expire(std::time::Instant::now()) {
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.notifier.dismiss(id);
+        cx.notify();
+    }
+
+    /// Open the notification history, or close it if it is open.
+    pub fn toggle_notices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.notices.is_some() {
+            self.close_notices(window, cx);
+            return;
         }
+        let focus = cx.focus_handle();
+        self.notices = Some(crate::notices_ui::NoticesUi { focus: focus.clone() });
+        self.notifier.mark_read();
+        window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        cx.notify();
+    }
+
+    pub fn close_notices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.notices.take().is_some() {
+            self.composer.update(cx, |state, cx| state.focus(window, cx));
+            cx.notify();
+        }
+    }
+
+    pub fn clear_notices(&mut self, cx: &mut Context<Self>) {
+        self.notifier.clear();
+        cx.notify();
     }
 
     // -- derived data ------------------------------------------------------------------------
@@ -594,6 +672,7 @@ impl ReactorApp {
             state.set_value("", window, cx);
             state.focus(window, cx);
         });
+        self.prompt_history.remember(&text);
         if let Some(cmd) = text.strip_prefix('/') {
             if let Some(name) = cmd.split_whitespace().next() {
                 self.record_use(name);
@@ -604,6 +683,78 @@ impl ReactorApp {
             cx.notify();
         } else {
             self.start_turn(text, cx);
+        }
+    }
+
+    // -- the prompt's history ---------------------------------------------------------------------
+
+    /// Whether the cursor is on the prompt's top line (`up`) or bottom line (`!up`), with nothing
+    /// selected — the only places the arrows leave the text to walk the history. A wrapped line
+    /// counts as several: the cursor has to be on the first (or last) one as drawn.
+    fn cursor_at_edge(&self, up: bool, cx: &App) -> bool {
+        let input = self.composer.read(cx);
+        if !input.selected_range().is_empty() {
+            return false;
+        }
+        let line = input.cursor_position().line as usize;
+        let last_line = input.value().matches('\n').count();
+        if (up && line != 0) || (!up && line != last_line) {
+            return false;
+        }
+        match input.cursor_layout() {
+            Some((cursor, line_height)) => {
+                let bounds = input.input_bounds();
+                if up {
+                    cursor.top() - bounds.top() < line_height
+                } else {
+                    bounds.bottom() - cursor.bottom() < line_height
+                }
+            }
+            // Not laid out yet (nothing drawn): the logical line is all there is to go on.
+            None => true,
+        }
+    }
+
+    /// Show a message from the history in the prompt, with the cursor at its end.
+    fn show_in_prompt(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::input::Position;
+        let (line, character) = match text.rsplit_once('\n') {
+            Some((before, last)) => (before.matches('\n').count() as u32 + 1, last.encode_utf16().count() as u32),
+            None => (0, text.encode_utf16().count() as u32),
+        };
+        self.composer.update(cx, |state, cx| {
+            state.set_value(text, window, cx);
+            state.set_cursor_position(Position::new(line, character), window, cx);
+        });
+        // A `/command` from the history is not a request for the completion popup.
+        self.slash.dismissed = true;
+        self.refresh_slash(false, cx);
+        cx.notify();
+    }
+
+    /// Up on the top line: the message before the one shown.
+    pub fn history_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.slash.is_open() || self.prompt_history.is_empty() || !self.cursor_at_edge(true, cx) {
+            cx.propagate();
+            return;
+        }
+        let current = self.composer.read(cx).value().to_string();
+        // Nothing older: leave it to the input, which takes the cursor to the line start.
+        let Some(text) = self.prompt_history.prev(&current).map(str::to_string) else {
+            cx.propagate();
+            return;
+        };
+        self.show_in_prompt(&text, window, cx);
+    }
+
+    /// Down on the bottom line: the next message, and past the newest, what was being typed.
+    pub fn history_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.prompt_history.is_walking() || self.slash.is_open() || !self.cursor_at_edge(false, cx) {
+            cx.propagate();
+            return;
+        }
+        if let Some(text) = self.prompt_history.next() {
+            self.show_in_prompt(&text, window, cx);
         }
     }
 
@@ -1071,6 +1222,7 @@ impl ReactorApp {
             "palette" => self.toggle_palette(window, cx),
             "settings" => self.toggle_settings(window, cx),
             "inspect" => self.toggle_inspect(window, cx),
+            "notifications" => self.toggle_notices(window, cx),
             "quit" => cx.quit(),
             "refresh" => {
                 self.refresh_catalogue(cx);
@@ -1550,6 +1702,8 @@ impl Render for ReactorApp {
             .on_action(cx.listener(|this, action: &SelectModelAction, _window, cx| {
                 this.set_model(&action.spec, cx);
             }))
+            .on_action(cx.listener(|this, _: &HistoryPrev, window, cx| this.history_prev(window, cx)))
+            .on_action(cx.listener(|this, _: &HistoryNext, window, cx| this.history_next(window, cx)))
             .on_action(cx.listener(|this, _: &SlashUp, _window, cx| this.slash_move(-1, cx)))
             .on_action(cx.listener(|this, _: &SlashDown, _window, cx| this.slash_move(1, cx)))
             .on_action(cx.listener(|this, _: &SlashAccept, window, cx| this.accept_slash(window, cx)))
@@ -1557,6 +1711,7 @@ impl Render for ReactorApp {
             .on_action(cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)))
             .on_action(cx.listener(|this, _: &CloseSettings, window, cx| this.close_settings(window, cx)))
             .on_action(cx.listener(|this, _: &CloseInspect, window, cx| this.close_inspect(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseNotices, window, cx| this.close_notices(window, cx)))
             .on_action(cx.listener(|this, _: &ComposerEsc, window, cx| {
                 // Esc closes the palette wherever focus is — this is the handler every Esc
                 // reaches — and must not also interrupt the agent.
@@ -1572,16 +1727,27 @@ impl Render for ReactorApp {
                     this.close_inspect(window, cx);
                     return;
                 }
+                if this.notices.is_some() {
+                    this.close_notices(window, cx);
+                    return;
+                }
                 if this.session.read(cx).phase == AgentPhase::Working {
                     this.interrupt(window, cx);
                 }
             }))
-            .child(crate::chrome::title_bar(format!("REactor — {}", self.cwd.display()), self.menu_bar.as_ref(), cx))
+            .child(crate::chrome::title_bar(
+                format!("REactor — {}", self.cwd.display()),
+                self.menu_bar.as_ref(),
+                Some(crate::notices_ui::bell(self, cx.weak_entity(), cx)),
+                cx,
+            ))
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
             .when_some(self.render_palette(cx), |el, palette| el.child(palette))
             .when_some(crate::settings_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::inspect_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
+            .when_some(crate::notices_ui::history(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
+            .when_some(crate::notices_ui::toasts(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(notification_layer, |el, layer| el.child(layer))
             .when_some(dialog_layer, |el, layer| el.child(layer))
     }

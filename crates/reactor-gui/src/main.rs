@@ -295,7 +295,7 @@ impl Render for WorkdirChooser {
             );
         }
 
-        v_flex().size_full().child(reactor_gui::chrome::title_bar("REactor", None, cx)).child(v_flex()
+        v_flex().size_full().child(reactor_gui::chrome::title_bar("REactor", None, None, cx)).child(v_flex()
             .flex_1()
             .min_h_0()
             .p_4()
@@ -471,7 +471,7 @@ impl Render for SessionPicker {
         }
         v_flex()
             .size_full()
-            .child(reactor_gui::chrome::title_bar("REactor", None, cx))
+            .child(reactor_gui::chrome::title_bar("REactor", None, None, cx))
             .child(
                 v_flex()
                     .flex_1()

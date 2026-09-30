@@ -50,23 +50,27 @@ pub fn menu_bar(cx: &mut App) -> Option<Entity<AppMenuBar>> {
     if cfg!(target_os = "macos") { None } else { Some(AppMenuBar::new(cx)) }
 }
 
-/// The title bar: the menu (if any) on the left, the window's title after it.
+/// The title bar: the menu (if any) on the left, the window's title after it, and `right`
+/// (the notification bell) at the far end.
 pub fn title_bar(
     title: impl Into<SharedString>,
     menu: Option<&Entity<AppMenuBar>>,
+    right: Option<gpui_kit::AnyElement>,
     cx: &App,
 ) -> TitleBar {
     let title: SharedString = title.into();
-    TitleBar::new().child(
-        h_flex()
-            .items_center()
-            .gap_3()
-            .children(menu.cloned())
-            .child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(px(12.))
-                    .child(title),
-            ),
-    )
+    TitleBar::new()
+        .child(
+            h_flex()
+                .items_center()
+                .gap_3()
+                .children(menu.cloned())
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .text_size(px(12.))
+                        .child(title),
+                ),
+        )
+        .children(right)
 }

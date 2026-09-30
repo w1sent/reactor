@@ -137,7 +137,7 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
     reduction hides from the model are dimmed.
   - Composer: multi-line text area. `Enter` sends (or queues a follow-up while
     the agent works); `Shift+Enter` newline; `Esc` interrupts; an explicit
-    Interrupt button cancels the turn. `/`-commands (`COMMANDS` in `app.rs`) run
+    Interrupt button cancels the turn. `↑` with the cursor on the prompt's top line puts the previous message you sent into the input (the text that was there is kept), and `↓` on the bottom line moves forward again, ending on that text; anywhere else the arrows just move the cursor. So an interrupted message is one `↑` away, ready to edit and send again. `/`-commands (`COMMANDS` in `app.rs`) run
     in the app. The model picker is in the status bar; context % is measured from
     the request the agent would send next.
 - **Left** (collapsible): the session tree, read from the store. *Continue from
@@ -238,6 +238,21 @@ a setting is changed, where something is saved — is a **tooltip** on the eleme
 (`hints::tip`), or, where there is nothing to hover (a heading, a whole popup), an **(i) button**
 that opens the text when clicked (`hints::info_button`). Empty states, errors and confirmations are
 feedback, not commentary, and stay as short text.
+
+### 6.0c Notifications
+
+Anything the app tells the person — a command's result, a failed save, a model error — is a
+notification (`ReactorApp::push_note`), shown twice:
+
+- a **popup** in the top-right corner, under the title bar, that goes after a timeout (*Settings →
+  Behaviour*, 6 s by default) or when closed with its ×;
+- a line in the **history** behind the **bell** at the right-hand end of the title bar. The bell
+  shows how many notifications have not been looked at; clicking it opens the list, newest first, with
+  the time of each, and *Clear* empties it. `Esc` or a click outside closes it. `/notifications`
+  opens it too.
+
+The rules (timeouts, unread count, history cap of 200) are `src/notifications.rs`, tested without a
+window; `src/notices_ui.rs` draws them.
 
 ### 6.0b The context window
 

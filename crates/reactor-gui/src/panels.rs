@@ -14,6 +14,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::label::Label;
+use gpui_kit::component::marker::{Marker, MarkerContent, MarkerLoadingStyle};
+use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::TextView;
@@ -287,7 +289,6 @@ fn render_item(
                         .style(crate::theme::text_view_style(theme)),
                 )
                 .when(streaming, |el| el.opacity(0.85))
-                .into()
         }
         ChatItem::Thinking { text, streaming } => {
             let chevron = if thinking_expanded {
@@ -333,7 +334,6 @@ fn render_item(
                             ),
                         ),
                 )
-                .into()
         }
         ChatItem::ToolCall {
             name,
@@ -365,7 +365,7 @@ fn render_item(
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(Label::new(format!("{name}")).text_color(if *is_error {
+                        .child(Label::new(name.clone()).text_color(if *is_error {
                             theme.danger
                         } else {
                             theme.accent
@@ -403,7 +403,6 @@ fn render_item(
                     )
                 })
                 .when(*is_error, |el| el.border_l_2().border_color(colour))
-                .into()
         }
         ChatItem::Reduction { entry, mode, trigger, covers, before, after, active, summary } => {
             let entry = *entry;
@@ -440,7 +439,6 @@ fn render_item(
                         div().px_2().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(summary),
                     )
                 })
-                .into()
         }
         ChatItem::Error { message } => v_flex()
             .px_2()
@@ -452,8 +450,7 @@ fn render_item(
                     .bg(theme.danger.opacity(0.2))
                     .text_color(theme.danger)
                     .child(message.clone()),
-            )
-            .into(),
+            ),
     }
 }
 
@@ -596,11 +593,26 @@ impl Render for TranscriptPanel {
 
         // The composer: Enter submits (queued as a follow-up while the agent
         // works) — the subscription lives on ReactorApp, the view here.
+        // No marker at all while nothing is being processed.
         let phase_label = match phase {
-            AgentPhase::Idle => "idle",
-            AgentPhase::Working => "working",
-            AgentPhase::Compacting => "reducing the context…",
+            AgentPhase::Idle => None,
+            AgentPhase::Working => Some("working"),
+            AgentPhase::Compacting => Some("reducing the context"),
         };
+        // gpui-kit's marker in its shimmering loading state, at the foot of the transcript: the
+        // agent is working on a prompt. Nothing at all when it is not.
+        let running = phase_label.map(|label| {
+            div().px_3().py_1().child(
+                Marker::new()
+                    .id("agent-running")
+                    .role(gpui_kit::Role::Status)
+                    .loading(true)
+                    .with_loading_style(MarkerLoadingStyle::Shimmer)
+                    .with_shimmer_style(ShimmerStyle::new().highlight_color(theme.foreground))
+                    .text_color(theme.muted_foreground)
+                    .content(MarkerContent::new().text(label)),
+            )
+        });
         let queue_label = (queued > 0).then(|| format!("{queued} queued"));
 
         // The `/` completion popup, above the input: the ranked commands for what has been
@@ -678,10 +690,7 @@ impl Render for TranscriptPanel {
                                 }
                             })),
                     )
-                    .when(phase != AgentPhase::Idle, |el| {
-                        el.child(Spinner::new().small().color(cx.theme().accent))
-                    })
-                    .child(Label::new(phase_label).text_color(cx.theme().muted_foreground))
+
                     .when_some(queue_label, |el, label| {
                         el.child(Label::new(label).text_color(cx.theme().accent))
                     }),
@@ -689,7 +698,15 @@ impl Render for TranscriptPanel {
 
         let mut panel = v_flex()
             .size_full()
-            .child(div().flex_1().min_h_0().font_family(body_family).text_size(body_size).child(transcript))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .font_family(body_family)
+                    .text_size(body_size)
+                    .child(div().flex_1().min_h_0().child(transcript))
+                    .children(running),
+            )
             .child(composer);
 
         if let Some(error) = last_error {

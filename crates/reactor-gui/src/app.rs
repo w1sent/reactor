@@ -572,7 +572,7 @@ impl ReactorApp {
                 }
                 let main = cx.update(|cx| cx.try_global::<MainWindow>().cloned());
                 let Some(main) = main else { continue };
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     let _ = cx.update_window(main.handle, |_, window, cx| {
                         if let Some(app) = main.app.upgrade() {
                             app.update(cx, |app, cx| app.flush_toasts(window, cx));
@@ -787,7 +787,7 @@ impl ReactorApp {
         }
         let current = self.composer.read(cx).value().to_string();
         // Nothing older: leave it to the input, which takes the cursor to the line start.
-        let Some(text) = self.prompt_history.prev(&current).map(str::to_string) else {
+        let Some(text) = self.prompt_history.back(&current).map(str::to_string) else {
             cx.propagate();
             return;
         };
@@ -800,7 +800,7 @@ impl ReactorApp {
             cx.propagate();
             return;
         }
-        if let Some(text) = self.prompt_history.next() {
+        if let Some(text) = self.prompt_history.forward() {
             self.show_in_prompt(&text, window, cx);
         }
     }

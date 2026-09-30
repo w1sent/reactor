@@ -96,7 +96,8 @@ fn writes_agree_and_leave_the_same_state() {
     let (_, cli) = pair(&dir_cli);
 
     let norm = |v: Value, dir: &TempDir| Value::String(v.to_string().replace(&dir.path().display().to_string(), "<CFG>"));
-    let steps: Vec<Box<dyn Fn(&dyn ReactorClient) -> Value>> = vec![
+    type Step = Box<dyn Fn(&dyn ReactorClient) -> Value>;
+    let steps: Vec<Step> = vec![
         Box::new(|c| c.set_toolset("static", true).unwrap()),
         Box::new(|c| c.set_tool("beta", true).unwrap()),
         Box::new(|c| c.set_tool("alpha", false).unwrap()),

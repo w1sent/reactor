@@ -1,0 +1,366 @@
+//! The settings popup (SPEC.md §6.2): fonts and sizes per part of the window, and a few
+//! behaviours. Every change applies at once and is saved; there is no OK button.
+//!
+//! This file only draws. The state lives on [`ReactorApp`] (`ui`, `settings`) and every
+//! change goes through its methods, which keep the theme, the file and the window in step.
+
+use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::label::Label;
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _};
+use gpui_kit::prelude::*;
+use gpui_kit::*;
+use gpui_kit::{Entity, MouseButton, SharedString, div, px};
+
+use crate::app::ReactorApp;
+use crate::layout::LayoutPreset;
+use crate::settings::{OUTPUT_CHARS, Slot};
+
+/// The popup's tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Fonts,
+    Behaviour,
+    Model,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 3] = [Tab::Fonts, Tab::Behaviour, Tab::Model];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Fonts => "Fonts",
+            Tab::Behaviour => "Behaviour",
+            Tab::Model => "Model",
+        }
+    }
+}
+
+/// The open popup: a tab, one text input per font slot, the model tab's fields, and a line
+/// for what went wrong.
+pub struct SettingsUi {
+    pub tab: Tab,
+    pub inputs: Vec<(Slot, Entity<InputState>)>,
+    pub message: Option<String>,
+    /// A plain confirmation, shown in the accent colour.
+    pub notice: Option<String>,
+    /// The provider picked on the model tab.
+    pub provider: String,
+    /// The model name typed after it.
+    pub model_input: Entity<InputState>,
+    /// What `settings.json` holds now: the default model, and the picker's list.
+    pub default_model: Option<String>,
+    pub models: Vec<String>,
+}
+
+/// The environment variable each provider's key is read from.
+fn key_variable(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
+        _ => "OLLAMA_API_BASE_URL",
+    }
+}
+
+/// The popup, over a scrim. `weak` is the app's handle, for the buttons.
+pub fn overlay(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &mut Context<ReactorApp>) -> Option<impl IntoElement> {
+    let state = app.settings.as_ref()?;
+    let ui = app.ui.clone();
+    let theme = cx.theme().clone();
+    let muted = theme.muted_foreground;
+    let small = theme.font_size * 0.85;
+
+    // -- fonts --
+    let mut fonts = v_flex().gap_2();
+    fonts = fonts.child(
+        Label::new("Family is an installed font's name; empty is the default. Size is in pixels.")
+            .text_color(muted)
+            .text_size(small),
+    );
+    for (slot, input) in &state.inputs {
+        let slot = *slot;
+        let (_, effective) = ui.text(slot, &theme);
+        let chosen = ui.size(slot).is_some();
+        let (w_minus, w_plus, w_reset) = (weak.clone(), weak.clone(), weak.clone());
+        let step = move |delta: f32, weak: gpui_kit::WeakEntity<ReactorApp>| {
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                weak.update(cx, |app, cx| {
+                    let now = f32::from(app.ui.text(slot, cx.theme()).1);
+                    app.update_ui(|ui| ui.set_size(slot, Some((now + delta).round())), cx);
+                })
+                .ok();
+            }
+        };
+        fonts = fonts.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().w(px(190.)).child(Label::new(slot.label())))
+                .child(div().flex_1().child(Input::new(input)))
+                .child(Button::new(("size-minus", slot as usize)).label("−").small().on_click(step(-1.0, w_minus)))
+                .child(
+                    div()
+                        .w(px(34.))
+                        .flex()
+                        .justify_center()
+                        .text_color(if chosen { theme.foreground } else { muted })
+                        .child(format!("{}", f32::from(effective).round())),
+                )
+                .child(Button::new(("size-plus", slot as usize)).label("+").small().on_click(step(1.0, w_plus)))
+                .child(Button::new(("font-reset", slot as usize)).label("reset").small().ghost().on_click(move |_, window, cx| {
+                    w_reset.update(cx, |app, cx| app.reset_font(slot, window, cx)).ok();
+                })),
+        );
+    }
+    if let Some(message) = &state.message {
+        fonts = fonts.child(Label::new(message.clone()).text_color(theme.warning).text_size(small));
+    }
+
+    // -- behaviour --
+    let switch = |id: &'static str, label: &'static str, on: bool, weak: gpui_kit::WeakEntity<ReactorApp>, set: fn(&mut crate::settings::UiSettings, bool)| {
+        Switch::new(id).checked(on).label(label).on_click(move |value, _window, cx| {
+            let value = *value;
+            weak.update(cx, |app, cx| app.update_ui(|ui| set(ui, value), cx)).ok();
+        })
+    };
+    let output = ui.tool_output_chars;
+    let (w_less, w_more, w_layouts) = (weak.clone(), weak.clone(), weak.clone());
+    let output_step = move |up: bool, weak: gpui_kit::WeakEntity<ReactorApp>| {
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            weak.update(cx, |app, cx| {
+                let now = app.ui.tool_output_chars;
+                let step = if now < 5000 { 500 } else { 2500 };
+                let next = if up { now + step } else { now.saturating_sub(step) };
+                app.update_ui(|ui| ui.tool_output_chars = next.clamp(*OUTPUT_CHARS.start(), *OUTPUT_CHARS.end()), cx);
+            })
+            .ok();
+        }
+    };
+    let mut layouts = h_flex().gap_1();
+    for preset in LayoutPreset::ALL {
+        let active = ui.start_layout() == preset;
+        let weak = w_layouts.clone();
+        layouts = layouts.child(
+            Button::new(SharedString::from(format!("start-{}", preset.label())))
+                .label(preset.label())
+                .small()
+                .when(active, |b| b.primary())
+                .on_click(move |_, _window, cx| {
+                    weak.update(cx, |app, cx| app.update_ui(|ui| ui.start_layout = preset.label().to_ascii_lowercase(), cx)).ok();
+                }),
+        );
+    }
+    let behaviour = v_flex()
+        .gap_2()
+        .child(switch("expand-thinking", "Open thinking blocks by default", ui.expand_thinking, weak.clone(), |ui, v| ui.expand_thinking = v))
+        .child(switch("dim-reduced", "Dim what a context reduction took out of the model's view", ui.dim_reduced, weak.clone(), |ui, v| ui.dim_reduced = v))
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().w(px(260.)).child(Label::new("Tool output shown in the transcript (characters)")))
+                .child(Button::new("output-less").label("−").small().on_click(output_step(false, w_less)))
+                .child(div().w(px(56.)).flex().justify_center().child(format!("{output}")))
+                .child(Button::new("output-more").label("+").small().on_click(output_step(true, w_more)))
+                .child(Label::new("the session keeps it all").text_color(muted).text_size(small)),
+        )
+        .child(h_flex().gap_2().items_center().child(div().w(px(260.)).child(Label::new("Layout a window opens with"))).child(layouts));
+
+    let model = model_tab(state, &weak, &theme, cx);
+    let mut tabs = h_flex().gap_1();
+    for tab in Tab::ALL {
+        let weak = weak.clone();
+        tabs = tabs.child(
+            Button::new(SharedString::from(format!("settings-tab-{}", tab.label())))
+                .label(tab.label())
+                .small()
+                .when(state.tab == tab, |b| b.primary())
+                .on_click(move |_, _window, cx| {
+                    weak.update(cx, |app, cx| app.settings_tab(tab, cx)).ok();
+                }),
+        );
+    }
+    let body = match state.tab {
+        Tab::Fonts => fonts.into_any_element(),
+        Tab::Behaviour => behaviour.into_any_element(),
+        Tab::Model => model,
+    };
+
+    let (w_all, w_close, w_scrim, w_promote) = (weak.clone(), weak.clone(), weak.clone(), weak);
+    let card = v_flex()
+        .id("settings-card")
+        .w(px(720.))
+        .max_w_full()
+        .max_h(relative(0.88))
+        .overflow_y_scroll()
+        .gap_4()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.popover)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(Label::new("Settings").text_size(theme.font_size * 1.3))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("settings-promote")
+                                .label("Make current settings the default")
+                                .small()
+                                .tooltip("This session's model, context settings and tool activation become what new sessions start with. Fonts and behaviour here are already saved for every session.")
+                                .on_click(move |_, _window, cx| {
+                                    w_promote.update(cx, |app, cx| app.promote_session(cx)).ok();
+                                }),
+                        )
+                        .child(Button::new("settings-reset-all").label("Reset fonts and behaviour").small().on_click(move |_, window, cx| {
+                            w_all.update(cx, |app, cx| app.reset_ui(window, cx)).ok();
+                        }))
+                        .child(Button::new("settings-close").label("Close").small().primary().on_click(move |_, window, cx| {
+                            w_close.update(cx, |app, cx| app.close_settings(window, cx)).ok();
+                        })),
+                ),
+        )
+        .child(tabs)
+        .child(body)
+        .children(state.notice.clone().map(|n| Label::new(n).text_color(theme.accent).text_size(small)))
+        .child(
+            Label::new(match state.tab {
+                Tab::Model => "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is in the Context panel and `/context`.",
+                _ => "Saved in ~/.reactor/gui.json. The agent's own settings — models, the context budget — are under Model, the Context panel and `/context`.",
+            })
+            .text_color(muted)
+            .text_size(small),
+        );
+
+    Some(
+        div()
+            .id("settings-scrim")
+            .key_context("ReactorSettings")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .bg(theme.background.opacity(0.6))
+            .flex()
+            .justify_center()
+            .items_start()
+            .pt(px(40.))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                w_scrim.update(cx, |app, cx| app.close_settings(window, cx)).ok();
+            })
+            .child(card),
+    )
+}
+
+/// The model tab: which model new sessions start on, which providers have a key, and the list
+/// the status bar's picker offers.
+fn model_tab(state: &SettingsUi, weak: &gpui_kit::WeakEntity<ReactorApp>, theme: &gpui_kit::component::Theme, _cx: &mut Context<ReactorApp>) -> gpui_kit::AnyElement {
+    let muted = theme.muted_foreground;
+    let small = theme.font_size * 0.85;
+
+    let mut providers = h_flex().gap_1();
+    for provider in reactor_agent::provider::PROVIDERS {
+        let weak = weak.clone();
+        providers = providers.child(
+            Button::new(SharedString::from(format!("provider-{provider}")))
+                .label(provider)
+                .small()
+                .when(state.provider == provider, |b| b.primary())
+                .on_click(move |_, _window, cx| {
+                    weak.update(cx, |app, cx| app.settings_provider(provider, cx)).ok();
+                }),
+        );
+    }
+    let variable = key_variable(&state.provider);
+    let key_line = if state.provider == "ollama" {
+        format!("{} runs locally; {variable} overrides its address.", state.provider)
+    } else if std::env::var_os(variable).is_some() {
+        format!("{variable} is set.")
+    } else {
+        format!("{variable} is not set — REactor reads the key from the environment, so set it before starting the GUI.")
+    };
+
+    let action = |id: &'static str, label: &'static str, weak: gpui_kit::WeakEntity<ReactorApp>, run: fn(&mut ReactorApp, &mut Context<ReactorApp>)| {
+        Button::new(id).label(label).small().on_click(move |_, _window, cx| {
+            weak.update(cx, |app, cx| run(app, cx)).ok();
+        })
+    };
+
+    let mut listed = v_flex().gap_1();
+    if state.models.is_empty() {
+        listed = listed.child(Label::new("none — the picker offers only the current model").text_color(muted).text_size(small));
+    }
+    for spec in &state.models {
+        let (w_use, w_default, w_remove) = (weak.clone(), weak.clone(), weak.clone());
+        let (s_use, s_default, s_remove) = (spec.clone(), spec.clone(), spec.clone());
+        let is_default = state.default_model.as_deref() == Some(spec.as_str());
+        listed = listed.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).child(spec.clone()))
+                .child(Button::new(SharedString::from(format!("use-{spec}"))).label("use now").small().on_click(move |_, _w, cx| {
+                    let spec = s_use.clone();
+                    w_use.update(cx, |app, cx| app.set_model(&spec, cx)).ok();
+                }))
+                .child(
+                    Button::new(SharedString::from(format!("default-{spec}")))
+                        .label(if is_default { "default ✓" } else { "make default" })
+                        .small()
+                        .when(is_default, |b| b.primary())
+                        .on_click(move |_, _w, cx| {
+                            let spec = s_default.clone();
+                            w_default.update(cx, |app, cx| app.set_default_model(Some(spec), cx)).ok();
+                        }),
+                )
+                .child(Button::new(SharedString::from(format!("remove-{spec}"))).label("remove").small().ghost().on_click(move |_, _w, cx| {
+                    let spec = s_remove.clone();
+                    w_remove.update(cx, |app, cx| app.unlist_model(&spec, cx)).ok();
+                })),
+        );
+    }
+
+    v_flex()
+        .gap_3()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Label::new("Default model").text_color(muted))
+                .child(div().font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).child(state.default_model.clone().unwrap_or_else(|| "none — pick one in the status bar each time".into()))),
+        )
+        .child(Label::new("Provider").text_color(muted).text_size(small))
+        .child(providers)
+        .child(Label::new(key_line).text_color(muted).text_size(small))
+        .child(Label::new("Model name").text_color(muted).text_size(small))
+        .child(Input::new(&state.model_input))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(action("model-default", "Set as default", weak.clone(), |app, cx| app.set_typed_model(ModelUse::Default, cx)))
+                .child(action("model-now", "Use in this session", weak.clone(), |app, cx| app.set_typed_model(ModelUse::Now, cx)))
+                .child(action("model-list", "Add to picker list", weak.clone(), |app, cx| app.set_typed_model(ModelUse::List, cx)))
+                .child(action("model-clear", "Clear default", weak.clone(), |app, cx| app.set_default_model(None, cx))),
+        )
+        .child(Label::new("Models in the picker").text_color(muted).text_size(small))
+        .child(listed)
+        .into_any_element()
+}
+
+/// What the model tab's "typed model" buttons do with `provider/name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelUse {
+    Default,
+    Now,
+    List,
+}

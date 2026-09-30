@@ -37,6 +37,13 @@ pub fn install_ayu_dark(cx: &mut gpui_kit::App) {
         gpui_kit::component::Theme::global_mut(cx).dark_theme = ayu;
     }
     Theme::change(ThemeMode::Dark, None, cx);
+
+    // The user's fonts go over the theme's (`crate::settings`). The theme's own are kept the
+    // first time, so clearing a choice can put them back.
+    if cx.try_global::<crate::settings::ThemeFonts>().is_none() {
+        crate::settings::capture_theme_fonts(cx);
+    }
+    crate::settings::apply(&crate::start::GuiConfig::load_ui(), cx);
 }
 
 /// A per-instance override for `TextView::markdown(..).style(..)`, toning

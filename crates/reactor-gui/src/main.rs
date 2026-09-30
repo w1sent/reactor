@@ -47,6 +47,7 @@ fn main() {
                 reactor_gui::app::ComposerEsc,
                 None,
             )]);
+            reactor_gui::app::bind_keys(cx);
             install_menus(cx);
 
             match &launch.cwd {
@@ -78,7 +79,7 @@ fn main() {
 /// lets the window answer them: they land on `ReactorApp`'s root, alongside
 /// the model and thinking pickers (see its `Render`).
 fn install_menus(cx: &mut App) {
-    use reactor_gui::app::{ApplyLayoutAction, MainWindow, ToggleDockAction};
+    use reactor_gui::app::{ApplyLayoutAction, MainWindow, OpenPalette, OpenSettings, ToggleDockAction};
     use reactor_gui::layout::{DockSide, LayoutPreset};
 
     // Global handlers, not `.on_action` on some element: a native menu bar
@@ -123,6 +124,32 @@ fn install_menus(cx: &mut App) {
         });
     });
 
+    cx.on_action(|_: &OpenPalette, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.toggle_palette(window, cx));
+                }
+            });
+        });
+    });
+
+    cx.on_action(|_: &OpenSettings, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.toggle_settings(window, cx));
+                }
+            });
+        });
+    });
+
     let mut items: Vec<MenuItem> = LayoutPreset::ALL
         .iter()
         .map(|preset| MenuItem::action(preset.label(), ApplyLayoutAction { preset: *preset }))
@@ -137,11 +164,18 @@ fn install_menus(cx: &mut App) {
 
     reactor_gui::chrome::install_menus(
         cx,
-        vec![Menu {
-            name: "Layout".into(),
-            items,
-            disabled: false,
-        }],
+        vec![
+            Menu {
+                name: "Commands".into(),
+                items: vec![MenuItem::action("Command Palette…", OpenPalette), MenuItem::action("Settings…", OpenSettings)],
+                disabled: false,
+            },
+            Menu {
+                name: "Layout".into(),
+                items,
+                disabled: false,
+            },
+        ],
     );
 }
 

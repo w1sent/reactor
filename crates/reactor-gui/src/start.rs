@@ -88,6 +88,12 @@ fn legacy_config_path() -> PathBuf {
 pub struct GuiConfig {
     #[serde(default)]
     pub recent_workdirs: Vec<String>,
+    /// How often each command has been run from the palette or the composer, for ranking.
+    #[serde(default)]
+    pub command_usage: std::collections::BTreeMap<String, u32>,
+    /// Fonts and behaviour (`crate::settings`).
+    #[serde(default)]
+    pub ui: crate::settings::UiSettings,
 }
 
 impl GuiConfig {
@@ -104,6 +110,31 @@ impl GuiConfig {
         self.recent_workdirs.retain(|entry| entry != &path);
         self.recent_workdirs.insert(0, path);
         self.recent_workdirs.truncate(8);
+        self.save();
+    }
+
+    /// Count one run of a command. Loads first, so a second window's counts are not lost.
+    pub fn record_command(key: &str) {
+        let mut config = GuiConfig::load();
+        *config.command_usage.entry(key.to_string()).or_insert(0) += 1;
+        config.save();
+    }
+
+    /// The UI settings, normalized.
+    pub fn load_ui() -> crate::settings::UiSettings {
+        let mut ui = GuiConfig::load().ui;
+        ui.normalize();
+        ui
+    }
+
+    /// Store the UI settings. Loads first, so the recents and counts are kept.
+    pub fn save_ui(ui: &crate::settings::UiSettings) {
+        let mut config = GuiConfig::load();
+        config.ui = ui.clone();
+        config.save();
+    }
+
+    fn save(&self) {
         let file = config_path();
         if let Some(parent) = file.parent() {
             let _ = std::fs::create_dir_all(parent);

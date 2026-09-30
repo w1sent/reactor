@@ -59,7 +59,7 @@ deliberately (ADR-0015): it is not a documented interface, only something the
 scripts that ship alongside it depend on.
 
 `--format json` is supported on every subcommand and is **not optional**: it is
-the only interface the pi extensions have, so its shape is part of REactor's
+the interface scripts and the GUI's CLI fallback rely on, so its shape is part of REactor's
 contract and changes to it are breaking. Human-readable output carries no such
 guarantee. `crates/reactor-cli/tests/cli.rs` pins the shape, and its golden files pin the bytes.
 
@@ -75,10 +75,9 @@ leaves the extension a pure transport.
   ([ADR-0003](../docs/adr/0003-tools-toml-single-source-of-truth.md)) — except
   `diff-config` and `overwrite-config`, whose whole job is to compare the two.
   If the installed catalogue is absent it falls back to the shipped copy and
-  says so, so `reactor doctor` works before `install.py` has run.
-- Does not import from pi and does not require pi to be running.
-- Probes have timeouts and a cached-value fallback. Once the registry extension
-  is wired up, a hanging probe stalls an agent turn.
+  says so, so `reactor doctor` works before `reactor setup` has run.
+- Probes have timeouts and a cached-value fallback. A hanging probe would
+  stall an agent turn.
 - A probe that times out is reported as *unknown*, not as absent.
 - `--format json` never writes anything to stdout but the payload. Confirmation
   prompts, installer output and progress all move elsewhere in that mode.

@@ -2,14 +2,15 @@
 //!
 //! The goldens in `tests/golden/*.json` are captured from the TypeScript
 //! extensions, run through pi's own loader, by
-//! `tests/extensions/golden/capture.mjs` (MIGRATE.md phase 3). Each is a scripted
+//! `tests/extensions/golden/capture.mjs` (MIGRATE.md phase 3), which now lives only in git
+//! history: commit `014a9b8`. Each is a scripted
 //! session: operations, and beside each the notifications, session entries,
 //! prompt text, tool results and side effects the extension produced. This file
 //! replays the same operations against the Rust modules and demands the same
 //! answers — every key, every byte.
 //!
-//! The extensions are frozen (ADR-0035), so a failure here is a defect in the
-//! port, not drift in the spec.
+//! The extensions are gone from the tree, so the goldens are fixtures: a failure here
+//! is a defect in the port unless the behaviour was changed on purpose.
 
 use std::fs;
 use std::path::{Path, PathBuf};

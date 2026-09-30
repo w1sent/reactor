@@ -14,23 +14,23 @@ reactor-context     this crate                             (session facts)
 reactor-agent       the loop composes these blocks; it does not author them
 ```
 
-Each module is a port of one pi extension with the host removed. A command is
+Each module is a port of one of REactor's former pi extensions with the host removed. A command is
 `command(&mut State, …) -> Effects`; the block for the system prompt is
 `block(&State, …)`. What a handler did *to the world* — an entry to append, a
 toolset to enable, a settings file to save — comes back as data for the caller to
 perform.
 
-The pi extensions are frozen and are the specification
+The original extensions were the specification
 ([ADR-0040](../../docs/adr/0040-reactor-context-is-a-port-verified-against-the-extensions.md)).
 `tests/golden/*.json` records what they actually said and did; `tests/golden.rs`
 replays it and demands the same answers, byte for byte.
 
 ```bash
 cargo test -p reactor-context
-
-# after changing a scenario prompt, or if a frozen extension is ever touched:
-node tests/extensions/golden/capture.mjs --check    # are the goldens current?
-node tests/extensions/golden/capture.mjs            # rewrite them
 ```
 
-The capture needs pi and a Node with TypeScript support; the tests do not.
+The extensions are no longer in the tree, so the goldens are now fixtures: they
+change only when the behaviour is changed on purpose. To regenerate them from
+the originals, check out commit `014a9b8` and run
+`node tests/extensions/golden/capture.mjs` there (needs pi and a Node with
+TypeScript support).

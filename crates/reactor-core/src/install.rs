@@ -205,7 +205,7 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
     }
 
     if !host.json() {
-        // Never to stdout in json mode: that stream is the extensions' input.
+        // Never to stdout in json mode: that stream is the caller's input.
         host.print(&plan.iter().map(|p| format!("  {} {}", ljust(&p.tool, 12), p.text())).collect::<Vec<_>>().join("\n"));
     }
     if !host.confirm(&format!("run {} install command(s)?", plan.len())) {

@@ -5,8 +5,8 @@ members = [
     "crates/reactor-context",
     "crates/reactor-agent",
     "crates/reactor-cli",
-    "gui/crates/reactor-client",
-    "gui/crates/reactor-gui",
+    "crates/reactor-client",
+    "crates/reactor-gui",
 ]
 # reactor-gui pulls in a native windowing stack (fontconfig, xkbcommon, ...), so
 # a bare `cargo build` / `cargo test` leaves it out. `-p reactor-gui` opts in.
@@ -15,7 +15,7 @@ default-members = [
     "crates/reactor-context",
     "crates/reactor-agent",
     "crates/reactor-cli",
-    "gui/crates/reactor-client",
+    "crates/reactor-client",
 ]
 
 [workspace.package]

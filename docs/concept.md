@@ -56,26 +56,27 @@ repo](https://github.com/w1sent/bn-plugins/blob/main/docs/adr/0038-binja-cli-ski
 progressive-disclosure mechanism" — generalised from one tool to the whole
 toolbox.
 
-## Why a CLI, and why pi
+## Why a CLI
 
-pi's stated philosophy is skills and CLI tools over MCP servers, on the grounds
-that a CLI composes: its stdout can be filtered by `jq`, `rg` or a shell script
+A CLI composes: its stdout can be filtered by `jq`, `rg` or a shell script
 *before* it becomes a tool result, so the unfiltered data never reaches the
 model's context. An MCP tool call has no shell stage between return value and
-context. REactor takes the same position, and takes it for its own surfaces too:
-`reactor` is a CLI, and the TUI extensions shell out to it rather than
-reimplementing its logic in TypeScript.
+context. REactor takes that position for its own surfaces too: `reactor` is a
+CLI first, and the agent and the GUI use the same library the binary is built on
+([ADR-0034](adr/0034-reactor-cli-becomes-a-rust-library-with-a-binary.md)).
 
-pi is also the only harness REactor targets. That is a deliberate narrowing —
-see [ADR-0001](adr/0001-pi-is-the-only-target-harness.md).
+REactor began as a package for the [pi](https://pi.dev) harness
+([ADR-0001](adr/0001-pi-is-the-only-target-harness.md)) and now owns its harness
+([ADR-0033](adr/0033-reactor-is-a-rust-project-on-rig.md)). The pi flavor is in git
+history (last at commit `014a9b8`).
 
 ## Architecture
 
 ```
       ┌──────────────────────────────────────────────────────────────┐
-      │  this repo (pi package)                                      │
-      │    tools.toml  toolsets.toml  crates/ (the reactor binary)   │
-      │    extensions/  skills/  prompts/  themes/                   │
+      │  this repo                                                   │
+      │    tools.toml  toolsets.toml   (shipped seeds)               │
+      │    crates/  skills/  prompts/                                │
       └───────────────┬──────────────────────────────────────────────┘
                       │  reactor setup
                       ▼
@@ -84,35 +85,34 @@ see [ADR-0001](adr/0001-pi-is-the-only-target-harness.md).
       │    tools.toml      ← live catalogue, user-editable           │
       │    toolsets.toml   ← live toolsets, user-editable            │
       │    state.json      ← which tools/toolsets are active         │
+      │    settings.json   ← models, context budget, identity        │
       │    skills/<tool>/  ← upstream skills, fetched at install     │
+      │    sessions/<id>/  ← session store (+ per-session overrides) │
       └───────────────┬──────────────────────────────────────────────┘
                       │
         ┌─────────────┴──────────────┬───────────────────────┐
         ▼                            ▼                       ▼
-   reactor CLI               tool-registry ext         selector ext
-   doctor                    probe + cache             search / inspect
-   tools list|show           before_agent_start        toggle tool/toolset
-   skills list|show          → system prompt           → ctx.reload()
-   install                   resources_discover
-   diff-config               → gate skills/prompts     status ext
-   overwrite-config          ctx.ui.setStatus          services, devices
+   reactor-cli               reactor-agent             reactor-gui
+   doctor, tools, skills     loop over rig, session    panels, transcript,
+   install, diff-config      store, context budget,    context and tool
+   --format json             registry in the prompt    controls
+        └──────── all three build on reactor-core ───────────┘
 ```
 
 Three things to notice about that diagram:
 
-1. **The catalogue is the only source of truth.** The CLI reads it, the
-   extensions read it through the CLI, the doctor reads it, the installer reads
-   it. Adding a tool is one TOML block, not a code change in four places.
-2. **Extensions never parse the catalogue themselves.** They shell out to
-   `reactor ... --format json`. Same discipline the project applies everywhere
-   else, and it means the TUI can never disagree with the CLI.
-3. **The runtime catalogue lives in `~/.reactor/`, not in the package.** The
-   package copy is a seed. This matters because pi's update path does
-   `git reset --hard` followed by `git clean -fdx` on the installed package —
-   anything the user edited inside the package directory would be destroyed on
-   every update.
+1. **The catalogue is the only source of truth.** The CLI, the agent's registry,
+   the doctor, the installer and the GUI panels all read it through
+   `reactor-core`. Adding a tool is one TOML block, not a code change in four
+   places.
+2. **Nothing else parses the catalogue.** The GUI and agent call the library (or
+   `reactor ... --format json`, whose shape is frozen), so no surface can
+   disagree with the CLI.
+3. **The runtime catalogue lives in `~/.reactor/`, not in the checkout.** The
+   repo copy is a seed and is compiled into the binary; a reinstall never
+   destroys the user's edits.
 
-## The four surfaces
+## The surfaces
 
 ### 1. The catalogue and the CLI
 
@@ -121,62 +121,45 @@ appear in the registry, how to detect it, how to get its version, whether it is
 a service and how to check it, per-platform install recipes, and the upstream
 skill source if there is one.
 
-`reactor` is a stdlib-only Python CLI on PATH. `reactor doctor` reports what is
-present and prints the install command for what is not, chosen for the platform
-it is running on. `reactor install <tool>...` runs them. `reactor tools` and
-`reactor skills` list and inspect. Every subcommand supports `--format json`,
-which is how the extensions consume it.
+`reactor doctor` reports what is present and prints the install command for what
+is not, chosen for the platform it is running on. `reactor install <tool>...`
+runs them. `reactor tools` and `reactor skills` list and inspect. Every
+subcommand supports `--format json`.
 
-### 2. The tool-registry extension
+### 2. The registry
 
-Probes the catalogue's entries, caches the result, and returns the rendered
-registry from `before_agent_start`, where pi allows an extension to replace the
-system prompt for that turn. Rendering is deterministic: if nothing about the
-machine changed, the string is byte-identical to last turn's and the provider's
-prompt cache is unaffected. It invalidates only when reality changed — a service
-started, a device was plugged in, a tool was installed — which is exactly when
-invalidation is worth paying for.
+The agent probes the catalogue's entries, caches the result, and puts the
+rendered registry in the system prompt. Rendering is deterministic: if nothing
+about the machine changed, the string is byte-identical to last turn's and the
+provider's prompt cache is unaffected. It invalidates only when reality changed —
+a service started, a device was plugged in, a tool was installed — which is
+exactly when invalidation is worth paying for. Deactivating a toolset also
+removes its skills from the prompt.
 
-The same extension gates skill and prompt-template visibility through pi's
-`resources_discover` event, so deactivating a toolset also removes its skills
-from the system prompt, and `ctx.reload()` makes a toggle take effect
-immediately.
+Activation is scoped: a toggle in a session applies to that session, and can be
+promoted to the machine default or dropped
+([ADR-0042](adr/0042-the-gui-hosts-the-agent-in-process.md)).
 
-Together with the selector, this pair is "the toolbox" — a `toolbox: false` in
-pi's own agent directory (`reactor.json`, next to `settings.json`) removes both
-from a session as if neither were loaded: no commands, no status line, nothing
-injected. `/reactor-toolbox [on|off]` flips it from inside pi itself, since
-pi's own `/settings` has no extension point for a third party's fields to
-appear in ([ADR-0016](adr/0016-extension-toggles-live-in-their-own-pi-side-file.md)).
+### 3. The agent and its session
 
-### 3. The selector and status extensions
-
-The selector is the user's view of the same data: search the catalogue, inspect
-an entry, read its skill if it has one, toggle individual tools and toolsets.
-The status extension surfaces live state — which services are up, which devices
-are attached — in the footer and a panel; individual services can be hidden
-from it the same way, via `hiddenServices` in the same file.
-
-Both are pure TUI over `reactor --format json`. Neither owns any logic.
+`reactor-agent` is the loop: an append-only session store you can branch and
+resume, calls to the model through rig, and a context budget that replaces old
+ranges with a stand-in message before the window fills — with preview and undo
+([ADR-0036](adr/0036-reactor-owns-its-session-store-format.md),
+[ADR-0037](adr/0037-context-reduction-is-one-budget-manager.md),
+[ADR-0041](adr/0041-the-agent-loop-owns-the-message-list.md)). `reactor-context`
+supplies the session blocks: the manifest (goal, steps, guidelines), the working
+identity, reporting, and scenarios.
 
 ### 4. Scenarios
 
 A scenario is a chain of phases — Markdown files under `prompts/scenarios/<id>/`,
-one per phase, ordered by filename, read directly by `extensions/scenario/`
-rather than through pi's own prompt-command machinery
-([ADR-0017](adr/0017-scenario-steps-are-read-directly-not-pi-prompts.md)). The
-agent advances by calling `reactor_phase_complete(summary)`, and the tool's
-*return content is the next phase's briefing* — what to do now, what not to do
-yet, which tools just became relevant. Phases are the scenario's own stages,
-distinct from the manifest's steps (goal-setting). State rides in the tool result's
-`details` field and in a `pi.appendEntry` record, both of which pi persists in
-the session without ever sending them to the model, and both are restored on
-`session_start` ([ADR-0009](adr/0009-scenarios-advance-by-tool-result.md)).
-
-`/reactor-scenario list|start <id>|status|next [summary]|stop` is the human's
-window onto the same state — `list` and `start` before the agent has anything
-to advance, `next` as the manual override when the human, not the model, is
-the better judge that a step is done.
+one per phase, ordered by filename. The agent advances by calling
+`reactor_phase_complete(summary)`, and the tool's *return content is the next
+phase's briefing* — what to do now, what not to do yet, which tools just became
+relevant. Phases are the scenario's own stages, distinct from the manifest's
+steps. State rides in the session store and is restored on resume
+([ADR-0009](adr/0009-scenarios-advance-by-tool-result.md)).
 
 Scenarios exist because an eager model finishes triage and immediately starts
 patching. A briefing that says "do not start dynamic analysis yet" costs one
@@ -184,12 +167,10 @@ tool result and redirects it. Like the rest of REactor it persuades; it does not
 enforce — a step may activate a toolset as it advances, but never deactivates
 the one before it.
 
-The first scenario ships with the package: `investigation` — seventeen stages
+The first scenario ships with the repo: `investigation` — seventeen stages
 covering the full arc from scoping and evidence acquisition through triage,
 static, dynamic and deep analysis, timeline, detection, reporting and
-remediation to analysis-derived tooling. The four phases used as the
-illustrative example throughout this document and in ADR-0009 live inside it
-as stages C, D, E and N.
+remediation to analysis-derived tooling.
 
 ## What REactor deliberately does not do
 
@@ -205,8 +186,9 @@ as stages C, D, E and N.
 - **It does not merge config for you.** `reactor diff-config` shells out to
   `diff(1)`; you fix it by hand.
   ([ADR-0004](adr/0004-config-updates-via-plain-diff.md))
-- **It is not portable to other harnesses.**
-  ([ADR-0001](adr/0001-pi-is-the-only-target-harness.md))
+- **It does not host other harnesses.** The `reactor` CLI is the portable
+  surface: machine facts, `--format json`
+  ([ADR-0035](adr/0035-portable-surface-is-machine-facts.md)).
 
 ## Target tool surface
 
@@ -226,24 +208,9 @@ not by plan. It is meant to cover at least:
 | Databases | usql, redis-cli, mongosh, cqlsh, influx (Influx CLI) |
 | Solving | z3, angr |
 | Parsing / transformation | tree-sitter |
-| Agent delegation | pi itself, non-interactive only (`-p`) |
 
 Some of these get nothing but a catalogue entry — a name, a line of description,
 and `--help`. That is the expected outcome for most of them, and it is not a gap.
-
-The last row is not an RE tool at all: `pi` — the harness this agent is
-already running inside — is catalogued as `pi-subagent`, the same way angr or
-joern are, for delegating a self-contained subtask to a fresh agent.
-Recursive, and not treated specially for it; withholding a real capability
-because it happens to point back at the harness would be inconsistent with
-cataloguing everything else worth reaching for
-([ADR-0018](adr/0018-pi-itself-is-a-catalogue-entry-non-interactive-only.md)).
-It is also the one entry in this catalogue with a self-authored skill behind
-it — `skills/pi-subagent/` — because *scoping* a delegated subagent (pi's own
-`--no-tools`/`--tools`/`--exclude-tools`, an enforced boundary, versus
-REactor's own toolbox activation, advisory only per ADR-0007) is exactly the
-kind of cross-tool workflow knowledge no single `--help` contains
-([ADR-0022](adr/0022-pi-subagent-gets-a-skill-so-it-gets-a-clearer-id.md)).
 
 Where a decompiler has both a GUI and a CLI, the CLI is the entry: `ilspycmd`
 rather than ILSpy. The agent invokes commands, so a tool it cannot invoke is not

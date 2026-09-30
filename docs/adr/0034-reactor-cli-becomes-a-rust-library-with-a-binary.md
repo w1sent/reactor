@@ -14,7 +14,7 @@ fact strengthened.
 ## Why
 
 **The GUI already treats the CLI as its source of truth, and pays a process
-per panel to do it.** `gui/SPEC.md` records the rule ("single source of truth:
+per panel to do it.** `crates/reactor-gui/SPEC.md` records the rule ("single source of truth:
 the CLI") and the cost: `reactor … --format json` spawned for the catalogue,
 the toolsets and the services, on every refresh. Linking the library keeps the
 rule and deletes the cost. The seam narrows; it does not move.

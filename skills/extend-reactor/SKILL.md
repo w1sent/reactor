@@ -26,8 +26,7 @@ The full schema comment block lives at the top of `tools.toml` and
 
 The repo-root `tools.toml` / `toolsets.toml` are the **shipped seeds**. A user
 machine reads the installed copies at `~/.reactor/` — never edit those in
-the package tree on a user machine (pi's package update runs `git clean
--fdx`). After an update, `reactor diff-config` shows the difference against
+the repo checkout on a user machine (a reinstall can overwrite it). After an update, `reactor diff-config` shows the difference against
 installed copies and the user merges by hand.
 
 ## Hard invariants

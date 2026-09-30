@@ -63,10 +63,8 @@ actions!(
         SlashDismiss,
         /// Esc in the command palette: close it, whatever is typed.
         ClosePalette,
-        /// Open the settings popup (Cmd+, / Ctrl+,, or the Commands menu).
+        /// Open the settings window (Cmd+, / Ctrl+,, or the Commands menu).
         OpenSettings,
-        /// Esc in the settings popup.
-        CloseSettings,
         /// Esc in the context-window popup.
         CloseInspect,
         /// Esc in the notification history.
@@ -152,8 +150,14 @@ pub struct ReactorApp {
     pub ui: crate::settings::UiSettings,
     /// The context-window popup, while it is open.
     pub inspect: Option<crate::inspect_ui::InspectUi>,
-    /// The settings popup, while it is open.
-    pub settings: Option<crate::settings_ui::SettingsUi>,
+    /// Font family fields as typed (half a name is not applied, but is kept on screen).
+    family_drafts: std::collections::HashMap<crate::settings::Slot, String>,
+    /// The model page's provider and name fields.
+    pub model_draft: crate::settings_window::ModelDraft,
+    /// Which layer of the context budget the settings window edits.
+    pub context_scope: crate::settings_window::ContextScope,
+    /// The settings window, while it is open.
+    pub settings_window: Option<gpui_kit::AnyWindowHandle>,
 }
 
 /// The open command palette.
@@ -187,7 +191,6 @@ pub fn bind_keys(cx: &mut App) {
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-p", OpenPalette, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
-        KeyBinding::new("escape", CloseSettings, Some("ReactorSettings > Input")),
         KeyBinding::new("escape", CloseInspect, Some("ReactorInspect")),
         KeyBinding::new("escape", CloseNotices, Some("ReactorNotices")),
         // The prompt: up on its top line and down on its bottom line walk through the messages
@@ -372,7 +375,10 @@ impl ReactorApp {
             prompt_history,
             ui,
             inspect: None,
-            settings: None,
+            family_drafts: Default::default(),
+            model_draft: Default::default(),
+            context_scope: crate::settings_window::ContextScope::Default,
+            settings_window: None,
         }
     }
 
@@ -814,7 +820,6 @@ impl ReactorApp {
             return;
         };
         self.palette = None;
-        self.settings = None;
         let focus = cx.focus_handle();
         self.inspect = Some(crate::inspect_ui::InspectUi { data: None, loading: true, error: None, selected: 0, filter: None, focus: focus.clone() });
         backend.inspect();
@@ -869,293 +874,74 @@ impl ReactorApp {
         }
     }
 
-    // -- settings --------------------------------------------------------------------------------
+    // -- settings ----------------------------------------------------------------------------------
+    //
+    // The settings live in their own window (`crate::settings_window`), which reads and changes
+    // the app through these methods. Nothing here needs a window of its own.
 
-    /// Open the settings popup, or close it if it is open.
+    /// Open the settings window, or bring it forward if it is open.
     pub fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_kit::component::input::InputState;
-        if self.settings.is_some() {
-            self.close_settings(window, cx);
-            return;
-        }
-        self.palette = None;
-        let mut inputs = Vec::new();
-        for slot in crate::settings::Slot::ALL {
-            let current = self.ui.family(slot).unwrap_or("").to_string();
-            let input = cx.new(|cx| {
-                let mut state = InputState::new(window, cx).placeholder("default");
-                state.set_value(&current, window, cx);
-                state
-            });
-            cx.subscribe_in(&input, window, move |this, _input, event: &InputEvent, _window, cx| {
-                // On Enter or leaving the field, not on every keystroke: half a font name is
-                // not a font.
-                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                    this.commit_family(slot, cx);
-                }
-            })
-            .detach();
-            inputs.push((slot, input));
-        }
-        let (default_model, models) = self.model_settings();
-        let (provider, name) = default_model
-            .as_deref()
-            .or(self.session.read(cx).model.as_deref())
-            .and_then(|m| m.split_once('/'))
-            .map(|(p, n)| (p.to_string(), n.to_string()))
-            .unwrap_or_else(|| (reactor_agent::provider::PROVIDERS[0].to_string(), String::new()));
-        let model_input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("model name, e.g. claude-sonnet-5-5");
-            state.set_value(&name, window, cx);
-            state
-        });
-        let scope = crate::settings_ui::ContextScope::Default;
-        let layer = self.context_layer(scope);
-        let mut context_inputs = Vec::new();
-        for field in crate::settings_ui::CtxField::ALL {
-            let input = cx.new(|cx| InputState::new(window, cx));
-            cx.subscribe_in(&input, window, move |this, _input, event: &InputEvent, _window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                    this.context_commit(field, cx);
-                }
-            })
-            .detach();
-            context_inputs.push((field, input));
-        }
-        self.settings = Some(crate::settings_ui::SettingsUi {
-            tab: crate::settings_ui::Tab::Fonts,
-            inputs,
-            message: None,
-            notice: None,
-            provider,
-            model_input,
-            default_model,
-            models,
-            context_scope: scope,
-            context_layer: layer,
-            context_inputs,
-        });
-        self.context_fill(window, cx);
+        let app = cx.entity();
+        // After this update: the new window's views read the app, which is being updated now.
+        window.defer(cx, move |_window, cx| crate::settings_window::open(cx, app));
+    }
+
+    /// Change the settings, then keep everything in step: normalize, save, restyle the theme.
+    pub fn update_ui(&mut self, change: impl FnOnce(&mut crate::settings::UiSettings), cx: &mut Context<Self>) {
+        change(&mut self.ui);
+        self.ui.normalize();
+        crate::start::GuiConfig::save_ui(&self.ui);
+        crate::settings::apply(&self.ui, cx);
         cx.notify();
     }
 
-    // -- the Context tab ---------------------------------------------------------------------------
-
-    /// One layer of the context settings as stored.
-    fn context_layer(&self, scope: crate::settings_ui::ContextScope) -> ContextSettings {
-        match (&self.backend, scope) {
-            (Some(b), crate::settings_ui::ContextScope::Default) => b.context_layers().0,
-            (Some(b), crate::settings_ui::ContextScope::Session) => b.context_layers().1,
-            (None, _) => ContextSettings::default(),
-        }
+    /// The text shown in a font family field: what is being typed, else what is set.
+    pub fn family_text(&self, slot: crate::settings::Slot) -> String {
+        self.family_drafts.get(&slot).cloned().unwrap_or_else(|| self.ui.family(slot).unwrap_or("").to_string())
     }
 
-    /// Show the stored layer in the tab's fields; an empty field is an unset value, and the
-    /// placeholder says what the session uses now.
-    fn context_fill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::settings_ui::CtxField;
-        let Some(scope) = self.settings.as_ref().map(|s| s.context_scope) else { return };
-        let layer = self.context_layer(scope);
-        let view = self.context.clone();
-        let inputs: Vec<_> = self.settings.iter().flat_map(|s| s.context_inputs.iter().cloned()).collect();
-        for (field, input) in inputs {
-            let (value, now) = match field {
-                CtxField::Window => (layer.window.map(|n| n.to_string()), view.as_ref().map(|v| v.window.to_string())),
-                CtxField::Reserve => (layer.reserve.map(|n| n.to_string()), view.as_ref().map(|v| v.reserve.to_string())),
-                CtxField::Pct => (layer.pct.map(|p| format!("{:.0}", p * 100.0)), view.as_ref().map(|v| format!("{:.0}", v.pct * 100.0))),
-                CtxField::Keep => (layer.keep.map(|p| format!("{:.0}", p * 100.0)), view.as_ref().map(|v| format!("{:.0}", v.keep * 100.0))),
-                CtxField::Summarizer => (layer.summarizer.clone(), Some(view.as_ref().and_then(|v| v.summarizer.clone()).unwrap_or_else(|| "the session's model".into()))),
-            };
-            input.update(cx, |state, cx| {
-                state.set_value(value.unwrap_or_default(), window, cx);
-                state.set_placeholder(now.unwrap_or_default(), window, cx);
-            });
-        }
-        if let Some(s) = &mut self.settings {
-            s.context_layer = layer;
-        }
-    }
-
-    pub fn context_scope(&mut self, scope: crate::settings_ui::ContextScope, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(s) = &mut self.settings {
-            s.context_scope = scope;
-            s.message = None;
-        }
-        self.context_fill(window, cx);
-        cx.notify();
-    }
-
-    /// Change the layer being edited: read it, let `edit` change it, store it back.
-    fn context_edit(&mut self, edit: impl FnOnce(&mut ContextSettings), cx: &mut Context<Self>) {
-        let (Some(backend), Some(scope)) = (self.backend.clone(), self.settings.as_ref().map(|s| s.context_scope)) else { return };
-        let global = scope == crate::settings_ui::ContextScope::Default;
-        let before = self.context_layer(scope);
-        let mut layer = before.clone();
-        edit(&mut layer);
-        if layer == before {
-            return;
-        }
-        match backend.replace_context_layer(global, layer.clone()) {
-            Ok(()) => {
-                self.set_settings_message(None);
-                if let Some(s) = &mut self.settings {
-                    s.context_layer = layer;
-                }
-                self.preview = None;
-            }
-            Err(e) => self.set_settings_message(Some(e)),
-        }
-        cx.notify();
-    }
-
-    pub fn context_set_mode(&mut self, mode: Option<&str>, cx: &mut Context<Self>) {
-        let mode = mode.map(str::to_string);
-        self.context_edit(|l| l.mode = mode, cx);
-    }
-
-    /// Take what was typed into a field: empty clears it, anything else must make sense.
-    fn context_commit(&mut self, field: crate::settings_ui::CtxField, cx: &mut Context<Self>) {
-        use crate::settings_ui::CtxField;
-        let Some(input) = self.settings.as_ref().and_then(|s| s.context_inputs.iter().find(|(f, _)| *f == field)).map(|(_, i)| i.clone()) else { return };
-        let typed = input.read(cx).value().trim().to_string();
-        let tokens = |v: &str| -> Option<u64> {
-            let v = v.to_ascii_lowercase().replace([',', '_'], "");
-            let (digits, factor) = match v.strip_suffix('k') {
-                Some(n) => (n.to_string(), 1_000.0),
-                None => match v.strip_suffix('m') {
-                    Some(n) => (n.to_string(), 1_000_000.0),
-                    None => (v, 1.0),
-                },
-            };
-            let n = digits.parse::<f64>().ok()? * factor;
-            (n >= 0.0 && n.is_finite()).then(|| n.round() as u64)
-        };
-        let share = |v: &str| -> Option<f64> {
-            let n = v.trim_end_matches('%').trim().parse::<f64>().ok()?;
-            Some(if n > 1.0 { n / 100.0 } else { n })
-        };
+    /// A font family typed into a field: empty clears it, an installed font is applied, and
+    /// anything else (half a name) is kept as typed but not applied.
+    pub fn set_family_text(&mut self, slot: crate::settings::Slot, text: &str, cx: &mut Context<Self>) {
+        let typed = text.trim();
+        self.family_drafts.insert(slot, text.to_string());
         if typed.is_empty() {
-            self.context_edit(
-                |l| match field {
-                    CtxField::Window => l.window = None,
-                    CtxField::Reserve => l.reserve = None,
-                    CtxField::Pct => l.pct = None,
-                    CtxField::Keep => l.keep = None,
-                    CtxField::Summarizer => l.summarizer = None,
-                },
-                cx,
-            );
-            return;
-        }
-        let bad = |what: &str| format!("{}: {what}", field.label());
-        let outcome: Result<Box<dyn FnOnce(&mut ContextSettings)>, String> = match field {
-            CtxField::Window => tokens(&typed).filter(|n| *n >= 1_000).map(|n| Box::new(move |l: &mut ContextSettings| l.window = Some(n)) as Box<dyn FnOnce(&mut ContextSettings)>).ok_or_else(|| bad("a number of tokens, at least 1000 — 200000 or 200k")),
-            CtxField::Reserve => tokens(&typed).map(|n| Box::new(move |l: &mut ContextSettings| l.reserve = Some(n)) as Box<dyn FnOnce(&mut ContextSettings)>).ok_or_else(|| bad("a number of tokens — 8000 or 8k")),
-            CtxField::Pct => share(&typed).filter(|p| *p > 0.0 && *p <= 1.0).map(|p| Box::new(move |l: &mut ContextSettings| l.pct = Some(p)) as Box<dyn FnOnce(&mut ContextSettings)>).ok_or_else(|| bad("a percentage from 1 to 100")),
-            CtxField::Keep => share(&typed).filter(|p| *p > 0.0 && *p < 1.0).map(|p| Box::new(move |l: &mut ContextSettings| l.keep = Some(p)) as Box<dyn FnOnce(&mut ContextSettings)>).ok_or_else(|| bad("a percentage from 1 to 99")),
-            CtxField::Summarizer => {
-                if typed.contains('/') {
-                    let spec = typed.clone();
-                    Ok(Box::new(move |l: &mut ContextSettings| l.summarizer = Some(spec)) as Box<dyn FnOnce(&mut ContextSettings)>)
-                } else {
-                    Err(bad("provider/name, like ollama/llama3"))
-                }
-            }
-        };
-        match outcome {
-            Ok(edit) => self.context_edit(edit, cx),
-            Err(message) => {
-                self.set_settings_message(Some(message));
-                cx.notify();
-            }
+            self.family_drafts.remove(&slot);
+            self.update_ui(|ui| ui.set_family(slot, None), cx);
+        } else if crate::settings::font_exists(typed, cx) {
+            let typed = typed.to_string();
+            self.update_ui(|ui| ui.set_family(slot, Some(typed)), cx);
+        } else {
+            cx.notify();
         }
     }
 
-    /// Clear one field of the layer: it inherits again.
-    pub fn context_reset(&mut self, field: crate::settings_ui::CtxField, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::settings_ui::CtxField;
-        self.context_edit(
-            |l| match field {
-                CtxField::Window => l.window = None,
-                CtxField::Reserve => l.reserve = None,
-                CtxField::Pct => l.pct = None,
-                CtxField::Keep => l.keep = None,
-                CtxField::Summarizer => l.summarizer = None,
+    /// A size from a number field. Equal to the default is the same as unset.
+    pub fn set_font_size(&mut self, slot: crate::settings::Slot, size: f64, default: f64, cx: &mut Context<Self>) {
+        let unset = (size - default).abs() < 0.5;
+        self.update_ui(|ui| ui.set_size(slot, if unset { None } else { Some(size.round() as f32) }), cx);
+    }
+
+    /// Whether this slot differs from the defaults (its reset button shows).
+    pub fn font_is_set(&self, slot: crate::settings::Slot) -> bool {
+        self.ui.family(slot).is_some() || self.ui.size(slot).is_some() || self.family_drafts.contains_key(&slot)
+    }
+
+    pub fn reset_font(&mut self, slot: crate::settings::Slot, cx: &mut Context<Self>) {
+        self.family_drafts.remove(&slot);
+        self.update_ui(
+            |ui| {
+                ui.set_family(slot, None);
+                ui.set_size(slot, None);
             },
             cx,
         );
-        self.context_fill(window, cx);
     }
 
-    /// Back to the defaults: the session drops its own values; the default drops its own and
-    /// new sessions use the built-in ones.
-    pub fn context_reset_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.context_edit(|l| *l = ContextSettings::default(), cx);
-        self.context_fill(window, cx);
-        if let Some(s) = &mut self.settings {
-            s.notice = Some("Reset.".into());
-        }
-    }
-
-    pub fn settings_tab(&mut self, tab: crate::settings_ui::Tab, cx: &mut Context<Self>) {
-        if let Some(s) = &mut self.settings {
-            s.tab = tab;
-            s.message = None;
-            s.notice = None;
-            cx.notify();
-        }
-    }
-
-    pub fn settings_provider(&mut self, provider: &str, cx: &mut Context<Self>) {
-        if let Some(s) = &mut self.settings {
-            s.provider = provider.to_string();
-            cx.notify();
-        }
-    }
-
-    /// Say something in the settings popup, in the accent colour.
-    fn settings_notice(&mut self, text: impl Into<String>) {
-        if let Some(s) = &mut self.settings {
-            s.message = None;
-            s.notice = Some(text.into());
-        }
-    }
-
-    /// The Model tab: this session's model becomes the default for new sessions.
-    pub fn promote_model(&mut self, cx: &mut Context<Self>) {
-        match self.session.read(cx).model.clone().filter(|m| !m.is_empty()) {
-            Some(model) => {
-                self.set_default_model(Some(model.clone()), cx);
-                self.settings_notice(format!("{model} is now the default model."));
-            }
-            None => self.set_settings_message(Some("this session has no model yet".into())),
-        }
-        cx.notify();
-    }
-
-    /// The Context tab: this session's values become the default, and the session inherits.
-    pub fn context_promote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.make_context_default(cx);
-        self.context_fill(window, cx);
-        self.settings_notice("This session's context settings are now the default.");
-        cx.notify();
-    }
-
-    /// The Tools tab: this session's activation becomes the machine's.
-    pub fn tools_promote(&mut self, cx: &mut Context<Self>) {
-        self.make_activation_default(cx);
-        self.settings_notice("This session's tools are now the default for new sessions.");
-        cx.notify();
-    }
-
-    pub fn tools_inherit(&mut self, cx: &mut Context<Self>) {
-        self.inherit_activation(cx);
-        self.settings_notice("This session uses the default activation again.");
-        cx.notify();
-    }
+    // -- the model -----------------------------------------------------------------------------
 
     /// The default model and the picker's list, as `settings.json` has them.
-    fn model_settings(&self) -> (Option<String>, Vec<String>) {
+    pub fn model_settings(&self) -> (Option<String>, Vec<String>) {
         match &self.backend {
             Some(b) => {
                 let s = Settings::load(&b.paths);
@@ -1165,41 +951,31 @@ impl ReactorApp {
         }
     }
 
-    /// Change `settings.json`'s model keys, then show what it holds.
+    /// Change `settings.json`'s model keys and the picker that shows them.
     fn change_model_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else { return };
         let mut settings = Settings::load(&backend.paths);
         change(&mut settings);
         match settings.save(&backend.paths) {
-            Ok(()) => {
-                self.models = backend.models();
-                let (default_model, models) = self.model_settings();
-                if let Some(s) = &mut self.settings {
-                    s.default_model = default_model;
-                    s.models = models;
-                    s.message = None;
-                }
-            }
-            Err(e) => self.set_settings_message(Some(format!("could not save settings.json: {e}"))),
+            Ok(()) => self.models = backend.models(),
+            Err(e) => self.push_note("error", format!("could not save settings.json: {e}")),
         }
         cx.notify();
     }
 
-    /// `provider/name` from the model tab's fields, if a name was typed.
-    fn typed_model(&mut self, cx: &mut Context<Self>) -> Option<String> {
-        let s = self.settings.as_ref()?;
-        let name = s.model_input.read(cx).value().trim().to_string();
+    /// `provider/name` from the model page's fields, if a name was typed.
+    fn typed_model(&mut self) -> Option<String> {
+        let name = self.model_draft.name.trim().to_string();
         if name.is_empty() {
-            self.set_settings_message(Some("type a model name after choosing the provider".into()));
-            cx.notify();
+            self.push_note("warning", "type a model name first");
             return None;
         }
-        Some(format!("{}/{}", s.provider, name))
+        Some(format!("{}/{}", self.model_draft.provider, name))
     }
 
-    pub fn set_typed_model(&mut self, what: crate::settings_ui::ModelUse, cx: &mut Context<Self>) {
-        use crate::settings_ui::ModelUse;
-        let Some(spec) = self.typed_model(cx) else { return };
+    pub fn set_typed_model(&mut self, what: crate::settings_window::ModelUse, cx: &mut Context<Self>) {
+        use crate::settings_window::ModelUse;
+        let Some(spec) = self.typed_model() else { return };
         match what {
             ModelUse::Default => self.set_default_model(Some(spec), cx),
             ModelUse::Now => self.set_model(&spec, cx),
@@ -1234,80 +1010,59 @@ impl ReactorApp {
         );
     }
 
-    pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings.take().is_some() {
-            self.composer.update(cx, |state, cx| state.focus(window, cx));
-            cx.notify();
+    /// This session's model becomes the default for new sessions.
+    pub fn promote_model(&mut self, cx: &mut Context<Self>) {
+        match self.session.read(cx).model.clone().filter(|m| !m.is_empty()) {
+            Some(model) => {
+                self.set_default_model(Some(model.clone()), cx);
+                self.push_note("info", format!("{model} is now the default model"));
+            }
+            None => self.push_note("warning", "this session has no model yet"),
         }
     }
 
-    /// Change the settings, then keep everything in step: normalize, save, restyle the theme.
-    pub fn update_ui(&mut self, change: impl FnOnce(&mut crate::settings::UiSettings), cx: &mut Context<Self>) {
-        change(&mut self.ui);
-        self.ui.normalize();
-        crate::start::GuiConfig::save_ui(&self.ui);
-        crate::settings::apply(&self.ui, cx);
+    // -- the context budget ----------------------------------------------------------------------
+
+    /// One layer of the context settings as stored.
+    pub fn context_layer(&self, scope: crate::settings_window::ContextScope) -> ContextSettings {
+        match (&self.backend, scope) {
+            (Some(b), crate::settings_window::ContextScope::Default) => b.context_layers().0,
+            (Some(b), crate::settings_window::ContextScope::Session) => b.context_layers().1,
+            (None, _) => ContextSettings::default(),
+        }
+    }
+
+    /// Change the layer being edited: read it, let `edit` change it, store it back.
+    pub fn context_edit(&mut self, edit: impl FnOnce(&mut ContextSettings), cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else { return };
+        let scope = self.context_scope;
+        let global = scope == crate::settings_window::ContextScope::Default;
+        let before = self.context_layer(scope);
+        let mut layer = before.clone();
+        edit(&mut layer);
+        if layer == before {
+            return;
+        }
+        match backend.replace_context_layer(global, layer) {
+            Ok(()) => self.preview = None,
+            Err(e) => self.push_note("error", e),
+        }
         cx.notify();
     }
 
-    /// Take a font name typed into a slot's field.
-    fn commit_family(&mut self, slot: crate::settings::Slot, cx: &mut Context<Self>) {
-        let Some(input) = self.settings.as_ref().and_then(|s| s.inputs.iter().find(|(k, _)| *k == slot)).map(|(_, i)| i.clone()) else { return };
-        let typed = input.read(cx).value().trim().to_string();
-        if typed.is_empty() {
-            self.set_settings_message(None);
-            self.update_ui(|ui| ui.set_family(slot, None), cx);
-        } else if crate::settings::font_exists(&typed, cx) {
-            self.set_settings_message(None);
-            self.update_ui(|ui| ui.set_family(slot, Some(typed)), cx);
-        } else {
-            self.set_settings_message(Some(format!("\"{typed}\" is not an installed font, so {} keeps its font", slot.label())));
-            cx.notify();
-        }
+    /// This session's context values become the default, and the session inherits.
+    pub fn context_promote(&mut self, cx: &mut Context<Self>) {
+        self.make_context_default(cx);
     }
 
-    fn set_settings_message(&mut self, message: Option<String>) {
-        if let Some(s) = &mut self.settings {
-            s.message = message;
-        }
+    // -- tool activation -------------------------------------------------------------------------
+
+    pub fn tools_promote(&mut self, cx: &mut Context<Self>) {
+        self.make_activation_default(cx);
     }
 
-    /// Clear one slot's family and size, and its field.
-    pub fn reset_font(&mut self, slot: crate::settings::Slot, window: &mut Window, cx: &mut Context<Self>) {
-        self.clear_fields(Some(slot), window, cx);
-        self.update_ui(|ui| {
-            ui.set_family(slot, None);
-            ui.set_size(slot, None);
-        }, cx);
-    }
-
-    /// The Fonts tab: every font and size back to the theme's own.
-    pub fn reset_fonts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.clear_fields(None, window, cx);
-        self.set_settings_message(None);
-        self.update_ui(|ui| ui.fonts.clear(), cx);
-    }
-
-    /// The Behaviour tab: its options back to their standard values. Fonts are left alone.
-    pub fn reset_behaviour(&mut self, cx: &mut Context<Self>) {
-        self.update_ui(
-            |ui| {
-                let standard = crate::settings::UiSettings::default();
-                ui.tool_output_chars = standard.tool_output_chars;
-                ui.expand_thinking = standard.expand_thinking;
-                ui.dim_reduced = standard.dim_reduced;
-                ui.start_layout = standard.start_layout;
-                ui.notice_seconds = standard.notice_seconds;
-            },
-            cx,
-        );
-    }
-
-    fn clear_fields(&mut self, only: Option<crate::settings::Slot>, window: &mut Window, cx: &mut Context<Self>) {
-        let inputs: Vec<_> = self.settings.iter().flat_map(|s| s.inputs.iter()).filter(|(k, _)| only.is_none_or(|o| o == *k)).map(|(_, i)| i.clone()).collect();
-        for input in inputs {
-            input.update(cx, |state, cx| state.set_value("", window, cx));
-        }
+    pub fn tools_inherit(&mut self, cx: &mut Context<Self>) {
+        self.inherit_activation(cx);
     }
 
     /// Open the palette, or close it if it is already open.
@@ -1319,7 +1074,6 @@ impl ReactorApp {
         let entries = self.palette_entries();
         let shown = palette::rank("", &entries, &self.usage, false).into_iter().cloned().collect();
         let list = cx.new(|cx| CommandState::new(window, cx));
-        self.settings = None;
         self.palette = Some(PaletteUi { list: list.clone(), entries, shown });
         // After this frame renders: a view that is not in the tree yet cannot take focus.
         window.defer(cx, move |window, cx| list.update(cx, |state, cx| state.focus(window, cx)));
@@ -1929,7 +1683,6 @@ impl Render for ReactorApp {
             .on_action(cx.listener(|this, _: &SlashAccept, window, cx| this.accept_slash(window, cx)))
             .on_action(cx.listener(|this, _: &SlashDismiss, _window, cx| this.slash_dismiss(cx)))
             .on_action(cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &CloseSettings, window, cx| this.close_settings(window, cx)))
             .on_action(cx.listener(|this, _: &CloseInspect, window, cx| this.close_inspect(window, cx)))
             .on_action(cx.listener(|this, _: &CloseNotices, window, cx| this.close_notices(window, cx)))
             .on_action(cx.listener(|this, _: &ComposerEsc, window, cx| {
@@ -1937,10 +1690,6 @@ impl Render for ReactorApp {
                 // reaches — and must not also interrupt the agent.
                 if this.palette.is_some() {
                     this.close_palette(window, cx);
-                    return;
-                }
-                if this.settings.is_some() {
-                    this.close_settings(window, cx);
                     return;
                 }
                 if this.inspect.is_some() {
@@ -1964,7 +1713,6 @@ impl Render for ReactorApp {
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
             .when_some(self.render_palette(cx), |el, palette| el.child(palette))
-            .when_some(crate::settings_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::inspect_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::notices_ui::history(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::notices_ui::toasts(self, cx.weak_entity(), cx), |el, popup| el.child(popup))

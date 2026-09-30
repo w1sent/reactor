@@ -244,15 +244,18 @@ feedback, not commentary, and stay as short text.
 Anything the app tells the person — a command's result, a failed save, a model error — is a
 notification (`ReactorApp::push_note`), shown twice:
 
-- a **popup** in the top-right corner, under the title bar, that goes after a timeout (*Settings →
-  Behaviour*, 6 s by default) or when closed with its ×;
+- a **popup** in the top-right corner, under the title bar — gpui-kit's notification component, so its
+  look, stacking, animation and close button are the library's. It goes after a timeout (*Settings →
+  Behaviour*, 6 s by default) or when closed with its ×. The component's own auto-hide is a fixed 5 s,
+  so popups are pushed without it and taken down by `ReactorApp::flush_toasts` at the configured time.
+  The settings window shows the same popups;
 - a line in the **history** behind the **bell** at the right-hand end of the title bar. The bell
   shows how many notifications have not been looked at; clicking it opens the list, newest first, with
   the time of each, and *Clear* empties it. `Esc` or a click outside closes it. `/notifications`
-  opens it too.
+  opens it too. The component has no history, so this part is ours.
 
-The rules (timeouts, unread count, history cap of 200) are `src/notifications.rs`, tested without a
-window; `src/notices_ui.rs` draws them.
+The history rules (unread count, cap of 200, dates for other days) are `src/notifications.rs`, tested
+without a window; `src/notices_ui.rs` draws the bell and the list.
 
 ### 6.0b The context window
 

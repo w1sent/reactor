@@ -86,9 +86,10 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
-        let toasts = crate::notices_ui::toasts(self.app.read(cx), self.app.downgrade(), cx);
+        // The component's notification layer, so popups (this window gets the same ones) show here.
+        let notifications = Root::render_notification_layer(window, cx);
         v_flex()
             .size_full()
             .relative()
@@ -96,7 +97,7 @@ impl Render for SettingsWindow {
             .child(div().flex_1().min_h_0().child(
                 Settings::new("reactor-settings").sidebar_width(px(220.)).pages(vec![fonts_page(&app, cx), behaviour_page(&app), model_page(&app, cx), context_page(&app), tools_page(&app)]),
             ))
-            .children(toasts)
+            .children(notifications)
     }
 }
 

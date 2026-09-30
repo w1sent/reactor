@@ -1,5 +1,5 @@
-//! Notifications on screen: the popups in the top-right corner, the bell in the title bar, and
-//! the history list it opens. The rules are in [`crate::notifications`]; this only draws.
+//! Notifications on screen: the bell in the title bar and the history list it opens. (The popups
+//! are gpui-kit's notification component.) The rules are in [`crate::notifications`].
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -61,40 +61,6 @@ pub fn bell(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &App) 
             )
         })
         .into_any_element()
-}
-
-/// The popups, top right, under the title bar.
-pub fn toasts(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &App) -> Option<impl IntoElement> {
-    let shown = app.notifier.toasts();
-    if shown.is_empty() {
-        return None;
-    }
-    let theme = cx.theme();
-    let mut stack = v_flex().absolute().top(px(46.)).right_4().w(px(380.)).gap_2();
-    for notice in shown {
-        let id = notice.id;
-        let weak = weak.clone();
-        stack = stack.child(
-            h_flex()
-                .id(("toast", id as usize))
-                .gap_2()
-                .items_start()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .bg(theme.popover)
-                .border_1()
-                .border_color(theme.border)
-                .border_l_4()
-                .border_color(colour(notice.level, theme))
-                .shadow_md()
-                .child(div().flex_1().min_w_0().text_color(theme.popover_foreground).child(notice.message.clone()))
-                .child(Button::new(("toast-close", id as usize)).icon(IconName::Close).ghost().small().on_click(move |_, _w, cx| {
-                    weak.update(cx, |app, cx| app.dismiss_toast(id, cx)).ok();
-                })),
-        );
-    }
-    Some(stack)
 }
 
 /// The history: every notification, newest first, under the bell.

@@ -749,7 +749,11 @@ impl Render for TreePanel {
                     .gap_2()
                     .items_center()
                     .rounded_md()
-                    .when(row.is_head || selected, |el| el.bg(theme.tokens.list_active))
+                    // The tip (where the next prompt goes) is the list's active colour; the row
+                    // picked for "Continue from here" is Ayu's blue, with an edge, so the two
+                    // never look alike.
+                    .when(row.is_head, |el| el.bg(theme.tokens.list_active))
+                    .when(selected, |el| el.bg(theme.info.opacity(0.28)).border_l_2().border_color(theme.info))
                     .when(!(row.is_head || selected), |el| el.hover(|style| style.bg(theme.list_hover)))
                     .px_2()
                     .py_1()

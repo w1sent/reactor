@@ -842,3 +842,36 @@ async fn the_context_preview_takes_the_request_apart_and_labels_every_piece() {
     let m = r.agent.measure().await.unwrap();
     assert_eq!(p.total_tokens, m.total, "the preview and the budget count the same request");
 }
+
+fn thinking_only() -> Result<Reply> {
+    Ok(Reply { blocks: vec![Block::Thinking { text: "hmm, where to begin".into(), signature: None }], usage: None, stop: Some("length".into()) })
+}
+
+fn summary_request() -> SummaryRequest {
+    SummaryRequest { system: "You compress.".into(), transcript: "#1 user: hi".into(), max_tokens: 1_500 }
+}
+
+#[tokio::test]
+async fn a_reasoning_model_that_runs_out_of_room_thinking_is_given_more_and_the_notes_arrive() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([thinking_only(), ScriptedLlm::say("The notes.")]));
+    let notes = LlmSummarizer { llm: llm.clone() }.summarize(summary_request()).await.unwrap();
+    assert_eq!(notes, "The notes.");
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].max_tokens.unwrap() >= 4096, "room for thinking as well as the notes");
+    assert!(seen[1].max_tokens > seen[0].max_tokens, "and more on the second try");
+    assert!(seen[0].system.contains("under about 1125 words"), "{}", seen[0].system);
+}
+
+#[tokio::test]
+async fn a_summarizer_that_never_writes_notes_fails_saying_why() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([thinking_only(), thinking_only()]));
+    let e = LlmSummarizer { llm }.summarize(summary_request()).await.unwrap_err().to_string();
+    assert!(e.contains("only thinking") && e.contains("stop: length") && e.contains("Settings"), "{e}");
+
+    let empty = Arc::new(ScriptedLlm::new([Ok(Reply { blocks: vec![], usage: None, stop: Some("stop".into()) })]));
+    let e = LlmSummarizer { llm: empty }.summarize(summary_request()).await.unwrap_err().to_string();
+    assert!(e.contains("nothing at all"), "{e}");
+}

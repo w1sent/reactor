@@ -449,8 +449,23 @@ impl ReactorApp {
             UiEvent::TurnEnded(result) => {
                 backend.turn_finished();
                 let store = backend.store();
-                self.session.update(cx, |s, _| s.end_turn(&store.lock().unwrap()));
                 let ok = result.is_ok();
+                // A finished prompt is annotated: when, how long, how much it streamed. It goes
+                // in the log, so a resumed session shows it too.
+                if let Some(run) = self.session.update(cx, |s, _| s.run.take())
+                    && ok
+                {
+                    let now = chrono::Local::now();
+                    let data = serde_json::json!({
+                        "date": now.format("%Y-%m-%d").to_string(),
+                        "time": now.format("%H:%M:%S").to_string(),
+                        "duration_ms": run.elapsed(std::time::Instant::now()).as_millis() as u64,
+                        "tokens": run.tokens(),
+                        "stream_ms": run.stream_time().as_millis() as u64,
+                    });
+                    let _ = store.lock().unwrap().append(reactor_agent::entry::Kind::Custom { key: crate::session::STATS_KEY.to_string(), data });
+                }
+                self.session.update(cx, |s, _| s.end_turn(&store.lock().unwrap()));
                 match result {
                     Ok(_) => {}
                     Err(e) if e == "cancelled" => self.push_note("info", "interrupted"),
@@ -462,7 +477,7 @@ impl ReactorApp {
                 self.refresh_tree(cx);
                 self.refresh_statuses(cx);
                 backend.refresh_context();
-                // Messages typed while it ran go next, oldest first.
+                // Messages scheduled while it ran go next, oldest first.
                 if ok && let Some(next) = self.session.update(cx, |s, _| (!s.follow_up.is_empty()).then(|| s.follow_up.remove(0))) {
                     self.start_turn(next, cx);
                 }
@@ -565,8 +580,10 @@ impl ReactorApp {
     /// The clock that shows and takes down popups.
     fn start_notice_clock(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut ticks = 0u32;
             loop {
                 cx.background_executor().timer(Duration::from_millis(100)).await;
+                ticks = ticks.wrapping_add(1);
                 if this.upgrade().is_none() {
                     break;
                 }
@@ -575,7 +592,13 @@ impl ReactorApp {
                 cx.update(|cx| {
                     let _ = cx.update_window(main.handle, |_, window, cx| {
                         if let Some(app) = main.app.upgrade() {
-                            app.update(cx, |app, cx| app.flush_toasts(window, cx));
+                            app.update(cx, |app, cx| {
+                                app.flush_toasts(window, cx);
+                                // The running prompt's clock: redrawn twice a second.
+                                if ticks.is_multiple_of(5) && app.session.read(cx).run.is_some() {
+                                    cx.notify();
+                                }
+                            });
                         }
                     });
                 });
@@ -779,8 +802,18 @@ impl ReactorApp {
         cx.notify();
     }
 
-    /// Up on the top line: the message before the one shown.
+    /// Up on the top line: the message before the one shown — or, in an empty prompt, the
+    /// message scheduled to run next.
     pub fn history_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An empty prompt and a message scheduled to run next: bring the latest one back to
+        // change. (Nothing is lost: it leaves the schedule only to sit in the input.)
+        if !self.slash.is_open() && self.composer.read(cx).value().is_empty() {
+            let latest = self.session.update(cx, |s, _| s.follow_up.pop());
+            if let Some(text) = latest {
+                self.show_in_prompt(&text, window, cx);
+                return;
+            }
+        }
         if self.slash.is_open() || self.prompt_history.is_empty() || !self.cursor_at_edge(true, cx) {
             cx.propagate();
             return;
@@ -813,6 +846,7 @@ impl ReactorApp {
         self.session.update(cx, |s, _| {
             s.phase = AgentPhase::Working;
             s.last_error = None;
+            s.run = Some(crate::session::Run::new(std::time::Instant::now()));
         });
         backend.prompt(text);
         cx.notify();
@@ -1415,7 +1449,7 @@ impl ReactorApp {
         self.set_context(layer, cx);
     }
 
-    /// Interrupt: cancel the turn, and give anything queued back to the composer.
+    /// Interrupt: cancel the turn, and give anything scheduled back to the composer.
     pub fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else { return };
         backend.cancel();

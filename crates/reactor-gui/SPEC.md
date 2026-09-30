@@ -274,7 +274,7 @@ Every user-facing feature is a **slash command** — `ReactorApp::run_command` i
 place that executes them — and two views list them (`src/palette.rs`):
 
 - **The command palette** — `Ctrl+P` / `Cmd+P`, or *Commands → Command Palette…* in the
-  app menu. It lists the commands *and* what the session's state makes possible: a line per
+  app menu. It is gpui-kit's command component hosted in gpui-kit's dialog (the library draws the backdrop, handles focus and closes on Esc or a click outside). It lists the commands *and* what the session's state makes possible: a line per
   model (`Model: switch to …`), per tool (`Tool: enable adb`, `Tool: install frida`), toolset,
   scenario, identity and reduction in force, plus layouts, docks, context settings and so on.
   Choosing an entry runs it; one that needs arguments (`/goal`, `/tool`, …) puts `/name ` in

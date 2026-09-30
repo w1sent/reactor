@@ -1111,7 +1111,10 @@ impl ReactorApp {
 
     /// Open the palette, or close it if it is already open.
     pub fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.is_some() {
+        use gpui_kit::component::WindowExt as _;
+        // The dialog may have been closed by the library (Esc, a click outside) without the app
+        // hearing of it, so "open" is what the window says, not what `palette` holds.
+        if self.palette.is_some() && window.has_active_dialog(cx) {
             self.close_palette(window, cx);
             return;
         }
@@ -1119,12 +1122,23 @@ impl ReactorApp {
         let shown = palette::rank("", &entries, &self.usage, false).into_iter().cloned().collect();
         let list = cx.new(|cx| CommandState::new(window, cx));
         self.palette = Some(PaletteUi { list: list.clone(), entries, shown });
+
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let weak = weak.clone();
+            dialog.w(px(640.)).margin_top(px(72.)).close_button(false).content(move |content, _window, cx| content.child(palette_list(&weak, cx)))
+        });
         // After this frame renders: a view that is not in the tree yet cannot take focus.
         window.defer(cx, move |window, cx| list.update(cx, |state, cx| state.focus(window, cx)));
         cx.notify();
     }
 
+    /// Close the palette's dialog and give the prompt its focus back.
     fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        if window.has_active_dialog(cx) {
+            window.close_dialog(cx);
+        }
         if self.palette.take().is_some() {
             self.composer.update(cx, |state, cx| state.focus(window, cx));
             cx.notify();
@@ -1631,72 +1645,57 @@ impl ReactorApp {
     }
 }
 
-impl ReactorApp {
-    /// The command palette: a scrim over the window and the list in a card near the top.
-    /// The list does the typing and keyboard navigation; ranking is ours (`crate::palette`),
-    /// so its own filtering is off.
-    fn render_palette(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let palette = self.palette.as_ref()?;
-        let list = palette.list.clone();
-        let weak = cx.weak_entity();
-        let theme = cx.theme().clone();
+/// The palette's contents, for its dialog: the library's command list over the entries ranked for
+/// what is typed. The list does the typing and keyboard navigation; ranking is ours
+/// (`crate::palette`), so its own filtering is off. The dialog builds this again on every frame,
+/// so it reads the app's current state each time.
+fn palette_list(weak: &gpui_kit::WeakEntity<ReactorApp>, cx: &mut App) -> gpui_kit::AnyElement {
+    let Some(app) = weak.upgrade() else { return div().into_any_element() };
+    let Some((list, shown)) = app.read(cx).palette.as_ref().map(|p| (p.list.clone(), p.shown.clone())) else { return div().into_any_element() };
 
-        let items: Vec<CommandItem> = palette
-            .shown
-            .iter()
-            .map(|entry| {
-                let (title, detail) = (entry.title.clone(), entry.name.as_ref().map(|n| format!("/{n}")).unwrap_or_else(|| entry.group.to_string()));
-                CommandItem::new().label(title.clone()).child(move |_window, cx| {
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .gap_3()
-                        .child(div().child(title.clone()))
-                        .child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child(detail.clone()))
-                })
+    let items: Vec<CommandItem> = shown
+        .iter()
+        .map(|entry| {
+            let (title, detail) = (entry.title.clone(), entry.name.as_ref().map(|n| format!("/{n}")).unwrap_or_else(|| entry.group.to_string()));
+            CommandItem::new().label(title.clone()).child(move |_window, cx| {
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().child(title.clone()))
+                    .child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child(detail.clone()))
             })
-            .collect();
+        })
+        .collect();
 
-        let (on_query, on_confirm, on_cancel) = (weak.clone(), weak.clone(), weak);
-        let commands = PaletteList::new(&list)
-            .filterable(false)
-            .items(items)
-            .placeholder("Type a command")
-            .max_h(px(380.))
-            .on_query(move |query, _window, cx| {
-                on_query.update(cx, |app, cx| app.palette_query(query, cx)).ok();
-            })
-            .on_confirm(move |index, window, cx| {
-                on_confirm.update(cx, |app, cx| app.palette_confirm(index.row, window, cx)).ok();
-            })
-            .on_cancel(move |window, cx| {
-                // Deferred: this runs mid-dispatch, and Esc goes on to the window's own
-                // handler, which must still see the palette open (see `ComposerEsc`).
-                let weak = on_cancel.clone();
-                window.defer(cx, move |window, cx| {
-                    weak.update(cx, |app, cx| app.close_palette(window, cx)).ok();
-                });
-            })
-            .empty(|_state, _window, cx| div().p_3().text_color(cx.theme().muted_foreground).child("no command matches"));
+    let (on_query, on_confirm, on_cancel) = (weak.clone(), weak.clone(), weak.clone());
+    let commands = PaletteList::new(&list)
+        .filterable(false)
+        .bordered(false)
+        // The dialog's own surface is the window background; the list defaults to the popover colour.
+        .bg(cx.theme().tokens.background)
+        .items(items)
+        .placeholder("Type a command")
+        .max_h(px(380.))
+        .on_query(move |query, _window, cx| {
+            on_query.update(cx, |app, cx| app.palette_query(query, cx)).ok();
+        })
+        .on_confirm(move |index, window, cx| {
+            on_confirm.update(cx, |app, cx| app.palette_confirm(index.row, window, cx)).ok();
+        })
+        .on_cancel(move |window, cx| {
+            // The dialog closes itself on this Esc; the app only forgets the palette, after the
+            // dispatch, so the window's own Esc handler still sees it open.
+            let weak = on_cancel.clone();
+            window.defer(cx, move |window, cx| {
+                weak.update(cx, |app, cx| app.close_palette(window, cx)).ok();
+            });
+        })
+        .empty(|_state, _window, cx| div().p_3().text_color(cx.theme().muted_foreground).child("no command matches"));
 
-        Some(
-            div()
-                .id("palette-scrim")
-                .key_context("ReactorPalette")
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .occlude()
-                .bg(theme.background.opacity(0.6))
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(72.))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |app, _, window, cx| app.close_palette(window, cx)))
-                .child(div().w(px(640.)).max_w_full().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(commands)),
-        )
-    }
+    // `ReactorPalette`: the context `ClosePalette`'s key binding hangs on, so Esc always closes —
+    // the list's own Esc only clears a typed query first.
+    div().key_context("ReactorPalette").child(commands).into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -1733,8 +1732,14 @@ impl Render for ReactorApp {
                 // Esc closes the palette wherever focus is — this is the handler every Esc
                 // reaches — and must not also interrupt the agent.
                 if this.palette.is_some() {
-                    this.close_palette(window, cx);
-                    return;
+                    // The library may have closed the dialog already (a click outside): then
+                    // the app's note of it is stale, and this Esc is an ordinary one.
+                    use gpui_kit::component::WindowExt as _;
+                    if window.has_active_dialog(cx) {
+                        this.close_palette(window, cx);
+                        return;
+                    }
+                    this.palette = None;
                 }
                 if this.inspect.is_some() {
                     this.close_inspect(window, cx);
@@ -1756,7 +1761,6 @@ impl Render for ReactorApp {
             ))
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
-            .when_some(self.render_palette(cx), |el, palette| el.child(palette))
             .when_some(crate::inspect_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(crate::notices_ui::history(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(notification_layer, |el, layer| el.child(layer))

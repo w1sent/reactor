@@ -27,6 +27,7 @@ use gpui_kit::{
 use crate::app::ReactorApp;
 use crate::backend::TreeRow;
 use crate::session::{AgentPhase, ChatItem};
+use crate::settings::Slot;
 
 /// One activation row — a leading dot for on/off, a name, an optional muted
 /// detail note, and an enable/disable button — shared by the Tools and
@@ -76,6 +77,7 @@ fn activation_row(
                     // output.
                     Label::new(label.into())
                         .font_family(theme.mono_font_family.clone())
+                        .text_size(theme.mono_font_size)
                         .text_color(if active {
                             theme.foreground
                         } else {
@@ -123,6 +125,7 @@ fn install_row(
                 .child(
                     Label::new(id.to_owned())
                         .font_family(theme.mono_font_family.clone())
+                        .text_size(theme.mono_font_size)
                         .text_color(theme.muted_foreground),
                 )
                 .child(
@@ -244,10 +247,19 @@ impl TranscriptPanel {
 }
 
 /// Render one transcript item, at the width the panel was given.
+/// How tool cards are drawn: the font, and how much output they show.
+#[derive(Clone)]
+pub struct ToolStyle {
+    pub family: SharedString,
+    pub size: gpui_kit::Pixels,
+    pub max_chars: usize,
+}
+
 fn render_item(
     index: usize,
     item: &ChatItem,
     theme: &gpui_kit::component::Theme,
+    tools: &ToolStyle,
     thinking_expanded: bool,
     toggle_thinking: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
     restore: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
@@ -333,8 +345,8 @@ fn render_item(
             };
             // On a character boundary: tool output is arbitrary text and `…` and friends are
             // not one byte. (The whole output is in the session, and `history_read` gets it.)
-            let output = if output.len() > crate::app::TOOL_OUTPUT_MAX_CHARS {
-                let mut end = crate::app::TOOL_OUTPUT_MAX_CHARS;
+            let output = if output.len() > tools.max_chars {
+                let mut end = tools.max_chars;
                 while !output.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -362,7 +374,8 @@ fn render_item(
                     div()
                         .px_2()
                         .text_color(theme.muted_foreground)
-                        .text_size(theme.mono_font_size * 0.8)
+                        .font_family(tools.family.clone())
+                        .text_size(tools.size)
                         .child(short_args(args)),
                 )
                 .when(!output.is_empty(), |el| {
@@ -374,7 +387,8 @@ fn render_item(
                             } else {
                                 theme.foreground
                             })
-                            .text_size(theme.mono_font_size * 0.8)
+                            .font_family(tools.family.clone())
+                            .text_size(tools.size)
                             .child(output),
                     )
                 })
@@ -476,6 +490,11 @@ impl Panel for TranscriptPanel {
 impl Render for TranscriptPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let ui = self.app.upgrade().map(|a| a.read(cx).ui.clone()).unwrap_or_default();
+        let (body_family, body_size) = ui.text(Slot::Transcript, &theme);
+        let (tool_family, tool_size) = ui.text(Slot::Tools, &theme);
+        let (prompt_family, prompt_size) = ui.text(Slot::Prompt, &theme);
+        let tool_style = ToolStyle { family: tool_family, size: tool_size, max_chars: ui.tool_output_chars };
         let (items, hidden, notifications, phase, queued, last_error) = match self.app.upgrade() {
             Some(app) => {
                 let session = app.read(cx).session.read(cx);
@@ -525,6 +544,8 @@ impl Render for TranscriptPanel {
         } else {
             let render_theme = theme.clone();
             let expanded_thinking = self.expanded_thinking.clone();
+            let (open_thinking, dim_reduced) = (ui.expand_thinking, ui.dim_reduced);
+            let tool_style = tool_style.clone();
             let weak_self = self.weak_self.clone();
             let weak_app = self.app.clone();
             let toggle_thinking = move |index: usize, _window: &mut Window, cx: &mut App| {
@@ -550,13 +571,15 @@ impl Render for TranscriptPanel {
                         index,
                         &items[index],
                         &render_theme,
-                        expanded_thinking.contains(&index),
+                        &tool_style,
+                        // The default flips on the choice: a click toggles either way.
+                        expanded_thinking.contains(&index) != open_thinking,
                         toggle_thinking.clone(),
                         restore.clone(),
                     );
                     // What a reduction has taken out of the model's context stays on screen,
                     // dimmed: the log keeps everything, and so does the transcript.
-                    if hidden.contains(&index) { row.opacity(0.45) } else { row }
+                    if dim_reduced && hidden.contains(&index) { row.opacity(0.45) } else { row }
                 },
             )
             .with_bottom_fade(theme.background)
@@ -572,16 +595,51 @@ impl Render for TranscriptPanel {
         };
         let queue_label = (queued > 0).then(|| format!("{queued} queued"));
 
+        // The `/` completion popup, above the input: the ranked commands for what has been
+        // typed. Keys (up/down/Enter/Tab/Esc) reach it through the `SlashPopup` key context.
+        let slash = self.app.upgrade().map(|a| {
+            let slash = &a.read(cx).slash;
+            (slash.is_open(), slash.items.clone(), slash.selected)
+        });
+        let (slash_open, slash_items, slash_selected) = slash.unwrap_or_default();
+        let popup = slash_open.then(|| {
+            let mut list = v_flex().id("slash-popup").gap_0p5().p_1().rounded_md().border_1().border_color(theme.border).bg(theme.popover);
+            for (i, entry) in slash_items.iter().enumerate() {
+                let selected = i == slash_selected;
+                list = list.child(
+                    h_flex()
+                        .id(("slash-row", i))
+                        .gap_3()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .when(selected, |row| row.bg(theme.list_active))
+                        .hover(|row| row.bg(theme.list_hover))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if let Some(app) = this.app.upgrade() {
+                                app.update(cx, |app, cx| app.slash_pick(i, window, cx));
+                            }
+                        }))
+                        .child(div().min_w(px(140.)).font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).text_color(theme.accent).child(format!("/{}", entry.run)))
+                        .child(div().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(entry.detail.clone())),
+                );
+            }
+            list.child(div().px_2().text_color(theme.muted_foreground).text_size(theme.font_size * 0.75).child("↑↓ choose · Enter or Tab take it · Esc close"))
+        });
+
         let composer = v_flex()
+            .when(slash_open, |el| el.key_context("SlashPopup"))
             .border_t_1()
             .border_color(cx.theme().border)
             .p_2()
             .gap_2()
+            .children(popup)
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Textarea::new(&self.composer).flex_1())
+                    .child(div().flex_1().font_family(prompt_family).text_size(prompt_size).child(Textarea::new(&self.composer)))
                     .child(
                         Button::new("send")
                             .primary()
@@ -618,7 +676,7 @@ impl Render for TranscriptPanel {
 
         let mut panel = v_flex()
             .size_full()
-            .child(div().flex_1().min_h_0().child(transcript))
+            .child(div().flex_1().min_h_0().font_family(body_family).text_size(body_size).child(transcript))
             .child(composer);
 
         // Transient extension toasts above the status bar (§4.5's `notify`).
@@ -1810,6 +1868,8 @@ impl Render for ConsolePanel {
         self.last_line_count = new_len;
 
         let row_theme = theme.clone();
+        let ui = self.app.upgrade().map(|a| a.read(cx).ui.clone()).unwrap_or_default();
+        let (console_family, console_size) = ui.text(Slot::Console, &theme);
         let input = self.input.clone();
         let row_count = lines.len();
 
@@ -1837,8 +1897,8 @@ impl Render for ConsolePanel {
                     // bug behind "selection works most of the time".
                     let mut row = h_flex()
                         .id(("console-line", at))
-                        .font_family(row_theme.mono_font_family.clone())
-                        .text_size(row_theme.mono_font_size * 0.85);
+                        .font_family(console_family.clone())
+                        .text_size(console_size);
                     for (index, span) in lines[at].iter().enumerate() {
                         let order = (at as u64) * 1000 + index as u64;
                         let style = TextStyleRefinement {
@@ -1860,12 +1920,12 @@ impl Render for ConsolePanel {
                         .id("console-prompt")
                         .gap_1()
                         .items_center()
-                        .font_family(row_theme.mono_font_family.clone())
-                        .text_size(row_theme.mono_font_size * 0.85)
+                        .font_family(console_family.clone())
+                        .text_size(console_size)
                         .child(
                             Label::new("$")
-                                .font_family(row_theme.mono_font_family.clone())
-                                .text_size(row_theme.mono_font_size * 0.85)
+                                .font_family(console_family.clone())
+                                .text_size(console_size)
                                 .text_color(if busy {
                                     row_theme.accent
                                 } else {
@@ -1889,8 +1949,8 @@ impl Render for ConsolePanel {
                                 .appearance(false)
                                 .bordered(false)
                                 .focus_bordered(false)
-                                .font_family(row_theme.mono_font_family.clone())
-                                .text_size(row_theme.mono_font_size * 0.85)
+                                .font_family(console_family.clone())
+                                .text_size(console_size)
                                 .px_0()
                                 .py_0()
                                 .flex_1(),

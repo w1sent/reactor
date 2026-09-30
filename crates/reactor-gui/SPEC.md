@@ -231,6 +231,51 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
   lists; invoking sends the `/command` through `prompt`.
 - **Dialogs**: native modals for `select/confirm/input/editor`.
 
+### 6.0 Commands: the palette and the `/` popup
+
+Every user-facing feature is a **slash command** — `ReactorApp::run_command` is the one
+place that executes them — and two views list them (`src/palette.rs`):
+
+- **The command palette** — `Ctrl+P` / `Cmd+P`, or *Commands → Command Palette…* in the
+  app menu. It lists the commands *and* what the session's state makes possible: a line per
+  model (`Model: switch to …`), per tool (`Tool: enable adb`, `Tool: install frida`), toolset,
+  scenario, identity and reduction in force, plus layouts, docks, context settings and so on.
+  Choosing an entry runs it; one that needs arguments (`/goal`, `/tool`, …) puts `/name ` in
+  the composer instead.
+- **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
+  input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
+  more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
+
+**Ranking** is the same for both. An entry's score is the number of characters of the query it
+matches — the longest common subsequence of what was typed and the entry's text, inside a
+window no wider than twice the query — so a missing, extra, wrong or swapped letter costs one
+match rather than the whole entry (`raduce` finds `reduce`). The query may lose one character in
+four and still match. Entries are ordered by score; equal scores by how often the person has
+run them (`command_usage` in `~/.reactor/gui.json`); equal frequency by the shorter text, then
+alphabetically. With nothing typed, frequency alone orders the list.
+
+### 6.0a Settings
+
+*Commands → Settings…*, `Ctrl+,` / `Cmd+,` or `/settings` opens a popup (`src/settings_ui.rs`).
+Changes apply at once and are saved to `ui` in `~/.reactor/gui.json`; unset means the theme's own,
+so a fresh install looks as it always did and *reset* clears a field.
+
+- **Fonts** — a family (an installed font's name, checked when you press Enter or leave the
+  field) and a size in pixels, for: *Interface* and *Monospace* (the theme's base fonts, which
+  every component reads), *Transcript*, *Tool calls and output*, *Prompt input* and *Console*.
+  Tool and toolset names and the `/` popup use the monospace font at its own size.
+- **Behaviour** — open thinking blocks by default; dim what a reduction took out of the model's
+  view; how much tool output the transcript shows (the session keeps it all); the layout a window
+  opens with.
+
+- **Model** — the model new sessions start on (`defaultModel` in `settings.json`): pick a provider
+  (anthropic, openai, gemini, openrouter, ollama; the tab says whether its key variable is set),
+  type a model name, then *Set as default*, *Use in this session* or *Add to picker list*. The
+  picker's list (`models`) is editable here too. API keys are read from the environment, never stored.
+
+The popup has one tab per kind: Fonts, Behaviour, Model. The context budget is separate: the
+Context panel and `/context`.
+
 ### 6.1 Layout: nothing is fixed furniture
 
 Every panel is draggable between docks and droppable onto another panel's

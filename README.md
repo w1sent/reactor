@@ -81,6 +81,8 @@ crates/          Rust: `reactor-core` (catalogue, probes, activation, install,
                  `reactor` binary over it (ADR-0034), and `reactor-context`,
                  the manifest/identity/reporting/scenario state machines
                  (ADR-0040)
+                 and `reactor-agent`, the session store, the loop over rig and the
+                 context budget manager (ADR-0041)
 gui/             reactor-gui, the native frontend (Rust, gpui-kit) — spec in
                  gui/SPEC.md, its own cargo workspace until it links
                  reactor-core (MIGRATE.md phase 2); the frontend the Rust

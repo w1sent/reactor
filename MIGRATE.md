@@ -251,21 +251,35 @@ must reproduce it byte for byte.
 
 ### 4 · `reactor-agent`  *(the commitment)*
 
-The new part. By here, most of what the extensions did already lives below.
+The new part. What was built and the choices it settled are in
+[ADR-0041](docs/adr/0041-the-agent-loop-owns-the-message-list.md).
 
-- [ ] Session store: append-only JSONL + derived index, branches as parent
-      pointers, reductions as entries over a range (ADR-0036)
-- [ ] Loop over rig: tool dispatch, streaming, thinking
-- [ ] Budget manager: fade, summarizer, three modes, checked at every
-      tool-result boundary (ADR-0037)
-- [ ] Loop invariants: consecutive-reduction budget; never continue after a
-      failed reduction
-- [ ] Skill loading + activation gating
-- [ ] Long-running and high-volume tool I/O: persistent sessions, streaming,
-      truncation policy, and the fade's stub format where they meet
+- [x] Session store: append-only JSONL + derived index, branches as parent
+      pointers, reductions as entries over a range, blobs for whole tool output
+      (ADR-0036)
+- [x] Loop over rig: tool dispatch, streaming, thinking — through rig's
+      `CompletionModel::stream` (five providers wired), with the message list ours
+- [x] Budget manager: fade, summarizer, three modes, checked before every request
+      and after every tool result (ADR-0037); previewable, undoable
+- [x] Loop invariants: consecutive-reduction budget; never continue after a failed
+      reduction; every call in a recorded reply gets a recorded result
+- [x] Skill loading + activation gating (`requires:` for authored skills, the
+      registry for upstream ones)
+- [x] Long-running and high-volume tool I/O: persistent shells, streaming,
+      truncation policy with a shared address format, spill-to-disk
+- [x] `examples/repl.rs`, a development-only terminal REPL over the same `Agent`, so it can
+      be run before the GUI is on this backend (not a frontend; removed in phase 5)
+- [ ] Open: budget knobs (`mode`, `pct`, `keep`, `reserve`, summarizer model) are
+      constructed in code, not resolved through settings — phase 5, with the UI
+- [ ] Open: scenarios and authored skills are read from directories; compile them in?
 
-**Gate:** a real RE session — acquire, triage, analyse, report — runs end to
-end without the operator working around the harness.
+**Gate:** a real RE session — acquire, triage, analyse, report — runs end to end
+without the operator working around the harness.
+
+- [x] Everything up to the wire, against a scripted model (73 tests)
+- [x] A real session against a real model: run by hand through `examples/repl.rs`
+      (Ollama) and it works. That was one operator's smoke test, not the full
+      acquire → triage → analyse → report session; longer runs will still turn up work.
 
 ### 5 · The GUI switches backends
 

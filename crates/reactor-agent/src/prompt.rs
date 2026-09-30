@@ -43,18 +43,40 @@ pub struct Inputs<'a> {
     pub scenarios_dir: &'a Path,
 }
 
+/// Where a piece of the system prompt comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Base,
+    Identity,
+    Registry,
+    Skills,
+    Manifest,
+    Reporting,
+    Scenario,
+}
+
+/// The system prompt's pieces, in the order they are sent, each with where it comes from.
+pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
+    let mut parts: Vec<(Part, String)> = vec![(Part::Base, i.base.trim_end().to_string())];
+    let mut push = |part: Part, b: Option<String>| parts.extend(b.filter(|s| !s.is_empty()).map(|s| (part, s)));
+
+    push(Part::Identity, identity::block(&i.state.identity, &i.settings.identity));
+    push(Part::Registry, (!i.registry.block.is_empty()).then(|| i.registry.block.clone()));
+    push(Part::Skills, skills_block(i.skills));
+    push(Part::Manifest, manifest::block(&i.state.manifest, &i.settings.manifest));
+    push(Part::Reporting, i.state.reporting.is_enabled().then(|| reporting::block(&i.settings.reporting)));
+    push(Part::Scenario, scenario_block(i.state, i.scenarios_dir));
+    parts
+}
+
+/// Pieces joined into the system prompt.
+pub fn join_parts(parts: &[(Part, String)]) -> String {
+    parts.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n\n")
+}
+
 /// The system prompt for one request.
 pub fn system_prompt(i: &Inputs) -> String {
-    let mut parts: Vec<String> = vec![i.base.trim_end().to_string()];
-    let mut push = |b: Option<String>| parts.extend(b.filter(|s| !s.is_empty()));
-
-    push(identity::block(&i.state.identity, &i.settings.identity));
-    push((!i.registry.block.is_empty()).then(|| i.registry.block.clone()));
-    push(skills_block(i.skills));
-    push(manifest::block(&i.state.manifest, &i.settings.manifest));
-    push(i.state.reporting.is_enabled().then(|| reporting::block(&i.settings.reporting)));
-    push(scenario_block(i.state, i.scenarios_dir));
-    parts.join("\n\n")
+    join_parts(&system_parts(i))
 }
 
 /// The current phase's briefing, and what has been concluded so far.

@@ -77,6 +77,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::fixed("reactor-scenario", "Session", Optional, "Scenarios", "/reactor-scenario list | start <id> | status | next | stop"),
         Entry::fixed("model", "Model", Required, "Switch model", "/model provider/name"),
         Entry::fixed("context", "Model", Optional, "Context settings", "/context <mode|window|reserve|pct|keep|summarizer> <value> | default | inherit"),
+        Entry::fixed("inspect", "Model", None, "Show the context window", "what the model would be sent, and where each piece comes from"),
         Entry::fixed("preview", "Model", Optional, "Preview a context reduction", "/preview [auto|fade|compact]"),
         Entry::fixed("reduce", "Model", Optional, "Reduce the context now", "/reduce [auto|fade|compact]"),
         Entry::fixed("undo", "Model", Optional, "Undo a reduction", "/undo — the latest — or /undo <entry>"),

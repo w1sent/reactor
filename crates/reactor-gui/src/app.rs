@@ -67,6 +67,8 @@ actions!(
         OpenSettings,
         /// Esc in the settings popup.
         CloseSettings,
+        /// Esc in the context-window popup.
+        CloseInspect,
     ]
 );
 
@@ -138,6 +140,8 @@ pub struct ReactorApp {
     pub slash: SlashUi,
     /// Fonts and behaviour (`crate::settings`).
     pub ui: crate::settings::UiSettings,
+    /// The context-window popup, while it is open.
+    pub inspect: Option<crate::inspect_ui::InspectUi>,
     /// The settings popup, while it is open.
     pub settings: Option<crate::settings_ui::SettingsUi>,
 }
@@ -174,6 +178,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-p", OpenPalette, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("escape", CloseSettings, Some("ReactorSettings > Input")),
+        KeyBinding::new("escape", CloseInspect, Some("ReactorInspect")),
         // `SlashPopup > Input`: the text input, while the popup is open above it. Deeper than
         // the popup alone, so these win over the input's own up/down/enter/tab/escape.
         KeyBinding::new("up", SlashUp, Some("SlashPopup > Input")),
@@ -341,6 +346,7 @@ impl ReactorApp {
             usage: crate::start::GuiConfig::load().command_usage,
             slash: SlashUi::default(),
             ui,
+            inspect: None,
             settings: None,
         }
     }
@@ -437,6 +443,21 @@ impl ReactorApp {
                     Err(e) => self.push_note("error", e),
                 }
                 self.refresh_tree(cx);
+            }
+            UiEvent::Inspect(result) => {
+                if let Some(i) = &mut self.inspect {
+                    i.loading = false;
+                    match result {
+                        Ok(p) => {
+                            i.error = None;
+                            if i.selected >= p.segments.len() {
+                                i.selected = 0;
+                            }
+                            i.data = Some(p);
+                        }
+                        Err(e) => i.error = Some(e),
+                    }
+                }
             }
             UiEvent::Preview(result) => {
                 self.context_busy = false;
@@ -627,6 +648,74 @@ impl ReactorApp {
             snapshot.reductions = b.agent.reductions().iter().map(|r| r.entry).collect();
         }
         palette::build(&snapshot)
+    }
+
+    // -- the context window ------------------------------------------------------------------
+
+    /// Open the context-window popup, or close it if it is open.
+    pub fn toggle_inspect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.inspect.is_some() {
+            self.close_inspect(window, cx);
+            return;
+        }
+        let Some(backend) = self.backend.clone() else {
+            self.push_note("error", "the agent is not running");
+            return;
+        };
+        self.palette = None;
+        self.settings = None;
+        let focus = cx.focus_handle();
+        self.inspect = Some(crate::inspect_ui::InspectUi { data: None, loading: true, error: None, selected: 0, filter: None, focus: focus.clone() });
+        backend.inspect();
+        // After this frame renders: a view that is not in the tree yet cannot take focus.
+        window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        cx.notify();
+    }
+
+    pub fn close_inspect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.inspect.take().is_some() {
+            self.composer.update(cx, |state, cx| state.focus(window, cx));
+            cx.notify();
+        }
+    }
+
+    /// Measure again, with the session as it is now.
+    pub fn refresh_inspect(&mut self, cx: &mut Context<Self>) {
+        if let (Some(i), Some(b)) = (&mut self.inspect, &self.backend) {
+            i.loading = true;
+            b.inspect();
+            cx.notify();
+        }
+    }
+
+    pub fn inspect_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(i) = &mut self.inspect {
+            i.selected = index;
+            cx.notify();
+        }
+    }
+
+    /// Show only one source's pieces; choosing it again shows all.
+    pub fn inspect_filter(&mut self, origin: reactor_agent::inspect::Origin, cx: &mut Context<Self>) {
+        if let Some(i) = &mut self.inspect {
+            i.filter = if i.filter == Some(origin) { None } else { Some(origin) };
+            if let Some(d) = &i.data
+                && i.filter.is_some_and(|f| d.segments.get(i.selected).is_none_or(|s| s.origin != f))
+                && let Some(first) = d.segments.iter().position(|s| Some(s.origin) == i.filter)
+            {
+                i.selected = first;
+            }
+            cx.notify();
+        }
+    }
+
+    /// The whole request, as text, to the clipboard.
+    pub fn copy_inspect(&mut self, cx: &mut Context<Self>) {
+        if let Some(d) = self.inspect.as_ref().and_then(|i| i.data.as_ref()) {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(d.as_text()));
+            self.push_note("info", "the request is on the clipboard");
+            cx.notify();
+        }
     }
 
     // -- settings --------------------------------------------------------------------------------
@@ -981,6 +1070,7 @@ impl ReactorApp {
             }
             "palette" => self.toggle_palette(window, cx),
             "settings" => self.toggle_settings(window, cx),
+            "inspect" => self.toggle_inspect(window, cx),
             "quit" => cx.quit(),
             "refresh" => {
                 self.refresh_catalogue(cx);
@@ -1466,6 +1556,7 @@ impl Render for ReactorApp {
             .on_action(cx.listener(|this, _: &SlashDismiss, _window, cx| this.slash_dismiss(cx)))
             .on_action(cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)))
             .on_action(cx.listener(|this, _: &CloseSettings, window, cx| this.close_settings(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseInspect, window, cx| this.close_inspect(window, cx)))
             .on_action(cx.listener(|this, _: &ComposerEsc, window, cx| {
                 // Esc closes the palette wherever focus is — this is the handler every Esc
                 // reaches — and must not also interrupt the agent.
@@ -1477,6 +1568,10 @@ impl Render for ReactorApp {
                     this.close_settings(window, cx);
                     return;
                 }
+                if this.inspect.is_some() {
+                    this.close_inspect(window, cx);
+                    return;
+                }
                 if this.session.read(cx).phase == AgentPhase::Working {
                     this.interrupt(window, cx);
                 }
@@ -1486,6 +1581,7 @@ impl Render for ReactorApp {
             .child(self.render_status_bar(window, cx))
             .when_some(self.render_palette(cx), |el, palette| el.child(palette))
             .when_some(crate::settings_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
+            .when_some(crate::inspect_ui::overlay(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
             .when_some(notification_layer, |el, layer| el.child(layer))
             .when_some(dialog_layer, |el, layer| el.child(layer))
     }

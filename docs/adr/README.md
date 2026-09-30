@@ -6,7 +6,7 @@ rejected" section — the alternatives that were walked and why they lost.
 
 Write the ADR before implementing, not after.
 
-ADRs **0033–0041** record the migration from a pi package to a Rust project on
+ADRs **0033–0042** record the migration from a pi package to a Rust project on
 [rig](https://rig.rs/) — see [`MIGRATE.md`](../../MIGRATE.md) for the plan they
 add up to. Rows marked † are reversed, superseded, narrowed or amended by one
 of them; each says so in a note at the top of its own file, and every one of
@@ -55,3 +55,4 @@ them still governs the pi flavor, which keeps working.
 | [0039](0039-the-executables-contain-no-python.md) | The REactor executables contain no Python |
 | [0040](0040-reactor-context-is-a-port-verified-against-the-extensions.md) | reactor-context is a port verified against the frozen extensions, not a set of shims |
 | [0041](0041-the-agent-loop-owns-the-message-list.md) | The agent loop owns the message list, and reduction replaces whole ranges |
+| [0042](0042-the-gui-hosts-the-agent-in-process.md) | The GUI hosts the agent in process, and activation is session-scoped |

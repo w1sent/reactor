@@ -5,7 +5,6 @@ members = [
     "crates/reactor-context",
     "crates/reactor-agent",
     "crates/reactor-cli",
-    "gui/crates/reactor-rpc",
     "gui/crates/reactor-client",
     "gui/crates/reactor-gui",
 ]
@@ -16,7 +15,6 @@ default-members = [
     "crates/reactor-context",
     "crates/reactor-agent",
     "crates/reactor-cli",
-    "gui/crates/reactor-rpc",
     "gui/crates/reactor-client",
 ]
 

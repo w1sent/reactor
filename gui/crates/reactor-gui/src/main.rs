@@ -16,8 +16,9 @@ use gpui_kit::{
 
 use reactor_gui::app::ReactorApp;
 use reactor_gui::start::{
-    GuiConfig, LaunchArgs, ResolvedLaunch, SessionSummary, list_sessions, parse_args,
+    GuiConfig, LaunchArgs, ResolvedLaunch, parse_args,
 };
+use reactor_gui::backend::{SessionSummary, list_sessions};
 use reactor_gui::theme;
 
 fn main() {
@@ -347,7 +348,7 @@ struct SessionPicker {
 
 impl SessionPicker {
     fn open(cx: &mut App, resolved: ResolvedLaunch) {
-        let sessions = list_sessions(&resolved.cwd);
+        let sessions = list_sessions(&reactor_core::Paths::from_env(), Some(&resolved.cwd));
         let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(
             None,
             size(px(780.), px(440.)),
@@ -383,14 +384,11 @@ impl Render for SessionPicker {
             .sessions
             .iter()
             .map(|session| {
-                let label = session.name.clone().unwrap_or_else(|| {
-                    session
-                        .timestamp
-                        .clone()
-                        .unwrap_or_else(|| session.id.clone())
-                });
+                let prompt = session.first_prompt.clone().unwrap_or_else(|| "(no prompt yet)".into());
+                let prompt: String = prompt.lines().next().unwrap_or("").chars().take(90).collect();
+                let label = format!("{prompt}  ·  {} entries", session.entries);
                 SessionRow {
-                    path: session.path.clone(),
+                    path: session.dir.clone(),
                     label,
                 }
             })
@@ -416,7 +414,7 @@ impl Render for SessionPicker {
             let session_label = row.label.clone();
             list = list.child(
                 div()
-                    .id(SharedString::from(session_path.clone()))
+                    .id(SharedString::from(session_path.display().to_string()))
                     .px_2()
                     .py_1()
                     .rounded_md()
@@ -460,6 +458,6 @@ impl Render for SessionPicker {
 /// One row of the session picker, as rendered.
 #[derive(Debug, Clone, PartialEq)]
 struct SessionRow {
-    path: String,
+    path: PathBuf,
     label: String,
 }

@@ -507,6 +507,17 @@ impl Client {
         }
     }
 
+    /// Like [`Client::from_env`], but for a session whose activation is scoped to it
+    /// (ADR-0038): the library reads exactly the given `paths`. The subprocess fallback has
+    /// no notion of a session, so under `REACTOR_GUI_CLIENT=cli` the panels show the machine's
+    /// state instead — a debugging aid, and said so by `kind()`.
+    pub fn for_session(paths: reactor_core::Paths, cwd: Option<PathBuf>) -> Self {
+        match std::env::var(CLIENT_ENV).as_deref() {
+            Ok("cli") => Client::Cli(CliClient::new(cwd)),
+            _ => Client::Lib(LibClient::with_paths(paths)),
+        }
+    }
+
     /// For the status bar and bug reports: which path answered.
     pub fn kind(&self) -> &'static str {
         match self {

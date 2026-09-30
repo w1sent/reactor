@@ -1,12 +1,19 @@
-//! The session view model: what the transcript, status bar and composer
-//! render, built from the RPC event stream.
+//! The session view model: what the transcript, status bar and composer render.
 //!
-//! The GUI holds *no facts* (gui/SPEC.md §4.4) — it renders what pi streams
-//! and reconciles against `get_entries` on load. `message_end.message` is
-//! authoritative; `message_update` deltas build the live partial. An unknown
-//! event type lands in the debug view raw, never dropped and never fatal
-//! (gui/SPEC.md §2's protocol-drift rule).
+//! The GUI holds *no facts*: the transcript is a function of the session store — the
+//! full current branch, including everything a context reduction has hidden from the
+//! model — plus the little that is still streaming and not yet in it. [`Session::rebuild`]
+//! is that function; [`Session::apply`] folds in the live events (text deltas, a running
+//! tool's output) between rebuilds. There is nothing to reconcile and nothing to drift:
+//! a resumed session and a live one build the same rows (gui/SPEC.md §2).
 
+use std::collections::{HashMap, HashSet};
+
+use reactor_agent::agent::Event;
+use reactor_agent::context::{SessionState, active_reductions, hidden_by};
+use reactor_agent::entry::{Block, Kind, Mode};
+use reactor_agent::store::Store;
+use reactor_context::settings::Settings;
 use serde_json::Value;
 
 /// One renderable row of the transcript.
@@ -19,75 +26,48 @@ pub enum ChatItem {
     /// A thinking block, rendered collapsed.
     Thinking { text: String, streaming: bool },
     /// One tool call with its live/final state.
-    ToolCall {
-        call_id: String,
-        name: String,
-        args: Value,
-        output: String,
-        is_error: bool,
-        done: bool,
-    },
-    /// A custom session entry — reactor's extensions append these
-    /// (`reactor-detail`, `pi-goal-setting`, `reactor-scenario`, …);
-    /// rendered generically from the entry's data (gui/SPEC.md §6).
-    CustomEntry { custom_type: String, raw: Value },
-    /// An error pi reported — an assistant error or a compaction failure.
+    ToolCall { call_id: String, name: String, args: Value, output: String, is_error: bool, done: bool },
+    /// A context reduction, where it happened (ADR-0037). `active` is false once undone.
+    Reduction { entry: u64, mode: String, trigger: String, covers: usize, before: u64, after: u64, active: bool, summary: Option<String> },
+    /// Something went wrong that the person should see.
     Error { message: String },
-    /// An event or record the GUI cannot render. Raw JSON in a debug view
-    /// (gui/SPEC.md §2's protocol-drift rule).
-    Unknown { raw: Value },
 }
 
-/// Where in the turn cycle the agent is — drives the composer's mode
-/// (send vs follow-up) and the interrupt affordance (gui/SPEC.md §6).
+/// Where in the turn cycle the agent is — drives the composer's mode (send vs queue) and
+/// the interrupt affordance.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgentPhase {
-    /// The agent is settled; `Enter` sends.
+    /// Settled; `Enter` sends.
     #[default]
     Idle,
-    /// The agent is streaming; `Enter` queues a follow-up.
+    /// A turn is running; `Enter` queues a follow-up.
     Working,
-    /// An automatic retry or compaction retry is in progress.
-    Retrying,
-    /// Compaction is running; prompts are rejected until it ends.
+    /// A manual context reduction is running.
     Compacting,
 }
 
-/// The one session the GUI is attached to (gui/SPEC.md §3).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Session {
-    /// Transcript items, in stream order. Tool-call cards are keyed by
-    /// `call_id` and updated in place as tool events arrive.
+    /// Transcript rows, in log order.
     pub items: Vec<ChatItem>,
-    /// Extension statuses, key-sorted (`0-reactor` anchor first) — the
-    /// footer's grammar survives into the status bar.
+    /// Rows a context reduction currently hides from the model — shown dimmed, never removed.
+    pub hidden: HashSet<usize>,
+    /// The status bar's left side: key-sorted `(key, text)` — goal, identity, reporting, scenario.
     pub statuses: Vec<(String, String)>,
-    /// Non-envelope text widgets (`setWidget` from extensions), by key —
-    /// rendered above the composer, `aboveEditor` parity with the TUI.
-    pub widgets: Vec<(String, Vec<String>)>,
-    /// Pending steering and follow-up queues, from `queue_update`.
-    pub steering: Vec<String>,
+    /// Messages typed while a turn ran; sent, oldest first, as turns end.
     pub follow_up: Vec<String>,
-    /// Current model, as `get_state` reports it — `provider/id`.
+    /// The model in use, `provider/name`.
     pub model: Option<String>,
-    /// Thinking level, e.g. `"medium"`.
-    pub thinking_level: Option<String>,
-    /// Context usage percent, from the last usage report.
+    /// Estimated context use, percent of the usable window.
     pub context_percent: Option<u64>,
-    pub session_file: Option<String>,
-    pub session_id: Option<String>,
-    pub cwd: Option<String>,
     pub phase: AgentPhase,
-    /// The last error pi reported, if any.
     pub last_error: Option<String>,
-    /// Where the assistant message currently streaming began in [`Self::items`].
-    ///
-    /// `message_end` is authoritative (gui/SPEC.md §2), so it rebuilds this
-    /// message's blocks from the final message rather than trusting whatever
-    /// the deltas left behind. Without the marker it could only guess — and
-    /// guessing wrong meant pushing a second copy of a block instead of
-    /// replacing the first.
-    message_start_at: Option<usize>,
+    // -- live, not yet in the store --
+    live_text: String,
+    live_thinking: String,
+    live_tools: HashMap<String, String>,
+    /// The last rebuild's row index of each tool card, for in-place output updates.
+    card_at: HashMap<String, usize>,
 }
 
 impl Session {
@@ -95,921 +75,325 @@ impl Session {
         Self::default()
     }
 
-    /// History: a session-file entry from `get_entries` (gui/SPEC.md §2) —
-    /// a resumed session's transcript comes from here, since the event
-    /// stream only carries new activity. Message entries render as their
-    /// role; custom entries (`reactor-detail`, `pi-goal-setting`, …) render
-    /// as their type with a generic fallback (gui/SPEC.md §6).
-    pub fn ingest_entry(&mut self, entry: &Value) {
-        if entry.get("type").and_then(Value::as_str) != Some("message") {
-            // Other entry types (compaction records, settings entries) are
-            // deliberately not transcript rows — v0.1 skips them.
-            return;
+    /// Rebuild every row from the store's current branch.
+    pub fn rebuild(&mut self, store: &Store) {
+        self.items.clear();
+        self.hidden.clear();
+        self.card_at.clear();
+        let hidden = hidden_by(store);
+        let active = active_reductions(store);
+
+        for e in store.branch() {
+            let first = self.items.len();
+            match &e.kind {
+                Kind::User { text } => self.items.push(ChatItem::User { text: text.clone() }),
+                Kind::Assistant { blocks, .. } => {
+                    for b in blocks {
+                        match b {
+                            Block::Thinking { text, .. } => self.items.push(ChatItem::Thinking { text: text.clone(), streaming: false }),
+                            Block::Text { text } => self.items.push(ChatItem::AssistantText { text: text.clone(), streaming: false }),
+                            Block::ToolCall { id, name, arguments } => {
+                                self.card_at.insert(id.clone(), self.items.len());
+                                self.items.push(ChatItem::ToolCall {
+                                    call_id: id.clone(),
+                                    name: name.clone(),
+                                    args: arguments.clone(),
+                                    output: self.live_tools.get(id).cloned().unwrap_or_default(),
+                                    is_error: false,
+                                    done: false,
+                                });
+                            }
+                        }
+                    }
+                }
+                Kind::ToolResult { call_id, name, content, is_error, .. } => {
+                    match self.card_at.get(call_id).copied() {
+                        Some(i) => {
+                            if let ChatItem::ToolCall { output, is_error: err, done, .. } = &mut self.items[i] {
+                                *output = content.clone();
+                                *err = *is_error;
+                                *done = true;
+                            }
+                        }
+                        // A result whose call is not on this branch (a fork): still show it.
+                        None => self.items.push(ChatItem::ToolCall {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            args: Value::Null,
+                            output: content.clone(),
+                            is_error: *is_error,
+                            done: true,
+                        }),
+                    }
+                }
+                Kind::Reduction(r) => self.items.push(ChatItem::Reduction {
+                    entry: e.id,
+                    mode: mode_word(r.mode).into(),
+                    trigger: crate::backend::trigger_label(r.trigger).into(),
+                    covers: r.covers.len(),
+                    before: r.before_tokens,
+                    after: r.after_tokens,
+                    active: active.contains(&e.id),
+                    summary: r.summary.clone(),
+                }),
+                Kind::Session { .. } | Kind::Custom { .. } | Kind::Restore { .. } | Kind::Label { .. } => {}
+            }
+            if hidden.contains_key(&e.id) {
+                self.hidden.extend(first..self.items.len());
+            }
         }
-        let Some(message) = entry.get("message") else {
-            return;
-        };
-        match message.get("role").and_then(Value::as_str) {
-            Some("user") => self.items.push(ChatItem::User {
-                text: content_text(message.get("content").unwrap_or(&Value::Null)),
-            }),
-            Some("assistant") => {
-                if let Some(thinking) = assistant_thinking(message) {
-                    self.push_thinking(thinking, false);
-                }
-                if let Some(text) = assistant_text(message) {
-                    self.items.push(ChatItem::AssistantText {
-                        text,
-                        streaming: false,
-                    });
-                }
-            }
-            Some("toolResult") => {
-                if let (Some(call_id), Some(tool_name)) = (
-                    message.get("toolCallId").and_then(Value::as_str),
-                    message.get("toolName").and_then(Value::as_str),
-                ) {
-                    self.items.push(ChatItem::ToolCall {
-                        call_id: call_id.to_owned(),
-                        name: tool_name.to_owned(),
-                        args: Value::Null,
-                        output: content_text(message.get("content").unwrap_or(&Value::Null)),
-                        is_error: message
-                            .get("isError")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        done: true,
-                    });
-                }
-            }
-            Some("custom") => {
-                let custom_type = message
-                    .get("customType")
-                    .and_then(Value::as_str)
-                    .unwrap_or("custom")
-                    .to_owned();
-                self.items.push(ChatItem::CustomEntry {
-                    custom_type,
-                    raw: message.clone(),
-                });
-            }
-            _ => {}
+
+        // What is streaming and not yet a log entry goes last.
+        if !self.live_thinking.is_empty() {
+            self.items.push(ChatItem::Thinking { text: self.live_thinking.clone(), streaming: true });
+        }
+        if !self.live_text.is_empty() {
+            self.items.push(ChatItem::AssistantText { text: self.live_text.clone(), streaming: true });
         }
     }
 
-    /// Ingest one incoming line. The GUI calls this from its pump task; the
-    /// only thing that follows is a re-render.
-    pub fn ingest(&mut self, incoming: &reactor_rpc::Incoming) {
-        match incoming {
-            reactor_rpc::Incoming::Event(event) => self.ingest_event(event),
-            reactor_rpc::Incoming::ExtensionUiRequest(request) => {
-                // Dialogs are answered by the GUI's overlay layer
-                // (gui/SPEC.md §4.5); the view model only learns about
-                // statuses and widgets.
-                use reactor_rpc::protocol::UiMethod;
-                match &request.method {
-                    UiMethod::SetStatus {
-                        status_key,
-                        status_text,
-                    } => {
-                        self.set_status(status_key, status_text.clone());
-                    }
-                    UiMethod::SetWidget {
-                        widget_key,
-                        widget_lines,
-                        widget_placement,
-                    } => {
-                        let _ = widget_placement; // above-editor parity; placement is the key's
-                        self.set_widget(widget_key, widget_lines.clone().unwrap_or_default());
-                    }
-                    _ => {}
-                }
-            }
-            // Late responses are debug-view material; nothing to render.
-            reactor_rpc::Incoming::Response(_) => {}
-            reactor_rpc::Incoming::Malformed { line, reason } => {
-                self.items.push(ChatItem::Unknown {
-                    raw: serde_json::json!({ "malformed": line, "reason": reason }),
-                });
-            }
-            reactor_rpc::Incoming::Eof => {
-                self.last_error = Some("pi exited".to_owned());
-            }
-        }
-    }
-
-    fn ingest_event(&mut self, event: &reactor_rpc::protocol::Event) {
-        use reactor_rpc::protocol::Event as E;
+    /// Fold in one live event. `store` is consulted only when an entry was appended.
+    pub fn apply(&mut self, event: &Event, store: &Store) {
         match event {
-            E::SessionHeader { raw } => {
-                self.session_id = raw.get("id").and_then(Value::as_str).map(str::to_owned);
-                self.cwd = raw.get("cwd").and_then(Value::as_str).map(str::to_owned);
-            }
-            E::MessageUpdate { delta, .. } => {
-                // Usage arrives here for the token counters; the context
-                // percent comes from `get_session_stats` (gui/SPEC.md §6).
-                self.apply_delta(delta);
-            }
-            E::MessageEnd { message } => {
-                // `message_end.message` is authoritative (gui/SPEC.md §2):
-                // drop whatever the deltas built for *this* message and lay
-                // it out again from the final content, in the order the
-                // message carries it. Reconciling block by block instead
-                // meant a block the deltas had already closed got pushed a
-                // second time rather than replaced.
-                if message.get("role").and_then(Value::as_str) == Some("assistant") {
-                    self.rebuild_assistant_message(message);
-                }
-                // Custom messages an extension sent via `pi.sendMessage`
-                // (e.g. a scenario briefing) render as their type.
-                if message.get("role").and_then(Value::as_str) == Some("custom") {
-                    if let Some(custom_type) = message.get("customType").and_then(Value::as_str) {
-                        self.items.push(ChatItem::CustomEntry {
-                            custom_type: custom_type.to_owned(),
-                            raw: message.clone(),
-                        });
-                    }
+            Event::Text(delta) => {
+                self.live_text.push_str(delta);
+                match self.items.last_mut() {
+                    Some(ChatItem::AssistantText { text, streaming: true }) => text.push_str(delta),
+                    _ => self.items.push(ChatItem::AssistantText { text: delta.clone(), streaming: true }),
                 }
             }
-            E::ToolExecutionStart {
-                tool_call_id,
-                tool_name,
-                args,
-            } => {
-                self.items.push(ChatItem::ToolCall {
-                    call_id: tool_call_id.to_owned(),
-                    name: tool_name.to_owned(),
-                    args: args.clone(),
-                    output: String::new(),
-                    is_error: false,
-                    done: false,
-                });
-            }
-            E::ToolExecutionUpdate {
-                tool_call_id,
-                partial_result,
-                ..
-            } => {
-                // `partialResult` is the accumulated output so far — replace,
-                // never append (gui/SPEC.md §2).
-                if let Some(ChatItem::ToolCall { output, .. }) = self.tool_call_mut(tool_call_id) {
-                    *output = content_text(partial_result);
+            Event::Thinking(delta) => {
+                self.live_thinking.push_str(delta);
+                match self.items.iter_mut().rev().find(|i| matches!(i, ChatItem::Thinking { streaming: true, .. })) {
+                    Some(ChatItem::Thinking { text, .. }) => text.push_str(delta),
+                    _ => self.items.push(ChatItem::Thinking { text: delta.clone(), streaming: true }),
                 }
             }
-            E::ToolExecutionEnd {
-                tool_call_id,
-                result,
-                is_error: _,
-                ..
-            } => {
-                if let Some(ChatItem::ToolCall {
-                    output,
-                    is_error,
-                    done,
-                    ..
-                }) = self.tool_call_mut(tool_call_id)
+            Event::ToolOutput { id, chunk } => {
+                self.live_tools.entry(id.clone()).or_default().push_str(chunk);
+                if let Some(i) = self.card_at.get(id).copied()
+                    && let Some(ChatItem::ToolCall { output, done: false, .. }) = self.items.get_mut(i)
                 {
-                    *output = content_text(result);
-                    *is_error = *is_error;
-                    *done = true;
+                    output.push_str(chunk);
                 }
             }
-            E::QueueUpdate {
-                steering,
-                follow_up,
-            } => {
-                self.steering = steering.clone();
-                self.follow_up = follow_up.clone();
-            }
-            E::AgentStart => {
-                self.phase = AgentPhase::Working;
-                // A fresh agent run is starting. If the previous one left a
-                // streaming item unfinished — pi's own auto-retry (verified
-                // against a live 502/TLS-timeout run: a failed attempt can
-                // stream partial thinking/text deltas, then fail *without*
-                // ever sending that attempt's `message_end`, straight into
-                // `auto_retry_start`) — drop it before the retry's fresh
-                // `text_start`/`thinking_start` deltas arrive. Otherwise
-                // `apply_delta`'s "append to the existing streaming item"
-                // rule (`TextStart` only pushes a new item when none is
-                // already streaming) appends the retry's full response onto
-                // the failed attempt's stale partial text with no
-                // separator — this *was* the "the same prompt got answered
-                // twice, concatenated" bug; it was never a double send.
-                self.discard_unfinished_streaming_items();
-            }
-            E::AgentSettled => self.phase = AgentPhase::Idle,
-            E::AutoRetryStart { .. } => self.phase = AgentPhase::Retrying,
-            E::AutoRetryEnd { success, .. } => {
-                self.phase = AgentPhase::Working;
-                if !success {
-                    // Final failure: the error text arrived on the tail event.
+            Event::Appended(id) => {
+                // The reply that was streaming is an entry now; its live text is redundant.
+                if matches!(store.get(*id).map(|e| &e.kind), Some(Kind::Assistant { .. })) {
+                    self.live_text.clear();
+                    self.live_thinking.clear();
                 }
-            }
-            E::CompactionStart { .. } => self.phase = AgentPhase::Compacting,
-            E::CompactionEnd { error_message, .. } => {
-                self.phase = AgentPhase::Working;
-                if let Some(error) = error_message {
-                    self.last_error = Some(error.clone());
+                if matches!(store.get(*id).map(|e| &e.kind), Some(Kind::ToolResult { .. })) {
+                    self.live_tools.retain(|_, _| false);
                 }
+                self.rebuild(store);
             }
-            E::ExtensionError { error, .. } => {
-                if let Some(error) = error {
-                    self.last_error = Some(error.clone());
-                }
+            Event::Finished => {
+                self.live_text.clear();
+                self.live_thinking.clear();
+                self.live_tools.clear();
             }
-            E::Unknown { raw } => {
-                // Rendered raw in the debug view, never dropped (gui/SPEC.md §2).
-                self.items.push(ChatItem::Unknown { raw: raw.clone() });
-            }
-            // Events the transcript does not render (the composer, the status
-            // bar and the bridge consume them where relevant).
-            E::AgentEnd { .. } | E::TurnStart | E::TurnEnd { .. } => {}
-            E::MessageStart { message } => {
-                // Remember where this message's blocks start so `message_end`
-                // can replace them wholesale.
-                if message.get("role").and_then(Value::as_str) == Some("assistant") {
-                    self.message_start_at = Some(self.items.len());
-                }
-            }
-            E::BashExecutionUpdate { .. } => {}
-            E::EntryAppended => {}
+            Event::ToolCallStarted { .. } | Event::ToolStart { .. } | Event::ToolEnd { .. } | Event::Usage(_) | Event::Reduced { .. } | Event::Notice(_) => {}
         }
     }
 
-    /// Apply one streaming delta to the in-progress message item.
-    fn apply_delta(&mut self, delta: &reactor_rpc::protocol::AssistantMessageEvent) {
-        use reactor_rpc::protocol::AssistantMessageEvent as D;
-        match delta {
-            D::TextStart { .. } => {
-                if !self.has_streaming_assistant() {
-                    self.items.push(ChatItem::AssistantText {
-                        text: String::new(),
-                        streaming: true,
-                    });
-                }
-            }
-            D::TextDelta { delta, .. } => self.append_to_streaming(delta),
-            D::TextEnd {
-                text: Some(text), ..
-            } => {
-                // `text_end.content` is the block's *complete* text, not a
-                // trailing delta (verified live against pi 0.87.0).
-                // Appending it to the deltas already accumulated is what
-                // rendered every answer twice, run together with no
-                // separator: "…what would you like to do?Hi! I'm ready…".
-                self.set_streaming_text(text);
-                self.finalize_streaming_assistant();
-            }
-            D::ThinkingStart { .. } => {
-                if !self.has_streaming_thinking() {
-                    self.items.push(ChatItem::Thinking {
-                        text: String::new(),
-                        streaming: true,
-                    });
-                }
-            }
-            D::ThinkingDelta { delta, .. } => self.append_to_thinking(delta),
-            D::ThinkingEnd {
-                thinking: Some(thinking),
-                ..
-            } => {
-                // Same contract as `text_end`: the complete block, replacing
-                // the deltas rather than extending them.
-                self.set_streaming_thinking(thinking);
-                self.finalize_thinking();
-            }
-            _ => {}
-        }
-    }
-
-    /// Index of the block a thinking/text delta belongs to: the newest one
-    /// of that kind still streaming.
-    ///
-    /// Searched from the back rather than read off `last()`, because pi
-    /// interleaves content blocks — it closes the *thinking* block (index 0)
-    /// only after the *text* block (index 1) has started streaming — so the
-    /// block a delta belongs to is routinely not the newest item. Reading
-    /// `last()` there appended thinking onto the text block, or pushed a
-    /// duplicate block when the kinds did not match.
-    fn streaming_block(&self, thinking: bool) -> Option<usize> {
-        self.items.iter().rposition(|item| match item {
-            ChatItem::Thinking { streaming, .. } => thinking && *streaming,
-            ChatItem::AssistantText { streaming, .. } => !thinking && *streaming,
-            _ => false,
-        })
-    }
-
-    fn has_streaming_assistant(&self) -> bool {
-        self.streaming_block(false).is_some()
-    }
-
-    fn has_streaming_thinking(&self) -> bool {
-        self.streaming_block(true).is_some()
-    }
-
-    fn append_to_streaming(&mut self, delta: &str) {
-        match self.streaming_block(false) {
-            Some(at) => {
-                if let ChatItem::AssistantText { text, .. } = &mut self.items[at] {
-                    text.push_str(delta);
-                }
-            }
-            None => self.items.push(ChatItem::AssistantText {
-                text: delta.to_owned(),
-                streaming: true,
-            }),
-        }
-    }
-
-    fn append_to_thinking(&mut self, delta: &str) {
-        match self.streaming_block(true) {
-            Some(at) => {
-                if let ChatItem::Thinking { text, .. } = &mut self.items[at] {
-                    text.push_str(delta);
-                }
-            }
-            None => self.items.push(ChatItem::Thinking {
-                text: delta.to_owned(),
-                streaming: true,
-            }),
-        }
-    }
-
-    /// Replace the streaming text block's contents outright — for
-    /// `text_end`, which carries the whole block rather than a delta.
-    fn set_streaming_text(&mut self, full: &str) {
-        match self.streaming_block(false) {
-            Some(at) => {
-                if let ChatItem::AssistantText { text, .. } = &mut self.items[at] {
-                    *text = full.to_owned();
-                }
-            }
-            None => self.items.push(ChatItem::AssistantText {
-                text: full.to_owned(),
-                streaming: true,
-            }),
-        }
-    }
-
-    /// The thinking-block counterpart of [`Self::set_streaming_text`].
-    fn set_streaming_thinking(&mut self, full: &str) {
-        match self.streaming_block(true) {
-            Some(at) => {
-                if let ChatItem::Thinking { text, .. } = &mut self.items[at] {
-                    *text = full.to_owned();
-                }
-            }
-            None => self.items.push(ChatItem::Thinking {
-                text: full.to_owned(),
-                streaming: true,
-            }),
-        }
-    }
-
-    fn push_thinking(&mut self, thinking: String, streaming: bool) {
-        self.items.push(ChatItem::Thinking {
-            text: thinking,
-            streaming,
-        });
-    }
-
-    /// Lay out a finished assistant message from its authoritative content,
-    /// discarding the preview its deltas built.
-    ///
-    /// Only this message's own thinking/text blocks are dropped — anything
-    /// else that landed in the meantime (a tool card, an error) is left
-    /// where it is, and so is every earlier message.
-    fn rebuild_assistant_message(&mut self, message: &Value) {
-        // No marker means the deltas arrived without a `message_start`
-        // (history replay, a truncated stream). Fall back to the run of
-        // thinking/text blocks at the tail: those are what this message
-        // built.
-        let fallback = self.items.len()
-            - self
-                .items
-                .iter()
-                .rev()
-                .take_while(|item| {
-                    matches!(
-                        item,
-                        ChatItem::AssistantText { .. } | ChatItem::Thinking { .. }
-                    )
-                })
-                .count();
-        let from = self
-            .message_start_at
-            .take()
-            .unwrap_or(fallback)
-            .min(self.items.len());
-        let mut at = from;
-        while at < self.items.len() {
-            if matches!(
-                self.items[at],
-                ChatItem::AssistantText { .. } | ChatItem::Thinking { .. }
-            ) {
-                self.items.remove(at);
-            } else {
-                at += 1;
-            }
-        }
-        if let Some(thinking) = assistant_thinking(message) {
-            self.push_thinking(thinking, false);
-        }
-        if let Some(text) = assistant_text(message) {
-            self.items.push(ChatItem::AssistantText {
-                text,
-                streaming: false,
-            });
-        }
-    }
-
-    fn finalize_streaming_assistant(&mut self) {
-        if let Some(at) = self.streaming_block(false) {
-            if let ChatItem::AssistantText { streaming, .. } = &mut self.items[at] {
-                *streaming = false;
-            }
-        }
-    }
-
-    fn finalize_thinking(&mut self) {
-        if let Some(at) = self.streaming_block(true) {
-            if let ChatItem::Thinking { streaming, .. } = &mut self.items[at] {
-                *streaming = false;
-            }
-        }
-    }
-
-    fn tool_call_mut(&mut self, call_id: &str) -> Option<&mut ChatItem> {
-        self.items
-            .iter_mut()
-            .rev()
-            .find(|item| matches!(item, ChatItem::ToolCall { call_id: id, .. } if id == call_id))
-    }
-
-    /// Drop trailing items still marked `streaming: true` — content an
-    /// aborted attempt never got a `message_end` to finalize. Called when a
-    /// fresh `agent_start` arrives (see there for why): whatever was
-    /// mid-stream when the previous attempt died belongs to a turn that is
-    /// being retried, not to the one about to start.
-    fn discard_unfinished_streaming_items(&mut self) {
-        while matches!(
-            self.items.last(),
-            Some(
-                ChatItem::AssistantText {
-                    streaming: true,
-                    ..
-                } | ChatItem::Thinking {
-                    streaming: true,
-                    ..
-                }
-            )
-        ) {
-            self.items.pop();
-        }
+    /// The turn is over, however it ended: nothing is streaming any more.
+    pub fn end_turn(&mut self, store: &Store) {
+        self.live_text.clear();
+        self.live_thinking.clear();
+        self.live_tools.clear();
+        self.phase = AgentPhase::Idle;
+        self.rebuild(store);
     }
 }
 
-impl Session {
-    /// One extension status entry: `None` clears it (pi's setStatus
-    /// contract). Key-sorted on read so REactor's anchor (`0-reactor`)
-    /// leads — the footer grammar survives into the status bar.
-    pub fn set_status(&mut self, key: &str, text: Option<String>) {
-        self.statuses.retain(|(k, _)| k != key);
-        if let Some(text) = text {
-            self.statuses.push((key.to_owned(), text));
-            self.statuses.sort_by(|a, b| a.0.cmp(&b.0));
-        }
-    }
-
-    /// One non-envelope text widget (`setWidget` without the `reactor:`
-    /// prefix); `None`/empty clears it.
-    pub fn set_widget(&mut self, key: &str, lines: Vec<String>) {
-        self.widgets.retain(|(k, _)| k != key);
-        if !lines.is_empty() {
-            self.widgets.push((key.to_owned(), lines));
-        }
+fn mode_word(m: Mode) -> &'static str {
+    match m {
+        Mode::Auto => "auto",
+        Mode::Fade => "fade",
+        Mode::Compact => "compact",
     }
 }
 
-/// The text of a content value: `"a string"` or
-/// `[{"type":"text","text":"…"}, …]` — the shape of tool results.
-pub fn content_text(content: &Value) -> String {
-    // Tool results arrive as the whole message (`{"content": […]}`) in the
-    // `result` field — unwrap the wrapper when it is one.
-    let content = match content {
-        Value::Object(o) if o.contains_key("content") && o.get("role").is_none() => {
-            o.get("content").unwrap()
-        }
-        other => other,
-    };
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter_map(|block| {
-                if block.get("type").and_then(Value::as_str) == Some("text") {
-                    block.get("text").and_then(Value::as_str)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
-}
+/// The status bar's left side, from the session's state modules: what the manifest, the
+/// identity, reporting and the scenario are doing right now.
+pub fn status_items(state: &SessionState, settings: &Settings, scenarios_dir: &std::path::Path) -> Vec<(String, String)> {
+    use reactor_context::{identity, reporting, scenario};
+    let mut out: Vec<(String, String)> = Vec::new();
 
-/// The concatenated text content of an assistant message (`content` array of
-/// `{"type":"text","text":…}` blocks).
-pub fn assistant_text(message: &Value) -> Option<String> {
-    if message.get("role").and_then(Value::as_str) != Some("assistant") {
-        return None;
+    let m = &state.manifest;
+    if m.is_enabled() && m.has_content() {
+        let head = m.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()).map(|g| reactor_context::text::truncate(g, 48)).unwrap_or_else(|| "manifest".into());
+        let steps = match m.steps.len() {
+            0 => String::new(),
+            n => format!(" · {n} step{}", if n == 1 { "" } else { "s" }),
+        };
+        out.push(("goal".into(), format!("◎ {head}{steps}")));
     }
-    let text = content_text(message.get("content")?);
-    if text.is_empty() { None } else { Some(text) }
-}
-
-/// The concatenated thinking content of an assistant message.
-pub fn assistant_thinking(message: &Value) -> Option<String> {
-    if message.get("role").and_then(Value::as_str) != Some("assistant") {
-        return None;
+    if let Some(name) = state.identity.active_name(&settings.identity) {
+        out.push(("identity".into(), format!("@ {name}")));
     }
-    let thinking = message
-        .get("content")?
-        .as_array()?
-        .iter()
-        .filter_map(|block| {
-            if block.get("type").and_then(Value::as_str) == Some("thinking") {
-                block.get("thinking").and_then(Value::as_str)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    if thinking.is_empty() {
-        None
-    } else {
-        Some(thinking)
+    if let Some(word) = reporting::status_word(&state.reporting, &settings.reporting) {
+        out.push(("reporting".into(), format!("¶ reporting · {word}")));
+    } else if state.reporting.is_enabled() {
+        out.push(("reporting".into(), "¶ reporting".into()));
     }
+    if let Some(s) = &state.scenario {
+        let total = scenario::load_steps(scenarios_dir, &s.scenario_id).len();
+        out.push(("scenario".into(), format!("{} · phase {}/{}", s.scenario_id, s.step_index + 1, total)));
+    }
+    let _ = identity::BUILTINS;
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reactor_agent::entry::{Reduction, Stub, Trigger};
     use serde_json::json;
 
-    /// One streaming turn, from deltas to the authoritative `message_end` —
-    /// the exact sequence pi sends for a text answer (gui/SPEC.md §2).
-    #[test]
-    fn streaming_assembles_from_deltas_and_message_end_is_authoritative() {
-        let mut s = Session::new();
-        for line in [
-            r#"{"type":"agent_start"}"#,
-            r#"{"type":"turn_start"}"#,
-            r#"{"type":"message_start","message":{"role":"assistant","content":[]}}"#,
-            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}"#,
-            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}"#,
-        ] {
-            s.ingest_event(&reactor_rpc::Event::from_value(
-                serde_json::from_str::<Value>(line).unwrap(),
-            ));
-        }
+    fn store() -> (tempfile::TempDir, Store) {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::create(d.path().join("s"), "s", d.path()).unwrap();
+        (d, s)
+    }
 
-        // The live partial is streaming.
-        assert_eq!(
-            s.items,
-            vec![ChatItem::AssistantText {
-                text: "Hello world".into(),
-                streaming: true
-            }]
-        );
-        assert_eq!(s.phase, AgentPhase::Working);
-
-        // `message_end` is authoritative — its message replaces the partial.
-        let final_message = json!({
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Hello, world — final."}]
-        });
-        s.ingest_event(&reactor_rpc::Event::from_value(
-            json!({"type": "message_end", "message": final_message}),
-        ));
-        assert_eq!(
-            s.items,
-            vec![ChatItem::AssistantText {
-                text: "Hello, world — final.".into(),
-                streaming: false
-            }]
-        );
+    fn call(s: &mut Store, id: &str, args: Value, result: &str) {
+        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "running".into() }, Block::ToolCall { id: id.into(), name: "bash".into(), arguments: args }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::ToolResult { call_id: id.into(), name: "bash".into(), content: result.into(), is_error: false, blob: None }).unwrap();
     }
 
     #[test]
-    fn tool_calls_update_in_place_by_call_id() {
-        let mut s = Session::new();
-        for event in [
-            json!({"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"ls"}}),
-            json!({"type":"tool_execution_update","toolCallId":"c1","partialResult":{"content":[{"type":"text","text":"total 0"}]}}),
-            json!({"type":"tool_execution_end","toolCallId":"c1","result":{"content":[{"type":"text","text":"total 0"}]},"isError":false}),
-        ] {
-            s.ingest_event(&reactor_rpc::Event::from_value(event));
-        }
-        assert_eq!(
-            s.items,
-            vec![ChatItem::ToolCall {
-                call_id: "c1".into(),
-                name: "bash".into(),
-                args: json!({"command": "ls"}),
-                output: "total 0".into(),
-                is_error: false,
-                done: true,
-            }]
-        );
-    }
+    fn a_stores_branch_becomes_transcript_rows_with_tool_results_attached_to_their_calls() {
+        let (_d, mut s) = store();
+        s.append(Kind::User { text: "hello".into() }).unwrap();
+        s.append(Kind::Assistant { blocks: vec![Block::Thinking { text: "hmm".into(), signature: None }, Block::Text { text: "hi".into() }], model: None, usage: None, stop: None }).unwrap();
+        call(&mut s, "c1", json!({"command": "ls"}), "a b");
+        s.append(Kind::Custom { key: "manifest".into(), data: json!({}) }).unwrap();
 
-    /// The exact delta order pi 0.87.0 streams for a thinking model, captured
-    /// live: the thinking block opens first but is *closed after* the text
-    /// block has already started, and both `*_end` events carry the whole
-    /// block in `content` rather than a trailing delta.
-    ///
-    /// Every part of that tripped the old assembly: `text_end`'s full text
-    /// was appended to the deltas (the answer rendered twice, run together
-    /// with no separator), `thinking_end` was read from a `thinking` field pi
-    /// does not send (so the block never closed), and `message_end` then
-    /// pushed fresh blocks beside the ones already there. One "hi" rendered
-    /// as thinking, doubled answer, thinking again, answer again.
-    #[test]
-    fn interleaved_thinking_and_text_blocks_each_render_once() {
-        let mut s = Session::new();
-        let events = [
-            json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"The user "}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"said hi."}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":1}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"Hi! I'm "}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"ready."}}),
-            // Closes the *thinking* block, two blocks back — not `last()`.
-            json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"The user said hi."}}),
-            json!({"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":1,"content":"Hi! I'm ready."}}),
-        ];
-        for event in events {
-            s.ingest_event(&reactor_rpc::Event::from_value(event));
-        }
-
-        // The live preview: one thinking block, one answer, neither doubled.
-        assert_eq!(
-            s.items,
-            vec![
-                ChatItem::Thinking {
-                    text: "The user said hi.".into(),
-                    streaming: false
-                },
-                ChatItem::AssistantText {
-                    text: "Hi! I'm ready.".into(),
-                    streaming: false
-                },
-            ]
-        );
-
-        // And `message_end` replaces them rather than adding a second set.
-        s.ingest_event(&reactor_rpc::Event::from_value(json!({
-            "type": "message_end",
-            "message": {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "The user said hi."},
-                {"type": "text", "text": "Hi! I'm ready."}
-            ]}
-        })));
-        assert_eq!(
-            s.items,
-            vec![
-                ChatItem::Thinking {
-                    text: "The user said hi.".into(),
-                    streaming: false
-                },
-                ChatItem::AssistantText {
-                    text: "Hi! I'm ready.".into(),
-                    streaming: false
-                },
-            ],
-            "one turn must render as exactly one thinking block and one answer"
-        );
-    }
-
-    /// A live-verified pi trace (a real 502/TLS-handshake-timeout auto-retry
-    /// against a cloud provider): the failed attempt streams a partial
-    /// delta, then dies straight into `auto_retry_start` — no `message_end`
-    /// ever finalizes it. The retry's fresh `agent_start` must drop that
-    /// dangling partial, or the retry's full text lands appended onto it
-    /// with no separator: one run-on paragraph that reads as "the same
-    /// answer twice" — reported as "you send the prompt two times to pi",
-    /// which the RPC trace showed was never true; pi answered once, after
-    /// one retry.
-    #[test]
-    fn a_failed_attempts_partial_text_does_not_survive_into_the_retry() {
-        let mut s = Session::new();
-        for line in [
-            r#"{"type":"agent_start"}"#,
-            r#"{"type":"turn_start"}"#,
-            r#"{"type":"message_start","message":{"role":"assistant","content":[]}}"#,
-            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi! I'm ready to help"}}"#,
-            r#"{"type":"auto_retry_start","attempt":1,"errorMessage":"502 TLS handshake timeout"}"#,
-            r#"{"type":"agent_start"}"#,
-            r#"{"type":"turn_start"}"#,
-            r#"{"type":"message_start","message":{"role":"assistant","content":[]}}"#,
-        ] {
-            s.ingest_event(&reactor_rpc::Event::from_value(
-                serde_json::from_str::<Value>(line).unwrap(),
-            ));
-        }
-        // The failed attempt's partial must be gone before the retry starts
-        // streaming, not sitting there waiting to be appended onto.
-        assert_eq!(s.items, vec![]);
-
-        let final_message = json!({
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Hi! I'm ready to help with your project."}]
-        });
-        s.ingest_event(&reactor_rpc::Event::from_value(
-            json!({"type": "message_end", "message": final_message}),
-        ));
-        assert_eq!(
-            s.items,
-            vec![ChatItem::AssistantText {
-                text: "Hi! I'm ready to help with your project.".into(),
-                streaming: false
-            }],
-            "the retry's answer must appear exactly once, not concatenated with the failed attempt's partial"
-        );
-    }
-
-    /// pi reports prompt failures through the normal stream, not as a
-    /// response error — an assistant error message is the GUI's failure path.
-    #[test]
-    fn statuses_are_key_sorted_so_the_anchor_leads() {
-        let mut s = Session::new();
-        s.set_status("status", Some("Turn 3 running…".to_owned()));
-        s.set_status("0-reactor", Some("12 tools · 9 active".to_owned()));
-        s.set_status("identity", Some("reverse-engineer".to_owned()));
-
-        let keys: Vec<&str> = s.statuses.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, vec!["0-reactor", "identity", "status"]);
-
-        // Clearing: pi's setStatus contract — `statusText: undefined` clears.
-        s.set_status("identity", None);
-        let keys: Vec<&str> = s.statuses.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, vec!["0-reactor", "status"]);
-    }
-
-    #[test]
-    fn thinking_blocks_arrive_collapsed() {
-        let mut s = Session::new();
-        s.ingest_event(&reactor_rpc::Event::from_value(json!({
-            "type": "message_update",
-            "assistantMessageEvent": {"type": "thinking_delta", "contentIndex": 0, "delta": "User is…"}
-        })));
-        s.ingest_event(&reactor_rpc::Event::from_value(json!({
-            "type": "message_end",
-            "message": {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "User is asking about themes."},
-                {"type": "text", "text": "Answer."}
-            ]}
-        })));
-        // `message_end` is authoritative: the final thinking replaces the
-        // streaming partial, and the final text lands as its own block.
-        assert_eq!(
-            s.items,
-            vec![
-                ChatItem::Thinking {
-                    text: "User is asking about themes.".into(),
-                    streaming: false
-                },
-                ChatItem::AssistantText {
-                    text: "Answer.".into(),
-                    streaming: false
-                }
-            ]
-        );
-    }
-
-    /// A custom session entry (`reactor-detail` et al.) renders generically
-    /// from its data — the GUI knows the reactor types by name (gui/SPEC.md §6).
-    #[test]
-    fn custom_entries_render_as_their_type() {
-        let mut s = Session::new();
-        s.ingest_event(&reactor_rpc::Event::from_value(json!({
-            "type": "message_end",
-            "message": {"role": "custom", "customType": "reactor-detail",
-                        "content": [], "details": {"title": "skill: bn", "body": "# bn"}}
-        })));
-        // A custom message an extension sent via `pi.sendMessage` renders as
-        // its type — `raw` is the message, not the event envelope.
-        assert_eq!(
-            s.items,
-            vec![ChatItem::CustomEntry {
-                custom_type: "reactor-detail".into(),
-                raw: json!({"role": "custom", "customType": "reactor-detail",
-                            "content": [], "details": {"title": "skill: bn", "body": "# bn"}})
-            }]
-        );
-    }
-
-    #[test]
-    fn unknown_events_reach_the_debug_view() {
-        let mut s = Session::new();
-        s.ingest_event(&reactor_rpc::Event::from_value(json!({
-            "type": "session_tree_v2", "payload": {"x": 1}
-        })));
-        match &s.items[0] {
-            ChatItem::Unknown { raw } => assert_eq!(raw["payload"]["x"], 1),
-            other => panic!("expected Unknown, got {other:?}"),
-        }
-    }
-
-    /// The extension-UI contract of ADR-0032 rides setWidget's string lines —
-    /// the view model learns about widgets and statuses from the same
-    /// `extension_ui_request` the dialogs arrive on.
-    #[test]
-    fn set_widget_and_set_status_flow_through_the_ui_request() {
-        let mut s = Session::new();
-        let request = reactor_rpc::ExtensionUiRequest::from_value(json!({
-            "type": "extension_ui_request", "id": "u1", "method": "setWidget",
-            "widgetKey": "plain-panel",
-            "widgetLines": ["services panel lines"],
-            "widgetPlacement": "aboveEditor"
-        }))
-        .unwrap();
-        s.ingest(&reactor_rpc::Incoming::ExtensionUiRequest(request));
-        assert_eq!(
-            s.widgets,
-            vec![(
-                "plain-panel".to_owned(),
-                vec!["services panel lines".to_owned()]
-            )]
-        );
-    }
-
-    #[test]
-    fn queue_updates_drive_the_composer_mode() {
-        let mut s = Session::new();
-        s.ingest_event(&reactor_rpc::Event::from_value(json!({
-            "type": "queue_update",
-            "steering": ["Change direction"],
-            "followUp": ["After that, summarize"]
-        })));
-        assert_eq!(s.steering, vec!["Change direction".to_owned()]);
-        assert_eq!(s.follow_up, vec!["After that, summarize".to_owned()]);
-    }
-}
-
-#[cfg(test)]
-mod replay_capture {
-    use super::*;
-
-    /// Replay a recorded pi stream through the real assembly and print the
-    /// transcript it produces.
-    ///
-    /// Not an assertion — a bench for reading. The duplicated-answer bug was
-    /// only findable by recording an actual stream and seeing which blocks
-    /// came out, so the tool that found it stays. Record one with:
-    ///
-    /// ```text
-    /// mkfifo /tmp/f; (pi --mode rpc --no-session < /tmp/f > /tmp/cap.jsonl &)
-    /// exec 4>/tmp/f; echo '{"type":"prompt","message":"hi"}' >&4; sleep 30; exec 4>&-
-    /// PI_REPLAY=/tmp/cap.jsonl cargo test -p reactor-gui replay -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "needs PI_REPLAY=<recorded jsonl>"]
-    fn replay() {
-        let path = std::env::var("PI_REPLAY").expect("set PI_REPLAY to a recorded stream");
         let mut session = Session::new();
-        for line in std::fs::read_to_string(&path).unwrap().lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let value: Value = serde_json::from_str(line).unwrap();
-            // The same classification the reader thread applies: responses
-            // are answers to commands, not transcript content.
-            if value.get("type").and_then(Value::as_str) == Some("response") {
-                continue;
-            }
-            let incoming = match reactor_rpc::ExtensionUiRequest::from_value(value.clone()) {
-                Some(request) => reactor_rpc::Incoming::ExtensionUiRequest(request),
-                None => reactor_rpc::Incoming::Event(reactor_rpc::Event::from_value(value)),
-            };
-            session.ingest(&incoming);
+        session.rebuild(&s);
+        assert_eq!(session.items.len(), 5, "{:#?}", session.items);
+        assert!(matches!(&session.items[0], ChatItem::User { text } if text == "hello"));
+        assert!(matches!(&session.items[1], ChatItem::Thinking { text, streaming: false } if text == "hmm"));
+        assert!(matches!(&session.items[2], ChatItem::AssistantText { text, .. } if text == "hi"));
+        assert!(matches!(&session.items[4], ChatItem::ToolCall { name, output, done: true, is_error: false, .. } if name == "bash" && output == "a b"));
+    }
+
+    #[test]
+    fn a_call_with_no_result_yet_is_a_running_card_that_streams_output_in_place() {
+        let (_d, mut s) = store();
+        s.append(Kind::User { text: "go".into() }).unwrap();
+        s.append(Kind::Assistant { blocks: vec![Block::ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({"command": "make"}) }], model: None, usage: None, stop: None }).unwrap();
+        let mut session = Session::new();
+        session.rebuild(&s);
+        assert!(matches!(&session.items[1], ChatItem::ToolCall { done: false, output, .. } if output.is_empty()));
+
+        session.apply(&Event::ToolOutput { id: "c1".into(), chunk: "compiling…\n".into() }, &s);
+        session.apply(&Event::ToolOutput { id: "c1".into(), chunk: "linking\n".into() }, &s);
+        assert!(matches!(&session.items[1], ChatItem::ToolCall { done: false, output, .. } if output == "compiling…\nlinking\n"));
+
+        // A rebuild in the middle (some other entry appended) does not lose the live output.
+        session.rebuild(&s);
+        assert!(matches!(&session.items[1], ChatItem::ToolCall { output, .. } if output == "compiling…\nlinking\n"));
+
+        // The result lands: the card is done and shows the final text.
+        s.append(Kind::ToolResult { call_id: "c1".into(), name: "bash".into(), content: "built".into(), is_error: false, blob: None }).unwrap();
+        session.apply(&Event::Appended(s.head()), &s);
+        assert!(matches!(&session.items[1], ChatItem::ToolCall { done: true, output, .. } if output == "built"));
+    }
+
+    #[test]
+    fn streamed_text_grows_one_row_and_is_replaced_by_the_entry_when_it_lands() {
+        let (_d, mut s) = store();
+        s.append(Kind::User { text: "hi".into() }).unwrap();
+        let mut session = Session::new();
+        session.rebuild(&s);
+        for d in ["Hel", "lo ", "there"] {
+            session.apply(&Event::Text(d.into()), &s);
         }
-        for (at, item) in session.items.iter().enumerate() {
-            match item {
-                ChatItem::Thinking { text, streaming } => {
-                    println!("[{at}] thinking (streaming={streaming}) {text:?}")
-                }
-                ChatItem::AssistantText { text, streaming } => {
-                    println!("[{at}] text (streaming={streaming}) {text:?}")
-                }
-                other => println!("[{at}] {other:?}"),
-            }
-        }
+        assert_eq!(session.items.len(), 2);
+        assert!(matches!(&session.items[1], ChatItem::AssistantText { text, streaming: true } if text == "Hello there"));
+
+        let id = s.append(Kind::Assistant { blocks: vec![Block::Text { text: "Hello there".into() }], model: None, usage: None, stop: None }).unwrap();
+        session.apply(&Event::Appended(id), &s);
+        assert_eq!(session.items.len(), 2, "no duplicate: the live copy is dropped");
+        assert!(matches!(&session.items[1], ChatItem::AssistantText { streaming: false, .. }));
+    }
+
+    #[test]
+    fn a_cancelled_turn_leaves_no_ghost_streaming_row() {
+        let (_d, mut s) = store();
+        s.append(Kind::User { text: "hi".into() }).unwrap();
+        let mut session = Session::new();
+        session.rebuild(&s);
+        session.apply(&Event::Text("half a sent".into()), &s);
+        session.phase = AgentPhase::Working;
+        session.end_turn(&s);
+        assert_eq!(session.items.len(), 1);
+        assert_eq!(session.phase, AgentPhase::Idle);
+    }
+
+    #[test]
+    fn a_reduction_shows_where_it_happened_and_dims_what_it_hides_until_undone() {
+        let (_d, mut s) = store();
+        let u = s.append(Kind::User { text: "old question".into() }).unwrap();
+        let a = s.append(Kind::Assistant { blocks: vec![Block::Text { text: "old answer".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::User { text: "new question".into() }).unwrap();
+        let red = s
+            .append(Kind::Reduction(Reduction {
+                mode: Mode::Auto,
+                trigger: Trigger::Budget,
+                covers: vec![u, a],
+                summary: Some("summary".into()),
+                stubs: vec![Stub { entry: a, what: "assistant message".into(), detail: "old answer".into(), bytes: 10 }],
+                before_tokens: 900,
+                after_tokens: 300,
+            }))
+            .unwrap();
+
+        let mut session = Session::new();
+        session.rebuild(&s);
+        assert_eq!(session.hidden, HashSet::from([0, 1]), "the two rows the model no longer sees");
+        assert!(matches!(&session.items[3], ChatItem::Reduction { covers: 2, before: 900, after: 300, active: true, mode, trigger, .. } if mode == "auto" && trigger == "automatic"));
+
+        s.append(Kind::Restore { reduction: red }).unwrap();
+        session.rebuild(&s);
+        assert!(session.hidden.is_empty());
+        assert!(matches!(&session.items[3], ChatItem::Reduction { active: false, .. }));
+    }
+
+    #[test]
+    fn the_transcript_follows_the_current_branch_not_the_whole_tree() {
+        let (_d, mut s) = store();
+        let u = s.append(Kind::User { text: "q".into() }).unwrap();
+        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "first answer".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.set_head(u).unwrap();
+        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "second answer".into() }], model: None, usage: None, stop: None }).unwrap();
+        let mut session = Session::new();
+        session.rebuild(&s);
+        let texts: Vec<_> = session.items.iter().filter_map(|i| match i { ChatItem::AssistantText { text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(texts, ["second answer"]);
+    }
+
+    #[test]
+    fn statuses_say_what_the_manifest_identity_reporting_and_scenario_are_doing() {
+        let mut state = SessionState::default();
+        let settings = Settings::default();
+        let none = std::path::Path::new("/nonexistent");
+        assert!(status_items(&state, &settings, none).is_empty());
+
+        state.manifest.goal = Some("crack the license check".into());
+        state.manifest.steps = vec![reactor_context::manifest::Step { summary: "a".into(), status: "b".into() }];
+        state.identity.active = Some("publisher".into());
+        state.reporting.enabled = Some(true);
+        state.reporting.level = reactor_context::settings::Enforcement::new(2);
+        let items = status_items(&state, &settings, none);
+        let keys: Vec<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["goal", "identity", "reporting"], "key-sorted");
+        assert_eq!(items[0].1, "◎ crack the license check · 1 step");
+        assert_eq!(items[1].1, "@ publisher");
+        assert_eq!(items[2].1, "¶ reporting · strict");
     }
 }

@@ -5832,18 +5832,15 @@ dependencies = [
  "anyhow",
  "gpui-kit",
  "portable-pty",
+ "reactor-agent",
  "reactor-client",
- "reactor-rpc",
+ "reactor-context",
+ "reactor-core",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "reactor-rpc"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

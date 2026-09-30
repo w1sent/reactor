@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::{self, BudgetConfig, Plan, Summarizer, context_tokens, needs_reduction, plan};
 use crate::context::{
-    Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, estimate_tokens, project, save_state,
+    self, Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, estimate_tokens, project, save_state,
 };
 use crate::entry::{EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
@@ -118,6 +118,31 @@ pub struct Outcome {
     pub tool_calls: usize,
     /// Level-2 reporting reverted the turn this many times.
     pub reverts: usize,
+}
+
+/// What the context costs, in estimated tokens.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Measure {
+    /// System prompt and tool specs.
+    pub fixed: u64,
+    /// The projected messages.
+    pub messages: u64,
+    pub total: u64,
+    /// Real tokens per estimated token, as learned from the provider (1.0 until it reports).
+    pub calibration: f64,
+}
+
+/// A reduction in force, for a frontend to list and offer to undo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReductionInfo {
+    pub entry: EntryId,
+    pub mode: Mode,
+    pub trigger: Trigger,
+    pub covers: usize,
+    pub before_tokens: u64,
+    pub after_tokens: u64,
+    pub summary: Option<String>,
+    pub stubs: usize,
 }
 
 /// What a session command did, for the frontend to show and act on.
@@ -218,8 +243,50 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     // -- the budget ------------------------------------------------------------------------
 
+    /// The budget in force now: the built-in baseline (`cfg.budget`, whose window comes
+    /// from the model), then the global `settings.json`, then this session's own layer
+    /// (ADR-0038). Read every time, so a change takes effect on the next request.
+    pub fn effective_budget(&self) -> BudgetConfig {
+        let global = self.settings().context;
+        let session = SessionState::load(&self.store.lock().unwrap()).context;
+        let eff = session.over(&global);
+        let base = self.cfg.budget;
+        BudgetConfig {
+            window: eff.window.unwrap_or(base.window),
+            reserve: eff.reserve.unwrap_or(base.reserve),
+            pct: eff.pct.unwrap_or(base.pct),
+            keep: eff.keep.unwrap_or(base.keep),
+            mode: match eff.mode.as_deref() {
+                Some("fade") => Mode::Fade,
+                Some("compact") => Mode::Compact,
+                Some("auto") => Mode::Auto,
+                _ => base.mode,
+            },
+            summary_tokens: base.summary_tokens,
+        }
+    }
+
+    /// The two stored layers of the context settings: (global, this session's).
+    pub fn context_layers(&self) -> (reactor_context::settings::ContextSettings, reactor_context::settings::ContextSettings) {
+        (self.settings().context, SessionState::load(&self.store.lock().unwrap()).context)
+    }
+
+    /// Set this session's layer of the context settings.
+    pub fn set_session_context(&self, layer: &reactor_context::settings::ContextSettings) -> Result<()> {
+        save_state(&mut self.store.lock().unwrap(), context::KEY_CONTEXT, serde_json::to_value(layer).unwrap())?;
+        Ok(())
+    }
+
+    /// Make a layer the global default (`settings.json`).
+    pub fn set_global_context(&self, layer: reactor_context::settings::ContextSettings) -> Result<()> {
+        let mut s = self.settings();
+        s.context = layer;
+        s.save(&self.cfg.paths)?;
+        Ok(())
+    }
+
     fn scaled_budget(&self) -> BudgetConfig {
-        self.cfg.budget.scaled(*self.ratio.lock().unwrap())
+        self.effective_budget().scaled(*self.ratio.lock().unwrap())
     }
 
     /// A person asking to reduce wants *more* gone than the budget would take: the keep
@@ -266,7 +333,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 *in_a_row = 0;
                 return Ok(());
             }
-            let p = match plan(fixed, &items, &cfg, self.cfg.budget.mode) {
+            let p = match plan(fixed, &items, &cfg, cfg.mode) {
                 Ok(p) => p,
                 Err(nothing) => {
                     // Over the trigger with nothing older to reduce: fine while there is
@@ -514,6 +581,44 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             other => return Err(Error::Store(format!("unknown command `{other}`"))),
         }
         Ok(result)
+    }
+
+    /// What the context costs right now: the fixed part (system prompt, tool specs) and the
+    /// projected messages, in estimated tokens.
+    pub async fn measure(&self) -> Result<Measure> {
+        let (_, fixed, items) = self.build().await?;
+        let messages = context_tokens(0, &items);
+        Ok(Measure { fixed, messages, total: fixed + messages, calibration: *self.ratio.lock().unwrap() })
+    }
+
+    /// The reductions in force on this branch, oldest first.
+    pub fn reductions(&self) -> Vec<ReductionInfo> {
+        let store = self.store.lock().unwrap();
+        context::active_reductions(&store)
+            .into_iter()
+            .filter_map(|id| match store.get(id).map(|e| &e.kind) {
+                Some(Kind::Reduction(r)) => Some(ReductionInfo {
+                    entry: id,
+                    mode: r.mode,
+                    trigger: r.trigger,
+                    covers: r.covers.len(),
+                    before_tokens: r.before_tokens,
+                    after_tokens: r.after_tokens,
+                    summary: r.summary.clone(),
+                    stubs: r.stubs.len(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Undo a reduction: an append, and the originals are back in the next request.
+    pub fn restore(&self, reduction: EntryId) -> Result<()> {
+        if !context::active_reductions(&self.store.lock().unwrap()).contains(&reduction) {
+            return Err(Error::Reduction(format!("#{reduction} is not a reduction in force")));
+        }
+        self.append(Kind::Restore { reduction })?;
+        Ok(())
     }
 
     /// Everything the session's state modules hold, as of now.

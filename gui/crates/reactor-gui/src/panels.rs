@@ -25,9 +25,8 @@ use gpui_kit::{
 };
 
 use crate::app::ReactorApp;
-use crate::contract::Placement as ViewPlacement;
-use crate::session::{AgentPhase, ChatItem, content_text};
-use crate::views;
+use crate::backend::TreeRow;
+use crate::session::{AgentPhase, ChatItem};
 
 /// One activation row — a leading dot for on/off, a name, an optional muted
 /// detail note, and an enable/disable button — shared by the Tools and
@@ -252,6 +251,7 @@ fn render_item(
     theme: &gpui_kit::component::Theme,
     thinking_expanded: bool,
     toggle_thinking: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
+    restore: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
 ) -> gpui_kit::Div {
     match item {
         ChatItem::User { text } => v_flex()
@@ -332,11 +332,14 @@ fn render_item(
             } else {
                 *theme.tokens.tab_bar
             };
+            // On a character boundary: tool output is arbitrary text and `…` and friends are
+            // not one byte. (The whole output is in the session, and `history_read` gets it.)
             let output = if output.len() > crate::app::TOOL_OUTPUT_MAX_CHARS {
-                format!(
-                    "{}\n… truncated",
-                    &output[..crate::app::TOOL_OUTPUT_MAX_CHARS]
-                )
+                let mut end = crate::app::TOOL_OUTPUT_MAX_CHARS;
+                while !output.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}\n… truncated (the whole output is in the session log)", &output[..end])
             } else {
                 output.clone()
             };
@@ -379,34 +382,39 @@ fn render_item(
                 .when(*is_error, |el| el.border_l_2().border_color(colour))
                 .into()
         }
-        ChatItem::CustomEntry { custom_type, raw } => {
-            let title = raw
-                .get("details")
-                .and_then(|d| d.get("title"))
-                .and_then(Value::as_str)
-                .unwrap_or(custom_type);
-            let body = raw
-                .get("details")
-                .and_then(|d| d.get("body"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+        ChatItem::Reduction { entry, mode, trigger, covers, before, after, active, summary } => {
+            let entry = *entry;
+            let active = *active;
             v_flex()
                 .px_2()
                 .gap_1()
                 .child(
-                    div()
+                    h_flex()
+                        .gap_2()
+                        .items_center()
                         .px_2()
                         .py_1()
                         .rounded_md()
                         .bg(theme.tokens.title_bar)
-                        .child(Label::new(title).text_color(theme.accent)),
+                        .child(Label::new(if active { "context reduced" } else { "reduction undone" }).text_color(theme.accent))
+                        .child(
+                            Label::new(format!("{mode} · {trigger} · {covers} entries · ~{before} → ~{after} tokens"))
+                                .text_color(theme.muted_foreground)
+                                .text_size(theme.font_size * 0.85),
+                        )
+                        .when(active, |el| {
+                            el.child(
+                                Button::new(("undo-reduction", index))
+                                    .label("undo")
+                                    .small()
+                                    .tooltip("Bring the originals back into the model's context")
+                                    .on_click(move |_, window, cx| restore(entry, window, cx)),
+                            )
+                        }),
                 )
-                .when_some(body, |el, body| {
+                .when_some(summary.clone().filter(|_| active), |el, summary| {
                     el.child(
-                        div().px_2().child(
-                            TextView::markdown(format!("custom-{index}"), body)
-                                .style(crate::theme::text_view_style(theme)),
-                        ),
+                        div().px_2().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(summary),
                     )
                 })
                 .into()
@@ -422,12 +430,6 @@ fn render_item(
                     .text_color(theme.danger)
                     .child(message.clone()),
             )
-            .into(),
-        ChatItem::Unknown { raw } => div()
-            .px_2()
-            .text_size(theme.mono_font_size * 0.8)
-            .text_color(theme.muted_foreground)
-            .child(format!("debug: {}", short_json(raw)))
             .into(),
     }
 }
@@ -452,19 +454,6 @@ fn short_args(args: &Value) -> String {
     rendered
 }
 
-fn short_json(raw: &Value) -> String {
-    let rendered = serde_json::to_string_pretty(raw).unwrap_or_default();
-    if rendered.len() > 2000 {
-        format!("{}\n…", &rendered[..2000])
-    } else {
-        rendered
-    }
-}
-
-/// The transcript, newest last, in a scrollable column. The composer sits
-/// under it, and the extension text widgets (`setWidget` without the
-/// `reactor:` prefix) render above it — `aboveEditor` parity with the TUI
-/// (gui/SPEC.md §6).
 impl Focusable for TranscriptPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -488,21 +477,20 @@ impl Panel for TranscriptPanel {
 impl Render for TranscriptPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let (items, widgets, notifications, phase, queue_state, last_error) =
-            match self.app.upgrade() {
-                Some(app) => {
-                    let session = app.read(cx).session.read(cx);
-                    (
-                        session.items.clone(),
-                        session.widgets.clone(),
-                        app.read(cx).notifications.clone(),
-                        session.phase,
-                        (!session.steering.is_empty(), !session.follow_up.is_empty()),
-                        session.last_error.clone(),
-                    )
-                }
-                None => Default::default(),
-            };
+        let (items, hidden, notifications, phase, queued, last_error) = match self.app.upgrade() {
+            Some(app) => {
+                let session = app.read(cx).session.read(cx);
+                (
+                    session.items.clone(),
+                    session.hidden.clone(),
+                    app.read(cx).notifications.clone(),
+                    session.phase,
+                    session.follow_up.len(),
+                    session.last_error.clone(),
+                )
+            }
+            None => Default::default(),
+        };
 
         // Tell the scroller about new content before rendering it: an append
         // keeps tail-following, a shrink (a branch switch, a fresh session)
@@ -539,6 +527,7 @@ impl Render for TranscriptPanel {
             let render_theme = theme.clone();
             let expanded_thinking = self.expanded_thinking.clone();
             let weak_self = self.weak_self.clone();
+            let weak_app = self.app.clone();
             let toggle_thinking = move |index: usize, _window: &mut Window, cx: &mut App| {
                 if let Some(panel) = weak_self.upgrade() {
                     panel.update(cx, |panel, cx| {
@@ -549,17 +538,26 @@ impl Render for TranscriptPanel {
                     });
                 }
             };
+            let restore = move |entry: u64, _window: &mut Window, cx: &mut App| {
+                if let Some(app) = weak_app.upgrade() {
+                    app.update(cx, |app, cx| app.restore_reduction(entry, cx));
+                }
+            };
             MessageScroller::new(
                 "transcript",
                 self.scroller.clone(),
                 move |index, _window, _cx| {
-                    render_item(
+                    let row = render_item(
                         index,
                         &items[index],
                         &render_theme,
                         expanded_thinking.contains(&index),
                         toggle_thinking.clone(),
-                    )
+                        restore.clone(),
+                    );
+                    // What a reduction has taken out of the model's context stays on screen,
+                    // dimmed: the log keeps everything, and so does the transcript.
+                    if hidden.contains(&index) { row.opacity(0.45) } else { row }
                 },
             )
             .with_bottom_fade(theme.background)
@@ -571,36 +569,15 @@ impl Render for TranscriptPanel {
         let phase_label = match phase {
             AgentPhase::Idle => "idle",
             AgentPhase::Working => "working — Enter queues a follow-up",
-            AgentPhase::Retrying => "retrying — Enter queues a follow-up",
-            AgentPhase::Compacting => "compacting…",
+            AgentPhase::Compacting => "reducing the context…",
         };
-        let queue_label = match queue_state {
-            (false, false) => None,
-            (steering, follow_up) => Some(format!(
-                "queued:{} steering:{} follow-up:{}",
-                if queue_state.0 || queue_state.1 {
-                    "•"
-                } else {
-                    ""
-                },
-                if steering { "●" } else { "" },
-                if follow_up { "●" } else { "" }
-            )),
-        };
+        let queue_label = (queued > 0).then(|| format!("{queued} queued"));
 
         let composer = v_flex()
             .border_t_1()
             .border_color(cx.theme().border)
             .p_2()
             .gap_2()
-            .children(widgets.iter().map(|(key, lines)| {
-                div()
-                    .px_2()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child(Label::new(key.clone()).text_size(cx.theme().font_size * 0.75))
-                    .child(lines.join("\n"))
-            }))
             .child(
                 h_flex()
                     .gap_2()
@@ -684,188 +661,96 @@ impl Render for TranscriptPanel {
 }
 
 // ---------------------------------------------------------------------------
-// TreePanel — left: the session tree of pi's `/tree` (gui/SPEC.md §4.6)
+// TreePanel — left: the session's branches (gui/SPEC.md §4.6)
 // ---------------------------------------------------------------------------
 
-/// The left panel: the session tree of pi's `/tree` (gui/SPEC.md §4.6) —
-/// flatten `get_tree` depth-first, click selects, the button switches the
-/// branch through the tree bridge (disabled while streaming).
+/// The left panel: the session tree, read straight from the session store. Only user
+/// turns, final replies, reductions and labels are rows — tool rounds are elided — and
+/// depth grows only where the tree actually forks. A branch is continued from a final
+/// reply ("Continue from here"), disabled while the agent works.
 pub struct TreePanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
-    /// The node the user clicked — the switch-branch affordance acts on it.
-    selection: Option<SharedString>,
+    /// The row the user clicked — the switch affordance acts on it.
+    selection: Option<u64>,
     focus: FocusHandle,
 }
 
-/// One flattened row of the session tree: depth, id, and a readable label.
-#[derive(Debug, Clone, PartialEq)]
-struct TreeNode {
-    depth: usize,
-    id: SharedString,
-    label: String,
-}
-
 impl TreePanel {
-    pub fn new(
-        app: gpui_kit::WeakEntity<ReactorApp>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            app,
-            focus: cx.focus_handle(),
-            selection: None,
-        }
-    }
-}
-
-/// Flatten `get_tree`'s nodes depth-first, labelling each entry the way the
-/// transcript would label it (§4.6): user text, assistant text, custom types.
-fn flatten_tree(roots: &[Value], out: &mut Vec<TreeNode>, depth: usize) {
-    for node in roots {
-        let Some(entry) = node.get("entry") else {
-            continue;
-        };
-        let Some(id) = entry.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let message = entry.get("message");
-        let role = message.and_then(|m| m.get("role")).and_then(Value::as_str);
-        let label = match role {
-            Some("user") => {
-                "user: ".to_owned()
-                    + &content_text(message.unwrap().get("content").unwrap_or(&Value::Null))
-                        .chars()
-                        .take(60)
-                        .collect::<String>()
-            }
-            Some("assistant") => "assistant".to_owned(),
-            Some("toolResult") => "tool result".to_owned(),
-            Some("custom") => format!(
-                "custom: {}",
-                message
-                    .and_then(|m| m.get("customType"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("?")
-            ),
-            // A non-message entry (model/thinking-level changes, compaction
-            // records, …): its `type` field, humanized — snake_case verbatim
-            // (with the quote marks `{:?}` adds) read as raw debug output,
-            // not a tree label.
-            _ => entry
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("entry")
-                .replace('_', " "),
-        };
-        out.push(TreeNode {
-            depth,
-            id: SharedString::from(id.to_owned()),
-            label,
-        });
-        if let Some(children) = node.get("children").and_then(Value::as_array) {
-            flatten_tree(children, out, depth + 1);
-        }
+    pub fn new(app: gpui_kit::WeakEntity<ReactorApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self { app, focus: cx.focus_handle(), selection: None }
     }
 }
 
 impl Render for TreePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let tree = self.app.upgrade().and_then(|app| app.read(cx).tree.clone());
-        let leaf = self
-            .app
-            .upgrade()
-            .and_then(|app| app.read(cx).leaf_id.clone());
-        let streaming = self
-            .app
-            .upgrade()
-            .map(|app| app.read(cx).session.read(cx).phase != AgentPhase::Idle)
-            .unwrap_or(true);
-
-        let mut nodes = Vec::new();
-        if let Some(data) = &tree {
-            if let Some(roots) = data.get("tree").and_then(Value::as_array) {
-                flatten_tree(roots, &mut nodes, 0);
+        let (rows, streaming): (Vec<TreeRow>, bool) = match self.app.upgrade() {
+            Some(app) => {
+                let read = app.read(cx);
+                (read.tree.clone(), read.session.read(cx).phase != AgentPhase::Idle)
             }
-        }
+            None => (Vec::new(), true),
+        };
+        let selectable = |id: u64| rows.iter().any(|r| r.id == id && r.can_switch);
 
         let mut list = v_flex().p_2().gap_1();
-        for node in &nodes {
-            let is_leaf = leaf.as_deref() == Some(node.id.as_ref());
+        for row in &rows {
+            let id = row.id;
+            let selected = self.selection == Some(id);
+            let colour = if row.is_head {
+                theme.accent
+            } else if row.on_branch {
+                theme.foreground
+            } else {
+                theme.muted_foreground
+            };
             list = list.child(
                 div()
-                    .id(node.id.clone())
-                    .pl(px(8. * node.depth as f32))
+                    .id(("tree-row", id as usize))
+                    .pl(px(8. * row.depth as f32))
                     .flex()
                     .gap_2()
                     .items_center()
                     .rounded_md()
-                    .when(is_leaf, |el| el.bg(theme.tokens.list_active))
-                    .when(!is_leaf, |el| el.hover(|style| style.bg(theme.list_hover)))
+                    .when(row.is_head || selected, |el| el.bg(theme.tokens.list_active))
+                    .when(!(row.is_head || selected), |el| el.hover(|style| style.bg(theme.list_hover)))
                     .px_2()
                     .py_1()
-                    .child(
-                        div()
-                            .text_color(if is_leaf {
-                                theme.accent
-                            } else {
-                                theme.foreground
-                            })
-                            .text_size(theme.font_size * 0.85)
-                            .child(node.label.clone()),
-                    ),
+                    .when(row.can_switch, |el| {
+                        el.cursor_pointer().on_click(cx.listener(move |this, _, _window, cx| {
+                            this.selection = Some(id);
+                            cx.notify();
+                        }))
+                    })
+                    .child(div().text_color(colour).text_size(theme.font_size * 0.85).child(row.label.clone())),
             );
         }
-        let loading = self
-            .app
-            .upgrade()
-            .map(|app| app.read(cx).tree_loading)
-            .unwrap_or(false);
-        if nodes.is_empty() {
-            list = list.child(if loading {
-                loading_row("loading session tree…", &theme).into_any_element()
-            } else {
-                div()
-                    .px_2()
-                    .text_color(theme.muted_foreground)
-                    .child("no session tree yet — send a prompt")
-                    .into_any_element()
-            });
+        if rows.is_empty() {
+            list = list.child(div().px_2().text_color(theme.muted_foreground).child("no session tree yet — send a prompt"));
         }
 
-        // The branch-switch affordance: disabled while streaming (§4.6's
-        // verified rejection), the tree bridge does the navigation.
-        let selected = self.selection.clone();
+        let can_switch = self.selection.is_some_and(selectable) && !streaming;
         v_flex()
             .size_full()
             .gap_2()
             .child(
                 h_flex().justify_end().px_2().child(
                     Button::new("switch-branch")
-                        .label("Switch branch here")
+                        .label("Continue from here")
                         .small()
-                        .disabled(selected.is_none() || streaming)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if let Some(id) = this.selection.clone() {
-                                if let Some(app) = this.app.upgrade() {
-                                    app.update(cx, |app, cx| app.switch_branch(&id, cx));
-                                }
+                        .tooltip("Make the selected reply the tip: the next prompt branches from it")
+                        .disabled(!can_switch)
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            if let (Some(id), Some(app)) = (this.selection, this.app.upgrade()) {
+                                app.update(cx, |app, cx| app.switch_branch(id, cx));
                             }
-                            let _ = window;
                         })),
                 ),
             )
-            .child(
-                div()
-                    .id("scroll-panel")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(list),
-            )
+            .child(div().id("scroll-panel").flex_1().min_h_0().overflow_y_scroll().child(list))
     }
 }
+
 impl Focusable for TreePanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -879,8 +764,7 @@ impl gpui_kit::base::dock::Panel for TreePanel {
         "tree"
     }
 
-    /// The tree is a glance panel: it has no close affordance in v0.1 — the
-    /// layout is collapsible (gui/SPEC.md §6).
+    /// The tree is a glance panel: it has no close affordance — the layout is collapsible.
     fn closable(&self, _cx: &App) -> bool {
         false
     }
@@ -889,28 +773,6 @@ impl gpui_kit::base::dock::Panel for TreePanel {
 impl Panel for TreePanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel_title_row(IconName::GitBranch, "Session Tree")
-    }
-
-    fn toolbar_buttons(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Vec<Button>> {
-        let loading = self
-            .app
-            .upgrade()
-            .map(|a| a.read(cx).tree_loading)
-            .unwrap_or(false);
-        let app = self.app.clone();
-        Some(vec![refresh_button(
-            "refresh-tree",
-            loading,
-            move |_window, cx| {
-                if let Some(app) = app.upgrade() {
-                    app.update(cx, |app, cx| app.refresh_tree(cx));
-                }
-            },
-        )])
     }
 }
 
@@ -1125,8 +987,38 @@ impl Render for ToolsPanel {
             );
         }
 
-        v_flex().size_full().child(list)
+        let scope = self.app.upgrade().and_then(|a| a.read(cx).activation_scope.clone());
+        v_flex().size_full().child(scope_header(&self.app, scope.as_deref(), &theme)).child(list)
     }
+}
+
+/// The activation scope line above the tools and toolsets: whether toggles apply to this
+/// session only or to the machine, with the two ways to change that (ADR-0042).
+fn scope_header(app: &gpui_kit::WeakEntity<ReactorApp>, scope: Option<&str>, theme: &Theme) -> impl IntoElement {
+    let session = scope == Some("session");
+    let (a, b) = (app.clone(), app.clone());
+    h_flex()
+        .px_2()
+        .pt_2()
+        .gap_2()
+        .items_center()
+        .child(
+            Label::new(if session { "this session overrides the default" } else { "using the machine default" })
+                .text_color(theme.muted_foreground)
+                .text_size(theme.font_size * 0.8),
+        )
+        .when(session, |row| {
+            row.child(Button::new("act-default").label("make default").small().on_click(move |_, _w, cx| {
+                if let Some(app) = a.upgrade() {
+                    app.update(cx, |app, cx| app.make_activation_default(cx));
+                }
+            }))
+            .child(Button::new("act-inherit").label("inherit").small().on_click(move |_, _w, cx| {
+                if let Some(app) = b.upgrade() {
+                    app.update(cx, |app, cx| app.inherit_activation(cx));
+                }
+            }))
+        })
 }
 
 pub struct ToolsetsPanel {
@@ -1251,7 +1143,8 @@ impl Render for ToolsetsPanel {
             );
         }
 
-        v_flex().size_full().child(list)
+        let scope = self.app.upgrade().and_then(|a| a.read(cx).activation_scope.clone());
+        v_flex().size_full().child(scope_header(&self.app, scope.as_deref(), &theme)).child(list)
     }
 }
 
@@ -1415,133 +1308,234 @@ impl Render for ServicesPanel {
 }
 
 // ---------------------------------------------------------------------------
-// ExtensionViewsPanel — right, top tab group: side-docked extension views
-// (the `placement: "side"` half of the envelope contract, gui/SPEC.md §4.2,
-// ADR-0032). Overlay-placed views (today's selector, guide) float over the
-// transcript instead — see `ReactorApp::render_overlay`. Both call the same
-// `views::render_content`, so a future view primitive (a timeline, a graph,
-// a code view — see `crate::views`'s module doc) renders identically in
-// either spot; this panel is the fix for the "side views render nothing"
-// bug (`app.views` was parsed but never drawn) and the extensibility point
-// the redesign plans around.
+// ContextPanel — the context budget: what it costs, where each setting comes
+// from, what a reduction would do, and undo (ADR-0037, ADR-0038)
 // ---------------------------------------------------------------------------
 
-pub struct ExtensionViewsPanel {
+/// A small "this session" / "default" badge — the scope of a setting, so the cascade is
+/// never the confusing kind of magic (ADR-0038).
+fn origin_badge(origin: reactor_context::settings::Origin, theme: &Theme) -> impl IntoElement {
+    use reactor_context::settings::Origin;
+    let (text, colour) = match origin {
+        Origin::Session => ("this session", theme.accent),
+        Origin::Default => ("default", theme.muted_foreground),
+    };
+    div().px_1().rounded_sm().border_1().border_color(colour).text_color(colour).text_size(theme.font_size * 0.7).child(text)
+}
+
+pub struct ContextPanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
     focus: FocusHandle,
 }
 
-impl ExtensionViewsPanel {
-    pub fn new(
-        app: gpui_kit::WeakEntity<ReactorApp>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            app,
-            focus: cx.focus_handle(),
-        }
+impl ContextPanel {
+    pub fn new(app: gpui_kit::WeakEntity<ReactorApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self { app, focus: cx.focus_handle() }
     }
 }
 
-impl Focusable for ExtensionViewsPanel {
+impl Focusable for ContextPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
 
-impl EventEmitter<PanelEvent> for ExtensionViewsPanel {}
+impl EventEmitter<PanelEvent> for ContextPanel {}
 
-impl gpui_kit::base::dock::Panel for ExtensionViewsPanel {
+impl gpui_kit::base::dock::Panel for ContextPanel {
     fn panel_name(&self) -> &'static str {
-        "extension-views"
+        "context"
     }
 }
 
-impl Panel for ExtensionViewsPanel {
+impl Panel for ContextPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::LayoutDashboard, "Views")
+        panel_title_row(IconName::Layers, "Context")
     }
 }
 
-impl Render for ExtensionViewsPanel {
+impl Render for ContextPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let side_views: Vec<crate::contract::View> = self
-            .app
-            .upgrade()
-            .map(|app| {
-                app.read(cx)
-                    .views
-                    .iter()
-                    .filter(|v| v.placement == ViewPlacement::Side)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
+        use reactor_agent::entry::Mode;
+        use reactor_context::settings::{ContextSettings, Origin};
 
-        let mut body = v_flex()
-            .id("extension-views-list")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .gap_3()
-            .p_2();
-        if side_views.is_empty() {
-            body = body.child(div().px_2().text_color(theme.muted_foreground).child(
-                "no side view active — an extension docks one here with a \
-                     `side`-placement envelope (gui/SPEC.md §4.2)",
-            ));
+        let theme = cx.theme().clone();
+        let (view, preview, busy, idle) = match self.app.upgrade() {
+            Some(app) => {
+                let a = app.read(cx);
+                (a.context.clone(), a.preview.clone(), a.context_busy, a.session.read(cx).phase == AgentPhase::Idle)
+            }
+            None => (None, None, false, false),
+        };
+        let mut body = v_flex().id("context-body").p_2().gap_3().flex_1().min_h_0().overflow_y_scroll();
+        let Some(view) = view else {
+            return v_flex().size_full().child(body.child(loading_row("measuring the context…", &theme)));
+        };
+
+        // -- usage --
+        let fraction = if view.hard == 0 { 0.0 } else { (view.used as f32 / view.hard as f32).min(1.0) };
+        let trigger_at = if view.hard == 0 { 1.0 } else { (view.trigger as f32 / view.hard as f32).min(1.0) };
+        let bar_colour = if view.used > view.trigger { theme.warning } else { theme.accent };
+        body = body.child(
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(Label::new("In the next request"))
+                        .child(Label::new(format!("{}%", view.percent())).text_color(theme.muted_foreground)),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .h(px(8.))
+                        .rounded_full()
+                        .bg(theme.secondary)
+                        .child(div().h_full().rounded_full().bg(bar_colour).w(relative(fraction)))
+                        .child(div().absolute().top_0().bottom_0().w(px(2.)).left(relative(trigger_at)).bg(theme.foreground.opacity(0.6))),
+                )
+                .child(
+                    Label::new(format!(
+                        "~{} of {} usable tokens ({} window − {} reserved). The mark is where reduction starts.",
+                        view.used, view.hard, view.window, view.reserve
+                    ))
+                    .text_color(theme.muted_foreground)
+                    .text_size(theme.font_size * 0.8),
+                ),
+        );
+
+        // -- settings --
+        let origin_of = |key: &str| view.origins.iter().find(|(k, _)| k == key).map(|(_, o)| *o).unwrap_or(Origin::Default);
+        let setting = |label: &'static str, value: String, key: &str| {
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(Label::new(label).text_color(theme.muted_foreground))
+                .child(h_flex().gap_2().items_center().child(Label::new(value).font_family(theme.mono_font_family.clone())).child(origin_badge(origin_of(key), &theme)))
+        };
+        let mode_button = |label: &'static str, mode: &'static str| {
+            let active = view.mode == mode;
+            let app = self.app.clone();
+            Button::new(SharedString::from(format!("mode-{mode}")))
+                .label(label)
+                .small()
+                .when(active, |b| b.primary())
+                .on_click(move |_, _window, cx| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |app, cx| app.set_context(ContextSettings { mode: Some(mode.to_string()), ..Default::default() }, cx));
+                    }
+                })
+        };
+        body = body.child(
+            v_flex()
+                .gap_2()
+                .child(Label::new("Settings"))
+                .child(h_flex().gap_1().child(mode_button("auto", "auto")).child(mode_button("fade", "fade")).child(mode_button("compact", "compact")))
+                .child(setting("mode", view.mode.clone(), "mode"))
+                .child(setting("window", view.window.to_string(), "window"))
+                .child(setting("reserve", view.reserve.to_string(), "reserve"))
+                .child(setting("reduce at", format!("{:.0}%", view.pct * 100.0), "pct"))
+                .child(setting("keep", format!("{:.0}%", view.keep * 100.0), "keep"))
+                .child(setting("summarizer", view.summarizer.clone().unwrap_or_else(|| "the session's model".into()), "summarizer"))
+                .child(
+                    Label::new("Change one with /context <mode|window|reserve|pct|keep|summarizer> <value>.")
+                        .text_color(theme.muted_foreground)
+                        .text_size(theme.font_size * 0.8),
+                )
+                .child({
+                    let (app_a, app_b) = (self.app.clone(), self.app.clone());
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("context-default")
+                                .label("Make this the default")
+                                .small()
+                                .tooltip("Every new session starts with these settings")
+                                .on_click(move |_, _window, cx| {
+                                    if let Some(app) = app_a.upgrade() {
+                                        app.update(cx, |app, cx| app.make_context_default(cx));
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("context-inherit")
+                                .label("Inherit the default")
+                                .small()
+                                .tooltip("Drop this session's own values")
+                                .on_click(move |_, _window, cx| {
+                                    if let Some(app) = app_b.upgrade() {
+                                        app.update(cx, |app, cx| app.inherit_context(cx));
+                                    }
+                                }),
+                        )
+                }),
+        );
+
+        // -- reduction: preview, do, undo --
+        let action = |id: &'static str, label: &'static str, mode: Mode, reduce: bool| {
+            let app = self.app.clone();
+            Button::new(id).label(label).small().disabled(busy || !idle).on_click(move |_, _window, cx| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |app, cx| if reduce { app.reduce_now(mode, cx) } else { app.preview_reduction(mode, cx) });
+                }
+            })
+        };
+        let mut reduction = v_flex()
+            .gap_2()
+            .child(Label::new("Reduce"))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(action("preview-compact", "Preview: summarize", Mode::Compact, false))
+                    .child(action("preview-fade", "Preview: fade", Mode::Fade, false)),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(action("reduce-compact", "Summarize now", Mode::Compact, true))
+                    .child(action("reduce-fade", "Fade now", Mode::Fade, true)),
+            );
+        if busy {
+            reduction = reduction.child(loading_row("working…", &theme));
         }
-        for view in side_views {
-            let weak_app = self.app.clone();
-            let dismiss_view_id = view.view_id.clone();
-            let dispatch_view = view.clone();
-            body = body.child(
+        if let Some(p) = &preview {
+            reduction = reduction.child(
                 v_flex()
                     .gap_1()
-                    .pb_2()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(views::view_chrome(&view, {
-                        let weak_app = weak_app.clone();
-                        move |_window, cx| {
-                            if let Some(app) = weak_app.upgrade() {
-                                app.update(cx, |app, cx| app.dismiss_view(&dismiss_view_id, cx));
-                            }
-                        }
-                    }))
-                    .child(views::render_content(
-                        &view.content,
-                        &theme,
-                        move |action, row, _window, cx| {
-                            if let Some(app) = weak_app.upgrade() {
-                                let (command, payload) = dispatch_view.dispatch(action, row);
-                                app.update(cx, |app, cx| app.run_ui_event(command, payload, cx));
-                            }
-                        },
-                    ))
-                    .when_some(view.footer.clone(), |el, footer| {
-                        el.child(views::view_footer(&footer, &theme))
-                    }),
+                    .p_2()
+                    .rounded_md()
+                    .bg(theme.secondary)
+                    .child(Label::new(format!("{:?}: would reduce {} entries, keeping the newest", p.mode, p.entries)))
+                    .child(Label::new(format!("{} tool results (~{} tokens) and {} messages (~{} tokens)", p.mechanical, p.mechanical_tokens, p.conceptual, p.conceptual_tokens)).text_color(theme.muted_foreground))
+                    .child(Label::new(format!("~{} → ~{} tokens{}", p.before_tokens, p.after_tokens, if p.needs_model { " · asks the model for a summary" } else { " · no model call" })).text_color(theme.muted_foreground)),
             );
         }
+        body = body.child(reduction);
+
+        // -- reductions in force --
+        let mut in_force = v_flex().gap_1().child(Label::new("In force"));
+        if view.reductions.is_empty() {
+            in_force = in_force.child(Label::new("none — the model sees the whole session").text_color(theme.muted_foreground).text_size(theme.font_size * 0.85));
+        }
+        for r in &view.reductions {
+            let (entry, app) = (r.entry, self.app.clone());
+            in_force = in_force.child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(Label::new(format!("#{} {:?} · {} · {} entries · ~{} → ~{}", r.entry, r.mode, crate::backend::trigger_label(r.trigger), r.covers, r.before_tokens, r.after_tokens)).text_size(theme.font_size * 0.85))
+                    .child(Button::new(("undo", r.entry as usize)).label("undo").small().on_click(move |_, _window, cx| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |app, cx| app.restore_reduction(entry, cx));
+                        }
+                    })),
+            );
+        }
+        body = body.child(in_force);
 
         v_flex().size_full().child(body)
     }
 }
-
-// ---------------------------------------------------------------------------
-// ConsolePanel — bottom: run commands, watch them, answer them.
-//
-// A general command runner, not an install log: anything typed here runs
-// through the user's shell, and `reactor install <id>` from the Tools panel
-// opens its own console already running it. Each instance owns its own pty
-// session, output buffer and polling loop — nothing here reaches back into
-// `ReactorApp` except to open another console (`ReactorApp::open_console`)
-// and to refresh the catalogue once a command finishes — which is what lets
-// more than one of these exist side by side as tabs, each independent.
-// ---------------------------------------------------------------------------
 
 /// How often an idle-or-not console checks its session for new output.
 /// Matches `PUMP_TICK` in spirit — a console has nothing to synchronize with

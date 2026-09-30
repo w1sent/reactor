@@ -34,15 +34,25 @@ pub struct Paths {
     /// `None` means no project scope — the library reads no ambient process
     /// state, so tests and embedders decide.
     pub cwd: Option<PathBuf>,
+    /// A per-session activation file (ADR-0038: the GUI writes session scope by
+    /// default). When the file exists it wins over the project and machine state and
+    /// is reported as scope `session`; activation edits go *there*, so one session's
+    /// toggles never touch another's. `None` means no session scope.
+    pub session_state: Option<PathBuf>,
 }
 
 impl Paths {
     pub fn new(config_dir: impl Into<PathBuf>, shipped: Shipped) -> Self {
-        Self { config_dir: config_dir.into(), shipped, cwd: None }
+        Self { config_dir: config_dir.into(), shipped, cwd: None, session_state: None }
     }
 
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
+        self
+    }
+
+    pub fn with_session_state(mut self, file: impl Into<PathBuf>) -> Self {
+        self.session_state = Some(file.into());
         self
     }
 
@@ -63,7 +73,7 @@ impl Paths {
             Some(root) => Shipped::Dir(PathBuf::from(root)),
             None => Shipped::Embedded,
         };
-        Self { config_dir, shipped, cwd: std::env::current_dir().ok() }
+        Self { config_dir, shipped, cwd: std::env::current_dir().ok(), session_state: None }
     }
 
     pub fn live(&self, name: &str) -> PathBuf {

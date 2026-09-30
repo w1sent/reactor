@@ -253,6 +253,46 @@ impl Llm for ScriptedLlm {
     }
 }
 
+// -- switching ---------------------------------------------------------------------------
+
+/// A model that can be swapped while a session is open (a picker, `/model`). Each call
+/// uses whatever is current when it starts; a turn already streaming finishes on the
+/// model it began with.
+pub struct Switchable<L> {
+    inner: std::sync::Arc<Mutex<L>>,
+}
+
+impl<L> Clone for Switchable<L> {
+    fn clone(&self) -> Self {
+        Switchable { inner: self.inner.clone() }
+    }
+}
+
+impl<L: Llm + Clone> Switchable<L> {
+    pub fn new(llm: L) -> Self {
+        Switchable { inner: std::sync::Arc::new(Mutex::new(llm)) }
+    }
+
+    pub fn set(&self, llm: L) {
+        *self.inner.lock().unwrap() = llm;
+    }
+
+    pub fn current(&self) -> L {
+        self.inner.lock().unwrap().clone()
+    }
+}
+
+impl<L: Llm + Clone> Llm for Switchable<L> {
+    async fn complete(&self, req: LlmRequest, on_delta: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+        let llm = self.current();
+        llm.complete(req, on_delta).await
+    }
+
+    fn name(&self) -> String {
+        self.current().name()
+    }
+}
+
 // -- sharing and summarizing ---------------------------------------------------------------
 
 impl<T: Llm + ?Sized> Llm for std::sync::Arc<T> {

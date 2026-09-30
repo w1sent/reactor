@@ -663,3 +663,160 @@ async fn the_file_tools_read_write_and_edit_relative_to_the_working_directory() 
     assert!(res[4].contains("nope.txt"));
     assert_eq!(std::fs::read_to_string(r.root.join("work/notes/a.txt")).unwrap(), "alpha\nBETA\ngamma\n");
 }
+
+// -- settings layers and session scope (ADR-0038) ----------------------------------------------------
+
+#[tokio::test]
+async fn the_budget_is_the_baseline_then_the_global_settings_then_the_sessions_own_layer() {
+    use reactor_context::settings::ContextSettings;
+    let r = rig(vec![], Sum::says("-"), 50_000);
+    let base = r.agent.effective_budget();
+    assert_eq!((base.window, base.reserve, base.mode), (50_000, 100, Mode::Auto), "the baseline");
+
+    // Global: settings.json.
+    std::fs::create_dir_all(r.root.join("cfg")).unwrap();
+    std::fs::write(r.root.join("cfg/settings.json"), r#"{"context": {"mode": "compact", "reserve": 2000, "pct": 0.8}}"#).unwrap();
+    let eff = r.agent.effective_budget();
+    assert_eq!((eff.mode, eff.reserve, eff.pct, eff.window), (Mode::Compact, 2000, 0.8, 50_000));
+
+    // Session: wins field by field, inherits the rest.
+    r.agent
+        .set_session_context(&ContextSettings { mode: Some("fade".into()), window: Some(8_000), ..Default::default() })
+        .unwrap();
+    let eff = r.agent.effective_budget();
+    assert_eq!((eff.mode, eff.window, eff.reserve, eff.pct), (Mode::Fade, 8_000, 2000, 0.8));
+
+    let (global, session) = r.agent.context_layers();
+    assert_eq!(global.mode.as_deref(), Some("compact"));
+    assert_eq!(session.mode.as_deref(), Some("fade"));
+    assert_eq!(session.reserve, None);
+
+    // Making it the default writes settings.json; the session layer is unchanged.
+    r.agent.set_global_context(session.over(&global)).unwrap();
+    assert_eq!(r.agent.context_layers().0.mode.as_deref(), Some("fade"));
+}
+
+#[tokio::test]
+async fn a_session_override_changes_when_the_loop_reduces() {
+    // Same conversation, same window: with the global reserve the context fits; with the
+    // session's tighter window it must reduce. The setting takes effect on the next request.
+    let replies = (0..12).map(|i| ScriptedLlm::say(&format!("reply {i}"))).collect();
+    let r = rig(replies, Sum::says("SUMMARY"), 200_000);
+    for i in 0..4 {
+        run(&r, &format!("question {i}: {}", "w".repeat(3_000))).await.unwrap();
+    }
+    assert!(!kinds(&r).contains(&"reduction"), "a big window never reduces");
+
+    r.agent.set_session_context(&reactor_context::settings::ContextSettings { window: Some(4_000), ..Default::default() }).unwrap();
+    run(&r, "and one more").await.unwrap();
+    assert!(kinds(&r).contains(&"reduction"), "the session's smaller window took effect at once");
+}
+
+#[tokio::test]
+async fn switching_the_model_takes_effect_on_the_next_call() {
+    use reactor_agent::llm::{Llm, Switchable};
+    let a = Arc::new(ScriptedLlm::new(vec![ScriptedLlm::say("from a")]));
+    let b = Arc::new(ScriptedLlm::new(vec![ScriptedLlm::say("from b")]));
+    let sw = Switchable::new(a.clone());
+    let req = || reactor_agent::llm::LlmRequest { system: String::new(), messages: vec![Msg::User { text: "hi".into() }], tools: vec![], max_tokens: None };
+
+    assert_eq!(sw.complete(req(), &mut |_| {}).await.unwrap().blocks, vec![Block::Text { text: "from a".into() }]);
+    sw.set(b.clone());
+    assert_eq!(sw.complete(req(), &mut |_| {}).await.unwrap().blocks, vec![Block::Text { text: "from b".into() }]);
+    assert_eq!((a.requests().len(), b.requests().len()), (1, 1));
+}
+
+const SCOPE_TOOLS: &str = r#"
+version = 1
+[tool.alpha]
+name = "Alpha"
+desc = "the alpha tool"
+source = "https://example.invalid/a"
+invoke = "sh"
+detect = { binary = "sh" }
+tags = ["one"]
+[tool.beta]
+name = "Beta"
+desc = "the beta tool"
+source = "https://example.invalid/b"
+invoke = "ls"
+detect = { binary = "ls" }
+tags = ["two"]
+"#;
+
+const SCOPE_TOOLSETS: &str = "version = 1\n[toolset.only-alpha]\ndesc = \"alpha only\"\ntags = [\"one\"]\n[toolset.only-beta]\ndesc = \"beta only\"\ntags = [\"two\"]\n";
+
+#[tokio::test]
+async fn activation_in_one_session_changes_its_registry_block_and_no_other_sessions() {
+    use reactor_core::commands::set_activation;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_dir = dir.path().join("cfg");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(cfg_dir.join("tools.toml"), SCOPE_TOOLS).unwrap();
+    std::fs::write(cfg_dir.join("toolsets.toml"), SCOPE_TOOLSETS).unwrap();
+    let machine = Paths::new(&cfg_dir, Shipped::Embedded);
+    let session_a = machine.clone().with_session_state(dir.path().join("a-activation.json"));
+    let session_b = machine.clone().with_session_state(dir.path().join("b-activation.json"));
+
+    let make = |paths: Paths| {
+        let dir2 = dir.path().join(format!("s-{}", paths.session_state.as_ref().unwrap().file_stem().unwrap().to_string_lossy()));
+        let store = Store::create(&dir2, "s", dir.path()).unwrap();
+        let mut cfg = AgentConfig::new(dir.path().to_path_buf(), paths.clone(), 100_000);
+        cfg.registry = reactor_agent::agent::registry_from_core(paths);
+        let llm = Arc::new(ScriptedLlm::new(vec![ScriptedLlm::say("1"), ScriptedLlm::say("2")]));
+        let (agent, _rx) = Agent::new(llm.clone(), Sum::says("-"), store, Tools::new(), cfg);
+        (agent, llm)
+    };
+    let (a, llm_a) = make(session_a.clone());
+    let (b, llm_b) = make(session_b);
+
+    a.prompt("go", CancellationToken::new()).await.unwrap();
+    b.prompt("go", CancellationToken::new()).await.unwrap();
+    for llm in [&llm_a, &llm_b] {
+        let sys = &llm.requests()[0].system;
+        assert!(sys.contains("the alpha tool") && sys.contains("the beta tool"), "everything is active by default:\n{sys}");
+    }
+
+    // Session A narrows to alpha. Only A's next request changes.
+    set_activation(&session_a, &["only-alpha".to_string()], false, Some(true)).unwrap();
+    a.prompt("again", CancellationToken::new()).await.unwrap();
+    b.prompt("again", CancellationToken::new()).await.unwrap();
+    let (sys_a, sys_b) = (&llm_a.requests()[1].system, &llm_b.requests()[1].system);
+    assert!(sys_a.contains("the alpha tool") && !sys_a.contains("the beta tool"), "{sys_a}");
+    assert!(sys_b.contains("the alpha tool") && sys_b.contains("the beta tool"), "{sys_b}");
+    assert!(!cfg_dir.join("state.json").exists(), "the machine state was never written");
+}
+
+#[tokio::test]
+async fn a_frontend_can_measure_list_and_undo_reductions() {
+    let replies = (0..6).map(|i| ScriptedLlm::say(&format!("reply {i}"))).collect();
+    let r = rig(replies, Sum::says("The summary."), 30_000);
+    for i in 0..3 {
+        run(&r, &format!("question {i} {}", "z".repeat(3_000))).await.unwrap();
+    }
+    let before = r.agent.measure().await.unwrap();
+    assert!(before.total > before.fixed && before.messages > 2_000, "{before:?}");
+    assert_eq!(before.calibration, 1.0);
+    assert!(r.agent.reductions().is_empty());
+
+    let id = r.agent.reduce_now(Mode::Compact).await.unwrap();
+    let after = r.agent.measure().await.unwrap();
+    assert!(after.messages < before.messages, "{after:?} vs {before:?}");
+    let info = &r.agent.reductions()[0];
+    assert_eq!((info.entry, info.mode, info.summary.as_deref()), (id, Mode::Compact, Some("The summary.")));
+    assert!(info.covers >= 2 && info.after_tokens < info.before_tokens);
+
+    r.agent.restore(id).unwrap();
+    assert!(r.agent.reductions().is_empty());
+    assert_eq!(r.agent.measure().await.unwrap().messages, before.messages, "undo brings the originals back exactly");
+    assert!(r.agent.restore(id).is_err(), "and it is only undoable while in force");
+}
+
+#[tokio::test]
+async fn an_unconfigured_model_fails_each_call_clearly_instead_of_blocking_the_session() {
+    use reactor_agent::llm::Llm;
+    let llm = reactor_agent::provider::AnyLlm::Missing("no model selected -- pick one".into());
+    let e = llm.complete(reactor_agent::llm::LlmRequest { system: String::new(), messages: vec![], tools: vec![], max_tokens: None }, &mut |_| {}).await.unwrap_err();
+    assert!(e.to_string().contains("pick one"));
+    assert_eq!(llm.name(), "none");
+}

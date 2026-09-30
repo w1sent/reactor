@@ -408,7 +408,12 @@ impl Report for ToggleReport {
 pub fn set_activation(paths: &Paths, ids: &[String], tools: bool, on: Option<bool>) -> Result<Done<ToggleReport>> {
     let mut l = load(paths)?;
     toggle(&l.cat, &l.toolsets, &mut l.state, ids, tools, on)?;
-    if l.state.scope == Scope::Default {
+    if let Some(session) = &paths.session_state {
+        // Edits in a session go to the session, never to the machine: the override is
+        // seeded from whatever state applied, then written here.
+        l.state.path = session.clone();
+        l.state.scope = Scope::Session;
+    } else if l.state.scope == Scope::Default {
         l.state.path = paths.state_file();
     }
     l.state.save()?;
@@ -782,4 +787,46 @@ pub fn complete_ids(paths: &Paths, kind: &str) -> Result<Vec<String>> {
     } else {
         load_toolsets(paths)?.into_iter().map(|t| t.id).collect()
     })
+}
+
+// ---------------------------------------------------------------------------
+// session scope
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PromoteReport {
+    /// Where the session's activation was written: the machine-wide default.
+    pub path: String,
+    pub state: StateDoc,
+}
+
+impl Report for PromoteReport {
+    fn human(&self) -> String {
+        format!("made this session's activation the default -- {}", self.path)
+    }
+}
+
+/// "Make this the default": copy the session's activation into the machine-wide
+/// `state.json` (ADR-0038). The session keeps its own override; the two now agree.
+pub fn make_session_state_default(paths: &Paths) -> Result<Done<PromoteReport>> {
+    let l = load(paths)?;
+    if l.state.scope != Scope::Session {
+        return Err(err!("this session has no activation of its own to promote"));
+    }
+    let doc = l.state.as_doc();
+    let target = paths.state_file();
+    crate::json::write_json_atomic(&target, &doc)?;
+    Ok(Done::ok(PromoteReport { path: target.display().to_string(), state: doc }))
+}
+
+/// Drop the session's override: it inherits the project or machine state again.
+pub fn clear_session_state(paths: &Paths) -> Result<()> {
+    if let Some(p) = &paths.session_state {
+        match std::fs::remove_file(p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(err!("{}: {}", p.display(), crate::json::io_reason(&e))),
+        }
+    }
+    Ok(())
 }

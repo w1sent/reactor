@@ -36,6 +36,8 @@ pub enum UiEvent {
     /// A manual reduction finished.
     Reduced(std::result::Result<EntryId, String>),
     Preview(std::result::Result<PlanView, String>),
+    /// The context window, taken apart.
+    Inspect(std::result::Result<reactor_agent::inspect::ContextPreview, String>),
     Context(ContextView),
 }
 
@@ -261,6 +263,14 @@ impl Backend {
         let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
         self.runtime.spawn(async move {
             let _ = tx.send(UiEvent::Preview(agent.preview(mode).await.map(|p| PlanView::of(&p, mode)).map_err(|e| e.to_string())));
+        });
+    }
+
+    /// Ask for the request as it would be sent now, in pieces.
+    pub fn inspect(&self) {
+        let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
+        self.runtime.spawn(async move {
+            let _ = tx.send(UiEvent::Inspect(agent.context_preview().await.map_err(|e| e.to_string())));
         });
     }
 

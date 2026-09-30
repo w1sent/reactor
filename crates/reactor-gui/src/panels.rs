@@ -1544,7 +1544,16 @@ impl Render for ContextPanel {
         };
         let mut reduction = v_flex()
             .gap_2()
-            .child(Label::new("Reduce"))
+            .child(
+                h_flex().justify_between().items_center().child(Label::new("Reduce")).child({
+                    let app = self.app.clone();
+                    Button::new("context-inspect").label("Show the context window").small().tooltip("Everything the model would be sent next, and where each piece comes from").on_click(move |_, window, cx| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |app, cx| app.toggle_inspect(window, cx));
+                        }
+                    })
+                }),
+            )
             .child(
                 h_flex()
                     .gap_1()

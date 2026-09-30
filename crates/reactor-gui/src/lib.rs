@@ -8,6 +8,7 @@ pub mod backend;
 pub mod chrome;
 pub mod console;
 pub mod hints;
+pub mod inspect_ui;
 pub mod layout;
 pub mod palette;
 pub mod panels;

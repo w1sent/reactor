@@ -11,6 +11,7 @@ pub mod context;
 pub mod entry;
 pub mod error;
 pub mod history;
+pub mod inspect;
 pub mod llm;
 pub mod prompt;
 pub mod provider;

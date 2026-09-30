@@ -33,11 +33,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::{self, BudgetConfig, Plan, Summarizer, context_tokens, needs_reduction, plan};
 use crate::context::{
-    self, Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, estimate_tokens, project, save_state,
+    self, Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source, estimate_tokens, msg_tokens, project, save_state,
 };
 use crate::entry::{EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
 use crate::llm::{Delta, Llm, LlmRequest};
+use crate::inspect::ContextPreview;
 use crate::prompt::{self, RegistryView};
 use crate::skills::{self, Skill};
 use crate::store::Store;
@@ -132,6 +133,21 @@ pub struct Measure {
     pub calibration: f64,
 }
 
+/// What one request is made from.
+struct Gathered {
+    view: RegistryView,
+    settings: Settings,
+    state: SessionState,
+    items: Vec<Item>,
+    offered: Vec<Skill>,
+}
+
+fn entry_label(source: Source) -> String {
+    match source {
+        Source::Entry(id) | Source::Reduction(id) => format!("#{id}"),
+    }
+}
+
 /// A reduction in force, for a frontend to list and offer to undo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReductionInfo {
@@ -210,8 +226,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     // -- building a request --------------------------------------------------------------
 
-    /// The request as it would be sent now, and what it costs.
-    async fn build(&self) -> Result<(LlmRequest, u64, Vec<Item>)> {
+    /// What a request is made from: the catalogue, the settings, the session's state and the
+    /// projected messages.
+    async fn gather(&self) -> Result<Gathered> {
         let registry = self.cfg.registry.clone();
         let view = tokio::task::spawn_blocking(move || registry()).await.map_err(|e| Error::Store(e.to_string()))?;
         let settings = self.settings();
@@ -220,14 +237,25 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             (SessionState::load(&store), project(&store))
         };
         let offered = skills::offered(&self.authored_skills, &view.usable, &view.skill_dirs);
-        let system = prompt::system_prompt(&prompt::Inputs {
+        Ok(Gathered { view, settings, state, items, offered })
+    }
+
+    fn system_parts(&self, g: &Gathered) -> Vec<(prompt::Part, String)> {
+        prompt::system_parts(&prompt::Inputs {
             base: &self.cfg.base_prompt,
-            settings: &settings,
-            state: &state,
-            registry: &view,
-            skills: &offered,
+            settings: &g.settings,
+            state: &g.state,
+            registry: &g.view,
+            skills: &g.offered,
             scenarios_dir: &self.cfg.scenarios_dir,
-        });
+        })
+    }
+
+    /// The request as it would be sent now, and what it costs.
+    async fn build(&self) -> Result<(LlmRequest, u64, Vec<Item>)> {
+        let g = self.gather().await?;
+        let system = prompt::join_parts(&self.system_parts(&g));
+        let Gathered { settings, state, items, .. } = g;
         let tools = self.tools.specs(&state);
         let fixed = estimate_tokens(&system)
             + tools.iter().map(|t| estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string())).sum::<u64>();
@@ -239,6 +267,70 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             messages.push(Msg::User { text: nag });
         }
         Ok((LlmRequest { system, messages, tools, max_tokens: self.cfg.max_tokens }, fixed, items))
+    }
+
+    /// The request as it would be sent now, taken apart: every piece with where it comes
+    /// from. The same pieces [`Agent::build`] sends, so what this shows is what the model gets.
+    pub async fn context_preview(&self) -> Result<ContextPreview> {
+        use crate::inspect::{Origin, Section, Segment};
+        let g = self.gather().await?;
+        let mut segments = Vec::new();
+
+        let parts = self.system_parts(&g);
+        // The budget counts the joined prompt, so the total does too; each piece's own
+        // estimate is rounded separately and may differ from its share by a token.
+        let system_tokens = estimate_tokens(&prompt::join_parts(&parts));
+        for (part, text) in parts {
+            let (origin, label) = match part {
+                prompt::Part::Base => (Origin::Base, "Base prompt"),
+                prompt::Part::Identity => (Origin::Identity, "Identity"),
+                prompt::Part::Registry => (Origin::Registry, "Available tools"),
+                prompt::Part::Skills => (Origin::Skills, "Skills"),
+                prompt::Part::Manifest => (Origin::Manifest, "Manifest"),
+                prompt::Part::Reporting => (Origin::Reporting, "Reporting"),
+                prompt::Part::Scenario => (Origin::Scenario, "Scenario phase"),
+            };
+            segments.push(Segment { section: Section::System, origin, label: label.to_string(), tokens: estimate_tokens(&text), text, entry: None });
+        }
+
+        for t in self.tools.specs(&g.state) {
+            let text = format!("{}\n\n{}", t.description, serde_json::to_string_pretty(&t.parameters).unwrap_or_default());
+            let tokens = estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string());
+            segments.push(Segment { section: Section::Tools, origin: Origin::ToolDefinition, label: t.name, text, tokens, entry: None });
+        }
+
+        for item in &g.items {
+            let (origin, label, text) = match (&item.msg, item.source) {
+                (Msg::User { text }, Source::Reduction(id)) => (Origin::Reduction, format!("#{id} reduction stand-in"), text.clone()),
+                (Msg::User { text }, Source::Entry(id)) => (Origin::User, format!("#{id} you"), text.clone()),
+                (Msg::Assistant { blocks }, source) => {
+                    let text = blocks
+                        .iter()
+                        .map(|b| match b {
+                            crate::entry::Block::Text { text } => text.clone(),
+                            crate::entry::Block::Thinking { text, .. } => format!("[thinking]\n{text}"),
+                            crate::entry::Block::ToolCall { name, arguments, .. } => format!("[tool call] {name} {arguments}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    (Origin::Assistant, format!("{} assistant", entry_label(source)), text)
+                }
+                (Msg::ToolResult { name, content, is_error, .. }, source) => {
+                    (Origin::ToolResult, format!("{} {name}{}", entry_label(source), if *is_error { " (error)" } else { "" }), content.clone())
+                }
+            };
+            let entry = match item.source {
+                Source::Entry(id) => Some(id),
+                Source::Reduction(_) => None,
+            };
+            segments.push(Segment { section: Section::Messages, origin, label, tokens: msg_tokens(&item.msg), text, entry });
+        }
+
+        if let Some(nag) = self.tracker.lock().unwrap().nag(&g.state.reporting, &g.settings.reporting) {
+            segments.push(Segment { section: Section::Messages, origin: Origin::Reminder, label: "reporting reminder".into(), tokens: estimate_tokens(&nag) + 8, text: nag, entry: None });
+        }
+        let total_tokens = system_tokens + segments.iter().filter(|s| s.section != Section::System).map(|s| s.tokens).sum::<u64>();
+        Ok(ContextPreview { segments, total_tokens, calibration: *self.ratio.lock().unwrap() })
     }
 
     // -- the budget ------------------------------------------------------------------------

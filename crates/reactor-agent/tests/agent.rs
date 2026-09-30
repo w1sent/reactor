@@ -820,3 +820,25 @@ async fn an_unconfigured_model_fails_each_call_clearly_instead_of_blocking_the_s
     assert!(e.to_string().contains("pick one"));
     assert_eq!(llm.name(), "none");
 }
+
+#[tokio::test]
+async fn the_context_preview_takes_the_request_apart_and_labels_every_piece() {
+    use reactor_agent::inspect::{Origin, Section};
+    let r = rig(vec![ScriptedLlm::say("noted")], Sum::says("."), 30_000);
+    r.agent.command("goal", "find the loader").unwrap();
+    run(&r, "hello there").await.unwrap();
+
+    let p = r.agent.context_preview().await.unwrap();
+    let origins: Vec<Origin> = p.segments.iter().map(|s| s.origin).collect();
+    assert!(origins.contains(&Origin::Base) && origins.contains(&Origin::Manifest), "{origins:?}");
+    assert!(origins.contains(&Origin::ToolDefinition));
+    let goal = p.segments.iter().find(|s| s.origin == Origin::Manifest).unwrap();
+    assert!(goal.text.contains("find the loader") && goal.section == Section::System);
+    let you = p.segments.iter().find(|s| s.origin == Origin::User).unwrap();
+    assert_eq!((you.text.as_str(), you.section, you.entry.is_some()), ("hello there", Section::Messages, true));
+    assert!(p.segments.iter().any(|s| s.origin == Origin::Assistant && s.text == "noted"));
+
+    // What is listed is what is measured: the same total the budget works from.
+    let m = r.agent.measure().await.unwrap();
+    assert_eq!(p.total_tokens, m.total, "the preview and the budget count the same request");
+}

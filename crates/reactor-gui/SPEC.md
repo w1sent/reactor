@@ -239,6 +239,17 @@ a setting is changed, where something is saved — is a **tooltip** on the eleme
 that opens the text when clicked (`hints::info_button`). Empty states, errors and confirmations are
 feedback, not commentary, and stay as short text.
 
+### 6.0b The context window
+
+*Show the context window* — the Context panel's button, `/inspect`, or the palette — opens a popup
+with the request the model would be sent next, taken apart. It is `reactor-agent`'s own
+`context_preview`, the pieces the loop sends, so it shows what the model gets. Each piece carries
+its **source**: the base prompt, identity, tool registry, skills, manifest, reporting, the current
+scenario phase, the tool definitions, then the messages — yours, the model's, tool results,
+reduction stand-ins and any reporting reminder. The chips above the list total the estimated tokens
+per source and filter by it; the (i) beside a piece says where it comes from and how to change it.
+*Copy all* puts the whole request on the clipboard.
+
 ### 6.0 Commands: the palette and the `/` popup
 
 Every user-facing feature is a **slash command** — `ReactorApp::run_command` is the one

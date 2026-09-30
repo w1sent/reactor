@@ -290,6 +290,70 @@ alphabetically. With nothing typed, frequency alone orders the list.
 
 ### 6.0a Settings
 
+*Commands → Settings…*, `Ctrl+,` / `Cmd+,` or `/settings` opens the settings in **a window of their
+own** (`src/settings_window.rs`), built on gpui-kit's `Settings` component: a page list on the left
+with a search box, the page's fields on the right, and a *reset* on each page for what has been
+changed. Changes apply at once and are saved; there is no OK button. The window reads and changes
+the main window's state, follows it when it changes, and shows the same notifications.
+
+- **Fonts** — a family (an installed font's name) and a size in pixels for *Interface* and
+  *Monospace* (the theme's base fonts, which every component reads), *Transcript*, *Tool calls and
+  output*, *Prompt input* and *Console*. Unset means the theme's own. Saved in `~/.reactor/gui.json`.
+- **Behaviour** — open thinking blocks by default; dim what a reduction took out of the model's view;
+  how much tool output the transcript shows (the session keeps it all); how long notification popups
+  stay; the layout a window opens with.
+- **Model** — the model new sessions start on (`defaultModel` in `settings.json`), chosen from the
+  picker's list; a provider (anthropic, openai, gemini, openrouter, ollama; the page says whether its
+  key variable is set), a model name, and *Set as default* / *Use in this session* / *Add to picker
+  list*; the picker's list itself; *Make its model the default* for the session's model. API keys are
+  read from the environment, never stored.
+- **Context** — the agent's context budget: reduction mode, the window in tokens (REactor does not ask
+  the provider for it: set it for your model), the reserve for the reply, when a reduction starts and
+  how far it goes (percentages of the usable window), and the summarizer model. A dropdown chooses
+  the layer edited: the **default** (`settings.json`, for new sessions) or **this session only**. A
+  field that is not set there shows what the session uses now; *reset* clears it, so a session falls
+  back to the default and the default to the built-in value.
+- **Tools** — *Make session's the default* and *Use the default* for the session's tool activation.
+
+Fonts and behaviour are not per session: they are saved for every session as they change. The pages
+that can differ per session (Model, Context, Tools) have their own *make the session's … the default*.
+
+### 6.0b The context window
+
+*Show the context window* — the Context panel's button, `/inspect`, or the palette — opens a popup
+with the request the model would be sent next, taken apart. It is `reactor-agent`'s own
+`context_preview`, the pieces the loop sends, so it shows what the model gets. Each piece carries
+its **source**: the base prompt, identity, tool registry, skills, manifest, reporting, the current
+scenario phase, the tool definitions, then the messages — yours, the model's, tool results,
+reduction stand-ins and any reporting reminder. The chips above the list total the estimated tokens
+per source and filter by it; the (i) beside a piece says where it comes from and how to change it.
+*Copy all* puts the whole request on the clipboard.
+
+### 6.0 Commands: the palette and the `/` popup
+
+Every user-facing feature is a **slash command** — `ReactorApp::run_command` is the one
+place that executes them — and two views list them (`src/palette.rs`):
+
+- **The command palette** — `Ctrl+P` / `Cmd+P`, or *Commands → Command Palette…* in the
+  app menu. It lists the commands *and* what the session's state makes possible: a line per
+  model (`Model: switch to …`), per tool (`Tool: enable adb`, `Tool: install frida`), toolset,
+  scenario, identity and reduction in force, plus layouts, docks, context settings and so on.
+  Choosing an entry runs it; one that needs arguments (`/goal`, `/tool`, …) puts `/name ` in
+  the composer instead.
+- **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
+  input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
+  more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
+
+**Ranking** is the same for both. An entry's score is the number of characters of the query it
+matches — the longest common subsequence of what was typed and the entry's text, inside a
+window no wider than twice the query — so a missing, extra, wrong or swapped letter costs one
+match rather than the whole entry (`raduce` finds `reduce`). The query may lose one character in
+four and still match. Entries are ordered by score; equal scores by how often the person has
+run them (`command_usage` in `~/.reactor/gui.json`); equal frequency by the shorter text, then
+alphabetically. With nothing typed, frequency alone orders the list.
+
+### 6.0a Settings
+
 *Commands → Settings…*, `Ctrl+,` / `Cmd+,` or `/settings` opens a popup (`src/settings_ui.rs`).
 Changes apply at once and are saved to `ui` in `~/.reactor/gui.json`; unset means the theme's own,
 so a fresh install looks as it always did and *reset* clears a field.

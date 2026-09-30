@@ -17,6 +17,6 @@ pub mod prompt_history;
 pub mod panels;
 pub mod session;
 pub mod settings;
-pub mod settings_ui;
+pub mod settings_window;
 pub mod start;
 pub mod theme;

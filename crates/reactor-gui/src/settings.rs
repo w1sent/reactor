@@ -165,6 +165,20 @@ pub fn capture_theme_fonts(cx: &mut App) {
     cx.set_global(fonts);
 }
 
+/// The size a slot has when nothing is chosen for it, given what else is chosen: the theme's own
+/// for the two base fonts, and for the rest what the base font they follow gives.
+pub fn default_size(slot: Slot, ui: &UiSettings, cx: &App) -> f32 {
+    let Some(base) = cx.try_global::<ThemeFonts>() else { return 14.0 };
+    let (ui_size, mono_size) = (ui.size(Slot::Interface).unwrap_or(f32::from(base.size)), ui.size(Slot::Mono).unwrap_or(f32::from(base.mono_size)));
+    match slot {
+        Slot::Interface => f32::from(base.size),
+        Slot::Mono => f32::from(base.mono_size),
+        Slot::Transcript | Slot::Prompt => ui_size,
+        Slot::Tools => mono_size * 0.8,
+        Slot::Console => mono_size * 0.85,
+    }
+}
+
 /// Write the base fonts into the theme and redraw.
 pub fn apply(settings: &UiSettings, cx: &mut App) {
     let Some(base) = cx.try_global::<ThemeFonts>().cloned() else { return };

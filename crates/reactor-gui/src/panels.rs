@@ -1958,7 +1958,7 @@ impl ConsolePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("$"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(""));
         cx.subscribe_in(
             &input,
             window,

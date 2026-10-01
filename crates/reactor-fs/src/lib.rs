@@ -7,6 +7,7 @@
 //! Paths inside a filesystem are [`VPath`]s: normalised, `/`-separated, rooted. A viewer is
 //! opened on a [`FileRef`] — a filesystem plus a path — never on a native `PathBuf`.
 
+mod find;
 mod hash;
 mod identify;
 mod local;
@@ -14,6 +15,7 @@ mod path;
 mod search;
 mod vfs;
 
+pub use find::{Found, find_bytes, parse_hex};
 pub use hash::{Algorithm, hash_file};
 pub use identify::{Identity, identify, identify_file};
 pub use local::LocalFs;

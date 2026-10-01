@@ -174,7 +174,7 @@ fn ansi_color(index: Option<u8>, theme: &Theme) -> Option<gpui_kit::Hsla> {
 /// name. The one place a panel gets its name, so a new panel can never ship
 /// gpui-kit's default `t!("Dock.Unnamed")` tab by accident (the bug this
 /// fixes — see the redesign notes at the top of this module).
-fn panel_title_row(icon: IconName, label: &str) -> impl IntoElement {
+pub(crate) fn panel_title_row(icon: IconName, label: &str) -> impl IntoElement + use<> {
     h_flex()
         .gap_2()
         .items_center()
@@ -1028,7 +1028,7 @@ fn refresh_button(
 
 /// The close button every panel ends its toolbar with: takes this panel out of the dock. It
 /// is brought back from the Layout menu's Panels submenu or the palette.
-fn close_button<P: gpui_kit::base::dock::Panel>(
+pub(crate) fn close_button<P: gpui_kit::base::dock::Panel>(
     app: &gpui_kit::WeakEntity<ReactorApp>,
     panel: gpui_kit::Entity<P>,
 ) -> Button {

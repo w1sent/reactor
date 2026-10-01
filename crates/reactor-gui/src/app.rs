@@ -112,6 +112,11 @@ pub struct TogglePanelAction {
 /// The one window's state.
 pub struct ReactorApp {
     pub cwd: PathBuf,
+    /// The working directory as a filesystem — what the explorer shows and `/open` resolves
+    /// relative paths against.
+    pub workdir_fs: Arc<reactor_fs::LocalFs>,
+    /// The whole host disk, for a file the transcript names outside the working directory.
+    pub host_fs: Arc<reactor_fs::LocalFs>,
     /// `None` only when the agent could not start; the window opens anyway and says why.
     backend: Option<Arc<Backend>>,
     reactor: Client,
@@ -407,6 +412,8 @@ impl ReactorApp {
 
         Self {
             menu_bar: crate::chrome::menu_bar(cx),
+            workdir_fs: Arc::new(reactor_fs::LocalFs::new(&cwd, ".")),
+            host_fs: Arc::new(reactor_fs::LocalFs::new("/", "/")),
             cwd,
             backend,
             reactor,
@@ -865,6 +872,52 @@ impl ReactorApp {
             if area.has_dock(DockPlacement::Bottom) && !area.is_dock_open(DockPlacement::Bottom) {
                 area.toggle_dock(DockPlacement::Bottom, window, cx);
             }
+        });
+    }
+
+    // -- files ----------------------------------------------------------------
+
+    /// The file a path in text names: relative paths are the working directory's, absolute
+    /// ones inside it become relative to it, and anything else is the host's own disk.
+    pub fn resolve_file(&self, text: &str) -> reactor_fs::FileRef {
+        let text = text.trim().trim_matches(['"', '\'', '`']);
+        let native = std::path::Path::new(text);
+        let native = if native.is_absolute() {
+            native.to_path_buf()
+        } else {
+            self.cwd.join(native)
+        };
+        match self.workdir_fs.virtual_path(&native) {
+            Some(path) => reactor_fs::FileRef::new(self.workdir_fs.clone(), path),
+            None => {
+                let path = self
+                    .host_fs
+                    .virtual_path(&native)
+                    .unwrap_or_else(reactor_fs::VPath::root);
+                reactor_fs::FileRef::new(self.host_fs.clone(), path)
+            }
+        }
+    }
+
+    /// Open a file in a viewer — a new tab in the centre, however many there already are.
+    /// `viewer` None picks by what the file is.
+    pub fn open_file(
+        &mut self,
+        viewer: Option<crate::files::Viewer>,
+        file: reactor_fs::FileRef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::files::Viewer;
+        let viewer = viewer.unwrap_or_else(|| crate::files::suggest(&file));
+        let weak_app = cx.weak_entity();
+        let handle = match viewer {
+            Viewer::Hex => panel_handle(
+                cx.new(|cx| crate::files::hex::HexPanel::new(weak_app, file, window, cx)),
+            ),
+        };
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(handle, DockPlacement::Center, None, window, cx);
         });
     }
 
@@ -1622,6 +1675,20 @@ impl ReactorApp {
                     "panel: transcript, tree, tools, toolsets, context, services or console",
                 ),
             },
+            "open" => {
+                let (viewer, path) = match args.split_once(' ') {
+                    Some((first, rest)) if crate::files::Viewer::from_slug(first).is_some() => {
+                        (crate::files::Viewer::from_slug(first), rest)
+                    }
+                    _ => (None, args),
+                };
+                if path.trim().is_empty() {
+                    self.push_note("warning", "open: which file?");
+                } else {
+                    let file = self.resolve_file(path);
+                    self.open_file(viewer, file, window, cx);
+                }
+            }
             "console" => {
                 let initial = (!args.is_empty())
                     .then(|| ("sh".to_owned(), vec!["-c".to_owned(), args.to_owned()]));

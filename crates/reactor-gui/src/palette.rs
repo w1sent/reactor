@@ -251,6 +251,13 @@ pub fn commands() -> Vec<Entry> {
             "/panel transcript | tree | tools | toolsets | context | services | console",
         ),
         Entry::fixed(
+            "open",
+            "Window",
+            Required,
+            "Open a file in a viewer",
+            "/open [hex] <path>",
+        ),
+        Entry::fixed(
             "console",
             "Window",
             Optional,

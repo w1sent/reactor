@@ -19,6 +19,7 @@ reactor-client = { path = "../reactor-client" }
 reactor-agent = { path = "../reactor-agent" }
 reactor-context = { path = "../reactor-context" }
 reactor-core = { path = "../reactor-core" }
+reactor-fs = { path = "../reactor-fs" }
 # The agent is async (rig is); it runs on its own runtime on background threads,
 # never on gpui's executor (docs/adr/0042).
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

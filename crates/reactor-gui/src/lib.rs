@@ -7,6 +7,7 @@ pub mod app;
 pub mod backend;
 pub mod chrome;
 pub mod console;
+pub mod files;
 pub mod hints;
 pub mod inspect_ui;
 pub mod layout;

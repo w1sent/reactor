@@ -13,7 +13,7 @@ removed. What it did is now two commands:
 cargo install --git https://github.com/w1sent/reactor reactor-cli   # the binary, onto ~/.cargo/bin
 cargo install --path crates/reactor-cli   # ...or from a checkout you already have
 reactor setup                             # seed config, skills, completions
-reactor setup --no-skills --no-completions --dry-run   # the switches
+reactor setup --no-skills --no-completions --no-launcher --dry-run   # the switches
 ```
 
 `reactor setup` does the rest:
@@ -33,7 +33,9 @@ reactor setup --no-skills --no-completions --dry-run   # the switches
    Unlike the config files these are reactor's own output, so they are
    overwritten unconditionally. zsh needs one manual step — `~/.zfunc` on `fpath`
    before `compinit` — and setup reminds you every run.
-5. Report. Warn **only** where a configured skill could not be fetched — a tool
+5. On Linux, if `reactor-gui` is installed, write its desktop entry and icon under
+   `$XDG_DATA_HOME` (`~/.local/share`) so Wayland shows the icon; `--no-launcher` skips it.
+6. Report. Warn **only** where a configured skill could not be fetched — a tool
    with no configured skill is the normal case and gets no warning.
 
 Idempotent; re-running is the supported way to update. Building `reactor-gui`

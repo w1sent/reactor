@@ -19,3 +19,12 @@ fallback).
 
 The catalogue panels talk to `reactor-core` through `reactor-client`
 (`LibClient` in-process, `CliClient` as the fallback).
+
+## Icon
+
+`assets/icon.ico` / `icon.png` at the repo root are the application icon. The window
+gets it from `chrome::window_options` (X11), the Windows `.exe` embeds it (`build.rs`), a
+macOS `.app` takes `assets/icon.icns` (`cargo bundle`, metadata in `Cargo.toml`). On Linux,
+Wayland and launchers read it from a desktop entry, which `cargo install` does not copy:
+`reactor setup` installs it (and the icon) under `~/.local/share` once `reactor-gui` is
+installed; `--no-launcher` skips that.

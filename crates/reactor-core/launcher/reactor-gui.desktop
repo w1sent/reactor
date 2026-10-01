@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=REactor
+Comment=Long-running analysis sessions with an agent
+Exec=@EXEC@
+Icon=reactor-gui
+Terminal=false
+Categories=Development;
+StartupWMClass=reactor-gui

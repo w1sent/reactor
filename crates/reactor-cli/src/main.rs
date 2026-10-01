@@ -170,7 +170,7 @@ enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// seed ~/.reactor/, fetch upstream skills, install shell completions
+    /// seed ~/.reactor/, fetch upstream skills, install shell completions and the GUI launcher
     Setup {
         /// skip fetching upstream skills
         #[arg(long)]
@@ -178,6 +178,9 @@ enum Command {
         /// skip installing bash/zsh/fish completion scripts
         #[arg(long)]
         no_completions: bool,
+        /// skip installing the GUI's desktop entry and icon
+        #[arg(long)]
+        no_launcher: bool,
         /// report what would happen and stop
         #[arg(long)]
         dry_run: bool,
@@ -342,9 +345,9 @@ fn run(cli: Cli) -> Result<i32, ReactorError> {
         Command::OverwriteConfig { file, yes } => {
             emit(f, config::overwrite_config(&paths, file.map(ConfigFile::name), &host(yes))?)
         }
-        Command::Setup { no_skills, no_completions, dry_run } => emit(
+        Command::Setup { no_skills, no_completions, no_launcher, dry_run } => emit(
             f,
-            config::setup(&paths, SetupOpts { skills: !no_skills, completions: !no_completions, dry_run })?,
+            config::setup(&paths, SetupOpts { skills: !no_skills, completions: !no_completions, launcher: !no_launcher, dry_run })?,
         ),
     })
 }

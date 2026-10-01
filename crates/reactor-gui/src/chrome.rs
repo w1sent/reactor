@@ -22,12 +22,26 @@ use gpui_kit::{
     App, Entity, Menu, SharedString, WindowBounds, WindowDecorations, WindowOptions, div, px,
 };
 
+/// The application's id: the Wayland `app_id` and X11 class, and the name of the `.desktop`
+/// file (`reactor setup` installs it) that gives launchers and Wayland compositors the icon.
+pub const APP_ID: &str = "reactor-gui";
+
+/// The window icon, for the platforms that take pixels (X11). Windows reads the executable's
+/// resources (`build.rs`) and macOS the bundle's `icon.icns`.
+fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
+    let icon = image::load_from_memory_with_format(include_bytes!("../../../assets/icon.ico"), image::ImageFormat::Ico).ok()?;
+    Some(std::sync::Arc::new(icon.into_rgba8()))
+}
+
 /// Options for any window that renders [`title_bar`]: the given bounds,
 /// client-side decorations, and the title bar owning window dragging.
 pub fn window_options(bounds: WindowBounds) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(bounds),
         window_decorations: Some(WindowDecorations::Client),
+        // Wayland finds the icon through the `.desktop` file this id names; X11 takes pixels.
+        app_id: Some(APP_ID.to_owned()),
+        icon: window_icon(),
         ..TitleBar::window_options()
     }
 }
@@ -73,4 +87,13 @@ pub fn title_bar(
                 ),
         )
         .children(right)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_window_icon_decodes() {
+        let icon = super::window_icon().expect("assets/icon.ico decodes");
+        assert!(icon.width() >= 128 && icon.height() >= 128);
+    }
 }

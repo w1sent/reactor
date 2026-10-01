@@ -208,6 +208,9 @@ pub fn overwrite_config(paths: &Paths, file: Option<&str>, host: &dyn Host) -> R
 pub struct SetupOpts {
     pub skills: bool,
     pub completions: bool,
+    /// Install the GUI's desktop entry and icon (Linux, and only when `reactor-gui` is
+    /// installed).
+    pub launcher: bool,
     pub dry_run: bool,
 }
 
@@ -246,8 +249,32 @@ fn completion_target(shell: &str) -> PathBuf {
     }
 }
 
+/// Where `reactor-gui` is installed: next to this binary (`cargo install` puts them in the same
+/// directory), else anywhere on `PATH`.
+fn gui_binary() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("reactor-gui")));
+    let on_path = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).map(|dir| dir.join("reactor-gui")).collect::<Vec<_>>());
+    beside.into_iter().chain(on_path).find(|candidate| candidate.is_file())
+}
+
+/// The desktop entry and icon that give `reactor-gui` its icon under Wayland, and its place in
+/// application launchers: Wayland compositors match a window's app id to a `.desktop` file,
+/// and `cargo install` copies a binary and nothing else. `Exec` is the binary's full path, so
+/// the entry works when `~/.cargo/bin` is not on the desktop session's `PATH`.
+fn launcher_files(gui: &std::path::Path) -> [(PathBuf, Vec<u8>); 2] {
+    let home = home_dir();
+    let data = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or(home.join(".local/share"));
+    let entry = include_str!("../launcher/reactor-gui.desktop").replace("@EXEC@", &gui.display().to_string());
+    [
+        (data.join("applications/reactor-gui.desktop"), entry.into_bytes()),
+        (data.join("icons/hicolor/256x256/apps/reactor-gui.png"), include_bytes!("../launcher/reactor-gui.png").to_vec()),
+    ]
+}
+
 /// Seed `~/.reactor/` from the shipped copies, fetch upstream skills, install
-/// shell completions. Idempotent; re-running is the supported way to update.
+/// shell completions and the GUI's launcher entry. Idempotent; re-running is the supported way to update.
 /// Seeding never clobbers an existing config file: if yours differs from the
 /// shipped copy it says so and points at `reactor diff-config` (ADR-0004).
 pub fn setup(paths: &Paths, opts: SetupOpts) -> Result<Done<SetupReport>> {
@@ -335,6 +362,30 @@ pub fn setup(paths: &Paths, opts: SetupOpts) -> Result<Done<SetupReport>> {
             "  zsh: add `fpath+=({})` before `compinit` in .zshrc if not already there",
             zfunc.parent().unwrap().display()
         ));
+    }
+
+    actions.push("launcher".to_string());
+    if !opts.launcher {
+        actions.push("  skipped (--no-launcher)".into());
+    } else if !cfg!(target_os = "linux") {
+        actions.push("  not needed on this platform".into());
+    } else if let Some(gui) = gui_binary() {
+        // Reactor's own output, like the completions: rewritten when it differs.
+        for (dest, bytes) in launcher_files(&gui) {
+            if std::fs::read(&dest).is_ok_and(|have| have == bytes) {
+                actions.push(format!("  {} (up to date)", dest.display()));
+                continue;
+            }
+            actions.push(format!("{would}write {}", dest.display()));
+            if !opts.dry_run {
+                let wrote = dest.parent().map(std::fs::create_dir_all).transpose().and_then(|_| std::fs::write(&dest, bytes));
+                if let Err(e) = wrote {
+                    warnings.push(format!("{}: {}", dest.display(), io_reason(&e)));
+                }
+            }
+        }
+    } else {
+        actions.push("  reactor-gui is not installed (cargo install --path crates/reactor-gui), skipped".into());
     }
 
     if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))

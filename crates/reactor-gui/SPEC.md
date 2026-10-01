@@ -413,26 +413,29 @@ clause is load-bearing, not incidental: gpui-base's
 `TabGroupContext::draggable` is `!is_locked() && !is_alone()`, and
 `is_alone()` means *no sibling group in the same split* — a dock or centre
 holding one lone tab group is undraggable no matter what the panel itself
-allows. Every preset below therefore pairs each used area with a sibling
-group (`layout::Panels::split`) rather than ever leaving one as a lone
-group, which is what makes every panel actually rearrangeable rather than
-only the ones that happened to land next to something else. `Focus` is the
-deliberate exception — showing the transcript alone with nothing else on
-screen is the point of it.
+allows. Every area of a preset is one tab group, and gpui-base denies a lone group
+both dragging and closing through its tab bar — so closing does not go through
+the tab group: it removes the panel from the `DockArea` directly
+(`layout::Panels::remove`).
+
+**Every panel can be closed and reopened**: from the Layout menu's *Panels*
+submenu, from the palette (`Panels: <name>`, i.e. `/panel <name>`), and by the
+close button at the end of each panel's own header toolbar. A closed panel comes
+back where the active preset keeps it (or its default dock, if the preset does
+not place it), opening that dock if it was collapsed.
 
 The GUI's own contribution on top of that freedom is the way back:
 
-- **Named presets** (`reactor-gui/src/layout.rs`), each putting a *different*
-  panel in the centre, which is the plainest statement that the centre is
-  not owned by the transcript:
-  - **Default** — transcript paired with the session tree in the centre,
-    tools/toolsets paired with views on the right, console paired with
-    services along the bottom.
-  - **Focus** — the transcript alone, every dock gone.
-  - **Analysis** — console paired with the transcript in the centre,
-    catalogue and tree on the sides.
-  - **Catalogue** — tools/toolsets/views paired with the tree in the centre,
-    big enough to read descriptions rather than guess from ids.
+- **Named presets** (`reactor-gui/src/layout.rs`) — Catalogue puts a different
+  panel in the centre, the plainest statement that the centre is not owned by
+  the transcript:
+  - **Default** — transcript in the centre; tools, toolsets, context,
+    services and the session tree as tabs on the right; the console below.
+  - **Focus** — the transcript with only the console below.
+  - **Analysis** — transcript in the centre, the tree on the left, tools,
+    toolsets, context and services on the right, the console below.
+  - **Catalogue** — tools in the centre, services on the left, toolsets on
+    the right, the console below.
 - **A `Layout` menu** carrying the presets and a switch per dock. Defined
   once through `cx.set_menus`, which is the real menu bar on macOS and the
   same menus drawn in-window by `AppMenuBar` on Windows and Linux. Because

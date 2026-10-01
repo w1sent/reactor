@@ -494,6 +494,10 @@ impl Panel for TranscriptPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel_title_row(IconName::MessageSquare, "Transcript")
     }
+
+    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![close_button(&self.app, cx.entity())])
+    }
 }
 
 impl Render for TranscriptPanel {
@@ -862,15 +866,15 @@ impl gpui_kit::base::dock::Panel for TreePanel {
         "tree"
     }
 
-    /// The tree is a glance panel: it has no close affordance — the layout is collapsible.
-    fn closable(&self, _cx: &App) -> bool {
-        false
-    }
 }
 
 impl Panel for TreePanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel_title_row(IconName::GitBranch, "Session Tree")
+    }
+
+    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![close_button(&self.app, cx.entity())])
     }
 }
 
@@ -900,6 +904,26 @@ fn refresh_button(
         .disabled(loading)
         .tooltip("Refresh from the reactor CLI")
         .on_click(move |_, window, cx| on_click(window, cx))
+}
+
+/// The close button every panel ends its toolbar with: takes this panel out of the dock. It
+/// is brought back from the Layout menu's Panels submenu or the palette.
+fn close_button<P: gpui_kit::base::dock::Panel>(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    panel: gpui_kit::Entity<P>,
+) -> Button {
+    let app = app.clone();
+    Button::new("close-panel")
+        .icon(IconName::X)
+        .ghost()
+        .small()
+        .tooltip("Close this panel — reopen it from Layout › Panels")
+        .on_click(move |_, window, cx| {
+            if let Some(app) = app.upgrade() {
+                let panel = panel.clone();
+                app.update(cx, |app, cx| app.close_panel(panel, window, cx));
+            }
+        })
 }
 
 pub struct ToolsPanel {
@@ -959,6 +983,7 @@ impl Panel for ToolsPanel {
             .map(|a| a.read(cx).catalogue_loading)
             .unwrap_or(false);
         let app = self.app.clone();
+        let close_app = self.app.clone();
         let showing = self.show_uninstalled;
         Some(vec![
             Button::new("toggle-uninstalled")
@@ -983,6 +1008,7 @@ impl Panel for ToolsPanel {
                     app.update(cx, |app, cx| app.refresh_catalogue(cx));
                 }
             }),
+            close_button(&close_app, cx.entity()),
         ])
     }
 }
@@ -1170,15 +1196,14 @@ impl Panel for ToolsetsPanel {
             .map(|a| a.read(cx).catalogue_loading)
             .unwrap_or(false);
         let app = self.app.clone();
-        Some(vec![refresh_button(
-            "refresh-toolsets",
-            loading,
-            move |_window, cx| {
+        Some(vec![
+            refresh_button("refresh-toolsets", loading, move |_window, cx| {
                 if let Some(app) = app.upgrade() {
                     app.update(cx, |app, cx| app.refresh_catalogue(cx));
                 }
-            },
-        )])
+            }),
+            close_button(&self.app, cx.entity()),
+        ])
     }
 }
 
@@ -1303,15 +1328,14 @@ impl Panel for ServicesPanel {
         let app = self.app.clone();
         // No `--refresh`: the CLI's own TTLs decide freshness (SPEC.md
         // §5, ADR-0014) — the button re-asks, it does not force a probe.
-        Some(vec![refresh_button(
-            "refresh-services",
-            loading,
-            move |_window, cx| {
+        Some(vec![
+            refresh_button("refresh-services", loading, move |_window, cx| {
                 if let Some(app) = app.upgrade() {
                     app.update(cx, |app, cx| app.refresh_services(false, cx));
                 }
-            },
-        )])
+            }),
+            close_button(&self.app, cx.entity()),
+        ])
     }
 }
 
@@ -1452,6 +1476,10 @@ impl gpui_kit::base::dock::Panel for ContextPanel {
 impl Panel for ContextPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel_title_row(IconName::Layers, "Context")
+    }
+
+    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![close_button(&self.app, cx.entity())])
     }
 }
 
@@ -1891,6 +1919,7 @@ impl Panel for ConsolePanel {
                 .small()
                 .tooltip("Clear this terminal")
                 .on_click(cx.listener(|this, _, _window, cx| this.clear(cx))),
+            close_button(&self.app, cx.entity()),
         ])
     }
 }

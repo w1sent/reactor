@@ -95,6 +95,13 @@ pub struct ToggleDockAction {
     pub side: crate::layout::DockSide,
 }
 
+/// Close or open one panel, from the Layout menu's Panels submenu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct TogglePanelAction {
+    pub panel: crate::layout::PanelKind,
+}
+
 // ---------------------------------------------------------------------------
 // ReactorApp — the root view
 // ---------------------------------------------------------------------------
@@ -291,14 +298,34 @@ impl ReactorApp {
         // Built once and kept as handles: a layout preset rearranges these rather than
         // building new panels, so switching never costs the console its scrollback or the
         // transcript its scroll position (crate::layout).
+        let transcript = cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx));
+        let tree = cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx));
+        let tools = cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx));
+        let toolsets = cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx));
+        let context = cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx));
+        let services = cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx));
+        let console = cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx));
         let panels = crate::layout::Panels {
-            transcript: panel_handle(cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx))),
-            tree: panel_handle(cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx))),
-            tools: panel_handle(cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx))),
-            toolsets: panel_handle(cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx))),
-            context: panel_handle(cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx))),
-            services: panel_handle(cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx))),
-            console: panel_handle(cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx))),
+            transcript: panel_handle(transcript.clone()),
+            tree: panel_handle(tree.clone()),
+            tools: panel_handle(tools.clone()),
+            toolsets: panel_handle(toolsets.clone()),
+            context: panel_handle(context.clone()),
+            services: panel_handle(services.clone()),
+            console: panel_handle(console.clone()),
+            // `DockArea` removes by typed entity; the handles above have lost the type.
+            remove: std::sync::Arc::new(move |kind, area, window, cx| {
+                use crate::layout::PanelKind::*;
+                match kind {
+                    Transcript => area.remove_panel(transcript.clone(), window, cx),
+                    Tree => area.remove_panel(tree.clone(), window, cx),
+                    Tools => area.remove_panel(tools.clone(), window, cx),
+                    Toolsets => area.remove_panel(toolsets.clone(), window, cx),
+                    Context => area.remove_panel(context.clone(), window, cx),
+                    Services => area.remove_panel(services.clone(), window, cx),
+                    Console => area.remove_panel(console.clone(), window, cx),
+                }
+            }),
         };
         let ui = crate::start::GuiConfig::load_ui();
         let layout = ui.start_layout();
@@ -703,6 +730,19 @@ impl ReactorApp {
         cx.notify();
     }
 
+    /// Take one panel out of the dock — what a panel's own close button does.
+    pub fn close_panel<P: gpui_kit::base::dock::Panel>(&mut self, panel: Entity<P>, window: &mut Window, cx: &mut Context<Self>) {
+        self.dock_area.update(cx, |area, cx| area.remove_panel(panel, window, cx));
+        cx.notify();
+    }
+
+    /// Close a panel that is open, open one that is closed — from the menu, the palette or a
+    /// panel's own close button.
+    pub fn toggle_panel(&mut self, kind: crate::layout::PanelKind, window: &mut Window, cx: &mut Context<Self>) {
+        crate::layout::toggle_panel(kind, self.layout, &self.panels, &self.dock_area, window, cx);
+        cx.notify();
+    }
+
     // -- the console --------------------------------------------------------
 
     /// Open a new terminal: another `ConsolePanel`, tabbed alongside any that already
@@ -716,6 +756,10 @@ impl ReactorApp {
         let handle = panel_handle(panel);
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(handle, DockPlacement::Bottom, None, window, cx);
+            // A collapsed dock would swallow the terminal that was just asked for.
+            if area.has_dock(DockPlacement::Bottom) && !area.is_dock_open(DockPlacement::Bottom) {
+                area.toggle_dock(DockPlacement::Bottom, window, cx);
+            }
         });
     }
 
@@ -1314,6 +1358,10 @@ impl ReactorApp {
                 "right" => self.toggle_dock(crate::layout::DockSide::Right, window, cx),
                 "bottom" => self.toggle_dock(crate::layout::DockSide::Bottom, window, cx),
                 _ => self.push_note("warning", "dock: left, right or bottom"),
+            },
+            "panel" => match crate::layout::PanelKind::from_slug(args) {
+                Some(kind) => self.toggle_panel(kind, window, cx),
+                None => self.push_note("warning", "panel: transcript, tree, tools, toolsets, context, services or console"),
             },
             "console" => {
                 let initial = (!args.is_empty()).then(|| ("sh".to_owned(), vec!["-c".to_owned(), args.to_owned()]));

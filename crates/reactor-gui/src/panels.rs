@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{SelectableText, h_flex, v_flex};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -844,7 +845,7 @@ impl Render for TreePanel {
                         })),
                 ),
             )
-            .child(div().id("scroll-panel").flex_1().min_h_0().overflow_y_scroll().child(list))
+            .child(div().id("scroll-panel").flex_1().min_h_0().overflow_y_scrollbar().child(list))
     }
 }
 
@@ -1003,7 +1004,7 @@ impl Render for ToolsPanel {
             .gap_1()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         if let Some(payload) = &tools {
             let mut hidden = 0usize;
             for tool in &payload.tools {
@@ -1198,7 +1199,7 @@ impl Render for ToolsetsPanel {
             .gap_1()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         if let Some(payload) = &toolsets {
             for row in &payload.toolsets {
                 let toolset_id = row.id.clone();
@@ -1331,7 +1332,7 @@ impl Render for ServicesPanel {
             .gap_1()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         if let Some(payload) = &services {
             // Down first, then unknown, then up — the footer's ladder (the
             // same rank `extensions/status/` renders in the TUI).
@@ -1467,7 +1468,7 @@ impl Render for ContextPanel {
             }
             None => (None, None, false, false),
         };
-        let mut body = v_flex().id("context-body").p_2().gap_3().flex_1().min_h_0().overflow_y_scroll();
+        let mut body = v_flex().id("context-body").p_2().gap_3().flex_1().min_h_0().overflow_y_scrollbar();
         let Some(view) = view else {
             return v_flex().size_full().child(body.child(loading_row("measuring the context…", &theme)));
         };

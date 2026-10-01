@@ -6,6 +6,7 @@
 //! [`ReactorApp`] (`inspect`).
 
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Theme};
@@ -124,7 +125,9 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
 
             // -- the pieces --
             let total = data.total_tokens.max(1);
-            let mut list = v_flex().id("inspect-list").w(px(330.)).flex_none().overflow_y_scroll().gap_0p5().pr_1();
+            // A scrolling column: its height is the space it is given (`h_full`, `min_h_0`), and
+            // every row keeps its own (`flex_none`) — rows that shrink to fit overlap each other.
+            let mut list = v_flex().id("inspect-list").w(px(330.)).flex_none().h_full().min_h_0().overflow_y_scrollbar().gap_0p5().pr_1();
             let mut last_section: Option<Section> = None;
             for (index, seg) in data.segments.iter().enumerate() {
                 if state.filter.is_some_and(|f| f != seg.origin) {
@@ -132,13 +135,14 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                 }
                 if last_section != Some(seg.section) {
                     last_section = Some(seg.section);
-                    list = list.child(div().pt_2().px_1().text_color(muted).text_size(theme.font_size * 0.8).child(seg.section.label()));
+                    list = list.child(div().flex_none().pt_2().px_1().text_color(muted).text_size(theme.font_size * 0.8).child(seg.section.label()));
                 }
                 let selected = index == state.selected;
                 let weak = weak.clone();
                 list = list.child(
                     v_flex()
                         .id(("inspect-row", index))
+                        .flex_none()
                         .px_2()
                         .py_1()
                         .gap_0p5()
@@ -183,9 +187,12 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                     v_flex()
                         .flex_1()
                         .min_w_0()
+                        .h_full()
+                        .min_h_0()
                         .gap_2()
                         .child(
                             h_flex()
+                                .flex_none()
                                 .gap_2()
                                 .items_center()
                                 .child(badge(seg.origin, &theme))
@@ -198,7 +205,7 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                                 .id("inspect-text")
                                 .flex_1()
                                 .min_h_0()
-                                .overflow_y_scroll()
+                                .overflow_y_scrollbar()
                                 .p_2()
                                 .rounded_md()
                                 .bg(theme.secondary)
@@ -215,11 +222,11 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                 .gap_2()
                 .flex_1()
                 .min_h_0()
-                .child(chips)
-                .child(h_flex().gap_3().flex_1().min_h_0().child(list).child(detail))
+                .child(div().flex_none().child(chips))
+                .child(h_flex().gap_3().flex_1().min_h_0().items_stretch().child(list).child(detail))
                 .into_any_element()
         }
     };
 
-    v_flex().key_context("ReactorInspect").h(height).gap_3().child(header).child(body).into_any_element()
+    v_flex().key_context("ReactorInspect").h(height).gap_3().child(div().flex_none().child(header)).child(body).into_any_element()
 }

@@ -28,6 +28,17 @@ serde_json.workspace = true
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 portable-pty = "0.9.0"
+# Decodes the window icon (assets/icon.ico), which gpui takes as RGBA pixels.
+image = { version = "0.25", default-features = false, features = ["ico"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+# What `cargo bundle` reads to make the macOS .app.
+[package.metadata.bundle]
+name = "REactor"
+identifier = "io.github.w1sent.reactor"
+icon = ["../../assets/icon.icns"]
 
 [dev-dependencies]
 tempfile = "3"

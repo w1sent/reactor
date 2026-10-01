@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use reactor_core::model::{DetectSpec, ToolEntry};
 use reactor_core::catalogue::DetectKind;
+use reactor_core::model::{DetectSpec, ToolEntry};
 use reactor_core::paths::{Paths, Shipped};
 use reactor_core::probe::{ServiceInfo, ServiceState, Status};
 use reactor_core::state::{Scope, State};
@@ -96,7 +96,10 @@ impl Fx {
     }
 
     pub fn with(tools: &str, toolsets: &str) -> Self {
-        let dir = tempfile::Builder::new().prefix("reactor-test-").tempdir().unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("reactor-test-")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("tools.toml"), tools).unwrap();
         std::fs::write(dir.path().join("toolsets.toml"), toolsets).unwrap();
         // Like the Python fixture: the shipped copy *is* the fixture.
@@ -134,7 +137,10 @@ pub fn entry(tid: &str) -> ToolEntry {
         source: None,
         invoke: tid.into(),
         tags: vec![],
-        detect: DetectSpec { kind: DetectKind::Binary, value: tid.into() },
+        detect: DetectSpec {
+            kind: DetectKind::Binary,
+            value: tid.into(),
+        },
         status: Status::Present,
         path: Some(format!("/bin/{tid}")),
         version: None,
@@ -148,12 +154,19 @@ pub fn entry(tid: &str) -> ToolEntry {
 
 pub fn python_module(mut e: ToolEntry) -> ToolEntry {
     e.invoke = format!("python3 -c 'import {}'", e.id);
-    e.detect = DetectSpec { kind: DetectKind::PythonModule, value: e.id.clone() };
+    e.detect = DetectSpec {
+        kind: DetectKind::PythonModule,
+        value: e.id.clone(),
+    };
     e
 }
 
 pub fn service(label: &str, state: ServiceState, detail: Option<&str>) -> Option<ServiceInfo> {
-    Some(ServiceInfo { label: Some(label.into()), state, detail: detail.map(str::to_string) })
+    Some(ServiceInfo {
+        label: Some(label.into()),
+        state,
+        detail: detail.map(str::to_string),
+    })
 }
 
 pub fn ids(v: &[&str]) -> Vec<String> {

@@ -44,10 +44,16 @@ pub struct SessionState {
 
 impl SessionState {
     pub fn normalize(raw: &Value) -> SessionState {
-        let Some(r) = raw.as_object() else { return SessionState::default() };
+        let Some(r) = raw.as_object() else {
+            return SessionState::default();
+        };
         SessionState {
             enabled: r.get("enabled").and_then(Value::as_bool),
-            level: r.get("level").and_then(Value::as_u64).and_then(|n| u8::try_from(n).ok()).and_then(Enforcement::new),
+            level: r
+                .get("level")
+                .and_then(Value::as_u64)
+                .and_then(|n| u8::try_from(n).ok())
+                .and_then(Enforcement::new),
         }
     }
 
@@ -98,10 +104,16 @@ pub type Snapshot = BTreeMap<String, (u64, i128)>;
 /// skipped, as they were (`Dirent.isFile()` is false for one).
 pub fn take_snapshot(dir: &Path) -> Snapshot {
     fn walk(d: &Path, prefix: &str, out: &mut Snapshot) {
-        let Ok(entries) = std::fs::read_dir(d) else { return };
+        let Ok(entries) = std::fs::read_dir(d) else {
+            return;
+        };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
             let Ok(ty) = e.file_type() else { continue };
             if ty.is_dir() {
                 walk(&e.path(), &rel, out);
@@ -158,7 +170,12 @@ impl Tracker {
 
     /// The agent is about to run on `prompt`. Returns the block to append to the
     /// system prompt, when reporting is on.
-    pub fn before_agent_start(&mut self, session: &SessionState, cfg: &ReportingSettings, prompt: &str) -> Option<String> {
+    pub fn before_agent_start(
+        &mut self,
+        session: &SessionState,
+        cfg: &ReportingSettings,
+        prompt: &str,
+    ) -> Option<String> {
         if self.pending_revert {
             // Our own resend, not a fresh instruction: keep the *original* prompt
             // as `base_prompt` so a second revert re-sends that, not an already
@@ -190,7 +207,10 @@ impl Tracker {
     /// Level 1: the reminder to append to the messages of a model call, if one is
     /// due.
     pub fn nag(&self, session: &SessionState, cfg: &ReportingSettings) -> Option<String> {
-        if !session.is_enabled() || session.level(cfg).get() < 1 || self.steps_since_change < cfg.step_threshold {
+        if !session.is_enabled()
+            || session.level(cfg).get() < 1
+            || self.steps_since_change < cfg.step_threshold
+        {
             return None;
         }
         Some(format!(
@@ -201,7 +221,10 @@ impl Tracker {
 
     /// Level 2: the turn has genuinely settled.
     pub fn settled(&mut self, session: &SessionState, cfg: &ReportingSettings) -> Settled {
-        if !session.is_enabled() || session.level(cfg).get() < 2 || self.steps_since_change < cfg.step_threshold {
+        if !session.is_enabled()
+            || session.level(cfg).get() < 2
+            || self.steps_since_change < cfg.step_threshold
+        {
             return Settled::Nothing;
         }
         if self.reverts_this_turn >= cfg.max_reverts {
@@ -250,7 +273,10 @@ pub struct Effects {
 }
 
 fn just(n: Notice) -> Effects {
-    Effects { notices: vec![n], ..Default::default() }
+    Effects {
+        notices: vec![n],
+        ..Default::default()
+    }
 }
 
 /// `Number(s)`, for the three values that matter.
@@ -263,7 +289,12 @@ fn js_level(s: Option<&str>) -> Option<Enforcement> {
 }
 
 /// `/report [on|off|level <n>|status|folder <path>|reset]`.
-pub fn command(session: &mut SessionState, tracker: &mut Tracker, cfg: &mut ReportingSettings, args: &str) -> Effects {
+pub fn command(
+    session: &mut SessionState,
+    tracker: &mut Tracker,
+    cfg: &mut ReportingSettings,
+    args: &str,
+) -> Effects {
     let mut words = args.split(crate::text::js_space).filter(|w| !w.is_empty());
     let sub = words.next();
     let rest: Vec<&str> = words.collect();
@@ -272,21 +303,34 @@ pub fn command(session: &mut SessionState, tracker: &mut Tracker, cfg: &mut Repo
         "on" => {
             session.enabled = Some(true);
             Effects {
-                notices: vec![Notice::info(format!("reactor-reporting: on, level {}", session.level(cfg).get()))],
+                notices: vec![Notice::info(format!(
+                    "reactor-reporting: on, level {}",
+                    session.level(cfg).get()
+                ))],
                 persist: true,
                 ..Default::default()
             }
         }
         "off" => {
             session.enabled = Some(false);
-            Effects { notices: vec![Notice::info("reactor-reporting: off")], persist: true, ..Default::default() }
+            Effects {
+                notices: vec![Notice::info("reactor-reporting: off")],
+                persist: true,
+                ..Default::default()
+            }
         }
         "level" => match js_level(rest.first().copied()) {
             None => just(Notice::error("reactor-reporting: level needs 0, 1, or 2")),
             Some(n) => {
-                *session = SessionState { enabled: Some(true), level: Some(n) };
+                *session = SessionState {
+                    enabled: Some(true),
+                    level: Some(n),
+                };
                 Effects {
-                    notices: vec![Notice::info(format!("reactor-reporting: on, level {}", n.get()))],
+                    notices: vec![Notice::info(format!(
+                        "reactor-reporting: on, level {}",
+                        n.get()
+                    ))],
                     persist: true,
                     ..Default::default()
                 }
@@ -306,14 +350,22 @@ pub fn command(session: &mut SessionState, tracker: &mut Tracker, cfg: &mut Repo
         "folder" => {
             let f = rest.join(" ");
             if f.is_empty() {
-                return just(Notice::error("reactor-reporting: folder needs a path, e.g. `folder report`"));
+                return just(Notice::error(
+                    "reactor-reporting: folder needs a path, e.g. `folder report`",
+                ));
             }
             cfg.folder = f.clone();
             // A different folder means whatever was counted against the old one is
             // meaningless: re-baseline and start the count over, as `reset` does.
             tracker.reset_counts();
             tracker.snapshot = None;
-            Effects { notices: vec![Notice::info(format!("reactor-reporting: folder set to \"{f}\""))], persist: false, save_folder: Some(f) }
+            Effects {
+                notices: vec![Notice::info(format!(
+                    "reactor-reporting: folder set to \"{f}\""
+                ))],
+                persist: false,
+                save_folder: Some(f),
+            }
         }
         "reset" => {
             tracker.reset_counts();

@@ -29,7 +29,9 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io(m) | Error::Store(m) | Error::Model(m) | Error::Reduction(m) => f.write_str(m),
+            Error::Io(m) | Error::Store(m) | Error::Model(m) | Error::Reduction(m) => {
+                f.write_str(m)
+            }
             Error::ReductionBudget { attempts } => write!(
                 f,
                 "context reduction ran {attempts} times in a row and the context still does not fit -- stopping"

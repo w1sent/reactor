@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::label::Label;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Root};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -16,10 +16,8 @@ use gpui_kit::{
 };
 
 use reactor_gui::app::ReactorApp;
-use reactor_gui::start::{
-    GuiConfig, LaunchArgs, ResolvedLaunch, parse_args,
-};
 use reactor_gui::backend::{SessionSummary, list_sessions};
+use reactor_gui::start::{GuiConfig, LaunchArgs, ResolvedLaunch, parse_args};
 use reactor_gui::theme;
 
 fn main() {
@@ -80,7 +78,10 @@ fn main() {
 /// lets the window answer them: they land on `ReactorApp`'s root, alongside
 /// the model and thinking pickers (see its `Render`).
 fn install_menus(cx: &mut App) {
-    use reactor_gui::app::{ApplyLayoutAction, MainWindow, OpenPalette, OpenSettings, TogglePanelAction, ToggleDockAction};
+    use reactor_gui::app::{
+        ApplyLayoutAction, MainWindow, OpenPalette, OpenSettings, ToggleDockAction,
+        TogglePanelAction,
+    };
     use reactor_gui::layout::{DockSide, LayoutPreset, PanelKind};
 
     // Global handlers, not `.on_action` on some element: a native menu bar
@@ -180,7 +181,10 @@ fn install_menus(cx: &mut App) {
     items.push(MenuItem::Separator);
     items.push(MenuItem::submenu(Menu {
         name: "Panels".into(),
-        items: PanelKind::ALL.iter().map(|kind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind })).collect(),
+        items: PanelKind::ALL
+            .iter()
+            .map(|kind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind }))
+            .collect(),
         disabled: false,
     }));
 
@@ -189,7 +193,10 @@ fn install_menus(cx: &mut App) {
         vec![
             Menu {
                 name: "Commands".into(),
-                items: vec![MenuItem::action("Command Palette…", OpenPalette), MenuItem::action("Settings…", OpenSettings)],
+                items: vec![
+                    MenuItem::action("Command Palette…", OpenPalette),
+                    MenuItem::action("Settings…", OpenSettings),
+                ],
                 disabled: false,
             },
             Menu {
@@ -217,27 +224,24 @@ impl WorkdirChooser {
             size(px(780.), px(440.)),
             cx,
         ));
-        let _ = cx.open_window(
-            reactor_gui::chrome::window_options(bounds),
-            |window, cx| {
-                // Wrap in `Root`, exactly like `ReactorApp::open`: `Root`'s
-                // own render is what actually applies the theme's
-                // `text_color`/background to the window (gpui-component's
-                // `root.rs`) — skipping it left this window with no ambient
-                // text color at all, so typed input text rendered invisible
-                // against the near-black background (the bug this fixes).
-                theme::install_ayu_dark(cx);
-                let path_input =
-                    cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/workdir"));
-                let chooser: Entity<WorkdirChooser> = cx.new(|_cx| WorkdirChooser {
-                    recents: GuiConfig::load().recent_workdirs,
-                    path_input,
-                    launch,
-                });
-                let root_view: gpui_kit::AnyView = chooser.into();
-                cx.new(|cx| Root::new(root_view, window, cx))
-            },
-        );
+        let _ = cx.open_window(reactor_gui::chrome::window_options(bounds), |window, cx| {
+            // Wrap in `Root`, exactly like `ReactorApp::open`: `Root`'s
+            // own render is what actually applies the theme's
+            // `text_color`/background to the window (gpui-component's
+            // `root.rs`) — skipping it left this window with no ambient
+            // text color at all, so typed input text rendered invisible
+            // against the near-black background (the bug this fixes).
+            theme::install_ayu_dark(cx);
+            let path_input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/workdir"));
+            let chooser: Entity<WorkdirChooser> = cx.new(|_cx| WorkdirChooser {
+                recents: GuiConfig::load().recent_workdirs,
+                path_input,
+                launch,
+            });
+            let root_view: gpui_kit::AnyView = chooser.into();
+            cx.new(|cx| Root::new(root_view, window, cx))
+        });
     }
 
     fn open_chosen(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -317,67 +321,72 @@ impl Render for WorkdirChooser {
             );
         }
 
-        v_flex().size_full().child(reactor_gui::chrome::title_bar("REactor", None, None, cx)).child(v_flex()
-            .flex_1()
-            .min_h_0()
-            .p_4()
-            .gap_4()
+        v_flex()
+            .size_full()
+            .child(reactor_gui::chrome::title_bar("REactor", None, None, cx))
             .child(
-                h_flex().justify_between().child(
-                    Label::new("REactor — choose the workdir").text_size(theme.font_size * 1.2),
-                ),
-            )
-            .child(
-                h_flex()
+                v_flex()
                     .flex_1()
                     .min_h_0()
+                    .p_4()
                     .gap_4()
+                    .child(h_flex().justify_between().child(
+                        Label::new("REactor — choose the workdir").text_size(theme.font_size * 1.2),
+                    ))
                     .child(
-                        // Left: frequently used folders (SPEC.md §3).
-                        // `recents` (built above, one clickable row per
-                        // path) — not `self.recents` again: that is the raw
-                        // `Vec<String>`, which used to be wired in here by
-                        // mistake, rendering lookalike rows with no click
-                        // handler at all (the bug behind "clicking a
-                        // frequent path does nothing").
-                        v_flex()
-                            .w(px(300.))
-                            .gap_2()
-                            .child(Label::new("frequent").text_color(theme.muted_foreground))
-                            .child(recents),
-                    )
-                    .child(
-                        // Right: type a path, or pick one with the native
-                        // folder dialog — both land in the same input, so
-                        // either path opens the same way (SPEC.md §3).
-                        v_flex()
+                        h_flex()
                             .flex_1()
-                            .gap_2()
-                            .child(Label::new("path").text_color(theme.muted_foreground))
+                            .min_h_0()
+                            .gap_4()
                             .child(
-                                h_flex()
+                                // Left: frequently used folders (SPEC.md §3).
+                                // `recents` (built above, one clickable row per
+                                // path) — not `self.recents` again: that is the raw
+                                // `Vec<String>`, which used to be wired in here by
+                                // mistake, rendering lookalike rows with no click
+                                // handler at all (the bug behind "clicking a
+                                // frequent path does nothing").
+                                v_flex()
+                                    .w(px(300.))
                                     .gap_2()
-                                    .child(Input::new(&self.path_input).flex_1())
                                     .child(
-                                        Button::new("browse")
-                                            .label("Browse…")
-                                            .on_click(cx.listener(Self::on_browse_click)),
-                                    ),
+                                        Label::new("frequent").text_color(theme.muted_foreground),
+                                    )
+                                    .child(recents),
                             )
                             .child(
-                                Button::new("open")
-                                    .primary()
-                                    .label("Open session")
-                                    .disabled(!can_open)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let Some(cwd) = this.chosen_path(cx) else {
-                                            return;
-                                        };
-                                        this.open_chosen(cwd, window, cx);
-                                    })),
+                                // Right: type a path, or pick one with the native
+                                // folder dialog — both land in the same input, so
+                                // either path opens the same way (SPEC.md §3).
+                                v_flex()
+                                    .flex_1()
+                                    .gap_2()
+                                    .child(Label::new("path").text_color(theme.muted_foreground))
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(Input::new(&self.path_input).flex_1())
+                                            .child(
+                                                Button::new("browse")
+                                                    .label("Browse…")
+                                                    .on_click(cx.listener(Self::on_browse_click)),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("open")
+                                            .primary()
+                                            .label("Open session")
+                                            .disabled(!can_open)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                let Some(cwd) = this.chosen_path(cx) else {
+                                                    return;
+                                                };
+                                                this.open_chosen(cwd, window, cx);
+                                            })),
+                                    ),
                             ),
                     ),
-            ))
+            )
     }
 }
 
@@ -409,18 +418,14 @@ impl SessionPicker {
             size(px(780.), px(440.)),
             cx,
         ));
-        let _ = cx.open_window(
-            reactor_gui::chrome::window_options(bounds),
-            |window, cx| {
-                // See `WorkdirChooser::open`'s comment: `Root` is what
-                // applies the theme's ambient text color to the window.
-                theme::install_ayu_dark(cx);
-                let picker: Entity<SessionPicker> =
-                    cx.new(|_| SessionPicker { sessions, resolved });
-                let root_view: gpui_kit::AnyView = picker.into();
-                cx.new(|cx| Root::new(root_view, window, cx))
-            },
-        );
+        let _ = cx.open_window(reactor_gui::chrome::window_options(bounds), |window, cx| {
+            // See `WorkdirChooser::open`'s comment: `Root` is what
+            // applies the theme's ambient text color to the window.
+            theme::install_ayu_dark(cx);
+            let picker: Entity<SessionPicker> = cx.new(|_| SessionPicker { sessions, resolved });
+            let root_view: gpui_kit::AnyView = picker.into();
+            cx.new(|cx| Root::new(root_view, window, cx))
+        });
     }
 }
 
@@ -439,8 +444,17 @@ impl Render for SessionPicker {
             .sessions
             .iter()
             .map(|session| {
-                let prompt = session.first_prompt.clone().unwrap_or_else(|| "(no prompt yet)".into());
-                let prompt: String = prompt.lines().next().unwrap_or("").chars().take(90).collect();
+                let prompt = session
+                    .first_prompt
+                    .clone()
+                    .unwrap_or_else(|| "(no prompt yet)".into());
+                let prompt: String = prompt
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(90)
+                    .collect();
                 let label = format!("{prompt}  ·  {} entries", session.entries);
                 SessionRow {
                     path: session.dir.clone(),
@@ -499,12 +513,9 @@ impl Render for SessionPicker {
                     .flex_1()
                     .min_h_0()
                     .gap_2()
-                    .child(
-                        h_flex().justify_between().child(
-                            Label::new("REactor — resume a session")
-                                .text_size(theme.font_size * 1.2),
-                        ),
-                    )
+                    .child(h_flex().justify_between().child(
+                        Label::new("REactor — resume a session").text_size(theme.font_size * 1.2),
+                    ))
                     .child(div().flex_1().min_h_0().child(list)),
             )
     }

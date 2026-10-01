@@ -51,7 +51,12 @@ pub struct PlanItem {
 
 impl PlanItem {
     fn text(&self) -> String {
-        Recipe { method: self.method.clone(), command: self.command.clone(), sudo: self.sudo }.text()
+        Recipe {
+            method: self.method.clone(),
+            command: self.command.clone(),
+            sudo: self.sudo,
+        }
+        .text()
     }
 }
 
@@ -156,7 +161,11 @@ fn recipe_argv(recipe: &Recipe) -> Vec<String> {
     argv
 }
 
-fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<Done<InstallReport>> {
+fn install_tools(
+    paths: &Paths,
+    opts: &InstallOpts,
+    host: &dyn Host,
+) -> Result<Done<InstallReport>> {
     if opts.auto_manual && opts.force_manual {
         return Err(err!(
             "--auto-install-manual and --force-install-manual are mutually exclusive: \
@@ -178,10 +187,31 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
     // places. It cannot be mixed with real ids -- there is nothing left for a
     // second id to narrow, so `install all jq` is rejected as an unknown tool
     // rather than silently doing what `install all` alone already does.
-    let ids = if opts.ids == ["all"] { cat.order() } else { select(&cat, &opts.ids)? };
-    let results = probe(paths, &cat, &ids, ProbeOpts { refresh: true, cached_only: false, services: false });
+    let ids = if opts.ids == ["all"] {
+        cat.order()
+    } else {
+        select(&cat, &opts.ids)?
+    };
+    let results = probe(
+        paths,
+        &cat,
+        &ids,
+        ProbeOpts {
+            refresh: true,
+            cached_only: false,
+            services: false,
+        },
+    );
     let managers = host.managers(&cat);
-    let entries = describe_using(paths, &cat, &toolsets, &state, &ids, &results, Some(&managers));
+    let entries = describe_using(
+        paths,
+        &cat,
+        &toolsets,
+        &state,
+        &ids,
+        &results,
+        Some(&managers),
+    );
 
     // Chosen up front so the plan (and --dry-run's preview of it) can already
     // show pip recipes redirected here, even though the directory itself is
@@ -195,18 +225,39 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
         let mut lines: Vec<String> = plan
             .iter()
             .map(|p| format!("would run  {} {}", ljust(&p.tool, 12), p.text()))
-            .chain(skipped.iter().map(|s| format!("skip       {} {}", ljust(&s.tool, 12), s.reason)))
+            .chain(
+                skipped
+                    .iter()
+                    .map(|s| format!("skip       {} {}", ljust(&s.tool, 12), s.reason)),
+            )
             .collect();
         if let Some(v) = &venv_str {
             lines.push(format!("venv       {v} (not created -- --dry-run)"));
         }
-        let human = if lines.is_empty() { "nothing to do".to_string() } else { lines.join("\n") };
-        return Ok(Done::ok(InstallReport { plan, skipped, ran: vec![], message: None, venv: venv_str, human }));
+        let human = if lines.is_empty() {
+            "nothing to do".to_string()
+        } else {
+            lines.join("\n")
+        };
+        return Ok(Done::ok(InstallReport {
+            plan,
+            skipped,
+            ran: vec![],
+            message: None,
+            venv: venv_str,
+            human,
+        }));
     }
 
     if !host.json() {
         // Never to stdout in json mode: that stream is the caller's input.
-        host.print(&plan.iter().map(|p| format!("  {} {}", ljust(&p.tool, 12), p.text())).collect::<Vec<_>>().join("\n"));
+        host.print(
+            &plan
+                .iter()
+                .map(|p| format!("  {} {}", ljust(&p.tool, 12), p.text()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
     if !host.confirm(&format!("run {} install command(s)?", plan.len())) {
         return Ok(Done::code(
@@ -216,14 +267,16 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
                 ran: vec![],
                 message: Some("not confirmed; re-run with --yes or --dry-run".into()),
                 venv: None,
-                human: "aborted -- re-run with --yes to execute, or --dry-run to see the plan".into(),
+                human: "aborted -- re-run with --yes to execute, or --dry-run to see the plan"
+                    .into(),
             },
             1,
         ));
     }
 
     if let Some(dir) = &venv_dir {
-        let note = ensure_venv(&cat, dir, host).map_err(|why| err!("--create-venv: could not create {}: {why}", dir.display()))?;
+        let note = ensure_venv(&cat, dir, host)
+            .map_err(|why| err!("--create-venv: could not create {}: {why}", dir.display()))?;
         if !host.json() {
             host.print(&format!("venv  {} ({note})", dir.display()));
         }
@@ -231,7 +284,9 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
 
     let mut ran = Vec::new();
     for p in &plan {
-        let tool = cat.get(&p.tool).expect("planned tools come from the catalogue");
+        let tool = cat
+            .get(&p.tool)
+            .expect("planned tools come from the catalogue");
         let mut cwd = None;
         let mut run_dir = PathBuf::new();
         if p.method == "manual" {
@@ -258,7 +313,11 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
         } else {
             Capture::Inherit
         };
-        let outcome = host.exec(&Exec { argv: p.argv.clone(), cwd, capture });
+        let outcome = host.exec(&Exec {
+            argv: p.argv.clone(),
+            cwd,
+            capture,
+        });
         let mut entry = Ran {
             tool: p.tool.clone(),
             command: p.text(),
@@ -279,7 +338,10 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
             entry.path = link;
             entry.hint = hint;
         }
-        if outcome.code != 0 && p.method == "pip" && outcome.captured.contains(EXTERNALLY_MANAGED_MARKER) {
+        if outcome.code != 0
+            && p.method == "pip"
+            && outcome.captured.contains(EXTERNALLY_MANAGED_MARKER)
+        {
             entry.hint = Some(format!(
                 "this Python refuses system-wide pip installs (PEP 668). Re-run with \
                  `reactor install --create-venv {}` to install into a venv instead.",
@@ -302,7 +364,12 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
     let mut lines: Vec<String> = ran
         .iter()
         .map(|r| {
-            let mut s = format!("{}{} {}", if r.returncode == 0 { "ok   " } else { "FAIL " }, ljust(&r.tool, 12), r.command);
+            let mut s = format!(
+                "{}{} {}",
+                if r.returncode == 0 { "ok   " } else { "FAIL " },
+                ljust(&r.tool, 12),
+                r.command
+            );
             if let Some(p) = &r.path {
                 s.push_str(&format!("\n       path: {p}"));
             }
@@ -316,16 +383,30 @@ fn install_tools(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<D
         lines.push(format!("venv       {v}"));
     }
     Ok(Done::code(
-        InstallReport { plan, skipped, ran, message: None, venv: venv_str, human: lines.join("\n") },
+        InstallReport {
+            plan,
+            skipped,
+            ran,
+            message: None,
+            venv: venv_str,
+            human: lines.join("\n"),
+        },
         if failed { 1 } else { 0 },
     ))
 }
 
-fn build_plan(entries: &[ToolEntry], opts: &InstallOpts, venv_dir: Option<&Path>) -> (Vec<PlanItem>, Vec<Skipped>) {
+fn build_plan(
+    entries: &[ToolEntry],
+    opts: &InstallOpts,
+    venv_dir: Option<&Path>,
+) -> (Vec<PlanItem>, Vec<Skipped>) {
     let (mut plan, mut skipped) = (Vec::new(), Vec::new());
     for e in entries {
         if e.status == Status::Present {
-            skipped.push(Skipped { tool: e.id.clone(), reason: "already present".into() });
+            skipped.push(Skipped {
+                tool: e.id.clone(),
+                reason: "already present".into(),
+            });
             continue;
         }
         let inst = e.install.as_ref().expect("described with install");
@@ -342,7 +423,10 @@ fn build_plan(entries: &[ToolEntry], opts: &InstallOpts, venv_dir: Option<&Path>
             match oneliner {
                 Some(cmd) => Some(manual(cmd)),
                 None => {
-                    skipped.push(Skipped { tool: e.id.clone(), reason: "no manual-install-oneliner".into() });
+                    skipped.push(Skipped {
+                        tool: e.id.clone(),
+                        reason: "no manual-install-oneliner".into(),
+                    });
                     continue;
                 }
             }
@@ -350,7 +434,10 @@ fn build_plan(entries: &[ToolEntry], opts: &InstallOpts, venv_dir: Option<&Path>
             match inst.candidates.iter().find(|c| &c.method == method) {
                 Some(c) => Some(c.clone()),
                 None => {
-                    skipped.push(Skipped { tool: e.id.clone(), reason: format!("no runnable {method} recipe") });
+                    skipped.push(Skipped {
+                        tool: e.id.clone(),
+                        reason: format!("no runnable {method} recipe"),
+                    });
                     continue;
                 }
             }
@@ -369,7 +456,10 @@ fn build_plan(entries: &[ToolEntry], opts: &InstallOpts, venv_dir: Option<&Path>
             if oneliner.is_some() {
                 reason.push_str(" -- a manual-install-oneliner exists; re-run with --auto-install-manual to use it");
             }
-            skipped.push(Skipped { tool: e.id.clone(), reason });
+            skipped.push(Skipped {
+                tool: e.id.clone(),
+                reason,
+            });
             continue;
         };
         let argv = if recipe.method == "manual" {
@@ -385,7 +475,13 @@ fn build_plan(entries: &[ToolEntry], opts: &InstallOpts, venv_dir: Option<&Path>
             }
             argv
         };
-        plan.push(PlanItem { tool: e.id.clone(), method: recipe.method, command: recipe.command, sudo: recipe.sudo, argv });
+        plan.push(PlanItem {
+            tool: e.id.clone(),
+            method: recipe.method,
+            command: recipe.command,
+            sudo: recipe.sudo,
+            argv,
+        });
     }
     (plan, skipped)
 }
@@ -394,15 +490,38 @@ fn build_plan(entries: &[ToolEntry], opts: &InstallOpts, venv_dir: Option<&Path>
 /// → Ok(what happened) | Err(why). This is REactor asking the *tool ecosystem's*
 /// interpreter to make an environment for pip-installed tools; REactor itself
 /// does not run on Python.
-fn ensure_venv(cat: &Catalogue, venv_dir: &Path, host: &dyn Host) -> std::result::Result<String, String> {
+fn ensure_venv(
+    cat: &Catalogue,
+    venv_dir: &Path,
+    host: &dyn Host,
+) -> std::result::Result<String, String> {
     if venv_exe(venv_dir, "pip").is_file() {
         return Ok("already exists".into());
     }
-    let argv = vec![cat.python.clone(), "-m".into(), "venv".into(), venv_dir.display().to_string()];
-    let out = host.exec(&Exec { argv: argv.clone(), cwd: None, capture: Capture::Both });
+    let argv = vec![
+        cat.python.clone(),
+        "-m".into(),
+        "venv".into(),
+        venv_dir.display().to_string(),
+    ];
+    let out = host.exec(&Exec {
+        argv: argv.clone(),
+        cwd: None,
+        capture: Capture::Both,
+    });
     if out.code != 0 || !venv_exe(venv_dir, "pip").is_file() {
-        let tail = out.captured.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
-        return Err(if tail.is_empty() { format!("`{} -m venv` exited {}", cat.python, out.code) } else { tail });
+        let tail = out
+            .captured
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .to_string();
+        return Err(if tail.is_empty() {
+            format!("`{} -m venv` exited {}", cat.python, out.code)
+        } else {
+            tail
+        });
     }
     Ok("created".into())
 }
@@ -451,9 +570,17 @@ pub fn promote_binary(tool: &Tool, run_dir: &Path) -> (Option<String>, Option<St
     }
     let target = found.canonicalize().unwrap_or(found);
     if let Err(e) = std::os::unix::fs::symlink(&target, &link) {
-        return (None, Some(format!("could not link {}: {e}", link.display())));
+        return (
+            None,
+            Some(format!("could not link {}: {e}", link.display())),
+        );
     }
-    let hint = (!on_path(&bin_dir)).then(|| format!("{} is not on PATH; add it to pick up {name}", bin_dir.display()));
+    let hint = (!on_path(&bin_dir)).then(|| {
+        format!(
+            "{} is not on PATH; add it to pick up {name}",
+            bin_dir.display()
+        )
+    });
     (Some(link.display().to_string()), hint)
 }
 
@@ -473,7 +600,9 @@ fn find_bounded(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     if depth >= 4 {
         return None;
     }
-    subdirs.into_iter().find_map(|d| find_bounded(&d, name, depth + 1))
+    subdirs
+        .into_iter()
+        .find_map(|d| find_bounded(&d, name, depth + 1))
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +635,11 @@ pub fn discover_python_packages(manager: &str) -> Vec<String> {
         // python3 -- there is no "all versions" to enumerate here. Every
         // pythonNN package on Arch lives in the AUR, which this excludes.
         "pacman" => {
-            if discovery_run(&["pacman", "-Si", "python"]).ok() { vec!["python".into()] } else { vec![] }
+            if discovery_run(&["pacman", "-Si", "python"]).ok() {
+                vec!["python".into()]
+            } else {
+                vec![]
+            }
         }
         "apt" => {
             let r = discovery_run(&["apt-cache", "search", "--names-only", r"^python3\.[0-9]+$"]);
@@ -553,8 +686,13 @@ pub fn discover_python_packages(manager: &str) -> Vec<String> {
                 return vec![];
             }
             let rx = re(r"^python@3\.\d+$");
-            let mut names: Vec<String> =
-                r.output.lines().map(str::trim).filter(|l| rx.is_match(l)).map(str::to_string).collect();
+            let mut names: Vec<String> = r
+                .output
+                .lines()
+                .map(str::trim)
+                .filter(|l| rx.is_match(l))
+                .map(str::to_string)
+                .collect();
             names.sort();
             names.dedup();
             names
@@ -563,7 +701,11 @@ pub fn discover_python_packages(manager: &str) -> Vec<String> {
     }
 }
 
-fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Result<Done<PythonAllReport>> {
+fn install_python_all(
+    paths: &Paths,
+    opts: &InstallOpts,
+    host: &dyn Host,
+) -> Result<Done<PythonAllReport>> {
     if opts.method.is_some() {
         return Err(err!(
             "--method does not apply to '{DECOMPILE_PYTHON_ALL_ID}'; it always uses \
@@ -580,8 +722,16 @@ fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Res
 
     let cat = load_catalogue(paths)?;
     let present = host.managers(&cat);
-    let rank = |m: &str| cat.prefer.iter().position(|p| p == m).unwrap_or(cat.prefer.len());
-    let mut candidates: Vec<&String> = present.keys().filter(|m| PYTHON_ALL_MANAGERS.contains(&m.as_str())).collect();
+    let rank = |m: &str| {
+        cat.prefer
+            .iter()
+            .position(|p| p == m)
+            .unwrap_or(cat.prefer.len())
+    };
+    let mut candidates: Vec<&String> = present
+        .keys()
+        .filter(|m| PYTHON_ALL_MANAGERS.contains(&m.as_str()))
+        .collect();
     candidates.sort_by_key(|m| rank(m));
     let fail = |manager: Option<String>, packages: Vec<String>, message: String| {
         Done::code(
@@ -603,7 +753,11 @@ fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Res
             vec![],
             format!(
                 "no supported package manager on this machine can discover python versions ({})",
-                { let mut v = PYTHON_ALL_MANAGERS.to_vec(); v.sort(); v.join(", ") }
+                {
+                    let mut v = PYTHON_ALL_MANAGERS.to_vec();
+                    v.sort();
+                    v.join(", ")
+                }
             ),
         ));
     };
@@ -628,7 +782,10 @@ fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Res
     }
     let command_text = shlex_join(&argv);
 
-    let report = |argv: Option<Vec<String>>, ran: Vec<Ran>, message: Option<String>, human: String| PythonAllReport {
+    let report = |argv: Option<Vec<String>>,
+                  ran: Vec<Ran>,
+                  message: Option<String>,
+                  human: String| PythonAllReport {
         manager: Some(manager.clone()),
         packages: packages.clone(),
         argv,
@@ -639,12 +796,20 @@ fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Res
     };
 
     if opts.dry_run {
-        return Ok(Done::ok(report(Some(argv), vec![], None, format!("would run  {command_text}"))));
+        return Ok(Done::ok(report(
+            Some(argv),
+            vec![],
+            None,
+            format!("would run  {command_text}"),
+        )));
     }
     if !host.json() {
         host.print(&format!("  {command_text}"));
     }
-    if !host.confirm(&format!("install {} python version(s) via {manager}?", packages.len())) {
+    if !host.confirm(&format!(
+        "install {} python version(s) via {manager}?",
+        packages.len()
+    )) {
         return Ok(Done::code(
             report(
                 Some(argv),
@@ -658,7 +823,11 @@ fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Res
     let outcome = host.exec(&Exec {
         argv: argv.clone(),
         cwd: None,
-        capture: if host.json() { Capture::Both } else { Capture::Inherit },
+        capture: if host.json() {
+            Capture::Both
+        } else {
+            Capture::Inherit
+        },
     });
     let mut cache = Cache::load(paths, &cat);
     cache.clear();
@@ -671,6 +840,12 @@ fn install_python_all(paths: &Paths, opts: &InstallOpts, host: &dyn Host) -> Res
         path: None,
         hint: None,
     };
-    let human = format!("{}{command_text}", if outcome.code == 0 { "ok   " } else { "FAIL " });
-    Ok(Done::code(report(Some(argv), vec![ran], None, human), if outcome.code != 0 { 1 } else { 0 }))
+    let human = format!(
+        "{}{command_text}",
+        if outcome.code == 0 { "ok   " } else { "FAIL " }
+    );
+    Ok(Done::code(
+        report(Some(argv), vec![ran], None, human),
+        if outcome.code != 0 { 1 } else { 0 },
+    ))
 }

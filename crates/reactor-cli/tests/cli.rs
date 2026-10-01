@@ -23,7 +23,12 @@ struct Out {
 
 impl Out {
     fn json(&self) -> Value {
-        serde_json::from_str(&self.stdout).unwrap_or_else(|e| panic!("stdout is not JSON ({e}):\n{}\nstderr: {}", self.stdout, self.stderr))
+        serde_json::from_str(&self.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout is not JSON ({e}):\n{}\nstderr: {}",
+                self.stdout, self.stderr
+            )
+        })
     }
 }
 
@@ -37,12 +42,24 @@ struct Env {
 
 impl Env {
     fn new() -> Self {
-        let root = tempfile::Builder::new().prefix("reactor-cli-").tempdir().unwrap();
-        let (cfg, home, cwd) = (root.path().join("cfg"), root.path().join("home"), root.path().join("cwd"));
+        let root = tempfile::Builder::new()
+            .prefix("reactor-cli-")
+            .tempdir()
+            .unwrap();
+        let (cfg, home, cwd) = (
+            root.path().join("cfg"),
+            root.path().join("home"),
+            root.path().join("cwd"),
+        );
         for d in [&cfg, &home, &cwd] {
             std::fs::create_dir_all(d).unwrap();
         }
-        Env { _root: root, cfg, home, cwd }
+        Env {
+            _root: root,
+            cfg,
+            home,
+            cwd,
+        }
     }
 
     /// The shipped catalogue, copied in like `reactor setup` would.
@@ -100,7 +117,10 @@ fn registry_shape() {
         assert!(p["summary"].get(key).is_some(), "summary.{key}");
     }
     for tool in p["tools"].as_array().unwrap() {
-        for key in ["id", "desc", "invoke", "status", "active", "detect", "override", "service", "skill", "version", "path", "source", "tags", "name"] {
+        for key in [
+            "id", "desc", "invoke", "status", "active", "detect", "override", "service", "skill",
+            "version", "path", "source", "tags", "name",
+        ] {
             assert!(tool.get(key).is_some(), "{}: missing {key}", tool["id"]);
         }
         assert!(["present", "absent", "unknown"].contains(&tool["status"].as_str().unwrap()));
@@ -144,7 +164,16 @@ fn doctor_shape() {
 #[test]
 fn json_mode_writes_nothing_to_stdout_but_the_payload() {
     let env = Env::shipped();
-    for args in [&["doctor"][..], &["registry"], &["services"], &["tools", "list"], &["toolsets", "list"], &["state"], &["skills", "list"], &["refresh"]] {
+    for args in [
+        &["doctor"][..],
+        &["registry"],
+        &["services"],
+        &["tools", "list"],
+        &["toolsets", "list"],
+        &["state"],
+        &["skills", "list"],
+        &["refresh"],
+    ] {
         let out = env.json(args);
         // `json()` panics unless the *whole* of stdout is one JSON document.
         out.json();
@@ -165,7 +194,12 @@ fn a_text_mode_error_goes_to_stderr_with_the_program_name() {
     let out = Env::shipped().run(&["tools", "show", "definitely-not-a-tool"]);
     assert_eq!(out.code, 1);
     assert!(out.stdout.is_empty());
-    assert!(out.stderr.starts_with("reactor: unknown tool(s): definitely-not-a-tool"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .starts_with("reactor: unknown tool(s): definitely-not-a-tool"),
+        "{}",
+        out.stderr
+    );
 }
 
 #[test]
@@ -174,19 +208,34 @@ fn install_never_runs_without_confirmation() {
     // yes. Every catalogued tool is a plausible `sudo pacman -S`.
     let out = Env::shipped().json(&["install", "jq"]);
     let p = out.json();
-    assert_eq!(p.get("ran").and_then(Value::as_array).map(Vec::len).unwrap_or(0), 0);
+    assert_eq!(
+        p.get("ran")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0),
+        0
+    );
 }
 
 #[test]
 fn install_all_targets_the_whole_catalogue() {
     let env = Env::shipped();
     let cat: Vec<String> = env.json(&["tools", "list", "--cached"]).json()["tools"]
-        .as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect();
     let out = env.json(&["install", "all", "--dry-run"]);
     assert_eq!(out.code, 0);
     let p = out.json();
-    let mut covered: Vec<String> = p["plan"].as_array().unwrap().iter().chain(p["skipped"].as_array().unwrap())
-        .map(|e| e["tool"].as_str().unwrap().to_string()).collect();
+    let mut covered: Vec<String> = p["plan"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(p["skipped"].as_array().unwrap())
+        .map(|e| e["tool"].as_str().unwrap().to_string())
+        .collect();
     covered.sort();
     let mut expect = cat;
     expect.sort();
@@ -232,7 +281,10 @@ fn enable_and_disable_round_trip_through_state_json() {
     let on = env.json(&["tools", "enable", "jq"]).json();
     assert_eq!(on["state"]["tools"]["disabled"], serde_json::json!([]));
     if let Some(before) = before {
-        assert_eq!(before, std::fs::read_to_string(env.cfg.join("state.json")).unwrap());
+        assert_eq!(
+            before,
+            std::fs::read_to_string(env.cfg.join("state.json")).unwrap()
+        );
     }
 }
 
@@ -252,7 +304,11 @@ fn a_project_state_file_is_used_and_written_in_place() {
     let env = Env::shipped();
     let project = env.cwd.join("work");
     std::fs::create_dir_all(project.join(".reactor")).unwrap();
-    std::fs::write(project.join(".reactor/state.json"), r#"{"version":1,"toolsets":[],"tools":{}}"#).unwrap();
+    std::fs::write(
+        project.join(".reactor/state.json"),
+        r#"{"version":1,"toolsets":[],"tools":{}}"#,
+    )
+    .unwrap();
     let nested = project.join("deep/er");
     std::fs::create_dir_all(&nested).unwrap();
 
@@ -264,9 +320,15 @@ fn a_project_state_file_is_used_and_written_in_place() {
 
     let mut cmd = env.command(&["tools", "disable", "jq", "--format", "json"]);
     cmd.current_dir(&nested).output().unwrap();
-    let written: Value = serde_json::from_str(&std::fs::read_to_string(project.join(".reactor/state.json")).unwrap()).unwrap();
+    let written: Value = serde_json::from_str(
+        &std::fs::read_to_string(project.join(".reactor/state.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(written["tools"]["disabled"], serde_json::json!(["jq"]));
-    assert!(!env.cfg.join("state.json").exists(), "the machine state must not be touched");
+    assert!(
+        !env.cfg.join("state.json").exists(),
+        "the machine state must not be touched"
+    );
 }
 
 // -- TestManualInstall ------------------------------------------------------
@@ -298,17 +360,32 @@ fn manual_env() -> Env {
 
 #[test]
 fn force_plans_the_one_liner() {
-    let out = manual_env().json(&["install", "demo-manual", "--force-install-manual", "--dry-run"]);
+    let out = manual_env().json(&[
+        "install",
+        "demo-manual",
+        "--force-install-manual",
+        "--dry-run",
+    ]);
     assert_eq!(out.code, 0);
     let p = out.json();
     assert_eq!(p["plan"][0]["method"], "manual");
-    assert!(p["plan"][0]["command"].as_str().unwrap().contains("demo-bin"));
+    assert!(
+        p["plan"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("demo-bin")
+    );
     assert_eq!(p["plan"][0]["argv"][0], "sh");
 }
 
 #[test]
 fn auto_falls_back_when_no_manager_recipe_ran() {
-    let out = manual_env().json(&["install", "demo-manual", "--auto-install-manual", "--dry-run"]);
+    let out = manual_env().json(&[
+        "install",
+        "demo-manual",
+        "--auto-install-manual",
+        "--dry-run",
+    ]);
     assert_eq!(out.code, 0);
     assert_eq!(out.json()["plan"][0]["method"], "manual");
 }
@@ -320,8 +397,12 @@ fn without_a_flag_the_oneliner_is_only_a_note() {
     let p = out.json();
     assert_eq!(p["plan"].as_array().unwrap().len(), 0);
     assert!(
-        p["skipped"].as_array().unwrap().iter().any(|s| s["reason"].as_str().unwrap().contains("manual-install-oneliner")),
-        "skip reasons should point at the oneliner: {}", p["skipped"]
+        p["skipped"].as_array().unwrap().iter().any(|s| s["reason"]
+            .as_str()
+            .unwrap()
+            .contains("manual-install-oneliner")),
+        "skip reasons should point at the oneliner: {}",
+        p["skipped"]
     );
 }
 
@@ -330,23 +411,50 @@ fn force_without_a_oneliner_skips() {
     // bulk-extractor: has only `brew` + a `manual` note, no oneliner, and is not
     // plausibly installed on a dev machine -- so the skip is the reason we are
     // checking, not "already present".
-    let out = manual_env().json(&["install", "bulk-extractor", "--force-install-manual", "--dry-run"]);
+    let out = manual_env().json(&[
+        "install",
+        "bulk-extractor",
+        "--force-install-manual",
+        "--dry-run",
+    ]);
     assert_eq!(out.code, 0);
     let p = out.json();
     assert_eq!(p["plan"].as_array().unwrap().len(), 0);
-    assert!(p["skipped"].as_array().unwrap().iter().any(|s| s["reason"] == "no manual-install-oneliner"));
+    assert!(
+        p["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["reason"] == "no manual-install-oneliner")
+    );
 }
 
 #[test]
 fn flags_are_mutually_exclusive() {
-    let out = manual_env().json(&["install", "demo-manual", "--auto-install-manual", "--force-install-manual"]);
+    let out = manual_env().json(&[
+        "install",
+        "demo-manual",
+        "--auto-install-manual",
+        "--force-install-manual",
+    ]);
     assert_eq!(out.code, 1);
-    assert!(out.json()["error"].as_str().unwrap().contains("mutually exclusive"));
+    assert!(
+        out.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("mutually exclusive")
+    );
 }
 
 #[test]
 fn method_conflicts_with_the_manual_flags() {
-    let out = manual_env().json(&["install", "demo-manual", "--method", "pacman", "--force-install-manual"]);
+    let out = manual_env().json(&[
+        "install",
+        "demo-manual",
+        "--method",
+        "pacman",
+        "--force-install-manual",
+    ]);
     assert_eq!(out.code, 1);
     assert!(out.json()["error"].as_str().unwrap().contains("--method"));
 }
@@ -381,7 +489,11 @@ fn complete_ids_lists_every_catalogued_tool_in_declaration_order() {
     let out = env.run(&["__complete", "tools"]);
     assert_eq!(out.code, 0);
     let listed: Vec<String> = env.json(&["tools", "list", "--cached"]).json()["tools"]
-        .as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect();
     assert_eq!(out.stdout.lines().collect::<Vec<_>>(), listed);
 }
 
@@ -389,9 +501,20 @@ fn complete_ids_lists_every_catalogued_tool_in_declaration_order() {
 fn complete_ids_lists_every_toolset() {
     let env = Env::shipped();
     let out = env.run(&["__complete", "toolsets"]);
-    let listed: std::collections::BTreeSet<String> = env.json(&["toolsets", "list"]).json()["toolsets"]
-        .as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
-    assert_eq!(out.stdout.lines().map(str::to_string).collect::<std::collections::BTreeSet<_>>(), listed);
+    let listed: std::collections::BTreeSet<String> =
+        env.json(&["toolsets", "list"]).json()["toolsets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect();
+    assert_eq!(
+        out.stdout
+            .lines()
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>(),
+        listed
+    );
 }
 
 #[test]
@@ -416,7 +539,10 @@ fn completion_prints_a_script_per_shell_that_calls_back_in() {
         let out = env.run(&["completion", shell]);
         assert_eq!(out.code, 0, "{}", out.stderr);
         assert!(out.stdout.contains("__complete"));
-        assert!(out.stdout.contains("setup"), "{shell}: the top-level command list must know `setup`");
+        assert!(
+            out.stdout.contains("setup"),
+            "{shell}: the top-level command list must know `setup`"
+        );
     }
 }
 
@@ -443,7 +569,10 @@ fn every_top_level_command_is_in_every_completion_script() {
     for shell in ["bash", "zsh", "fish"] {
         let script = env.run(&["completion", shell]).stdout;
         for c in &commands {
-            assert!(script.contains(c.as_str()), "{shell} completion does not mention `{c}`");
+            assert!(
+                script.contains(c.as_str()),
+                "{shell} completion does not mention `{c}`"
+            );
         }
     }
 }
@@ -456,21 +585,42 @@ fn every_top_level_command_is_in_every_completion_script() {
 fn json_and_text_outputs_are_byte_identical_to_the_python_clis() {
     let env = Env::new();
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    env.write("tools.toml", &std::fs::read_to_string(golden.join("tools.toml")).unwrap());
-    env.write("toolsets.toml", &std::fs::read_to_string(golden.join("toolsets.toml")).unwrap());
+    env.write(
+        "tools.toml",
+        &std::fs::read_to_string(golden.join("tools.toml")).unwrap(),
+    );
+    env.write(
+        "toolsets.toml",
+        &std::fs::read_to_string(golden.join("toolsets.toml")).unwrap(),
+    );
     let cfg = env.cfg.display().to_string();
 
     let cases: &[(&[&str], &str)] = &[
-        (&["registry", "--cached", "--format", "json"], "registry-cached.json"),
+        (
+            &["registry", "--cached", "--format", "json"],
+            "registry-cached.json",
+        ),
         (&["registry", "--cached"], "registry-cached.txt"),
-        (&["tools", "list", "--cached", "--format", "json"], "tools-list-cached.json"),
+        (
+            &["tools", "list", "--cached", "--format", "json"],
+            "tools-list-cached.json",
+        ),
         (&["tools", "list", "--cached"], "tools-list-cached.txt"),
-        (&["toolsets", "list", "--format", "json"], "toolsets-list.json"),
+        (
+            &["toolsets", "list", "--format", "json"],
+            "toolsets-list.json",
+        ),
         (&["toolsets", "list"], "toolsets-list.txt"),
         (&["state", "--format", "json"], "state.json.golden"),
-        (&["services", "--cached", "--format", "json"], "services-cached.json"),
+        (
+            &["services", "--cached", "--format", "json"],
+            "services-cached.json",
+        ),
         (&["services", "--cached"], "services-cached.txt"),
-        (&["tools", "show", "gamma", "--cached", "--format", "json"], "tools-show-gamma.json"),
+        (
+            &["tools", "show", "gamma", "--cached", "--format", "json"],
+            "tools-show-gamma.json",
+        ),
     ];
     for (args, file) in cases {
         let out = env.run(args);
@@ -488,16 +638,29 @@ fn setup_seeds_config_and_state_and_never_clobbers() {
     let env = Env::new();
     let out = env.run(&["setup", "--no-skills", "--no-completions"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(), repo_file("tools.toml"));
-    assert_eq!(std::fs::read_to_string(env.cfg.join("toolsets.toml")).unwrap(), repo_file("toolsets.toml"));
+    assert_eq!(
+        std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(),
+        repo_file("tools.toml")
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.cfg.join("toolsets.toml")).unwrap(),
+        repo_file("toolsets.toml")
+    );
     assert!(env.cfg.join("state.json").is_file());
 
     // A user edit survives a re-run, and setup says so.
     let edited = repo_file("tools.toml") + "\n# mine\n";
     env.write("tools.toml", &edited);
     let again = env.run(&["setup", "--no-skills", "--no-completions"]);
-    assert_eq!(std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(), edited);
-    assert!(again.stdout.contains("differs from the shipped copy"), "{}", again.stdout);
+    assert_eq!(
+        std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(),
+        edited
+    );
+    assert!(
+        again.stdout.contains("differs from the shipped copy"),
+        "{}",
+        again.stdout
+    );
     assert!(again.stdout.contains("(kept)"));
 }
 
@@ -522,7 +685,8 @@ fn setup_installs_completions_where_each_shell_looks() {
         ("zsh", ".zfunc/_reactor"),
         ("fish", ".config/fish/completions/reactor.fish"),
     ] {
-        let written = std::fs::read_to_string(env.home.join(rel)).unwrap_or_else(|e| panic!("{shell}: {e}"));
+        let written =
+            std::fs::read_to_string(env.home.join(rel)).unwrap_or_else(|e| panic!("{shell}: {e}"));
         assert_eq!(written, env.run(&["completion", shell]).stdout);
     }
     assert!(out.stdout.contains("fpath+="));
@@ -537,8 +701,17 @@ fn a_bare_binary_runs_doctor_before_setup_from_the_compiled_in_catalogue() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     let p = out.json();
     assert_eq!(p["config"]["shipped_fallback"], true);
-    assert!(p["problems"].as_array().unwrap().iter().any(|x| x["kind"] == "not-installed"));
-    assert!(!env.cfg.exists(), "reading the fallback must not create the config dir");
+    assert!(
+        p["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["kind"] == "not-installed")
+    );
+    assert!(
+        !env.cfg.exists(),
+        "reading the fallback must not create the config dir"
+    );
 }
 
 #[test]
@@ -547,7 +720,11 @@ fn the_legacy_state_root_is_moved_once() {
     let old = env.home.join(".pi/reactor");
     std::fs::create_dir_all(&old).unwrap();
     std::fs::write(old.join("tools.toml"), repo_file("tools.toml")).unwrap();
-    std::fs::write(old.join("state.json"), r#"{"version":1,"toolsets":["static"],"tools":{"enabled":[],"disabled":[]}}"#).unwrap();
+    std::fs::write(
+        old.join("state.json"),
+        r#"{"version":1,"toolsets":["static"],"tools":{"enabled":[],"disabled":[]}}"#,
+    )
+    .unwrap();
 
     // No REACTOR_CONFIG_DIR: the default location is in play.
     let mut cmd = env.command(&["state", "--format", "json"]);
@@ -557,7 +734,10 @@ fn the_legacy_state_root_is_moved_once() {
     let p: Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(p["state"]["toolsets"], serde_json::json!(["static"]));
     assert!(env.home.join(".reactor/tools.toml").is_file());
-    assert!(!old.exists(), "the old root should have moved, not been copied");
+    assert!(
+        !old.exists(),
+        "the old root should have moved, not been copied"
+    );
 }
 
 #[test]
@@ -598,7 +778,12 @@ fn diff_config_reports_drift_and_exits_1() {
     assert_eq!(out.code, 1);
     let p = out.json();
     assert_eq!(p["differ"], true);
-    assert!(p["diff"].as_str().unwrap().contains("--- shipped/tools.toml"));
+    assert!(
+        p["diff"]
+            .as_str()
+            .unwrap()
+            .contains("--- shipped/tools.toml")
+    );
     assert!(p["diff"].as_str().unwrap().contains("+# mine"));
     assert_eq!(p["files"][0]["state"], "differs");
 }
@@ -611,7 +796,10 @@ fn overwrite_config_backs_up_and_needs_yes() {
 
     let refused = env.json(&["overwrite-config"]);
     assert_eq!(refused.code, 1);
-    assert_eq!(std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(), edited);
+    assert_eq!(
+        std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(),
+        edited
+    );
 
     let done = env.json(&["overwrite-config", "--yes"]);
     assert_eq!(done.code, 0);
@@ -619,7 +807,10 @@ fn overwrite_config_backs_up_and_needs_yes() {
     assert_eq!(p["replaced"], serde_json::json!(["tools.toml"]));
     let backup = PathBuf::from(p["backups"][0].as_str().unwrap());
     assert_eq!(std::fs::read_to_string(backup).unwrap(), edited);
-    assert_eq!(std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(), repo_file("tools.toml"));
+    assert_eq!(
+        std::fs::read_to_string(env.cfg.join("tools.toml")).unwrap(),
+        repo_file("tools.toml")
+    );
 }
 
 // -- skills -------------------------------------------------------------------
@@ -629,7 +820,12 @@ fn skills_show_prints_a_fetched_skill_and_refuses_an_unfetched_one() {
     let env = Env::shipped();
     let missing = env.json(&["skills", "show", "bn"]);
     assert_eq!(missing.code, 1);
-    assert!(missing.json()["error"].as_str().unwrap().contains("no fetched skill"));
+    assert!(
+        missing.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("no fetched skill")
+    );
 
     let dir = env.cfg.join("skills/bn");
     std::fs::create_dir_all(&dir).unwrap();
@@ -644,9 +840,18 @@ fn skills_list_reports_fetch_state_and_metadata() {
     let dir = env.cfg.join("skills/bn");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\n---\n").unwrap();
-    std::fs::write(dir.join(".reactor-skill.json"), r#"{"commit":"abcdef0123456789","fetched_at":1700000000}"#).unwrap();
+    std::fs::write(
+        dir.join(".reactor-skill.json"),
+        r#"{"commit":"abcdef0123456789","fetched_at":1700000000}"#,
+    )
+    .unwrap();
     let p = env.json(&["skills", "list"]).json();
-    let bn = p["skills"].as_array().unwrap().iter().find(|s| s["tool"] == "bn").unwrap();
+    let bn = p["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["tool"] == "bn")
+        .unwrap();
     assert_eq!(bn["fetched"], true);
     assert_eq!(bn["commit"], "abcdef0123456789");
     assert_eq!(bn["fetched_at"], 1700000000);
@@ -670,7 +875,9 @@ fn a_repeated_flag_is_accepted_and_the_last_one_wins() {
     // The GUI's client used to send `--format json --format json`; argparse
     // allowed it, so callers depend on it.
     let env = Env::shipped();
-    let out = env.run(&["services", "--format", "text", "--format", "json", "--cached", "--cached"]);
+    let out = env.run(&[
+        "services", "--format", "text", "--format", "json", "--cached", "--cached",
+    ]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(out.json()["schema"], 1);
 }
@@ -678,8 +885,19 @@ fn a_repeated_flag_is_accepted_and_the_last_one_wins() {
 #[test]
 fn repeated_tags_still_accumulate() {
     let env = Env::shipped();
-    let one = env.json(&["tools", "list", "--cached", "--tag", "static"]).json();
-    let two = env.json(&["tools", "list", "--cached", "--tag", "static", "--tag", "native"]).json();
+    let one = env
+        .json(&["tools", "list", "--cached", "--tag", "static"])
+        .json();
+    let two = env
+        .json(&[
+            "tools", "list", "--cached", "--tag", "static", "--tag", "native",
+        ])
+        .json();
     let n = |v: &Value| v["tools"].as_array().unwrap().len();
-    assert!(n(&two) < n(&one), "a second --tag must narrow, not replace: {} vs {}", n(&two), n(&one));
+    assert!(
+        n(&two) < n(&one),
+        "a second --tag must narrow, not replace: {} vs {}",
+        n(&two),
+        n(&one)
+    );
 }

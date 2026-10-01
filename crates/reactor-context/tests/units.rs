@@ -31,7 +31,10 @@ fn truncate_keeps_whole_strings_and_ellipsizes_the_rest() {
     assert_eq!(truncate("short", 80), "short");
     assert_eq!(truncate("abcdef", 6), "abcdef");
     assert_eq!(truncate("abcdefg", 6), "abcde…");
-    assert_eq!(truncate("abc", 0), "abc".chars().take(0).collect::<String>() + "…");
+    assert_eq!(
+        truncate("abc", 0),
+        "abc".chars().take(0).collect::<String>() + "…"
+    );
     // Emoji count as two units, so this is over the limit at 5 chars.
     assert_eq!(truncate("ab😀cd", 5), "ab😀…");
 }
@@ -45,7 +48,10 @@ fn a_cut_that_would_split_a_surrogate_pair_stops_before_it() {
 
 #[test]
 fn truncate_words_takes_the_first_words_and_squeezes_whitespace() {
-    assert_eq!(truncate_words("  one   two\tthree four ", 3), "one two three");
+    assert_eq!(
+        truncate_words("  one   two\tthree four ", 3),
+        "one two three"
+    );
     assert_eq!(truncate_words("one", 3), "one");
     assert_eq!(truncate_words("   ", 3), "");
     assert_eq!(truncate_words("", 3), "");
@@ -69,11 +75,24 @@ fn settings_default_to_what_the_extensions_defaulted_to() {
     let s = Settings::default();
     assert!(s.toolbox);
     assert!(s.hidden_services.is_empty());
-    assert_eq!((s.manifest.soft_step_limit, s.manifest.max_description, s.manifest.status_words), (20, 80, 3));
+    assert_eq!(
+        (
+            s.manifest.soft_step_limit,
+            s.manifest.max_description,
+            s.manifest.status_words
+        ),
+        (20, 80, 3)
+    );
     assert_eq!(s.manifest.derive_context_chars, 24_000);
     assert_eq!(s.identity.default, "");
-    assert_eq!((s.reporting.level, s.reporting.folder.as_str()), (Enforcement::OFF, "report"));
-    assert_eq!((s.reporting.step_threshold, s.reporting.max_reverts), (8, 3));
+    assert_eq!(
+        (s.reporting.level, s.reporting.folder.as_str()),
+        (Enforcement::OFF, "report")
+    );
+    assert_eq!(
+        (s.reporting.step_threshold, s.reporting.max_reverts),
+        (8, 3)
+    );
     assert_eq!(s.reporting.template_path, None);
 }
 
@@ -95,7 +114,10 @@ fn loading_is_forgiving_field_by_field() {
     assert_eq!(s.identity.user.names().collect::<Vec<_>>(), ["a"]);
     assert_eq!(s.reporting.level, Enforcement::STRICT);
     assert_eq!(s.reporting.folder, "out");
-    assert_eq!(s.reporting.step_threshold, 8, "a zero threshold means nothing");
+    assert_eq!(
+        s.reporting.step_threshold, 8,
+        "a zero threshold means nothing"
+    );
     assert_eq!(s.reporting.max_reverts, 0, "zero reverts is a real choice");
     assert_eq!(s.reporting.template_path.as_deref(), Some("t.md"));
 }
@@ -115,19 +137,41 @@ fn a_file_that_is_not_json_or_not_an_object_means_defaults() {
 fn saving_round_trips_and_writes_sorted_keys() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::new(dir.path(), Shipped::Embedded);
-    let mut s = Settings { hidden_services: vec!["adb".into()], ..Settings::default() };
-    s.identity.user = UserIdentities::from_pairs([("zeta".into(), "Z".into()), ("alpha".into(), "A".into())]);
+    let mut s = Settings {
+        hidden_services: vec!["adb".into()],
+        ..Settings::default()
+    };
+    s.identity.user =
+        UserIdentities::from_pairs([("zeta".into(), "Z".into()), ("alpha".into(), "A".into())]);
     s.save(&paths).unwrap();
     // JSON files are written with sorted keys, so saved identities come back in
     // alphabetical order rather than the order they were saved in.
     let mut sorted = s.clone();
-    sorted.identity.user = UserIdentities::from_pairs([("alpha".into(), "A".into()), ("zeta".into(), "Z".into())]);
+    sorted.identity.user =
+        UserIdentities::from_pairs([("alpha".into(), "A".into()), ("zeta".into(), "Z".into())]);
     assert_eq!(Settings::load(&paths), sorted);
 
     let text = fs::read_to_string(Settings::path(&paths)).unwrap();
     assert!(text.ends_with("}\n"));
-    let top: Vec<&str> = text.lines().filter(|l| l.starts_with("  \"")).map(|l| l.trim().split('"').nth(1).unwrap()).collect();
-    assert_eq!(top, ["context", "defaultModel", "hiddenServices", "identity", "manifest", "models", "reporting", "toolbox"], "keys are sorted");
+    let top: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("  \""))
+        .map(|l| l.trim().split('"').nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        top,
+        [
+            "context",
+            "defaultModel",
+            "hiddenServices",
+            "identity",
+            "manifest",
+            "models",
+            "reporting",
+            "toolbox"
+        ],
+        "keys are sorted"
+    );
 }
 
 #[test]
@@ -159,9 +203,21 @@ fn normalizing_a_stored_entry_keeps_only_what_has_the_right_shape() {
     assert_eq!(s.guidelines.as_deref(), Some("g"));
     assert_eq!(
         s.steps,
-        [Step { summary: "a".into(), status: "b".into() }, Step { summary: "no status".into(), status: "".into() }]
+        [
+            Step {
+                summary: "a".into(),
+                status: "b".into()
+            },
+            Step {
+                summary: "no status".into(),
+                status: "".into()
+            }
+        ]
     );
-    assert_eq!(manifest::State::normalize(&json!(null)), manifest::State::default());
+    assert_eq!(
+        manifest::State::normalize(&json!(null)),
+        manifest::State::default()
+    );
 }
 
 #[test]
@@ -170,22 +226,42 @@ fn state_serializes_without_unset_fields() {
     assert_eq!(serde_json::to_value(&s).unwrap(), json!({"steps": []}));
     s.enabled = Some(false);
     s.goal = Some("g".into());
-    assert_eq!(serde_json::to_value(&s).unwrap(), json!({"enabled": false, "goal": "g", "steps": []}));
+    assert_eq!(
+        serde_json::to_value(&s).unwrap(),
+        json!({"enabled": false, "goal": "g", "steps": []})
+    );
 }
 
 #[test]
 fn an_untouched_session_adds_nothing_to_the_prompt() {
     // The property the prompt cache depends on.
     let cfg = Settings::default();
-    assert_eq!(manifest::block(&manifest::State::default(), &cfg.manifest), None);
-    assert_eq!(identity::block(&identity::State::default(), &cfg.identity), None);
-    assert_eq!(Tracker::new().clone().before_agent_start(&SessionState::default(), &cfg.reporting, "p"), None);
+    assert_eq!(
+        manifest::block(&manifest::State::default(), &cfg.manifest),
+        None
+    );
+    assert_eq!(
+        identity::block(&identity::State::default(), &cfg.identity),
+        None
+    );
+    assert_eq!(
+        Tracker::new()
+            .clone()
+            .before_agent_start(&SessionState::default(), &cfg.reporting, "p"),
+        None
+    );
 }
 
 #[test]
 fn extract_json_survives_fences_prose_and_nonsense() {
-    assert_eq!(manifest::extract_json("```json\n{\"a\": 1}\n```"), Some(json!({"a": 1})));
-    assert_eq!(manifest::extract_json("here: {\"a\": {\"b\": 2}} done"), Some(json!({"a": {"b": 2}})));
+    assert_eq!(
+        manifest::extract_json("```json\n{\"a\": 1}\n```"),
+        Some(json!({"a": 1}))
+    );
+    assert_eq!(
+        manifest::extract_json("here: {\"a\": {\"b\": 2}} done"),
+        Some(json!({"a": {"b": 2}}))
+    );
     assert_eq!(manifest::extract_json("no braces"), None);
     assert_eq!(manifest::extract_json("} {"), None);
     assert_eq!(manifest::extract_json("{not json}"), None);
@@ -196,17 +272,31 @@ fn extract_json_survives_fences_prose_and_nonsense() {
 #[test]
 fn the_builtins_are_the_six_the_extension_shipped_in_order() {
     let names: Vec<&str> = identity::BUILTINS.iter().map(|(n, _)| *n).collect();
-    assert_eq!(names, ["reverse-engineer", "cyber-forensics", "forensics", "software-engineer", "infrastructure", "publisher"]);
+    assert_eq!(
+        names,
+        [
+            "reverse-engineer",
+            "cyber-forensics",
+            "forensics",
+            "software-engineer",
+            "infrastructure",
+            "publisher"
+        ]
+    );
     for (n, text) in identity::BUILTINS {
         assert!(text.starts_with("You are the "), "{n}");
-        assert!(!text.ends_with('\n'), "{n}: the texts carry no trailing newline, as in the TS");
+        assert!(
+            !text.ends_with('\n'),
+            "{n}: the texts carry no trailing newline, as in the TS"
+        );
         assert!(identity::builtin_description(n).is_some(), "{n}");
     }
 }
 
 #[test]
 fn saved_identities_keep_file_order_and_overwrite_in_place() {
-    let mut u = UserIdentities::from_pairs([("zeta".into(), "Z".into()), ("alpha".into(), "A".into())]);
+    let mut u =
+        UserIdentities::from_pairs([("zeta".into(), "Z".into()), ("alpha".into(), "A".into())]);
     assert_eq!(u.names().collect::<Vec<_>>(), ["zeta", "alpha"]);
     u.set("zeta".into(), "Z2".into());
     assert_eq!(u.names().collect::<Vec<_>>(), ["zeta", "alpha"]);
@@ -226,7 +316,10 @@ fn a_missing_folder_snapshots_as_empty_not_as_an_error() {
 #[test]
 fn the_first_tool_call_only_takes_a_baseline() {
     let cfg = Settings::default().reporting;
-    let on = SessionState { enabled: Some(true), level: None };
+    let on = SessionState {
+        enabled: Some(true),
+        level: None,
+    };
     let mut t = Tracker::new();
     let snap = reporting::Snapshot::new();
     t.tool_end(&on, snap.clone());
@@ -251,7 +344,14 @@ fn the_level_is_the_sessions_else_the_globals() {
     let mut cfg = Settings::default().reporting;
     cfg.level = Enforcement::NAG;
     assert_eq!(SessionState::default().level(&cfg), Enforcement::NAG);
-    assert_eq!(SessionState { enabled: None, level: Some(Enforcement::STRICT) }.level(&cfg), Enforcement::STRICT);
+    assert_eq!(
+        SessionState {
+            enabled: None,
+            level: Some(Enforcement::STRICT)
+        }
+        .level(&cfg),
+        Enforcement::STRICT
+    );
     assert_eq!(Enforcement::new(3), None);
 }
 
@@ -260,9 +360,15 @@ fn the_level_is_the_sessions_else_the_globals() {
 #[test]
 fn frontmatter_is_two_fields_and_everything_else_is_prose() {
     let s = scenario::parse_step("---\ntitle: T\ntoolset: triage\nother: x\n---\nbody\n\nmore\n");
-    assert_eq!((s.title.as_str(), s.toolset.as_deref(), s.body.as_str()), ("T", Some("triage"), "body\n\nmore"));
+    assert_eq!(
+        (s.title.as_str(), s.toolset.as_deref(), s.body.as_str()),
+        ("T", Some("triage"), "body\n\nmore")
+    );
     let none = scenario::parse_step("just prose\n");
-    assert_eq!((none.title.as_str(), none.toolset, none.body.as_str()), ("", None, "just prose"));
+    assert_eq!(
+        (none.title.as_str(), none.toolset, none.body.as_str()),
+        ("", None, "just prose")
+    );
     let unterminated = scenario::parse_step("---\ntitle: T\nbody but no closing fence\n");
     assert_eq!(unterminated.title, "", "an unterminated block is prose");
 }
@@ -278,7 +384,10 @@ fn a_crlf_frontmatter_loses_every_field_but_the_last_exactly_as_the_extension_do
     assert_eq!(s.toolset.as_deref(), Some("native"));
     assert_eq!(s.body, "body");
     // With one field there is only a last line.
-    assert_eq!(scenario::parse_step("---\r\ntitle: X\r\n---\r\nbody").title, "X");
+    assert_eq!(
+        scenario::parse_step("---\r\ntitle: X\r\n---\r\nbody").title,
+        "X"
+    );
 }
 
 #[test]
@@ -286,7 +395,11 @@ fn the_shipped_scenarios_load_and_name_only_real_toolsets() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let scenarios = root.join("prompts/scenarios");
     let paths = Paths::new("/nonexistent", Shipped::Dir(root.clone()));
-    let toolsets: Vec<String> = load_toolsets(&paths).unwrap().into_iter().map(|t| t.id).collect();
+    let toolsets: Vec<String> = load_toolsets(&paths)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
 
     let ids = scenario::list_scenarios(&scenarios);
     assert!(ids.contains(&"investigation".to_string()), "{ids:?}");
@@ -297,7 +410,11 @@ fn the_shipped_scenarios_load_and_name_only_real_toolsets() {
             assert!(!step.title.is_empty(), "{id} phase {}: no title", i + 1);
             assert!(!step.body.is_empty(), "{id} phase {}: no body", i + 1);
             if let Some(t) = &step.toolset {
-                assert!(toolsets.contains(t), "{id} phase {}: toolset {t:?} is not in toolsets.toml", i + 1);
+                assert!(
+                    toolsets.contains(t),
+                    "{id} phase {}: toolset {t:?} is not in toolsets.toml",
+                    i + 1
+                );
             }
         }
     }
@@ -331,24 +448,53 @@ mod context_settings {
         assert_eq!(s.context.mode.as_deref(), Some("fade"));
         assert_eq!(s.context.pct, Some(0.8));
         assert_eq!(s.context.keep, None, "keep must be a fraction below 1");
-        assert_eq!(s.context.reserve, None, "wrong shape is unset, not a default");
+        assert_eq!(
+            s.context.reserve, None,
+            "wrong shape is unset, not a default"
+        );
         assert_eq!(s.context.window, Some(32_000));
         assert_eq!(s.context.summarizer.as_deref(), Some("ollama/small"));
-        assert_eq!(s.models, ["ollama/qwen", "anthropic/claude"], "only provider/name specs");
+        assert_eq!(
+            s.models,
+            ["ollama/qwen", "anthropic/claude"],
+            "only provider/name specs"
+        );
         assert_eq!(s.default_model.as_deref(), Some("ollama/qwen"));
-        assert_eq!(Settings::from_json(&json!({"context": {"mode": "bogus"}})).context.mode, None);
+        assert_eq!(
+            Settings::from_json(&json!({"context": {"mode": "bogus"}}))
+                .context
+                .mode,
+            None
+        );
     }
 
     #[test]
     fn a_session_layer_wins_field_by_field_and_reports_where_each_came_from() {
-        let global = ContextSettings { mode: Some("auto".into()), window: Some(32_000), pct: Some(0.8), ..Default::default() };
-        let session = ContextSettings::normalize(&json!({ "mode": "fade", "reserve": 4096, "summarizer": "ollama/small" }));
+        let global = ContextSettings {
+            mode: Some("auto".into()),
+            window: Some(32_000),
+            pct: Some(0.8),
+            ..Default::default()
+        };
+        let session = ContextSettings::normalize(
+            &json!({ "mode": "fade", "reserve": 4096, "summarizer": "ollama/small" }),
+        );
         let eff = session.over(&global);
-        assert_eq!((eff.mode.as_deref(), eff.reserve), (Some("fade"), Some(4096)));
-        assert_eq!(eff.pct, Some(0.8), "everything the session does not set comes from the global");
+        assert_eq!(
+            (eff.mode.as_deref(), eff.reserve),
+            (Some("fade"), Some(4096))
+        );
+        assert_eq!(
+            eff.pct,
+            Some(0.8),
+            "everything the session does not set comes from the global"
+        );
         assert_eq!(eff.window, Some(32_000));
         assert_eq!(eff.summarizer.as_deref(), Some("ollama/small"));
-        assert_eq!(eff.keep, None, "and what neither sets is left to the built-in default");
+        assert_eq!(
+            eff.keep, None,
+            "and what neither sets is left to the built-in default"
+        );
 
         let origins: std::collections::HashMap<_, _> = session.origins().into_iter().collect();
         assert_eq!(origins["mode"], Origin::Session);
@@ -359,11 +505,20 @@ mod context_settings {
 
     #[test]
     fn an_empty_layer_changes_nothing() {
-        let g = ContextSettings { pct: Some(0.7), ..Default::default() };
+        let g = ContextSettings {
+            pct: Some(0.7),
+            ..Default::default()
+        };
         assert_eq!(ContextSettings::default().over(&g), g);
-        assert_eq!(ContextSettings::normalize(&json!(null)), ContextSettings::default());
+        assert_eq!(
+            ContextSettings::normalize(&json!(null)),
+            ContextSettings::default()
+        );
         // Out-of-range values are dropped, not applied.
-        assert!(ContextSettings::normalize(&json!({"pct": 5, "keep": 0, "mode": "x", "reserve": -1})).is_empty());
+        assert!(
+            ContextSettings::normalize(&json!({"pct": 5, "keep": 0, "mode": "x", "reserve": -1}))
+                .is_empty()
+        );
     }
 
     #[test]

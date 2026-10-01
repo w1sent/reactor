@@ -46,7 +46,11 @@ pub struct Bash {
 
 impl Bash {
     pub fn new(cwd: PathBuf) -> Self {
-        Bash { cwd, sessions: tokio::sync::Mutex::new(HashMap::new()), counter: AtomicU64::new(0) }
+        Bash {
+            cwd,
+            sessions: tokio::sync::Mutex::new(HashMap::new()),
+            counter: AtomicU64::new(0),
+        }
     }
 }
 
@@ -76,8 +80,14 @@ impl Shell {
         let mut stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
         // One stream for the model: stderr joins stdout for good, no job-control chatter.
-        stdin.write_all(b"exec 2>&1\nset +m\nunset HISTFILE\n").await?;
-        Ok(Shell { child, stdin, stdout })
+        stdin
+            .write_all(b"exec 2>&1\nset +m\nunset HISTFILE\n")
+            .await?;
+        Ok(Shell {
+            child,
+            stdin,
+            stdout,
+        })
     }
 
     fn kill_group(&mut self) {
@@ -101,7 +111,13 @@ struct Capture {
 
 impl Capture {
     fn new() -> Self {
-        Capture { mem: Vec::new(), total: 0, spilled: None, head: Vec::new(), tail: VecDeque::new() }
+        Capture {
+            mem: Vec::new(),
+            total: 0,
+            spilled: None,
+            head: Vec::new(),
+            tail: VecDeque::new(),
+        }
     }
 
     fn push(&mut self, bytes: &[u8]) {
@@ -115,7 +131,11 @@ impl Capture {
         }
         self.mem.extend_from_slice(bytes);
         if self.mem.len() > SPILL_AT {
-            let path = std::env::temp_dir().join(format!("reactor-out-{}-{}.txt", std::process::id(), unique()));
+            let path = std::env::temp_dir().join(format!(
+                "reactor-out-{}-{}.txt",
+                std::process::id(),
+                unique()
+            ));
             if let Ok(mut file) = std::fs::File::create(&path) {
                 let _ = file.write_all(&self.mem);
                 self.head = self.mem[..HEAD_BYTES.min(self.mem.len())].to_vec();
@@ -135,7 +155,11 @@ impl Capture {
                 let _ = file.flush();
                 let tail: Vec<u8> = self.tail.iter().copied().collect();
                 let tail = &tail[tail.len().saturating_sub(TAIL_BYTES)..];
-                let text = format!("{}{CUT}{}", String::from_utf8_lossy(&self.head), String::from_utf8_lossy(tail));
+                let text = format!(
+                    "{}{CUT}{}",
+                    String::from_utf8_lossy(&self.head),
+                    String::from_utf8_lossy(tail)
+                );
                 (text, Some(path))
             }
         }
@@ -165,8 +189,10 @@ async fn run_in(
 ) -> Ended {
     // Group, not subshell, so `cd` and `export` persist; stdin from /dev/null so a
     // command that reads it cannot swallow the lines that follow.
-    let script = format!("{{ {command}\n}} </dev/null\n__rc=$?\nprintf '\\n%s%d\\n' '{marker}' \"$__rc\"\n");
-    if shell.stdin.write_all(script.as_bytes()).await.is_err() || shell.stdin.flush().await.is_err() {
+    let script =
+        format!("{{ {command}\n}} </dev/null\n__rc=$?\nprintf '\\n%s%d\\n' '{marker}' \"$__rc\"\n");
+    if shell.stdin.write_all(script.as_bytes()).await.is_err() || shell.stdin.flush().await.is_err()
+    {
         return Ended::Died;
     }
     let deadline = tokio::time::sleep(timeout);
@@ -220,9 +246,21 @@ impl Tool for Bash {
                 return ToolOutput::err("bash needs a `command` string");
             };
             let session = str_arg(&args, "session").unwrap_or("main").to_string();
-            let timeout = Duration::from_secs(usize_arg(&args, "timeout_secs").map(|s| s as u64).unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS));
-            let restart = args.get("restart").and_then(Value::as_bool).unwrap_or(false);
-            let marker = format!("__REACTOR_DONE_{}_{}__", std::process::id(), self.counter.fetch_add(1, Ordering::Relaxed));
+            let timeout = Duration::from_secs(
+                usize_arg(&args, "timeout_secs")
+                    .map(|s| s as u64)
+                    .unwrap_or(DEFAULT_TIMEOUT_SECS)
+                    .clamp(1, MAX_TIMEOUT_SECS),
+            );
+            let restart = args
+                .get("restart")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let marker = format!(
+                "__REACTOR_DONE_{}_{}__",
+                std::process::id(),
+                self.counter.fetch_add(1, Ordering::Relaxed)
+            );
 
             let mut sessions = self.sessions.lock().await;
             if restart && let Some(mut old) = sessions.remove(&session) {
@@ -252,7 +290,12 @@ impl Tool for Bash {
                         _ => {
                             // `exit` inside a command ends the persistent shell itself.
                             let status = match sessions.get_mut(&session) {
-                                Some(s) => tokio::time::timeout(Duration::from_millis(300), s.child.wait()).await.ok().and_then(|r| r.ok()),
+                                Some(s) => {
+                                    tokio::time::timeout(Duration::from_millis(300), s.child.wait())
+                                        .await
+                                        .ok()
+                                        .and_then(|r| r.ok())
+                                }
                                 None => None,
                             };
                             match status.and_then(|s| s.code()) {
@@ -264,7 +307,9 @@ impl Tool for Bash {
                     if let Some(mut dead) = sessions.remove(&session) {
                         dead.kill_group();
                     }
-                    notes = format!("[{why}; session \"{session}\" was reset -- its working directory, variables and background jobs are gone]");
+                    notes = format!(
+                        "[{why}; session \"{session}\" was reset -- its working directory, variables and background jobs are gone]"
+                    );
                     is_error = true;
                 }
             }
@@ -282,7 +327,11 @@ impl Tool for Bash {
                 }
                 text.push_str(&notes);
             }
-            ToolOutput { text, is_error, full }
+            ToolOutput {
+                text,
+                is_error,
+                full,
+            }
         })
     }
 }

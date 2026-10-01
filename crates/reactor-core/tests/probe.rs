@@ -7,11 +7,11 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use reactor_core::catalogue::{ServiceCount, Tool, DetectKind};
+use reactor_core::catalogue::load_catalogue;
+use reactor_core::catalogue::{DetectKind, ServiceCount, Tool};
 use reactor_core::commands::{ProbeFlags, services};
 use reactor_core::json::{to_string_pretty, to_string_sorted, write_json_atomic};
 use reactor_core::probe::{ProbeOpts, ServiceState, Status, probe, service_detail};
-use reactor_core::catalogue::load_catalogue;
 use reactor_core::util::{par_map, run};
 
 const SERVICE_TOOLS: &str = r#"
@@ -53,10 +53,21 @@ fn svc_fx() -> Fx {
 }
 
 fn report(fx: &Fx, cached: bool) -> reactor_core::commands::ServicesReport {
-    services(&fx.paths, ProbeFlags { refresh: false, cached }).unwrap().report
+    services(
+        &fx.paths,
+        ProbeFlags {
+            refresh: false,
+            cached,
+        },
+    )
+    .unwrap()
+    .report
 }
 
-fn by_id(r: &reactor_core::commands::ServicesReport, id: &str) -> reactor_core::commands::ServiceRow {
+fn by_id(
+    r: &reactor_core::commands::ServicesReport,
+    id: &str,
+) -> reactor_core::commands::ServiceRow {
     r.services.iter().find(|s| s.id == id).cloned().unwrap()
 }
 
@@ -66,7 +77,11 @@ fn by_id(r: &reactor_core::commands::ServicesReport, id: &str) -> reactor_core::
 fn only_tools_with_a_service_probe_are_reported() {
     // `plain` is installed and irrelevant here. Listing it would make the status
     // line a second, worse copy of the registry.
-    let ids: Vec<_> = report(&svc_fx(), false).services.into_iter().map(|s| s.id).collect();
+    let ids: Vec<_> = report(&svc_fx(), false)
+        .services
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
     assert_eq!(ids, ["answering", "refusing", "uninstalled"]);
 }
 
@@ -102,7 +117,10 @@ fn an_uninstalled_tool_is_unknown_not_down() {
 fn the_summary_counts_every_reported_service() {
     let r = report(&svc_fx(), false);
     assert_eq!((r.summary.up, r.summary.down, r.summary.unknown), (1, 1, 1));
-    assert_eq!(r.summary.up + r.summary.down + r.summary.unknown, r.services.len());
+    assert_eq!(
+        r.summary.up + r.summary.down + r.summary.unknown,
+        r.services.len()
+    );
 }
 
 #[test]
@@ -143,7 +161,10 @@ fn a_slow_probe_is_unknown_not_absent_or_down() {
     );
     let started = std::time::Instant::now();
     let r = report(&fx, false);
-    assert!(started.elapsed() < Duration::from_secs(4), "the probe was not cut off");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the probe was not cut off"
+    );
     assert_eq!(by_id(&r, "slow").state, ServiceState::Unknown);
 }
 
@@ -162,7 +183,12 @@ fn binaries_are_detected_and_python_modules_asked_of_the_interpreter() {
     let cat = load_catalogue(&fx.paths).unwrap();
     let r = probe(&fx.paths, &cat, &cat.ids(), ProbeOpts::new());
     assert_eq!(r["have"].status, Status::Present);
-    assert!(r["have"].path.as_deref().is_some_and(|p| p.ends_with("/sh")));
+    assert!(
+        r["have"]
+            .path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("/sh"))
+    );
     assert_eq!(r["lack"].status, Status::Absent);
     if reactor_core::util::which("python3").is_some() {
         assert_eq!(r["stdlib"].status, Status::Present);
@@ -204,7 +230,10 @@ fn a_config_dir_that_does_not_exist_is_not_created_by_probing() {
     // plain `reactor doctor`.
     let fx = Fx::new();
     let gone = fx.dir.path().join("not-yet");
-    let paths = reactor_core::Paths::new(&gone, reactor_core::paths::Shipped::Dir(fx.dir.path().to_path_buf()));
+    let paths = reactor_core::Paths::new(
+        &gone,
+        reactor_core::paths::Shipped::Dir(fx.dir.path().to_path_buf()),
+    );
     let cat = load_catalogue(&paths).unwrap();
     probe(&paths, &cat, &cat.ids(), ProbeOpts::new());
     assert!(!gone.exists());
@@ -227,7 +256,10 @@ fn the_cache_is_invalidated_when_the_catalogue_changes() {
 
 fn tool_with_count(pattern: &str, noun: &str) -> Tool {
     let mut t = Tool::simple("x", "x", DetectKind::Binary, "x");
-    t.service_count = Some(ServiceCount { pattern: Some(pattern.into()), noun: Some(noun.into()) });
+    t.service_count = Some(ServiceCount {
+        pattern: Some(pattern.into()),
+        noun: Some(noun.into()),
+    });
     t
 }
 
@@ -240,7 +272,10 @@ fn service_detail_counts_matching_lines() {
 
 #[test]
 fn service_detail_singular() {
-    assert_eq!(service_detail(&tool_with_count(r"\sdevice$", "device"), "a\tdevice\n").as_deref(), Some("1 device"));
+    assert_eq!(
+        service_detail(&tool_with_count(r"\sdevice$", "device"), "a\tdevice\n").as_deref(),
+        Some("1 device")
+    );
 }
 
 #[test]
@@ -253,7 +288,10 @@ fn service_detail_is_none_without_a_count_spec() {
 
 #[test]
 fn service_detail_survives_a_bad_pattern() {
-    assert_eq!(service_detail(&tool_with_count("(unclosed", "thing"), "x"), None);
+    assert_eq!(
+        service_detail(&tool_with_count("(unclosed", "thing"), "x"),
+        None
+    );
 }
 
 // -- TestAtomicWrites -------------------------------------------------------
@@ -265,10 +303,20 @@ fn the_temp_file_is_not_shared_between_processes() {
     let fx = Fx::new();
     let path = fx.dir.path().join("thing.json");
     write_json_atomic(&path, &serde_json::json!({"a": 1})).unwrap();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), serde_json::json!({"a": 1}));
-    let names: Vec<_> = std::fs::read_dir(fx.dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).unwrap())
+            .unwrap(),
+        serde_json::json!({"a": 1})
+    );
+    let names: Vec<_> = std::fs::read_dir(fx.dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     assert!(!names.contains(&"thing.json.tmp".to_string()), "{names:?}");
-    assert!(!names.iter().any(|n| n.ends_with(".tmp")), "temp file left behind: {names:?}");
+    assert!(
+        !names.iter().any(|n| n.ends_with(".tmp")),
+        "temp file left behind: {names:?}"
+    );
 }
 
 #[test]
@@ -293,7 +341,10 @@ fn a_failed_write_leaves_no_temp_file_behind() {
 fn json_escapes_non_ascii_the_way_pythons_ensure_ascii_does() {
     // é, ✓ and an astral-plane emoji (a surrogate pair), plus DEL and a control.
     let s = to_string_pretty(&serde_json::json!({"d": "é✓😀\u{7f}\u{1}\n\"\\"}));
-    assert_eq!(s, "{\n  \"d\": \"\\u00e9\\u2713\\ud83d\\ude00\\u007f\\u0001\\n\\\"\\\\\"\n}");
+    assert_eq!(
+        s,
+        "{\n  \"d\": \"\\u00e9\\u2713\\ud83d\\ude00\\u007f\\u0001\\n\\\"\\\\\"\n}"
+    );
 }
 
 #[test]
@@ -301,28 +352,45 @@ fn file_json_has_sorted_keys_at_every_depth() {
     // Pinned because serde_json's `preserve_order` is on for this very test
     // binary (see Cargo.toml) — as it is inside the GUI — and would otherwise
     // silently reorder every state.json and cache.json.
-    let s = to_string_sorted(&serde_json::json!({"b": {"z": 1, "a": 2}, "a": [ {"y": 1, "x": 2} ]}));
-    assert_eq!(s, "{\n  \"a\": [\n    {\n      \"x\": 2,\n      \"y\": 1\n    }\n  ],\n  \"b\": {\n    \"a\": 2,\n    \"z\": 1\n  }\n}");
+    let s =
+        to_string_sorted(&serde_json::json!({"b": {"z": 1, "a": 2}, "a": [ {"y": 1, "x": 2} ]}));
+    assert_eq!(
+        s,
+        "{\n  \"a\": [\n    {\n      \"x\": 2,\n      \"y\": 1\n    }\n  ],\n  \"b\": {\n    \"a\": 2,\n    \"z\": 1\n  }\n}"
+    );
 }
 
 #[test]
 fn empty_containers_print_the_way_python_prints_them() {
-    assert_eq!(to_string_pretty(&serde_json::json!({"a": [], "b": {}})), "{\n  \"a\": [],\n  \"b\": {}\n}");
+    assert_eq!(
+        to_string_pretty(&serde_json::json!({"a": [], "b": {}})),
+        "{\n  \"a\": [],\n  \"b\": {}\n}"
+    );
 }
 
 // -- util -------------------------------------------------------------------
 
 #[test]
 fn run_merges_stderr_into_stdout_and_reports_the_code() {
-    let r = run(&ids(&["sh", "-c", "echo out; echo err >&2; exit 4"]), Duration::from_secs(5));
+    let r = run(
+        &ids(&["sh", "-c", "echo out; echo err >&2; exit 4"]),
+        Duration::from_secs(5),
+    );
     assert!(r.completed);
     assert_eq!(r.code, Some(4));
-    assert!(r.output.contains("out") && r.output.contains("err"), "{:?}", r.output);
+    assert!(
+        r.output.contains("out") && r.output.contains("err"),
+        "{:?}",
+        r.output
+    );
 }
 
 #[test]
 fn run_of_a_missing_binary_is_127_not_a_panic() {
-    let r = run(&ids(&["reactor-no-such-binary-xyz"]), Duration::from_secs(5));
+    let r = run(
+        &ids(&["reactor-no-such-binary-xyz"]),
+        Duration::from_secs(5),
+    );
     assert!(r.completed);
     assert_eq!(r.code, Some(127));
 }
@@ -330,7 +398,10 @@ fn run_of_a_missing_binary_is_127_not_a_panic() {
 #[test]
 fn run_kills_on_timeout_and_does_not_wait_for_grandchildren() {
     let started = std::time::Instant::now();
-    let r = run(&ids(&["sh", "-c", "sleep 30 & sleep 30"]), Duration::from_millis(200));
+    let r = run(
+        &ids(&["sh", "-c", "sleep 30 & sleep 30"]),
+        Duration::from_millis(200),
+    );
     assert!(!r.completed);
     assert!(started.elapsed() < Duration::from_secs(5));
 }

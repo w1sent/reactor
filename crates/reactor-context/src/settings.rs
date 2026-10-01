@@ -42,8 +42,14 @@ pub struct Resolved<T> {
 /// of its two inputs, and tested as one — no setting gets a bespoke lookup.
 pub fn resolve<T: Clone>(global: &T, session: Option<&T>) -> Resolved<T> {
     match session {
-        Some(v) => Resolved { value: v.clone(), origin: Origin::Session },
-        None => Resolved { value: global.clone(), origin: Origin::Default },
+        Some(v) => Resolved {
+            value: v.clone(),
+            origin: Origin::Session,
+        },
+        None => Resolved {
+            value: global.clone(),
+            origin: Origin::Default,
+        },
     }
 }
 
@@ -61,7 +67,12 @@ pub struct ManifestSettings {
 
 impl Default for ManifestSettings {
     fn default() -> Self {
-        Self { soft_step_limit: 20, max_description: 80, status_words: 3, derive_context_chars: 24_000 }
+        Self {
+            soft_step_limit: 20,
+            max_description: 80,
+            status_words: 3,
+            derive_context_chars: 24_000,
+        }
     }
 }
 
@@ -159,14 +170,28 @@ pub const CONTEXT_MODES: [&str; 3] = ["auto", "fade", "compact"];
 impl ContextSettings {
     /// Read a stored layer, keeping only what has the right shape.
     pub fn normalize(raw: &Value) -> ContextSettings {
-        let Some(r) = raw.as_object() else { return ContextSettings::default() };
+        let Some(r) = raw.as_object() else {
+            return ContextSettings::default();
+        };
         ContextSettings {
-            mode: r.get("mode").and_then(Value::as_str).filter(|m| CONTEXT_MODES.contains(m)).map(str::to_string),
+            mode: r
+                .get("mode")
+                .and_then(Value::as_str)
+                .filter(|m| CONTEXT_MODES.contains(m))
+                .map(str::to_string),
             pct: number(r.get("pct")).filter(|p| *p > 0.0 && *p <= 1.0),
             keep: number(r.get("keep")).filter(|k| *k > 0.0 && *k < 1.0),
-            reserve: number(r.get("reserve")).filter(|n| *n >= 0.0 && n.fract() == 0.0).map(|n| n as u64),
-            window: number(r.get("window")).filter(|n| *n > 0.0 && n.fract() == 0.0).map(|n| n as u64),
-            summarizer: r.get("summarizer").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
+            reserve: number(r.get("reserve"))
+                .filter(|n| *n >= 0.0 && n.fract() == 0.0)
+                .map(|n| n as u64),
+            window: number(r.get("window"))
+                .filter(|n| *n > 0.0 && n.fract() == 0.0)
+                .map(|n| n as u64),
+            summarizer: r
+                .get("summarizer")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         }
     }
 
@@ -190,7 +215,13 @@ impl ContextSettings {
     /// Where each field of `self.over(global)` comes from — what a UI shows beside a
     /// setting so the cascade is never the confusing kind of magic.
     pub fn origins(&self) -> [(&'static str, Origin); 6] {
-        let o = |set: bool| if set { Origin::Session } else { Origin::Default };
+        let o = |set: bool| {
+            if set {
+                Origin::Session
+            } else {
+                Origin::Default
+            }
+        };
         [
             ("mode", o(self.mode.is_some())),
             ("pct", o(self.pct.is_some())),
@@ -245,13 +276,18 @@ impl Settings {
     /// taken, everything else keeps its default.
     pub fn from_json(raw: &Value) -> Settings {
         let mut s = Settings::default();
-        let Some(root) = raw.as_object() else { return s };
+        let Some(root) = raw.as_object() else {
+            return s;
+        };
 
         if let Some(b) = root.get("toolbox").and_then(Value::as_bool) {
             s.toolbox = b;
         }
         if let Some(Value::Array(ids)) = root.get("hiddenServices") {
-            s.hidden_services = ids.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+            s.hidden_services = ids
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
         }
 
         if let Some(m) = root.get("manifest").and_then(Value::as_object) {
@@ -274,15 +310,23 @@ impl Settings {
             }
             if let Some(Value::Object(user)) = i.get("user") {
                 s.identity.user = UserIdentities::from_pairs(
-                    user.iter().filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string()))),
+                    user.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string()))),
                 );
             }
         }
 
         if let Some(Value::Array(ms)) = root.get("models") {
-            s.models = ms.iter().filter_map(|v| v.as_str().filter(|m| m.contains('/')).map(str::to_string)).collect();
+            s.models = ms
+                .iter()
+                .filter_map(|v| v.as_str().filter(|m| m.contains('/')).map(str::to_string))
+                .collect();
         }
-        s.default_model = root.get("defaultModel").and_then(Value::as_str).filter(|m| m.contains('/')).map(str::to_string);
+        s.default_model = root
+            .get("defaultModel")
+            .and_then(Value::as_str)
+            .filter(|m| m.contains('/'))
+            .map(str::to_string);
         if let Some(c) = root.get("context") {
             s.context = ContextSettings::normalize(c);
         }
@@ -295,7 +339,11 @@ impl Settings {
             {
                 s.reporting.level = level;
             }
-            if let Some(f) = r.get("folder").and_then(Value::as_str).filter(|f| !crate::text::js_trim(f).is_empty()) {
+            if let Some(f) = r
+                .get("folder")
+                .and_then(Value::as_str)
+                .filter(|f| !crate::text::js_trim(f).is_empty())
+            {
                 s.reporting.folder = f.to_string();
             }
             if let Some(n) = number(r.get("stepThreshold")).filter(|n| *n > 0.0) {
@@ -304,7 +352,11 @@ impl Settings {
             if let Some(n) = number(r.get("maxReverts")).filter(|n| *n >= 0.0) {
                 s.reporting.max_reverts = n as usize;
             }
-            if let Some(t) = r.get("templatePath").and_then(Value::as_str).filter(|t| !crate::text::js_trim(t).is_empty()) {
+            if let Some(t) = r
+                .get("templatePath")
+                .and_then(Value::as_str)
+                .filter(|t| !crate::text::js_trim(t).is_empty())
+            {
                 s.reporting.template_path = Some(t.to_string());
             }
         }

@@ -48,13 +48,20 @@ impl State {
         let Some(r) = raw.as_object() else { return s };
         s.enabled = r.get("enabled").and_then(Value::as_bool);
         s.goal = r.get("goal").and_then(Value::as_str).map(str::to_string);
-        s.guidelines = r.get("guidelines").and_then(Value::as_str).map(str::to_string);
+        s.guidelines = r
+            .get("guidelines")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(Value::Array(steps)) = r.get("steps") {
             s.steps = steps
                 .iter()
                 .filter_map(|st| {
                     let summary = st.get("summary")?.as_str()?.to_string();
-                    let status = st.get("status").and_then(Value::as_str).unwrap_or("").to_string();
+                    let status = st
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     Some(Step { summary, status })
                 })
                 .collect();
@@ -71,7 +78,9 @@ impl State {
     }
 
     pub fn has_guidelines(&self) -> bool {
-        self.guidelines.as_deref().is_some_and(|g| !js_trim(g).is_empty())
+        self.guidelines
+            .as_deref()
+            .is_some_and(|g| !js_trim(g).is_empty())
     }
 
     /// Whether the manifest's row has anything to show.
@@ -108,10 +117,16 @@ pub struct Effects {
 
 impl Effects {
     fn note(n: Notice) -> Self {
-        Effects { notices: vec![n], persist: false }
+        Effects {
+            notices: vec![n],
+            persist: false,
+        }
     }
     fn changed(n: Notice) -> Self {
-        Effects { notices: vec![n], persist: true }
+        Effects {
+            notices: vec![n],
+            persist: true,
+        }
     }
 }
 
@@ -131,7 +146,11 @@ pub fn block(state: &State, cfg: &ManifestSettings) -> Option<String> {
         parts.push(String::new());
         parts.push(format!("Goal: {}", js_trim(state.goal.as_deref().unwrap())));
         parts.push(String::new());
-        parts.push(format!("Steps ({}/{}):", state.steps.len(), cfg.soft_step_limit));
+        parts.push(format!(
+            "Steps ({}/{}):",
+            state.steps.len(),
+            cfg.soft_step_limit
+        ));
         if state.steps.is_empty() {
             parts.push("(none yet)".into());
         } else {
@@ -148,18 +167,29 @@ pub fn block(state: &State, cfg: &ManifestSettings) -> Option<String> {
         parts.push(String::new());
         parts.push(js_trim(state.guidelines.as_deref().unwrap()).to_string());
     }
-    if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 fn step_lines(steps: &[Step], indent: &str) -> Vec<String> {
-    steps.iter().enumerate().map(|(i, s)| format!("{indent}{}. [{}] {}", i + 1, s.status, s.summary)).collect()
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("{indent}{}. [{}] {}", i + 1, s.status, s.summary))
+        .collect()
 }
 
 /// `/frame`: the manifest as plain text.
 pub fn frame_view(state: &State, cfg: &ManifestSettings) -> String {
     let mut out = vec![
         format!("goal: {}", state.goal.as_deref().unwrap_or("(none)")),
-        format!("guidelines: {}", state.guidelines.as_deref().unwrap_or("(none)")),
+        format!(
+            "guidelines: {}",
+            state.guidelines.as_deref().unwrap_or("(none)")
+        ),
         format!("steps ({}/{}):", state.steps.len(), cfg.soft_step_limit),
     ];
     if state.steps.is_empty() {
@@ -167,7 +197,10 @@ pub fn frame_view(state: &State, cfg: &ManifestSettings) -> String {
     } else {
         out.push(step_lines(&state.steps, "  ").join("\n"));
     }
-    out.push(format!("switch: {}", if state.is_enabled() { "on" } else { "off" }));
+    out.push(format!(
+        "switch: {}",
+        if state.is_enabled() { "on" } else { "off" }
+    ));
     out.join("\n")
 }
 
@@ -177,7 +210,12 @@ pub fn frame_view(state: &State, cfg: &ManifestSettings) -> String {
 /// a model, which this crate does not have — see [`apply_derivation`].
 ///
 /// Returns `None` for a command this module does not own.
-pub fn command(state: &mut State, cfg: &ManifestSettings, name: &str, args: &str) -> Option<Effects> {
+pub fn command(
+    state: &mut State,
+    cfg: &ManifestSettings,
+    name: &str,
+    args: &str,
+) -> Option<Effects> {
     let text = js_trim(args);
     Some(match name {
         "goal" => {
@@ -196,7 +234,9 @@ pub fn command(state: &mut State, cfg: &ManifestSettings, name: &str, args: &str
                 state.guidelines = None;
                 Effects::changed(Notice::info("guidelines cleared"))
             } else if text.is_empty() {
-                Effects::note(Notice::warning("usage: /guidelines <text> | /guidelines clear"))
+                Effects::note(Notice::warning(
+                    "usage: /guidelines <text> | /guidelines clear",
+                ))
             } else {
                 state.guidelines = Some(text.to_string());
                 Effects::changed(Notice::info(format!("guidelines set: {text}")))
@@ -208,7 +248,9 @@ pub fn command(state: &mut State, cfg: &ManifestSettings, name: &str, args: &str
                 state.goal = None;
                 state.guidelines = None;
                 state.steps.clear();
-                return Some(Effects::changed(Notice::info("manifest cleared -- goal, guidelines and steps are gone")));
+                return Some(Effects::changed(Notice::info(
+                    "manifest cleared -- goal, guidelines and steps are gone",
+                )));
             }
             let next = match arg.as_str() {
                 "on" => true,
@@ -222,7 +264,11 @@ pub fn command(state: &mut State, cfg: &ManifestSettings, name: &str, args: &str
             };
             state.enabled = Some(next);
             let msg = format!("goal-setting {}", if next { "enabled" } else { "disabled" });
-            Effects::changed(if next { Notice::info(msg) } else { Notice::warning(msg) })
+            Effects::changed(if next {
+                Notice::info(msg)
+            } else {
+                Notice::warning(msg)
+            })
         }
         "frame" => Effects::note(Notice::info(frame_view(state, cfg))),
         _ => return None,
@@ -239,11 +285,17 @@ pub struct ToolOutcome {
 
 pub fn update_steps(state: &mut State, cfg: &ManifestSettings, steps: &[Step]) -> ToolOutcome {
     if let Some(gate) = state.tool_gate_message() {
-        return ToolOutcome { text: gate.to_string(), persist: false };
+        return ToolOutcome {
+            text: gate.to_string(),
+            persist: false,
+        };
     }
     let clamped: Vec<Step> = steps
         .iter()
-        .map(|s| Step { summary: truncate(&s.summary, cfg.max_description), status: truncate_words(&s.status, cfg.status_words) })
+        .map(|s| Step {
+            summary: truncate(&s.summary, cfg.max_description),
+            status: truncate_words(&s.status, cfg.status_words),
+        })
         .collect();
     let n = clamped.len();
     state.steps = clamped;
@@ -254,7 +306,10 @@ pub fn update_steps(state: &mut State, cfg: &ManifestSettings, steps: &[Step]) -
             cfg.soft_step_limit
         ));
     }
-    ToolOutcome { text, persist: true }
+    ToolOutcome {
+        text,
+        persist: true,
+    }
 }
 
 // -- derive -------------------------------------------------------------------
@@ -269,9 +324,15 @@ pub const DERIVE_SCOPES: [&str; 4] = ["all", "goal", "guidelines", "steps"];
 pub fn derive_task(scope: &str) -> String {
     let shape = match scope {
         "goal" => r#"{"goal": "<one sentence: what this session is trying to achieve>"}"#,
-        "guidelines" => r#"{"guidelines": "<standing constraints the work implies, or "" if none>"}"#,
-        "steps" => r#"{"steps": [{"summary": "<conceptual step, not a micro-action>", "status": "<3 words>"}]}"#,
-        _ => r#"{"goal": "<one sentence>", "guidelines": "<standing constraints, or "" if none>", "steps": [{"summary": "<conceptual step>", "status": "<3 words>"}]}"#,
+        "guidelines" => {
+            r#"{"guidelines": "<standing constraints the work implies, or "" if none>"}"#
+        }
+        "steps" => {
+            r#"{"steps": [{"summary": "<conceptual step, not a micro-action>", "status": "<3 words>"}]}"#
+        }
+        _ => {
+            r#"{"goal": "<one sentence>", "guidelines": "<standing constraints, or "" if none>", "steps": [{"summary": "<conceptual step>", "status": "<3 words>"}]}"#
+        }
     };
     let what = match scope {
         "goal" => "the session goal",
@@ -287,11 +348,17 @@ pub fn derive_task(scope: &str) -> String {
 /// `/derive [scope]`: the scope asked for, or the warning that says it is not one.
 pub fn derive_scope(args: &str) -> Result<String, Notice> {
     let sub = js_trim(args).to_lowercase();
-    let sub = if sub.is_empty() { "all".to_string() } else { sub };
+    let sub = if sub.is_empty() {
+        "all".to_string()
+    } else {
+        sub
+    };
     if DERIVE_SCOPES.contains(&sub.as_str()) {
         Ok(sub)
     } else {
-        Err(Notice::warning(format!("derive: unknown scope \"{sub}\" -- try all, goal, guidelines or steps")))
+        Err(Notice::warning(format!(
+            "derive: unknown scope \"{sub}\" -- try all, goal, guidelines or steps"
+        )))
     }
 }
 
@@ -333,7 +400,10 @@ pub fn parse_derivation(text: &str, scope: &str, cfg: &ManifestSettings) -> Opti
     let wants = |s: &str| scope == "all" || scope == s;
     let mut parts = Derived::default();
     if wants("goal")
-        && let Some(g) = obj.get("goal").and_then(Value::as_str).filter(|g| !js_trim(g).is_empty())
+        && let Some(g) = obj
+            .get("goal")
+            .and_then(Value::as_str)
+            .filter(|g| !js_trim(g).is_empty())
     {
         parts.goal = Some(js_trim(g).to_string());
     }
@@ -349,7 +419,10 @@ pub fn parse_derivation(text: &str, scope: &str, cfg: &ManifestSettings) -> Opti
             steps
                 .iter()
                 .filter_map(|st| {
-                    let summary = st.get("summary")?.as_str().filter(|s| !js_trim(s).is_empty())?;
+                    let summary = st
+                        .get("summary")?
+                        .as_str()
+                        .filter(|s| !js_trim(s).is_empty())?;
                     let status = st.get("status").and_then(Value::as_str).unwrap_or("");
                     Some(Step {
                         summary: truncate(summary, cfg.max_description),
@@ -359,15 +432,26 @@ pub fn parse_derivation(text: &str, scope: &str, cfg: &ManifestSettings) -> Opti
                 .collect(),
         );
     }
-    if parts == Derived::default() { None } else { Some(parts) }
+    if parts == Derived::default() {
+        None
+    } else {
+        Some(parts)
+    }
 }
 
 /// Apply a model's answer to the manifest, exactly as `/goal` etc. would.
 /// `None` for the response means the model produced nothing usable and the
 /// notice says so.
-pub fn apply_derivation(state: &mut State, cfg: &ManifestSettings, scope: &str, response: &str) -> Effects {
+pub fn apply_derivation(
+    state: &mut State,
+    cfg: &ManifestSettings,
+    scope: &str,
+    response: &str,
+) -> Effects {
     let Some(parts) = parse_derivation(response, scope, cfg) else {
-        return Effects::note(Notice::warning("derive: the response was not the requested JSON -- nothing applied"));
+        return Effects::note(Notice::warning(
+            "derive: the response was not the requested JSON -- nothing applied",
+        ));
     };
     let mut applied: Vec<String> = Vec::new();
     if let Some(goal) = parts.goal {
@@ -382,5 +466,8 @@ pub fn apply_derivation(state: &mut State, cfg: &ManifestSettings, scope: &str, 
         applied.push(format!("steps: {}", steps.len()));
         state.steps = steps;
     }
-    Effects::changed(Notice::info(format!("derive: {} -- /frame to review", applied.join(", "))))
+    Effects::changed(Notice::info(format!(
+        "derive: {} -- /frame to review",
+        applied.join(", ")
+    )))
 }

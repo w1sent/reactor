@@ -51,7 +51,14 @@ impl BudgetConfig {
         // `pct` is the fade's own default (0.9). `keep` is new: owning both
         // strategies needs a target *below* the trigger, or a reduction that lands
         // just under it fires again on the next tool result.
-        BudgetConfig { window, reserve: 16_384, pct: 0.9, keep: 0.5, mode: Mode::Auto, summary_tokens: 1_500 }
+        BudgetConfig {
+            window,
+            reserve: 16_384,
+            pct: 0.9,
+            keep: 0.5,
+            mode: Mode::Auto,
+            summary_tokens: 1_500,
+        }
     }
     pub fn hard(&self) -> u64 {
         self.window.saturating_sub(self.reserve)
@@ -137,17 +144,25 @@ impl Plan {
         self.mode != Mode::Fade && !self.covers.is_empty()
     }
     pub fn reclaimed_tokens(&self) -> u64 {
-        self.before_tokens.saturating_sub(self.estimated_after_tokens)
+        self.before_tokens
+            .saturating_sub(self.estimated_after_tokens)
     }
 }
 
 /// Plan a reduction of `items` down to the keep window.
-pub fn plan(fixed: u64, items: &[Item], cfg: &BudgetConfig, mode: Mode) -> std::result::Result<Plan, NothingToReduce> {
+pub fn plan(
+    fixed: u64,
+    items: &[Item],
+    cfg: &BudgetConfig,
+    mode: Mode,
+) -> std::result::Result<Plan, NothingToReduce> {
     let tokens: Vec<u64> = items.iter().map(|i| msg_tokens(&i.msg)).collect();
     let suffix_budget = cfg.keep_budget().saturating_sub(fixed + cfg.summary_tokens);
 
     // Never cut away the person's current instruction.
-    let last_user = items.iter().rposition(|i| matches!(i.msg, Msg::User { .. }) && matches!(i.source, Source::Entry(_)));
+    let last_user = items
+        .iter()
+        .rposition(|i| matches!(i.msg, Msg::User { .. }) && matches!(i.source, Source::Entry(_)));
     let ceiling = last_user.unwrap_or(items.len().saturating_sub(1));
 
     // The smallest k (largest suffix) that fits the keep budget from a safe boundary.
@@ -163,12 +178,16 @@ pub fn plan(fixed: u64, items: &[Item], cfg: &BudgetConfig, mode: Mode) -> std::
         }
     }
     // Nothing fits: keep the last group at least, which starts at the last boundary.
-    let mut k = k.unwrap_or_else(|| items.iter().rposition(is_boundary).unwrap_or(0)).min(ceiling);
+    let mut k = k
+        .unwrap_or_else(|| items.iter().rposition(is_boundary).unwrap_or(0))
+        .min(ceiling);
     while k > 0 && !is_boundary(&items[k]) {
         k -= 1;
     }
     if k == 0 {
-        return Err(NothingToReduce("everything left is the latest work; there is nothing older to reduce"));
+        return Err(NothingToReduce(
+            "everything left is the latest work; there is nothing older to reduce",
+        ));
     }
     if k == 1 && matches!(items[0].source, Source::Reduction(_)) {
         return Err(NothingToReduce("everything older is already reduced"));
@@ -189,7 +208,9 @@ pub fn plan(fixed: u64, items: &[Item], cfg: &BudgetConfig, mode: Mode) -> std::
         }
     }
     let before = fixed + tokens.iter().sum::<u64>();
-    let after = fixed + cfg.summary_tokens.min(concept_tokens + mech_tokens) + tokens[k..].iter().sum::<u64>();
+    let after = fixed
+        + cfg.summary_tokens.min(concept_tokens + mech_tokens)
+        + tokens[k..].iter().sum::<u64>();
     Ok(Plan {
         mode,
         keep_from: k,
@@ -229,8 +250,18 @@ fn cap(text: &str, max: usize) -> String {
         return text.to_string();
     }
     let head: String = text.chars().take(max / 3).collect();
-    let tail: String = text.chars().rev().take(max * 2 / 3).collect::<Vec<_>>().into_iter().rev().collect();
-    format!("{head}\n… [{} bytes elided] …\n{tail}", text.len().saturating_sub(head.len() + tail.len()))
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(max * 2 / 3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!(
+        "{head}\n… [{} bytes elided] …\n{tail}",
+        text.len().saturating_sub(head.len() + tail.len())
+    )
 }
 
 /// The range as a transcript, every entry visible and addressable.
@@ -249,7 +280,9 @@ pub fn transcript(store: &Store, items: &[Item]) -> String {
                     .map(|b| match b {
                         Block::Text { text } => text.clone(),
                         Block::Thinking { text, .. } => format!("(thinking) {text}"),
-                        Block::ToolCall { name, arguments, .. } => format!("-> {name} {arguments}"),
+                        Block::ToolCall {
+                            name, arguments, ..
+                        } => format!("-> {name} {arguments}"),
                     })
                     .collect();
                 format!("[{label} assistant]\n{}", body.join("\n"))
@@ -257,7 +290,10 @@ pub fn transcript(store: &Store, items: &[Item]) -> String {
             Msg::ToolResult { name, content, .. } => {
                 // If it was truncated for the model, the summarizer sees the same.
                 let _ = store;
-                format!("[{label} tool result: {name}]\n{}", cap(content, TRANSCRIPT_TOOL_CAP))
+                format!(
+                    "[{label} tool result: {name}]\n{}",
+                    cap(content, TRANSCRIPT_TOOL_CAP)
+                )
             }
         });
     }
@@ -274,31 +310,76 @@ impl<T: Summarizer + ?Sized> Summarizer for std::sync::Arc<T> {
 
 fn digest(v: &serde_json::Value) -> String {
     let s = v.to_string();
-    if s.chars().count() <= 80 { s } else { format!("{}…", s.chars().take(79).collect::<String>()) }
+    if s.chars().count() <= 80 {
+        s
+    } else {
+        format!("{}…", s.chars().take(79).collect::<String>())
+    }
 }
 
 fn first_words(text: &str, n: usize) -> String {
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-    if line.chars().count() <= n { line.to_string() } else { format!("{}…", line.chars().take(n.saturating_sub(1)).collect::<String>()) }
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if line.chars().count() <= n {
+        line.to_string()
+    } else {
+        format!(
+            "{}…",
+            line.chars().take(n.saturating_sub(1)).collect::<String>()
+        )
+    }
 }
 
 /// What a dropped entry leaves behind.
-fn stub_for(store: &Store, id: EntryId, calls: &HashMap<String, (String, serde_json::Value)>) -> Option<Stub> {
+fn stub_for(
+    store: &Store,
+    id: EntryId,
+    calls: &HashMap<String, (String, serde_json::Value)>,
+) -> Option<Stub> {
     let e = store.get(id)?;
     Some(match &e.kind {
-        Kind::ToolResult { call_id, name, content, blob, .. } => {
-            let args = calls.get(call_id).map(|(_, a)| digest(a)).unwrap_or_default();
+        Kind::ToolResult {
+            call_id,
+            name,
+            content,
+            blob,
+            ..
+        } => {
+            let args = calls
+                .get(call_id)
+                .map(|(_, a)| digest(a))
+                .unwrap_or_default();
             Stub {
                 entry: id,
                 what: "tool result".into(),
-                detail: if args.is_empty() { name.clone() } else { format!("{name} {args}") },
-                bytes: blob.as_ref().map(|b| b.bytes).unwrap_or(content.len() as u64),
+                detail: if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name} {args}")
+                },
+                bytes: blob
+                    .as_ref()
+                    .map(|b| b.bytes)
+                    .unwrap_or(content.len() as u64),
             }
         }
-        Kind::User { text } => Stub { entry: id, what: "user message".into(), detail: first_words(text, 60), bytes: text.len() as u64 },
+        Kind::User { text } => Stub {
+            entry: id,
+            what: "user message".into(),
+            detail: first_words(text, 60),
+            bytes: text.len() as u64,
+        },
         Kind::Assistant { .. } => {
             let text = crate::history::text_of(&e.kind);
-            Stub { entry: id, what: "assistant message".into(), detail: first_words(&text, 60), bytes: text.len() as u64 }
+            Stub {
+                entry: id,
+                what: "assistant message".into(),
+                detail: first_words(&text, 60),
+                bytes: text.len() as u64,
+            }
         }
         _ => return None,
     })
@@ -324,7 +405,13 @@ pub struct Prepared {
 }
 
 /// Decide what a reduction covers, what it drops and what the summarizer must see.
-pub fn prepare(store: &Store, items: &[Item], plan: &Plan, trigger: Trigger, summary_tokens: u64) -> Result<Prepared> {
+pub fn prepare(
+    store: &Store,
+    items: &[Item],
+    plan: &Plan,
+    trigger: Trigger,
+    summary_tokens: u64,
+) -> Result<Prepared> {
     if plan.covers.is_empty() {
         return Err(Error::Reduction("nothing to reduce".into()));
     }
@@ -337,7 +424,11 @@ pub fn prepare(store: &Store, items: &[Item], plan: &Plan, trigger: Trigger, sum
         })
         .flatten()
         .filter_map(|b| match b {
-            Block::ToolCall { id, name, arguments } => Some((id.clone(), (name.clone(), arguments.clone()))),
+            Block::ToolCall {
+                id,
+                name,
+                arguments,
+            } => Some((id.clone(), (name.clone(), arguments.clone()))),
             _ => None,
         })
         .collect();
@@ -363,7 +454,12 @@ pub fn prepare(store: &Store, items: &[Item], plan: &Plan, trigger: Trigger, sum
     covers.dedup();
 
     let mut dropped: Vec<usize> = match plan.mode {
-        Mode::Fade => plan.mechanical.iter().chain(plan.conceptual.iter()).copied().collect(),
+        Mode::Fade => plan
+            .mechanical
+            .iter()
+            .chain(plan.conceptual.iter())
+            .copied()
+            .collect(),
         Mode::Auto => plan.mechanical.clone(),
         Mode::Compact => Vec::new(),
     };
@@ -385,7 +481,10 @@ pub fn prepare(store: &Store, items: &[Item], plan: &Plan, trigger: Trigger, sum
         stubs,
         before_tokens: plan.before_tokens,
         fixed_tokens: plan.before_tokens.saturating_sub(all),
-        suffix_tokens: items[plan.keep_from..].iter().map(|i| msg_tokens(&i.msg)).sum(),
+        suffix_tokens: items[plan.keep_from..]
+            .iter()
+            .map(|i| msg_tokens(&i.msg))
+            .sum(),
         // Summarize with everything still in view, so a finding in a dump is written
         // down before its bytes leave the context.
         request: plan.needs_summarizer().then(|| SummaryRequest {
@@ -409,7 +508,8 @@ pub fn commit(store: &mut Store, p: Prepared, summary: Option<String>) -> Result
         before_tokens: p.before_tokens,
         after_tokens: 0,
     };
-    reduction.after_tokens = p.fixed_tokens + estimate_tokens(&render_reduction(&reduction)) + 8 + p.suffix_tokens;
+    reduction.after_tokens =
+        p.fixed_tokens + estimate_tokens(&render_reduction(&reduction)) + 8 + p.suffix_tokens;
     store.append(Kind::Reduction(reduction))
 }
 

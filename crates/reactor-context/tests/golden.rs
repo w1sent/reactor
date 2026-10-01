@@ -20,7 +20,9 @@ use reactor_context::{Notice, identity, manifest, reporting, scenario};
 use serde_json::{Map, Value, json};
 
 fn golden(name: &str) -> Vec<Value> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(format!("{name}.json"));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(format!("{name}.json"));
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     serde_json::from_str(&text).unwrap()
 }
@@ -42,7 +44,11 @@ fn appended(block: Option<String>) -> Value {
 
 /// `Some(state)` → the one entry it produces; `None` → no entry.
 fn entries<T: serde::Serialize>(persist: bool, state: &T) -> Value {
-    if persist { json!([serde_json::to_value(state).unwrap()]) } else { json!([]) }
+    if persist {
+        json!([serde_json::to_value(state).unwrap()])
+    } else {
+        json!([])
+    }
 }
 
 fn check(case: &str, i: usize, op: &Value, got: Map<String, Value>) {
@@ -66,12 +72,14 @@ fn manifest_matches_the_goal_setting_extension() {
             let mut out = Map::new();
             match s(op, "op") {
                 "command" => {
-                    let e = manifest::command(&mut state, &cfg, s(op, "name"), s(op, "args")).expect("a manifest command");
+                    let e = manifest::command(&mut state, &cfg, s(op, "name"), s(op, "args"))
+                        .expect("a manifest command");
                     out.insert("notify".into(), notify(&e.notices));
                     out.insert("entries".into(), entries(e.persist, &state));
                 }
                 "tool" => {
-                    let steps: Vec<manifest::Step> = serde_json::from_value(op["steps"].clone()).unwrap();
+                    let steps: Vec<manifest::Step> =
+                        serde_json::from_value(op["steps"].clone()).unwrap();
                     let t = manifest::update_steps(&mut state, &cfg, &steps);
                     out.insert("text".into(), t.text.into());
                     out.insert("notify".into(), json!([]));
@@ -91,7 +99,8 @@ fn manifest_matches_the_goal_setting_extension() {
                         out.insert("systemPrompt".into(), manifest::DERIVE_SYSTEM.into());
                         // The transcript tail is empty in these sessions.
                         out.insert("userMessage".into(), manifest::derive_task(&scope).into());
-                        let e = manifest::apply_derivation(&mut state, &cfg, &scope, s(op, "response"));
+                        let e =
+                            manifest::apply_derivation(&mut state, &cfg, &scope, s(op, "response"));
                         out.insert("notify".into(), notify(&e.notices));
                         out.insert("entries".into(), entries(e.persist, &state));
                     }
@@ -121,7 +130,11 @@ fn identity_matches_the_identity_extension() {
                     let args = s(op, "args");
                     let e = if identity::wants_editor(args) {
                         // The editor needs a terminal; in `rpc` mode it says so.
-                        assert_eq!(s(op, "mode"), "rpc", "only the no-terminal path is captured");
+                        assert_eq!(
+                            s(op, "mode"),
+                            "rpc",
+                            "only the no-terminal path is captured"
+                        );
                         identity::editor_needs_terminal()
                     } else {
                         identity::command(&mut state, &mut cfg, args)
@@ -149,7 +162,8 @@ fn identity_matches_the_identity_extension() {
 
 fn set_mtime(path: &Path, secs: u64) {
     let f = fs::OpenOptions::new().write(true).open(path).unwrap();
-    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .unwrap();
 }
 
 #[test]
@@ -164,7 +178,8 @@ fn reporting_matches_the_reporting_extension() {
 
         for (i, op) in case["ops"].as_array().unwrap().iter().enumerate() {
             let mut out = Map::new();
-            let (mut notices, mut persist, mut user_messages, mut navigated) = (vec![], false, vec![], vec![]);
+            let (mut notices, mut persist, mut user_messages, mut navigated) =
+                (vec![], false, vec![], vec![]);
             match s(op, "op") {
                 "report" => {
                     let e = reporting::command(&mut session, &mut tracker, &mut cfg, s(op, "args"));
@@ -184,11 +199,25 @@ fn reporting_matches_the_reporting_extension() {
                     fs::write(&target, s(op, "content")).unwrap();
                     set_mtime(&target, op["mtime"].as_u64().unwrap());
                 }
-                "tool_end" => tracker.tool_end(&session, reporting::take_snapshot(&dir.path().join(&cfg.folder))),
-                "context" => out.insert("nag".into(), tracker.nag(&session, &cfg).map(Value::String).unwrap_or(Value::Null)).map(drop).unwrap_or(()),
+                "tool_end" => tracker.tool_end(
+                    &session,
+                    reporting::take_snapshot(&dir.path().join(&cfg.folder)),
+                ),
+                "context" => out
+                    .insert(
+                        "nag".into(),
+                        tracker
+                            .nag(&session, &cfg)
+                            .map(Value::String)
+                            .unwrap_or(Value::Null),
+                    )
+                    .map(drop)
+                    .unwrap_or(()),
                 "settled" => match tracker.settled(&session, &cfg) {
                     reporting::Settled::Nothing => {}
-                    reporting::Settled::Revert => user_messages.push("/reactor-report-enforce".to_string()),
+                    reporting::Settled::Revert => {
+                        user_messages.push("/reactor-report-enforce".to_string())
+                    }
                     reporting::Settled::GaveUp(n) => notices.push(n),
                 },
                 "enforce" => {
@@ -215,7 +244,11 @@ fn write_scenarios(root: &Path, scenarios: &Value) {
         let d = root.join(id);
         fs::create_dir_all(&d).unwrap();
         for (i, content) in steps.as_array().unwrap().iter().enumerate() {
-            fs::write(d.join(format!("{:02}.md", i + 1)), content.as_str().unwrap()).unwrap();
+            fs::write(
+                d.join(format!("{:02}.md", i + 1)),
+                content.as_str().unwrap(),
+            )
+            .unwrap();
         }
     }
 }
@@ -234,7 +267,10 @@ fn scenario_matches_the_scenario_extension() {
         let name = s(&case, "name");
         let dir: PathBuf = tempfile::tempdir().unwrap().keep();
         write_scenarios(&dir, &case["scenarios"]);
-        let mut sc = scenario::Scenario { dir: &dir, state: None };
+        let mut sc = scenario::Scenario {
+            dir: &dir,
+            state: None,
+        };
         let toolset_call = |t: &String| format!("toolsets enable {t} --format json");
 
         for (i, op) in case["ops"].as_array().unwrap().iter().enumerate() {
@@ -246,9 +282,20 @@ fn scenario_matches_the_scenario_extension() {
                     out.insert("entries".into(), scenario_entries(&e.persist));
                     out.insert(
                         "messages".into(),
-                        e.messages.iter().map(|m| json!({"content": m.content, "display": true})).collect::<Vec<_>>().into(),
+                        e.messages
+                            .iter()
+                            .map(|m| json!({"content": m.content, "display": true}))
+                            .collect::<Vec<_>>()
+                            .into(),
                     );
-                    out.insert("reactorCalls".into(), e.activate_toolsets.iter().map(toolset_call).collect::<Vec<_>>().into());
+                    out.insert(
+                        "reactorCalls".into(),
+                        e.activate_toolsets
+                            .iter()
+                            .map(toolset_call)
+                            .collect::<Vec<_>>()
+                            .into(),
+                    );
                 }
                 "tool" => {
                     let adv = sc.advance(s(op, "summary"));
@@ -256,7 +303,14 @@ fn scenario_matches_the_scenario_extension() {
                     out.insert("notify".into(), json!([]));
                     out.insert("entries".into(), scenario_entries(&adv.persist));
                     out.insert("messages".into(), json!([]));
-                    out.insert("reactorCalls".into(), adv.activate_toolset.iter().map(toolset_call).collect::<Vec<_>>().into());
+                    out.insert(
+                        "reactorCalls".into(),
+                        adv.activate_toolset
+                            .iter()
+                            .map(toolset_call)
+                            .collect::<Vec<_>>()
+                            .into(),
+                    );
                 }
                 other => panic!("unknown op {other}"),
             }

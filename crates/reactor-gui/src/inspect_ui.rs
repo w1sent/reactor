@@ -6,9 +6,9 @@
 //! [`ReactorApp`] (`inspect`).
 
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::label::Label;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Hsla, SharedString, div, px, relative};
@@ -55,15 +55,28 @@ fn badge(origin: Origin, theme: &Theme) -> impl IntoElement {
         .gap_1()
         .items_center()
         .child(div().size(px(8.)).rounded_full().bg(c))
-        .child(div().text_color(c).text_size(theme.font_size * 0.85).child(origin.label()))
+        .child(
+            div()
+                .text_color(c)
+                .text_size(theme.font_size * 0.85)
+                .child(origin.label()),
+        )
 }
 
 /// The popup's contents, for its dialog. The dialog builds this again on every frame, so it reads
 /// the app's current state each time; `height` is what the lists may fill.
-pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, cx: &mut App) -> gpui_kit::AnyElement {
-    let Some(app) = weak.upgrade() else { return div().into_any_element() };
+pub fn view(
+    weak: &gpui_kit::WeakEntity<ReactorApp>,
+    height: gpui_kit::Pixels,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some(app) = weak.upgrade() else {
+        return div().into_any_element();
+    };
     let app = app.read(cx);
-    let Some(state) = app.inspect.as_ref() else { return div().into_any_element() };
+    let Some(state) = app.inspect.as_ref() else {
+        return div().into_any_element();
+    };
     let weak = weak.clone();
     let theme = cx.theme().clone();
     let muted = theme.muted_foreground;
@@ -93,19 +106,33 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
         );
 
     let body = match (&state.data, &state.error) {
-        (_, Some(e)) => div().p_3().text_color(theme.danger).child(e.clone()).into_any_element(),
-        (None, _) => div().p_3().text_color(muted).child("measuring the context…").into_any_element(),
+        (_, Some(e)) => div()
+            .p_3()
+            .text_color(theme.danger)
+            .child(e.clone())
+            .into_any_element(),
+        (None, _) => div()
+            .p_3()
+            .text_color(muted)
+            .child("measuring the context…")
+            .into_any_element(),
         (Some(data), None) => {
             // -- where the tokens go --
             let mut chips = h_flex().gap_1().flex_wrap().items_center().child(
-                div().text_color(muted).text_size(theme.font_size * 0.85).child(format!("~{} tokens", data.total_tokens)),
+                div()
+                    .text_color(muted)
+                    .text_size(theme.font_size * 0.85)
+                    .child(format!("~{} tokens", data.total_tokens)),
             );
             for (origin, tokens) in data.by_origin() {
                 let active = state.filter == Some(origin);
                 let weak = weak.clone();
                 chips = chips.child(
                     h_flex()
-                        .id(SharedString::from(format!("inspect-chip-{}", origin.label())))
+                        .id(SharedString::from(format!(
+                            "inspect-chip-{}",
+                            origin.label()
+                        )))
                         .gap_1()
                         .items_center()
                         .px_2()
@@ -113,13 +140,23 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                         .rounded_md()
                         .cursor_pointer()
                         .border_1()
-                        .border_color(if active { colour(origin, &theme) } else { theme.border })
+                        .border_color(if active {
+                            colour(origin, &theme)
+                        } else {
+                            theme.border
+                        })
                         .hover(|s| s.bg(theme.list_hover))
                         .on_click(move |_, _w, cx| {
-                            weak.update(cx, |app, cx| app.inspect_filter(origin, cx)).ok();
+                            weak.update(cx, |app, cx| app.inspect_filter(origin, cx))
+                                .ok();
                         })
                         .child(badge(origin, &theme))
-                        .child(div().text_color(muted).text_size(theme.font_size * 0.85).child(format!("{tokens}"))),
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .text_size(theme.font_size * 0.85)
+                                .child(format!("{tokens}")),
+                        ),
                 );
             }
 
@@ -127,7 +164,15 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
             let total = data.total_tokens.max(1);
             // A scrolling column: its height is the space it is given (`h_full`, `min_h_0`), and
             // every row keeps its own (`flex_none`) — rows that shrink to fit overlap each other.
-            let mut list = v_flex().id("inspect-list").w(px(330.)).flex_none().h_full().min_h_0().overflow_y_scrollbar().gap_0p5().pr_1();
+            let mut list = v_flex()
+                .id("inspect-list")
+                .w(px(330.))
+                .flex_none()
+                .h_full()
+                .min_h_0()
+                .overflow_y_scrollbar()
+                .gap_0p5()
+                .pr_1();
             let mut last_section: Option<Section> = None;
             for (index, seg) in data.segments.iter().enumerate() {
                 if state.filter.is_some_and(|f| f != seg.origin) {
@@ -135,7 +180,15 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                 }
                 if last_section != Some(seg.section) {
                     last_section = Some(seg.section);
-                    list = list.child(div().flex_none().pt_2().px_1().text_color(muted).text_size(theme.font_size * 0.8).child(seg.section.label()));
+                    list = list.child(
+                        div()
+                            .flex_none()
+                            .pt_2()
+                            .px_1()
+                            .text_color(muted)
+                            .text_size(theme.font_size * 0.8)
+                            .child(seg.section.label()),
+                    );
                 }
                 let selected = index == state.selected;
                 let weak = weak.clone();
@@ -151,23 +204,50 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                         .when(selected, |r| r.bg(theme.list_active))
                         .hover(|r| r.bg(theme.list_hover))
                         .on_click(move |_, _w, cx| {
-                            weak.update(cx, |app, cx| app.inspect_select(index, cx)).ok();
+                            weak.update(cx, |app, cx| app.inspect_select(index, cx))
+                                .ok();
                         })
                         .child(
                             h_flex()
                                 .justify_between()
                                 .gap_2()
-                                .child(div().flex_1().overflow_hidden().text_ellipsis().text_size(theme.font_size * 0.9).child(seg.label.clone()))
-                                .child(div().text_color(muted).text_size(theme.font_size * 0.8).child(format!("{}", seg.tokens))),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_size(theme.font_size * 0.9)
+                                        .child(seg.label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(muted)
+                                        .text_size(theme.font_size * 0.8)
+                                        .child(format!("{}", seg.tokens)),
+                                ),
                         )
                         .child(
                             h_flex()
                                 .gap_2()
                                 .items_center()
                                 .child(badge(seg.origin, &theme))
-                                .child(div().flex_1().h(px(3.)).rounded_full().bg(theme.secondary).child(
-                                    div().h_full().rounded_full().bg(colour(seg.origin, &theme)).w(relative((seg.tokens as f32 / total as f32).clamp(0.0, 1.0))),
-                                )),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .h(px(3.))
+                                        .rounded_full()
+                                        .bg(theme.secondary)
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .rounded_full()
+                                                .bg(colour(seg.origin, &theme))
+                                                .w(relative(
+                                                    (seg.tokens as f32 / total as f32)
+                                                        .clamp(0.0, 1.0),
+                                                )),
+                                        ),
+                                ),
                         ),
                 );
             }
@@ -197,8 +277,16 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                                 .items_center()
                                 .child(badge(seg.origin, &theme))
                                 .child(div().child(seg.label.clone()))
-                                .child(div().text_color(muted).text_size(theme.font_size * 0.85).child(format!("~{} tokens", seg.tokens)))
-                                .child(crate::hints::info_button("inspect-source", seg.origin.source())),
+                                .child(
+                                    div()
+                                        .text_color(muted)
+                                        .text_size(theme.font_size * 0.85)
+                                        .child(format!("~{} tokens", seg.tokens)),
+                                )
+                                .child(crate::hints::info_button(
+                                    "inspect-source",
+                                    seg.origin.source(),
+                                )),
                         )
                         .child(
                             div()
@@ -223,10 +311,24 @@ pub fn view(weak: &gpui_kit::WeakEntity<ReactorApp>, height: gpui_kit::Pixels, c
                 .flex_1()
                 .min_h_0()
                 .child(div().flex_none().child(chips))
-                .child(h_flex().gap_3().flex_1().min_h_0().items_stretch().child(list).child(detail))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .flex_1()
+                        .min_h_0()
+                        .items_stretch()
+                        .child(list)
+                        .child(detail),
+                )
                 .into_any_element()
         }
     };
 
-    v_flex().key_context("ReactorInspect").h(height).gap_3().child(div().flex_none().child(header)).child(body).into_any_element()
+    v_flex()
+        .key_context("ReactorInspect")
+        .h(height)
+        .gap_3()
+        .child(div().flex_none().child(header))
+        .child(body)
+        .into_any_element()
 }

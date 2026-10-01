@@ -99,7 +99,8 @@ does the same from the checkout. It needs a Rust toolchain
 catalogue is compiled into the binary, and no Python is involved in installing or
 running REactor ([ADR-0039](docs/adr/0039-the-executables-contain-no-python.md)).
 `reactor setup` is idempotent and never clobbers your `tools.toml`; re-running
-it is the way to update. The GUI links a native windowing stack (fontconfig,
+it is the way to update. On Linux it also installs the GUI's desktop launcher
+and icon. The GUI links a native windowing stack (fontconfig,
 xkbcommon, Vulkan/Wayland/X11); see `crates/reactor-gui/README.md`.
 
 Point the GUI at a model with `settings.models` in `~/.reactor/settings.json`

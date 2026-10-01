@@ -27,13 +27,35 @@ pub enum ChatItem {
     /// A thinking block, rendered collapsed.
     Thinking { text: String, streaming: bool },
     /// One tool call with its live/final state.
-    ToolCall { call_id: String, name: String, args: Value, output: String, is_error: bool, done: bool },
+    ToolCall {
+        call_id: String,
+        name: String,
+        args: Value,
+        output: String,
+        is_error: bool,
+        done: bool,
+    },
     /// A context reduction, where it happened (ADR-0037). `active` is false once undone.
-    Reduction { entry: u64, mode: String, trigger: String, covers: usize, before: u64, after: u64, active: bool, summary: Option<String> },
+    Reduction {
+        entry: u64,
+        mode: String,
+        trigger: String,
+        covers: usize,
+        before: u64,
+        after: u64,
+        active: bool,
+        summary: Option<String>,
+    },
     /// Something went wrong that the person should see.
     Error { message: String },
     /// What a finished prompt cost: when it finished, how long it took, what it streamed.
-    Stats { date: String, time: String, duration_ms: u64, tokens: u64, stream_ms: u64 },
+    Stats {
+        date: String,
+        time: String,
+        duration_ms: u64,
+        tokens: u64,
+        stream_ms: u64,
+    },
 }
 
 /// The key of the log entry a finished prompt's statistics are kept under.
@@ -55,7 +77,13 @@ pub struct Run {
 
 impl Run {
     pub fn new(now: Instant) -> Run {
-        Run { started: now, reported_tokens: 0, round_chars: 0, round_span: None, streamed: Duration::ZERO }
+        Run {
+            started: now,
+            reported_tokens: 0,
+            round_chars: 0,
+            round_span: None,
+            streamed: Duration::ZERO,
+        }
     }
 
     /// Some text or thinking streamed in.
@@ -89,7 +117,11 @@ impl Run {
     /// Time spent actually streaming: what tokens per second is measured over, so a long tool
     /// run does not make the model look slow.
     pub fn stream_time(&self) -> Duration {
-        self.streamed + self.round_span.map(|(first, last)| last - first).unwrap_or_default()
+        self.streamed
+            + self
+                .round_span
+                .map(|(first, last)| last - first)
+                .unwrap_or_default()
     }
 }
 
@@ -105,14 +137,36 @@ pub fn format_duration(ms: u64) -> String {
 }
 
 /// The line under a finished prompt. The date is added for a prompt from another day.
-pub fn stats_label(date: &str, time: &str, duration_ms: u64, tokens: u64, stream_ms: u64, today: &str) -> String {
-    let mut out = format!("finished {}{time} · took {}", if date == today { String::new() } else { format!("{date} ") }, format_duration(duration_ms));
+pub fn stats_label(
+    date: &str,
+    time: &str,
+    duration_ms: u64,
+    tokens: u64,
+    stream_ms: u64,
+    today: &str,
+) -> String {
+    let mut out = format!(
+        "finished {}{time} · took {}",
+        if date == today {
+            String::new()
+        } else {
+            format!("{date} ")
+        },
+        format_duration(duration_ms)
+    );
     if tokens > 0 {
         out.push_str(&format!(" · {tokens} tokens"));
         // Over the time spent streaming when there is enough of it to measure, else the whole.
-        let over = if stream_ms >= 200 { stream_ms } else { duration_ms };
+        let over = if stream_ms >= 200 {
+            stream_ms
+        } else {
+            duration_ms
+        };
         if over > 0 {
-            out.push_str(&format!(" · {:.1} tokens/s", tokens as f64 * 1000.0 / over as f64));
+            out.push_str(&format!(
+                " · {:.1} tokens/s",
+                tokens as f64 * 1000.0 / over as f64
+            ));
         }
     }
     out
@@ -177,9 +231,19 @@ impl Session {
                 Kind::Assistant { blocks, .. } => {
                     for b in blocks {
                         match b {
-                            Block::Thinking { text, .. } => self.items.push(ChatItem::Thinking { text: text.clone(), streaming: false }),
-                            Block::Text { text } => self.items.push(ChatItem::AssistantText { text: text.clone(), streaming: false }),
-                            Block::ToolCall { id, name, arguments } => {
+                            Block::Thinking { text, .. } => self.items.push(ChatItem::Thinking {
+                                text: text.clone(),
+                                streaming: false,
+                            }),
+                            Block::Text { text } => self.items.push(ChatItem::AssistantText {
+                                text: text.clone(),
+                                streaming: false,
+                            }),
+                            Block::ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            } => {
                                 self.card_at.insert(id.clone(), self.items.len());
                                 self.items.push(ChatItem::ToolCall {
                                     call_id: id.clone(),
@@ -193,10 +257,22 @@ impl Session {
                         }
                     }
                 }
-                Kind::ToolResult { call_id, name, content, is_error, .. } => {
+                Kind::ToolResult {
+                    call_id,
+                    name,
+                    content,
+                    is_error,
+                    ..
+                } => {
                     match self.card_at.get(call_id).copied() {
                         Some(i) => {
-                            if let ChatItem::ToolCall { output, is_error: err, done, .. } = &mut self.items[i] {
+                            if let ChatItem::ToolCall {
+                                output,
+                                is_error: err,
+                                done,
+                                ..
+                            } = &mut self.items[i]
+                            {
                                 *output = content.clone();
                                 *err = *is_error;
                                 *done = true;
@@ -224,11 +300,25 @@ impl Session {
                     summary: r.summary.clone(),
                 }),
                 Kind::Custom { key, data } if key == STATS_KEY => {
-                    let text = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                    let text = |k: &str| {
+                        data.get(k)
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    };
                     let number = |k: &str| data.get(k).and_then(Value::as_u64).unwrap_or(0);
-                    self.items.push(ChatItem::Stats { date: text("date"), time: text("time"), duration_ms: number("duration_ms"), tokens: number("tokens"), stream_ms: number("stream_ms") });
+                    self.items.push(ChatItem::Stats {
+                        date: text("date"),
+                        time: text("time"),
+                        duration_ms: number("duration_ms"),
+                        tokens: number("tokens"),
+                        stream_ms: number("stream_ms"),
+                    });
                 }
-                Kind::Session { .. } | Kind::Custom { .. } | Kind::Restore { .. } | Kind::Label { .. } => {}
+                Kind::Session { .. }
+                | Kind::Custom { .. }
+                | Kind::Restore { .. }
+                | Kind::Label { .. } => {}
             }
             if hidden.contains_key(&e.id) {
                 self.hidden.extend(first..self.items.len());
@@ -237,10 +327,16 @@ impl Session {
 
         // What is streaming and not yet a log entry goes last.
         if !self.live_thinking.is_empty() {
-            self.items.push(ChatItem::Thinking { text: self.live_thinking.clone(), streaming: true });
+            self.items.push(ChatItem::Thinking {
+                text: self.live_thinking.clone(),
+                streaming: true,
+            });
         }
         if !self.live_text.is_empty() {
-            self.items.push(ChatItem::AssistantText { text: self.live_text.clone(), streaming: true });
+            self.items.push(ChatItem::AssistantText {
+                text: self.live_text.clone(),
+                streaming: true,
+            });
         }
     }
 
@@ -253,8 +349,14 @@ impl Session {
                 }
                 self.live_text.push_str(delta);
                 match self.items.last_mut() {
-                    Some(ChatItem::AssistantText { text, streaming: true }) => text.push_str(delta),
-                    _ => self.items.push(ChatItem::AssistantText { text: delta.clone(), streaming: true }),
+                    Some(ChatItem::AssistantText {
+                        text,
+                        streaming: true,
+                    }) => text.push_str(delta),
+                    _ => self.items.push(ChatItem::AssistantText {
+                        text: delta.clone(),
+                        streaming: true,
+                    }),
                 }
             }
             Event::Thinking(delta) => {
@@ -262,26 +364,50 @@ impl Session {
                     run.delta(delta.chars().count(), Instant::now());
                 }
                 self.live_thinking.push_str(delta);
-                match self.items.iter_mut().rev().find(|i| matches!(i, ChatItem::Thinking { streaming: true, .. })) {
+                match self.items.iter_mut().rev().find(|i| {
+                    matches!(
+                        i,
+                        ChatItem::Thinking {
+                            streaming: true,
+                            ..
+                        }
+                    )
+                }) {
                     Some(ChatItem::Thinking { text, .. }) => text.push_str(delta),
-                    _ => self.items.push(ChatItem::Thinking { text: delta.clone(), streaming: true }),
+                    _ => self.items.push(ChatItem::Thinking {
+                        text: delta.clone(),
+                        streaming: true,
+                    }),
                 }
             }
             Event::ToolOutput { id, chunk } => {
-                self.live_tools.entry(id.clone()).or_default().push_str(chunk);
+                self.live_tools
+                    .entry(id.clone())
+                    .or_default()
+                    .push_str(chunk);
                 if let Some(i) = self.card_at.get(id).copied()
-                    && let Some(ChatItem::ToolCall { output, done: false, .. }) = self.items.get_mut(i)
+                    && let Some(ChatItem::ToolCall {
+                        output,
+                        done: false,
+                        ..
+                    }) = self.items.get_mut(i)
                 {
                     output.push_str(chunk);
                 }
             }
             Event::Appended(id) => {
                 // The reply that was streaming is an entry now; its live text is redundant.
-                if matches!(store.get(*id).map(|e| &e.kind), Some(Kind::Assistant { .. })) {
+                if matches!(
+                    store.get(*id).map(|e| &e.kind),
+                    Some(Kind::Assistant { .. })
+                ) {
                     self.live_text.clear();
                     self.live_thinking.clear();
                 }
-                if matches!(store.get(*id).map(|e| &e.kind), Some(Kind::ToolResult { .. })) {
+                if matches!(
+                    store.get(*id).map(|e| &e.kind),
+                    Some(Kind::ToolResult { .. })
+                ) {
                     self.live_tools.retain(|_, _| false);
                 }
                 self.rebuild(store);
@@ -296,7 +422,11 @@ impl Session {
                     run.usage(usage.output_tokens);
                 }
             }
-            Event::ToolCallStarted { .. } | Event::ToolStart { .. } | Event::ToolEnd { .. } | Event::Reduced { .. } | Event::Notice(_) => {}
+            Event::ToolCallStarted { .. }
+            | Event::ToolStart { .. }
+            | Event::ToolEnd { .. }
+            | Event::Reduced { .. }
+            | Event::Notice(_) => {}
         }
     }
 
@@ -320,13 +450,23 @@ fn mode_word(m: Mode) -> &'static str {
 
 /// The status bar's left side, from the session's state modules: what the manifest, the
 /// identity, reporting and the scenario are doing right now.
-pub fn status_items(state: &SessionState, settings: &Settings, scenarios_dir: &std::path::Path) -> Vec<(String, String)> {
+pub fn status_items(
+    state: &SessionState,
+    settings: &Settings,
+    scenarios_dir: &std::path::Path,
+) -> Vec<(String, String)> {
     use reactor_context::{identity, reporting, scenario};
     let mut out: Vec<(String, String)> = Vec::new();
 
     let m = &state.manifest;
     if m.is_enabled() && m.has_content() {
-        let head = m.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()).map(|g| reactor_context::text::truncate(g, 48)).unwrap_or_else(|| "manifest".into());
+        let head = m
+            .goal
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(|g| reactor_context::text::truncate(g, 48))
+            .unwrap_or_else(|| "manifest".into());
         let steps = match m.steps.len() {
             0 => String::new(),
             n => format!(" · {n} step{}", if n == 1 { "" } else { "s" }),
@@ -343,7 +483,10 @@ pub fn status_items(state: &SessionState, settings: &Settings, scenarios_dir: &s
     }
     if let Some(s) = &state.scenario {
         let total = scenario::load_steps(scenarios_dir, &s.scenario_id).len();
-        out.push(("scenario".into(), format!("{} · phase {}/{}", s.scenario_id, s.step_index + 1, total)));
+        out.push((
+            "scenario".into(),
+            format!("{} · phase {}/{}", s.scenario_id, s.step_index + 1, total),
+        ));
     }
     let _ = identity::BUILTINS;
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -363,48 +506,130 @@ mod tests {
     }
 
     fn call(s: &mut Store, id: &str, args: Value, result: &str) {
-        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "running".into() }, Block::ToolCall { id: id.into(), name: "bash".into(), arguments: args }], model: None, usage: None, stop: None }).unwrap();
-        s.append(Kind::ToolResult { call_id: id.into(), name: "bash".into(), content: result.into(), is_error: false, blob: None }).unwrap();
+        s.append(Kind::Assistant {
+            blocks: vec![
+                Block::Text {
+                    text: "running".into(),
+                },
+                Block::ToolCall {
+                    id: id.into(),
+                    name: "bash".into(),
+                    arguments: args,
+                },
+            ],
+            model: None,
+            usage: None,
+            stop: None,
+        })
+        .unwrap();
+        s.append(Kind::ToolResult {
+            call_id: id.into(),
+            name: "bash".into(),
+            content: result.into(),
+            is_error: false,
+            blob: None,
+        })
+        .unwrap();
     }
 
     #[test]
     fn a_stores_branch_becomes_transcript_rows_with_tool_results_attached_to_their_calls() {
         let (_d, mut s) = store();
-        s.append(Kind::User { text: "hello".into() }).unwrap();
-        s.append(Kind::Assistant { blocks: vec![Block::Thinking { text: "hmm".into(), signature: None }, Block::Text { text: "hi".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::User {
+            text: "hello".into(),
+        })
+        .unwrap();
+        s.append(Kind::Assistant {
+            blocks: vec![
+                Block::Thinking {
+                    text: "hmm".into(),
+                    signature: None,
+                },
+                Block::Text { text: "hi".into() },
+            ],
+            model: None,
+            usage: None,
+            stop: None,
+        })
+        .unwrap();
         call(&mut s, "c1", json!({"command": "ls"}), "a b");
-        s.append(Kind::Custom { key: "manifest".into(), data: json!({}) }).unwrap();
+        s.append(Kind::Custom {
+            key: "manifest".into(),
+            data: json!({}),
+        })
+        .unwrap();
 
         let mut session = Session::new();
         session.rebuild(&s);
         assert_eq!(session.items.len(), 5, "{:#?}", session.items);
         assert!(matches!(&session.items[0], ChatItem::User { text } if text == "hello"));
-        assert!(matches!(&session.items[1], ChatItem::Thinking { text, streaming: false } if text == "hmm"));
+        assert!(
+            matches!(&session.items[1], ChatItem::Thinking { text, streaming: false } if text == "hmm")
+        );
         assert!(matches!(&session.items[2], ChatItem::AssistantText { text, .. } if text == "hi"));
-        assert!(matches!(&session.items[4], ChatItem::ToolCall { name, output, done: true, is_error: false, .. } if name == "bash" && output == "a b"));
+        assert!(
+            matches!(&session.items[4], ChatItem::ToolCall { name, output, done: true, is_error: false, .. } if name == "bash" && output == "a b")
+        );
     }
 
     #[test]
     fn a_call_with_no_result_yet_is_a_running_card_that_streams_output_in_place() {
         let (_d, mut s) = store();
         s.append(Kind::User { text: "go".into() }).unwrap();
-        s.append(Kind::Assistant { blocks: vec![Block::ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({"command": "make"}) }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::Assistant {
+            blocks: vec![Block::ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "make"}),
+            }],
+            model: None,
+            usage: None,
+            stop: None,
+        })
+        .unwrap();
         let mut session = Session::new();
         session.rebuild(&s);
-        assert!(matches!(&session.items[1], ChatItem::ToolCall { done: false, output, .. } if output.is_empty()));
+        assert!(
+            matches!(&session.items[1], ChatItem::ToolCall { done: false, output, .. } if output.is_empty())
+        );
 
-        session.apply(&Event::ToolOutput { id: "c1".into(), chunk: "compiling…\n".into() }, &s);
-        session.apply(&Event::ToolOutput { id: "c1".into(), chunk: "linking\n".into() }, &s);
-        assert!(matches!(&session.items[1], ChatItem::ToolCall { done: false, output, .. } if output == "compiling…\nlinking\n"));
+        session.apply(
+            &Event::ToolOutput {
+                id: "c1".into(),
+                chunk: "compiling…\n".into(),
+            },
+            &s,
+        );
+        session.apply(
+            &Event::ToolOutput {
+                id: "c1".into(),
+                chunk: "linking\n".into(),
+            },
+            &s,
+        );
+        assert!(
+            matches!(&session.items[1], ChatItem::ToolCall { done: false, output, .. } if output == "compiling…\nlinking\n")
+        );
 
         // A rebuild in the middle (some other entry appended) does not lose the live output.
         session.rebuild(&s);
-        assert!(matches!(&session.items[1], ChatItem::ToolCall { output, .. } if output == "compiling…\nlinking\n"));
+        assert!(
+            matches!(&session.items[1], ChatItem::ToolCall { output, .. } if output == "compiling…\nlinking\n")
+        );
 
         // The result lands: the card is done and shows the final text.
-        s.append(Kind::ToolResult { call_id: "c1".into(), name: "bash".into(), content: "built".into(), is_error: false, blob: None }).unwrap();
+        s.append(Kind::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            content: "built".into(),
+            is_error: false,
+            blob: None,
+        })
+        .unwrap();
         session.apply(&Event::Appended(s.head()), &s);
-        assert!(matches!(&session.items[1], ChatItem::ToolCall { done: true, output, .. } if output == "built"));
+        assert!(
+            matches!(&session.items[1], ChatItem::ToolCall { done: true, output, .. } if output == "built")
+        );
     }
 
     #[test]
@@ -417,12 +642,33 @@ mod tests {
             session.apply(&Event::Text(d.into()), &s);
         }
         assert_eq!(session.items.len(), 2);
-        assert!(matches!(&session.items[1], ChatItem::AssistantText { text, streaming: true } if text == "Hello there"));
+        assert!(
+            matches!(&session.items[1], ChatItem::AssistantText { text, streaming: true } if text == "Hello there")
+        );
 
-        let id = s.append(Kind::Assistant { blocks: vec![Block::Text { text: "Hello there".into() }], model: None, usage: None, stop: None }).unwrap();
+        let id = s
+            .append(Kind::Assistant {
+                blocks: vec![Block::Text {
+                    text: "Hello there".into(),
+                }],
+                model: None,
+                usage: None,
+                stop: None,
+            })
+            .unwrap();
         session.apply(&Event::Appended(id), &s);
-        assert_eq!(session.items.len(), 2, "no duplicate: the live copy is dropped");
-        assert!(matches!(&session.items[1], ChatItem::AssistantText { streaming: false, .. }));
+        assert_eq!(
+            session.items.len(),
+            2,
+            "no duplicate: the live copy is dropped"
+        );
+        assert!(matches!(
+            &session.items[1],
+            ChatItem::AssistantText {
+                streaming: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -441,16 +687,37 @@ mod tests {
     #[test]
     fn a_reduction_shows_where_it_happened_and_dims_what_it_hides_until_undone() {
         let (_d, mut s) = store();
-        let u = s.append(Kind::User { text: "old question".into() }).unwrap();
-        let a = s.append(Kind::Assistant { blocks: vec![Block::Text { text: "old answer".into() }], model: None, usage: None, stop: None }).unwrap();
-        s.append(Kind::User { text: "new question".into() }).unwrap();
+        let u = s
+            .append(Kind::User {
+                text: "old question".into(),
+            })
+            .unwrap();
+        let a = s
+            .append(Kind::Assistant {
+                blocks: vec![Block::Text {
+                    text: "old answer".into(),
+                }],
+                model: None,
+                usage: None,
+                stop: None,
+            })
+            .unwrap();
+        s.append(Kind::User {
+            text: "new question".into(),
+        })
+        .unwrap();
         let red = s
             .append(Kind::Reduction(Reduction {
                 mode: Mode::Auto,
                 trigger: Trigger::Budget,
                 covers: vec![u, a],
                 summary: Some("summary".into()),
-                stubs: vec![Stub { entry: a, what: "assistant message".into(), detail: "old answer".into(), bytes: 10 }],
+                stubs: vec![Stub {
+                    entry: a,
+                    what: "assistant message".into(),
+                    detail: "old answer".into(),
+                    bytes: 10,
+                }],
                 before_tokens: 900,
                 after_tokens: 300,
             }))
@@ -458,25 +725,57 @@ mod tests {
 
         let mut session = Session::new();
         session.rebuild(&s);
-        assert_eq!(session.hidden, HashSet::from([0, 1]), "the two rows the model no longer sees");
-        assert!(matches!(&session.items[3], ChatItem::Reduction { covers: 2, before: 900, after: 300, active: true, mode, trigger, .. } if mode == "auto" && trigger == "automatic"));
+        assert_eq!(
+            session.hidden,
+            HashSet::from([0, 1]),
+            "the two rows the model no longer sees"
+        );
+        assert!(
+            matches!(&session.items[3], ChatItem::Reduction { covers: 2, before: 900, after: 300, active: true, mode, trigger, .. } if mode == "auto" && trigger == "automatic")
+        );
 
         s.append(Kind::Restore { reduction: red }).unwrap();
         session.rebuild(&s);
         assert!(session.hidden.is_empty());
-        assert!(matches!(&session.items[3], ChatItem::Reduction { active: false, .. }));
+        assert!(matches!(
+            &session.items[3],
+            ChatItem::Reduction { active: false, .. }
+        ));
     }
 
     #[test]
     fn the_transcript_follows_the_current_branch_not_the_whole_tree() {
         let (_d, mut s) = store();
         let u = s.append(Kind::User { text: "q".into() }).unwrap();
-        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "first answer".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::Assistant {
+            blocks: vec![Block::Text {
+                text: "first answer".into(),
+            }],
+            model: None,
+            usage: None,
+            stop: None,
+        })
+        .unwrap();
         s.set_head(u).unwrap();
-        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "second answer".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::Assistant {
+            blocks: vec![Block::Text {
+                text: "second answer".into(),
+            }],
+            model: None,
+            usage: None,
+            stop: None,
+        })
+        .unwrap();
         let mut session = Session::new();
         session.rebuild(&s);
-        let texts: Vec<_> = session.items.iter().filter_map(|i| match i { ChatItem::AssistantText { text, .. } => Some(text.as_str()), _ => None }).collect();
+        let texts: Vec<_> = session
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                ChatItem::AssistantText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(texts, ["second answer"]);
     }
 
@@ -488,7 +787,10 @@ mod tests {
         assert!(status_items(&state, &settings, none).is_empty());
 
         state.manifest.goal = Some("crack the license check".into());
-        state.manifest.steps = vec![reactor_context::manifest::Step { summary: "a".into(), status: "b".into() }];
+        state.manifest.steps = vec![reactor_context::manifest::Step {
+            summary: "a".into(),
+            status: "b".into(),
+        }];
         state.identity.active = Some("publisher".into());
         state.reporting.enabled = Some(true);
         state.reporting.level = reactor_context::settings::Enforcement::new(2);
@@ -513,12 +815,23 @@ mod tests {
         let t0 = Instant::now();
         let mut run = Run::new(t0);
         run.delta(400, t0 + Duration::from_secs(1));
-        assert_eq!(run.tokens(), 100, "four characters to a token until the provider says");
+        assert_eq!(
+            run.tokens(),
+            100,
+            "four characters to a token until the provider says"
+        );
         run.usage(120);
-        assert_eq!(run.tokens(), 120, "the provider's count replaces the estimate");
+        assert_eq!(
+            run.tokens(),
+            120,
+            "the provider's count replaces the estimate"
+        );
         run.delta(40, t0 + Duration::from_secs(5));
         assert_eq!(run.tokens(), 130, "and the next round is estimated on top");
-        assert_eq!(run.elapsed(t0 + Duration::from_secs(9)), Duration::from_secs(9));
+        assert_eq!(
+            run.elapsed(t0 + Duration::from_secs(9)),
+            Duration::from_secs(9)
+        );
     }
 
     #[test]
@@ -537,19 +850,44 @@ mod tests {
     #[test]
     fn the_annotation_says_when_how_long_and_how_fast() {
         let line = stats_label("2026-10-01", "14:03:12", 72_000, 850, 25_000, "2026-10-01");
-        assert_eq!(line, "finished 14:03:12 · took 1m 12s · 850 tokens · 34.0 tokens/s");
+        assert_eq!(
+            line,
+            "finished 14:03:12 · took 1m 12s · 850 tokens · 34.0 tokens/s"
+        );
         let other_day = stats_label("2026-09-30", "23:59:01", 5_000, 0, 0, "2026-10-01");
-        assert_eq!(other_day, "finished 2026-09-30 23:59:01 · took 5s", "the date for another day, and no rate without tokens");
+        assert_eq!(
+            other_day, "finished 2026-09-30 23:59:01 · took 5s",
+            "the date for another day, and no rate without tokens"
+        );
     }
 
     #[test]
     fn a_stats_entry_in_the_log_becomes_a_row_after_the_reply() {
         let (_d, mut s) = store();
         s.append(Kind::User { text: "go".into() }).unwrap();
-        s.append(Kind::Assistant { blocks: vec![Block::Text { text: "done".into() }], model: None, usage: None, stop: None }).unwrap();
+        s.append(Kind::Assistant {
+            blocks: vec![Block::Text {
+                text: "done".into(),
+            }],
+            model: None,
+            usage: None,
+            stop: None,
+        })
+        .unwrap();
         s.append(Kind::Custom { key: STATS_KEY.into(), data: json!({"date": "2026-10-01", "time": "14:03:12", "duration_ms": 5000, "tokens": 40, "stream_ms": 2000}) }).unwrap();
         let mut session = Session::new();
         session.rebuild(&s);
-        assert!(matches!(session.items.last(), Some(ChatItem::Stats { tokens: 40, duration_ms: 5000, .. })), "{:?}", session.items);
+        assert!(
+            matches!(
+                session.items.last(),
+                Some(ChatItem::Stats {
+                    tokens: 40,
+                    duration_ms: 5000,
+                    ..
+                })
+            ),
+            "{:?}",
+            session.items
+        );
     }
 }

@@ -40,7 +40,10 @@ pub fn skill_status(paths: &Paths, tool: &Tool) -> Option<SkillStatus> {
         git_ref: spec.git_ref.clone(),
         fetched: dir.join("SKILL.md").is_file(),
         dir: dir.display().to_string(),
-        commit: meta.get("commit").and_then(Value::as_str).map(str::to_string),
+        commit: meta
+            .get("commit")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         fetched_at: meta.get("fetched_at").filter(|v| !v.is_null()).cloned(),
     })
 }
@@ -62,7 +65,12 @@ pub fn fetch_skill(paths: &Paths, tool: &Tool) -> FetchResult {
     let spec = tool.skill.as_ref().unwrap_or(&default);
     let source = spec.source.clone().unwrap_or_default();
     let dest = paths.skills_dir().join(&tool.id);
-    let fail = |message: String| FetchResult { ok: false, tool: tool.id.clone(), message, commit: None };
+    let fail = |message: String| FetchResult {
+        ok: false,
+        tool: tool.id.clone(),
+        message,
+        commit: None,
+    };
 
     let info = if let Some(url) = source.strip_prefix("git+") {
         fetch_git(url, spec.git_ref.as_deref(), spec.path.as_deref(), &dest)
@@ -87,14 +95,24 @@ pub fn fetch_skill(paths: &Paths, tool: &Tool) -> FetchResult {
     if let Err(e) = write_json_atomic(&dest.join(".reactor-skill.json"), &meta) {
         return fail(e.to_string());
     }
-    FetchResult { ok: true, tool: tool.id.clone(), message: dest.display().to_string(), commit: Some(commit) }
+    FetchResult {
+        ok: true,
+        tool: tool.id.clone(),
+        message: dest.display().to_string(),
+        commit: Some(commit),
+    }
 }
 
 fn s(x: &str) -> String {
     x.to_string()
 }
 
-fn fetch_git(url: &str, git_ref: Option<&str>, subpath: Option<&str>, dest: &Path) -> Result<Option<String>> {
+fn fetch_git(
+    url: &str,
+    git_ref: Option<&str>,
+    subpath: Option<&str>,
+    dest: &Path,
+) -> Result<Option<String>> {
     if which("git").is_none() {
         return Err(ReactorError::new("git is not on PATH"));
     }
@@ -115,7 +133,13 @@ fn fetch_git(url: &str, git_ref: Option<&str>, subpath: Option<&str>, dest: &Pat
             )));
         }
         let head = run(
-            &[s("git"), s("-C"), clone.display().to_string(), s("rev-parse"), s("HEAD")],
+            &[
+                s("git"),
+                s("-C"),
+                clone.display().to_string(),
+                s("rev-parse"),
+                s("HEAD"),
+            ],
             Duration::from_secs(20),
         );
         let src = match subpath {
@@ -123,7 +147,10 @@ fn fetch_git(url: &str, git_ref: Option<&str>, subpath: Option<&str>, dest: &Pat
             _ => clone.clone(),
         };
         if !src.is_dir() {
-            return Err(ReactorError::new(format!("path '{}' not found in {url}", subpath.unwrap_or(""))));
+            return Err(ReactorError::new(format!(
+                "path '{}' not found in {url}",
+                subpath.unwrap_or("")
+            )));
         }
         if !src.join("SKILL.md").is_file() {
             return Err(ReactorError::new(format!(
@@ -132,9 +159,11 @@ fn fetch_git(url: &str, git_ref: Option<&str>, subpath: Option<&str>, dest: &Pat
             )));
         }
         if dest.exists() {
-            std::fs::remove_dir_all(dest).map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
+            std::fs::remove_dir_all(dest)
+                .map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
         }
-        copy_tree(&src, dest).map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
+        copy_tree(&src, dest)
+            .map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
         let commit = first_line(&head.output);
         Ok((!commit.is_empty()).then_some(commit))
     })();
@@ -170,16 +199,31 @@ fn fetch_url(url: &str, dest: &Path) -> Result<Option<String>> {
         return Err(ReactorError::new("download failed: curl is not on PATH"));
     }
     let r = run(
-        &[s("curl"), s("--silent"), s("--show-error"), s("--fail"), s("--location"), s("--max-time"), s("30"), s(url)],
+        &[
+            s("curl"),
+            s("--silent"),
+            s("--show-error"),
+            s("--fail"),
+            s("--location"),
+            s("--max-time"),
+            s("30"),
+            s(url),
+        ],
         Duration::from_secs(35),
     );
     if !r.ok() {
-        return Err(ReactorError::new(format!("download failed: {}", first_line(&r.output))));
+        return Err(ReactorError::new(format!(
+            "download failed: {}",
+            first_line(&r.output)
+        )));
     }
     if !r.output.trim_start().starts_with("---") {
-        return Err(ReactorError::new("downloaded file has no YAML frontmatter; not a SKILL.md"));
+        return Err(ReactorError::new(
+            "downloaded file has no YAML frontmatter; not a SKILL.md",
+        ));
     }
-    std::fs::create_dir_all(dest).map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
+    std::fs::create_dir_all(dest)
+        .map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
     std::fs::write(dest.join("SKILL.md"), r.output)
         .map_err(|e| ReactorError::new(format!("{}: {}", dest.display(), io_reason(&e))))?;
     Ok(None)
@@ -191,13 +235,21 @@ pub fn skill_remote_head(tool: &Tool) -> Option<String> {
     let url = spec.source.as_deref()?.strip_prefix("git+")?;
     which("git")?;
     let r = run(
-        &[s("git"), s("ls-remote"), s(url), spec.git_ref.clone().unwrap_or_else(|| s("HEAD"))],
+        &[
+            s("git"),
+            s("ls-remote"),
+            s(url),
+            spec.git_ref.clone().unwrap_or_else(|| s("HEAD")),
+        ],
         Duration::from_secs(30),
     );
     if !r.ok() {
         return None;
     }
-    first_line(&r.output).split_whitespace().next().map(str::to_string)
+    first_line(&r.output)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 /// A scratch directory under the system temp dir, removed by the caller.
@@ -208,7 +260,13 @@ pub(crate) fn tempdir(prefix: &str) -> Result<PathBuf> {
         match std::fs::create_dir(&p) {
             Ok(()) => return Ok(p),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(ReactorError::new(format!("{}: {}", p.display(), io_reason(&e)))),
+            Err(e) => {
+                return Err(ReactorError::new(format!(
+                    "{}: {}",
+                    p.display(),
+                    io_reason(&e)
+                )));
+            }
         }
     }
     Err(ReactorError::new("could not create a scratch directory"))

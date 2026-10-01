@@ -55,7 +55,12 @@ pub fn tail(text: &str, budget: usize) -> &str {
 
 /// Head and tail of `text`, joined at [`CUT`].
 pub fn cut(text: &str) -> String {
-    format!("{}{}{}", head(text, HEAD_BYTES), CUT, tail(text, TAIL_BYTES))
+    format!(
+        "{}{}{}",
+        head(text, HEAD_BYTES),
+        CUT,
+        tail(text, TAIL_BYTES)
+    )
 }
 
 /// The marker that replaces the cut.
@@ -68,7 +73,11 @@ pub fn marker(elided: u64, total: u64, entry: EntryId) -> String {
 /// The model-visible view of an output of `total` bytes (`text` may already be a
 /// head-and-tail composite with [`CUT`] in it). `entry` is where the whole lives.
 pub fn view(text: &str, total: u64, entry: EntryId) -> String {
-    let composite = if text.contains(CUT) { text.to_string() } else { cut(text) };
+    let composite = if text.contains(CUT) {
+        text.to_string()
+    } else {
+        cut(text)
+    };
     let (h, t) = composite.split_once(CUT).unwrap_or((&composite, ""));
     let elided = total.saturating_sub((h.len() + t.len()) as u64);
     format!("{h}{}{t}", marker(elided, total, entry))

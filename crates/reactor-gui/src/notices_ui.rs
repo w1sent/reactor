@@ -3,9 +3,9 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::label::Label;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, FocusHandle, Hsla, MouseButton, div, px, relative};
@@ -27,7 +27,11 @@ fn colour(level: Level, theme: &Theme) -> Hsla {
 }
 
 /// The bell for the title bar, with a count of what has not been looked at.
-pub fn bell(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &App) -> gpui_kit::AnyElement {
+pub fn bell(
+    app: &ReactorApp,
+    weak: gpui_kit::WeakEntity<ReactorApp>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let theme = cx.theme();
     let unread = app.notifier.unread();
     div()
@@ -39,7 +43,8 @@ pub fn bell(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &App) 
                 .small()
                 .tooltip("Notifications")
                 .on_click(move |_, window, cx| {
-                    weak.update(cx, |app, cx| app.toggle_notices(window, cx)).ok();
+                    weak.update(cx, |app, cx| app.toggle_notices(window, cx))
+                        .ok();
                 }),
         )
         .when(unread > 0, |el| {
@@ -58,22 +63,39 @@ pub fn bell(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &App) 
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(if unread > 99 { "99+".to_string() } else { unread.to_string() }),
+                    .child(if unread > 99 {
+                        "99+".to_string()
+                    } else {
+                        unread.to_string()
+                    }),
             )
         })
         .into_any_element()
 }
 
 /// The history: every notification, newest first, under the bell.
-pub fn history(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &App) -> Option<impl IntoElement> {
+pub fn history(
+    app: &ReactorApp,
+    weak: gpui_kit::WeakEntity<ReactorApp>,
+    cx: &App,
+) -> Option<impl IntoElement> {
     let state = app.notices.as_ref()?;
     let theme = cx.theme();
     let (w_clear, w_close, w_scrim) = (weak.clone(), weak.clone(), weak);
 
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // Wide enough for the date when some notice is from another day, so the times stay in a column.
-    let stamp_width = if app.notifier.history().any(|n| n.date != today) { px(170.) } else { px(76.) };
-    let mut list = v_flex().id("notices-list").flex_1().min_h_0().overflow_y_scrollbar().gap_1();
+    let stamp_width = if app.notifier.history().any(|n| n.date != today) {
+        px(170.)
+    } else {
+        px(76.)
+    };
+    let mut list = v_flex()
+        .id("notices-list")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scrollbar()
+        .gap_1();
     let mut any = false;
     for notice in app.notifier.history() {
         any = true;
@@ -85,13 +107,34 @@ pub fn history(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &Ap
                 .py_1()
                 .rounded_md()
                 .hover(|r| r.bg(theme.list_hover))
-                .child(div().mt(px(6.)).size(px(8.)).flex_none().rounded_full().bg(colour(notice.level, theme)))
-                .child(div().w(stamp_width).flex_none().whitespace_nowrap().font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).text_color(theme.muted_foreground).child(crate::notifications::Notifier::stamp(notice, &today)))
+                .child(
+                    div()
+                        .mt(px(6.))
+                        .size(px(8.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(colour(notice.level, theme)),
+                )
+                .child(
+                    div()
+                        .w(stamp_width)
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_size(theme.mono_font_size)
+                        .text_color(theme.muted_foreground)
+                        .child(crate::notifications::Notifier::stamp(notice, &today)),
+                )
                 .child(div().flex_1().min_w_0().child(notice.message.clone())),
         );
     }
     if !any {
-        list = list.child(div().p_3().text_color(theme.muted_foreground).child("No notifications"));
+        list = list.child(
+            div()
+                .p_3()
+                .text_color(theme.muted_foreground)
+                .child("No notifications"),
+        );
     }
 
     let card = v_flex()
@@ -117,12 +160,26 @@ pub fn history(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &Ap
                 .child(
                     h_flex()
                         .gap_1()
-                        .child(Button::new("notices-clear").label("Clear").small().ghost().on_click(move |_, _w, cx| {
-                            w_clear.update(cx, |app, cx| app.clear_notices(cx)).ok();
-                        }))
-                        .child(Button::new("notices-close").icon(IconName::Close).small().ghost().on_click(move |_, window, cx| {
-                            w_close.update(cx, |app, cx| app.close_notices(window, cx)).ok();
-                        })),
+                        .child(
+                            Button::new("notices-clear")
+                                .label("Clear")
+                                .small()
+                                .ghost()
+                                .on_click(move |_, _w, cx| {
+                                    w_clear.update(cx, |app, cx| app.clear_notices(cx)).ok();
+                                }),
+                        )
+                        .child(
+                            Button::new("notices-close")
+                                .icon(IconName::Close)
+                                .small()
+                                .ghost()
+                                .on_click(move |_, window, cx| {
+                                    w_close
+                                        .update(cx, |app, cx| app.close_notices(window, cx))
+                                        .ok();
+                                }),
+                        ),
                 ),
         )
         .child(list);
@@ -137,9 +194,10 @@ pub fn history(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &Ap
             .left_0()
             .size_full()
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                w_scrim.update(cx, |app, cx| app.close_notices(window, cx)).ok();
+                w_scrim
+                    .update(cx, |app, cx| app.close_notices(window, cx))
+                    .ok();
             })
             .child(card),
     )
 }
-

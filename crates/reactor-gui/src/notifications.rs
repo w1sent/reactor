@@ -44,10 +44,22 @@ pub struct Notifier {
 
 impl Notifier {
     /// Add a notice to the history. Returns its id.
-    pub fn push(&mut self, level: Level, message: impl Into<String>, date: String, time: String) -> u64 {
+    pub fn push(
+        &mut self,
+        level: Level,
+        message: impl Into<String>,
+        date: String,
+        time: String,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.history.push(Notice { id, level, message: message.into(), time, date });
+        self.history.push(Notice {
+            id,
+            level,
+            message: message.into(),
+            time,
+            date,
+        });
         if self.history.len() > HISTORY_CAP {
             self.history.remove(0);
         }
@@ -63,7 +75,11 @@ impl Notifier {
     /// How the history shows a notice's time: the time alone for today's, with the date for any
     /// other day.
     pub fn stamp(notice: &Notice, today: &str) -> String {
-        if notice.date == today { notice.time.clone() } else { format!("{} {}", notice.date, notice.time) }
+        if notice.date == today {
+            notice.time.clone()
+        } else {
+            format!("{} {}", notice.date, notice.time)
+        }
     }
 
     pub fn unread(&self) -> usize {

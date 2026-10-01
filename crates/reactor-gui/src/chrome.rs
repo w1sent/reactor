@@ -14,9 +14,9 @@
 //! produce a second set), and puts the menu bar inside it. On macOS the title
 //! bar leaves room for the traffic lights and the native menu bar does the rest.
 
+use gpui_kit::base::{GlobalState, h_flex};
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::{ActiveTheme as _, TitleBar};
-use gpui_kit::base::{GlobalState, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Entity, Menu, SharedString, WindowBounds, WindowDecorations, WindowOptions, div, px,
@@ -29,7 +29,11 @@ pub const APP_ID: &str = "reactor-gui";
 /// The window icon, for the platforms that take pixels (X11). Windows reads the executable's
 /// resources (`build.rs`) and macOS the bundle's `icon.icns`.
 fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
-    let icon = image::load_from_memory_with_format(include_bytes!("../../../assets/icon.ico"), image::ImageFormat::Ico).ok()?;
+    let icon = image::load_from_memory_with_format(
+        include_bytes!("../../../assets/icon.ico"),
+        image::ImageFormat::Ico,
+    )
+    .ok()?;
     Some(std::sync::Arc::new(icon.into_rgba8()))
 }
 
@@ -61,7 +65,11 @@ pub fn install_menus(cx: &mut App, menus: Vec<Menu>) {
 
 /// The in-window menu bar, where there is no native one to use.
 pub fn menu_bar(cx: &mut App) -> Option<Entity<AppMenuBar>> {
-    if cfg!(target_os = "macos") { None } else { Some(AppMenuBar::new(cx)) }
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(AppMenuBar::new(cx))
+    }
 }
 
 /// The title bar: the menu (if any) on the left, the window's title after it, and `right`

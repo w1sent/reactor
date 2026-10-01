@@ -48,7 +48,10 @@ struct Probing {
 
 impl From<Probing> for ProbeFlags {
     fn from(p: Probing) -> Self {
-        ProbeFlags { refresh: p.refresh, cached: p.cached }
+        ProbeFlags {
+            refresh: p.refresh,
+            cached: p.cached,
+        }
     }
 }
 
@@ -263,7 +266,9 @@ enum SkillsCmd {
 /// Write to stdout; a closed pipe (`reactor … | head`) is not an error.
 fn out(text: &str) -> bool {
     let mut so = std::io::stdout().lock();
-    so.write_all(text.as_bytes()).and_then(|_| so.flush()).is_ok()
+    so.write_all(text.as_bytes())
+        .and_then(|_| so.flush())
+        .is_ok()
 }
 
 fn emit<R: Report>(format: Format, done: Done<R>) -> i32 {
@@ -284,28 +289,67 @@ fn emit<R: Report>(format: Format, done: Done<R>) -> i32 {
 fn run(cli: Cli) -> Result<i32, ReactorError> {
     let paths = Paths::from_env();
     let f = cli.format;
-    let host = |yes: bool| SystemHost { json: f == Format::Json, yes };
+    let host = |yes: bool| SystemHost {
+        json: f == Format::Json,
+        yes,
+    };
     Ok(match cli.command {
-        Command::Doctor { cached, check_skills } => {
-            emit(f, commands::doctor(&paths, DoctorFlags { cached, check_skills })?)
-        }
+        Command::Doctor {
+            cached,
+            check_skills,
+        } => emit(
+            f,
+            commands::doctor(
+                &paths,
+                DoctorFlags {
+                    cached,
+                    check_skills,
+                },
+            )?,
+        ),
         Command::Registry(p) => emit(f, commands::registry(&paths, p.into())?),
         Command::Services(p) => emit(f, commands::services(&paths, p.into())?),
         Command::Tools { cmd } => match cmd {
-            ToolsCmd::List { tags, active, present, missing, probing } => emit(
+            ToolsCmd::List {
+                tags,
+                active,
+                present,
+                missing,
+                probing,
+            } => emit(
                 f,
-                commands::tools_list(&paths, &ToolsListFlags { tags, active, present, missing, probe: probing.into() })?,
+                commands::tools_list(
+                    &paths,
+                    &ToolsListFlags {
+                        tags,
+                        active,
+                        present,
+                        missing,
+                        probe: probing.into(),
+                    },
+                )?,
             ),
-            ToolsCmd::Show { id, probing } => emit(f, commands::tools_show(&paths, &id, probing.into())?),
-            ToolsCmd::Enable { id } => emit(f, commands::set_activation(&paths, &id, true, Some(true))?),
-            ToolsCmd::Disable { id } => emit(f, commands::set_activation(&paths, &id, true, Some(false))?),
+            ToolsCmd::Show { id, probing } => {
+                emit(f, commands::tools_show(&paths, &id, probing.into())?)
+            }
+            ToolsCmd::Enable { id } => {
+                emit(f, commands::set_activation(&paths, &id, true, Some(true))?)
+            }
+            ToolsCmd::Disable { id } => {
+                emit(f, commands::set_activation(&paths, &id, true, Some(false))?)
+            }
             ToolsCmd::Reset { id } => emit(f, commands::set_activation(&paths, &id, true, None)?),
         },
         Command::Toolsets { cmd } => match cmd {
             ToolsetsCmd::List => emit(f, commands::toolsets_list(&paths)?),
             ToolsetsCmd::Show { id } => emit(f, commands::toolsets_show(&paths, &id)?),
-            ToolsetsCmd::Enable { id } => emit(f, commands::set_activation(&paths, &id, false, Some(true))?),
-            ToolsetsCmd::Disable { id } => emit(f, commands::set_activation(&paths, &id, false, Some(false))?),
+            ToolsetsCmd::Enable { id } => {
+                emit(f, commands::set_activation(&paths, &id, false, Some(true))?)
+            }
+            ToolsetsCmd::Disable { id } => emit(
+                f,
+                commands::set_activation(&paths, &id, false, Some(false))?,
+            ),
         },
         Command::State => emit(f, commands::state(&paths)?),
         Command::Skills { cmd } => match cmd {
@@ -313,7 +357,15 @@ fn run(cli: Cli) -> Result<i32, ReactorError> {
             SkillsCmd::Show { id } => emit(f, commands::skills_show(&paths, &id)?),
             SkillsCmd::Fetch { id } => emit(f, commands::skills_fetch(&paths, &id)?),
         },
-        Command::Install { id, method, dry_run, yes, create_venv, auto_install_manual, force_install_manual } => {
+        Command::Install {
+            id,
+            method,
+            dry_run,
+            yes,
+            create_venv,
+            auto_install_manual,
+            force_install_manual,
+        } => {
             let opts = InstallOpts {
                 ids: id,
                 method,
@@ -335,19 +387,42 @@ fn run(cli: Cli) -> Result<i32, ReactorError> {
             0
         }
         Command::Complete { kind } => {
-            let ids = commands::complete_ids(&paths, if matches!(kind, IdKind::Tools) { "tools" } else { "toolsets" })?;
+            let ids = commands::complete_ids(
+                &paths,
+                if matches!(kind, IdKind::Tools) {
+                    "tools"
+                } else {
+                    "toolsets"
+                },
+            )?;
             if !ids.is_empty() {
                 out(&(ids.join("\n") + "\n"));
             }
             0
         }
-        Command::DiffConfig { file } => emit(f, config::diff_config(&paths, file.map(ConfigFile::name))?),
-        Command::OverwriteConfig { file, yes } => {
-            emit(f, config::overwrite_config(&paths, file.map(ConfigFile::name), &host(yes))?)
+        Command::DiffConfig { file } => {
+            emit(f, config::diff_config(&paths, file.map(ConfigFile::name))?)
         }
-        Command::Setup { no_skills, no_completions, no_launcher, dry_run } => emit(
+        Command::OverwriteConfig { file, yes } => emit(
             f,
-            config::setup(&paths, SetupOpts { skills: !no_skills, completions: !no_completions, launcher: !no_launcher, dry_run })?,
+            config::overwrite_config(&paths, file.map(ConfigFile::name), &host(yes))?,
+        ),
+        Command::Setup {
+            no_skills,
+            no_completions,
+            no_launcher,
+            dry_run,
+        } => emit(
+            f,
+            config::setup(
+                &paths,
+                SetupOpts {
+                    skills: !no_skills,
+                    completions: !no_completions,
+                    launcher: !no_launcher,
+                    dry_run,
+                },
+            )?,
         ),
     })
 }

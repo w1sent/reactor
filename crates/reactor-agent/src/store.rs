@@ -52,13 +52,30 @@ impl Store {
         std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         let path = dir.join("session.jsonl");
         if path.exists() {
-            return Err(Error::Store(format!("{}: a session already lives here", dir.display())));
+            return Err(Error::Store(format!(
+                "{}: a session already lives here",
+                dir.display()
+            )));
         }
-        let log = OpenOptions::new().create_new(true).append(true).open(&path).map_err(|e| Error::io(&path, e))?;
-        let mut store = Store { dir, log, entries: Vec::new(), head: 0, log_bytes: 0 };
+        let log = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| Error::io(&path, e))?;
+        let mut store = Store {
+            dir,
+            log,
+            entries: Vec::new(),
+            head: 0,
+            log_bytes: 0,
+        };
         store.push(
             None,
-            Kind::Session { version: FORMAT_VERSION, session: session.to_string(), cwd: cwd.display().to_string() },
+            Kind::Session {
+                version: FORMAT_VERSION,
+                session: session.to_string(),
+                cwd: cwd.display().to_string(),
+            },
         )?;
         Ok(store)
     }
@@ -73,7 +90,9 @@ impl Store {
         let mut line = String::new();
         loop {
             line.clear();
-            let n = reader.read_line(&mut line).map_err(|e| Error::io(&path, e))?;
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| Error::io(&path, e))?;
             if n == 0 {
                 break;
             }
@@ -95,7 +114,9 @@ impl Store {
                 // is corruption, and silently skipping it would hide history.
                 _ => {
                     let mut rest = String::new();
-                    let more = reader.read_line(&mut rest).map_err(|e| Error::io(&path, e))?;
+                    let more = reader
+                        .read_line(&mut rest)
+                        .map_err(|e| Error::io(&path, e))?;
                     if more != 0 {
                         return Err(Error::Store(format!(
                             "{}: an unreadable entry at position {} is followed by more log",
@@ -111,7 +132,9 @@ impl Store {
             return Err(Error::Store(format!("{}: empty log", path.display())));
         }
         // Trim the debris so the next append starts on a clean line.
-        let on_disk = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?.len();
+        let on_disk = std::fs::metadata(&path)
+            .map_err(|e| Error::io(&path, e))?
+            .len();
         if on_disk != good_bytes {
             OpenOptions::new()
                 .write(true)
@@ -119,18 +142,35 @@ impl Store {
                 .and_then(|f| f.set_len(good_bytes))
                 .map_err(|e| Error::io(&path, e))?;
         }
-        let log = OpenOptions::new().append(true).open(&path).map_err(|e| Error::io(&path, e))?;
+        let log = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|e| Error::io(&path, e))?;
         let head = entries.len() as EntryId - 1;
-        Ok(Store { dir, log, entries, head, log_bytes: good_bytes })
+        Ok(Store {
+            dir,
+            log,
+            entries,
+            head,
+            log_bytes: good_bytes,
+        })
     }
 
     fn push(&mut self, parent: Option<EntryId>, kind: Kind) -> Result<EntryId> {
         let id = self.entries.len() as EntryId;
-        let entry = Entry { id, parent, ts: now_ms(), kind };
+        let entry = Entry {
+            id,
+            parent,
+            ts: now_ms(),
+            kind,
+        };
         let mut line = serde_json::to_string(&entry).map_err(|e| Error::Store(e.to_string()))?;
         line.push('\n');
         let path = self.dir.join("session.jsonl");
-        self.log.write_all(line.as_bytes()).and_then(|_| self.log.flush()).map_err(|e| Error::io(&path, e))?;
+        self.log
+            .write_all(line.as_bytes())
+            .and_then(|_| self.log.flush())
+            .map_err(|e| Error::io(&path, e))?;
         self.log_bytes += line.len() as u64;
         self.entries.push(entry);
         self.head = id;
@@ -195,13 +235,22 @@ impl Store {
     }
 
     pub fn children(&self, id: EntryId) -> Vec<EntryId> {
-        self.entries.iter().filter(|e| e.parent == Some(id)).map(|e| e.id).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.parent == Some(id))
+            .map(|e| e.id)
+            .collect()
     }
 
     /// Leaves of the tree: entries nothing hangs from.
     pub fn leaves(&self) -> Vec<EntryId> {
-        let parents: std::collections::HashSet<EntryId> = self.entries.iter().filter_map(|e| e.parent).collect();
-        self.entries.iter().map(|e| e.id).filter(|id| !parents.contains(id)).collect()
+        let parents: std::collections::HashSet<EntryId> =
+            self.entries.iter().filter_map(|e| e.parent).collect();
+        self.entries
+            .iter()
+            .map(|e| e.id)
+            .filter(|id| !parents.contains(id))
+            .collect()
     }
 
     // -- blobs ----------------------------------------------------------------
@@ -220,7 +269,10 @@ impl Store {
         };
         let path = dir.join(&file);
         std::fs::write(&path, bytes).map_err(|e| Error::io(&path, e))?;
-        Ok(Blob { file, bytes: bytes.len() as u64 })
+        Ok(Blob {
+            file,
+            bytes: bytes.len() as u64,
+        })
     }
 
     /// Take a file a producer already spilled to disk into the session, by copy, then
@@ -257,7 +309,9 @@ impl Store {
     /// (and written back). Its format can change without migrating anything.
     pub fn index(&self) -> Result<Index> {
         let path = self.dir.join("index.json");
-        if let Some(idx) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Index>(&t).ok())
+        if let Some(idx) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Index>(&t).ok())
             && idx.log_bytes == self.log_bytes
             && idx.version == INDEX_VERSION
         {
@@ -271,7 +325,15 @@ impl Store {
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 // -- index ---------------------------------------------------------------------
@@ -302,13 +364,17 @@ impl Index {
         Index {
             version: INDEX_VERSION,
             log_bytes: store.log_bytes,
-            entries: store.all().iter().map(|e| IndexEntry {
-                id: e.id,
-                parent: e.parent,
-                kind: e.kind.label().to_string(),
-                bytes: crate::history::text_of(&e.kind).len() as u64,
-                preview: crate::history::preview(&e.kind, 80),
-            }).collect(),
+            entries: store
+                .all()
+                .iter()
+                .map(|e| IndexEntry {
+                    id: e.id,
+                    parent: e.parent,
+                    kind: e.kind.label().to_string(),
+                    bytes: crate::history::text_of(&e.kind).len() as u64,
+                    preview: crate::history::preview(&e.kind, 80),
+                })
+                .collect(),
         }
     }
 }

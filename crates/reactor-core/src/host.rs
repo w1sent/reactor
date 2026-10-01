@@ -90,12 +90,22 @@ impl Host for SystemHost {
     fn exec(&self, req: &Exec) -> ExecOutcome {
         match req.capture {
             Capture::Both => {
-                let r = run_in(&req.argv, req.cwd.as_deref(), Duration::from_secs(10 * 365 * 86_400));
-                ExecOutcome { code: r.code.unwrap_or(-1), captured: r.output }
+                let r = run_in(
+                    &req.argv,
+                    req.cwd.as_deref(),
+                    Duration::from_secs(10 * 365 * 86_400),
+                );
+                ExecOutcome {
+                    code: r.code.unwrap_or(-1),
+                    captured: r.output,
+                }
             }
             Capture::Inherit | Capture::Stderr => {
                 let Some((program, rest)) = req.argv.split_first() else {
-                    return ExecOutcome { code: 127, captured: String::new() };
+                    return ExecOutcome {
+                        code: 127,
+                        captured: String::new(),
+                    };
                 };
                 let mut cmd = Command::new(program);
                 cmd.args(rest);
@@ -107,7 +117,10 @@ impl Host for SystemHost {
                 }
                 match cmd.output_or_status(req.capture) {
                     Ok(o) => o,
-                    Err(e) => ExecOutcome { code: 127, captured: format!("{program}: {e}\n") },
+                    Err(e) => ExecOutcome {
+                        code: 127,
+                        captured: format!("{program}: {e}\n"),
+                    },
                 }
             }
         }
@@ -136,7 +149,10 @@ impl CommandExt for Command {
             })
         } else {
             let status = self.status()?;
-            Ok(ExecOutcome { code: status.code().unwrap_or(-1), captured: String::new() })
+            Ok(ExecOutcome {
+                code: status.code().unwrap_or(-1),
+                captured: String::new(),
+            })
         }
     }
 }
@@ -146,5 +162,8 @@ impl CommandExt for Command {
 pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn discovery_run(argv: &[&str]) -> crate::util::Run {
-    run(&argv.iter().map(|s| s.to_string()).collect::<Vec<_>>(), DISCOVERY_TIMEOUT)
+    run(
+        &argv.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        DISCOVERY_TIMEOUT,
+    )
 }

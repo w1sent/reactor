@@ -13,7 +13,9 @@ use std::future::Future;
 use std::sync::Mutex;
 
 use futures::StreamExt;
-use rig_core::completion::message::{AssistantContent, Message, Reasoning, ReasoningContent, ToolResultContent, UserContent};
+use rig_core::completion::message::{
+    AssistantContent, Message, Reasoning, ReasoningContent, ToolResultContent, UserContent,
+};
 use rig_core::completion::{CompletionModel, CompletionRequestBuilder, ToolDefinition};
 use rig_core::streaming::StreamedAssistantContent;
 use serde_json::Value;
@@ -45,7 +47,9 @@ pub enum Delta {
     Text(String),
     Thinking(String),
     /// A tool call has begun (its arguments may still be arriving).
-    ToolCall { name: String },
+    ToolCall {
+        name: String,
+    },
 }
 
 /// A finished reply.
@@ -59,7 +63,11 @@ pub struct Reply {
 impl Reply {
     pub fn tool_calls(&self) -> impl Iterator<Item = (&str, &str, &Value)> {
         self.blocks.iter().filter_map(|b| match b {
-            Block::ToolCall { id, name, arguments } => Some((id.as_str(), name.as_str(), arguments)),
+            Block::ToolCall {
+                id,
+                name,
+                arguments,
+            } => Some((id.as_str(), name.as_str(), arguments)),
             _ => None,
         })
     }
@@ -88,7 +96,10 @@ pub struct RigLlm<M> {
 
 impl<M: CompletionModel + Clone> RigLlm<M> {
     pub fn new(model: M, name: impl Into<String>) -> Self {
-        RigLlm { model, name: name.into() }
+        RigLlm {
+            model,
+            name: name.into(),
+        }
     }
 }
 
@@ -104,24 +115,49 @@ pub fn to_rig(messages: &[Msg]) -> Vec<Message> {
                     .iter()
                     .map(|b| match b {
                         Block::Text { text } => AssistantContent::text(text.clone()),
-                        Block::Thinking { text, signature } => {
-                            AssistantContent::Reasoning(Reasoning::new_with_signature(text, signature.clone()))
+                        Block::Thinking { text, signature } => AssistantContent::Reasoning(
+                            Reasoning::new_with_signature(text, signature.clone()),
+                        ),
+                        Block::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } => {
+                            AssistantContent::tool_call(id.clone(), name.clone(), arguments.clone())
                         }
-                        Block::ToolCall { id, name, arguments } => AssistantContent::tool_call(id.clone(), name.clone(), arguments.clone()),
                     })
                     .collect();
                 if !content.is_empty() {
                     out.push(Message::Assistant { id: None, content });
                 }
             }
-            Msg::ToolResult { call_id, name, content, is_error } => {
-                let text = if *is_error { format!("error: {content}") } else { content.clone() };
-                let part = UserContent::tool_result_from_wire(call_id.clone(), name.clone(), vec![ToolResultContent::text(text)]);
+            Msg::ToolResult {
+                call_id,
+                name,
+                content,
+                is_error,
+            } => {
+                let text = if *is_error {
+                    format!("error: {content}")
+                } else {
+                    content.clone()
+                };
+                let part = UserContent::tool_result_from_wire(
+                    call_id.clone(),
+                    name.clone(),
+                    vec![ToolResultContent::text(text)],
+                );
                 match out.last_mut() {
-                    Some(Message::User { content }) if content.iter().all(|c| matches!(c, UserContent::ToolResult(_))) => {
+                    Some(Message::User { content })
+                        if content
+                            .iter()
+                            .all(|c| matches!(c, UserContent::ToolResult(_))) =>
+                    {
                         content.push(part);
                     }
-                    _ => out.push(Message::User { content: vec![part] }),
+                    _ => out.push(Message::User {
+                        content: vec![part],
+                    }),
                 }
             }
         }
@@ -130,7 +166,11 @@ pub fn to_rig(messages: &[Msg]) -> Vec<Message> {
 }
 
 impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
-    async fn complete(&self, req: LlmRequest, on_delta: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+    async fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> Result<Reply> {
         let mut history = to_rig(&req.messages);
         let Some(prompt) = history.pop() else {
             return Err(Error::Model("nothing to send".into()));
@@ -141,20 +181,31 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
             .tools(
                 req.tools
                     .iter()
-                    .map(|t| ToolDefinition { name: t.name.clone(), description: t.description.clone(), parameters: t.parameters.clone() })
+                    .map(|t| ToolDefinition {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone(),
+                    })
                     .collect(),
             );
         if let Some(n) = req.max_tokens {
             builder = builder.max_tokens(n);
         }
-        let mut stream = builder.stream().await.map_err(|e| Error::Model(e.to_string()))?;
+        let mut stream = builder
+            .stream()
+            .await
+            .map_err(|e| Error::Model(e.to_string()))?;
 
         let (mut usage, mut stop) = (None, None);
         while let Some(item) = stream.next().await {
             match item.map_err(|e| Error::Model(e.to_string()))? {
                 StreamedAssistantContent::Text(t) => on_delta(Delta::Text(t.text)),
-                StreamedAssistantContent::ReasoningDelta { reasoning, .. } => on_delta(Delta::Thinking(reasoning)),
-                StreamedAssistantContent::ToolCall { tool_call, .. } => on_delta(Delta::ToolCall { name: tool_call.function.name.clone() }),
+                StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
+                    on_delta(Delta::Thinking(reasoning))
+                }
+                StreamedAssistantContent::ToolCall { tool_call, .. } => on_delta(Delta::ToolCall {
+                    name: tool_call.function.name.clone(),
+                }),
                 StreamedAssistantContent::Final(f) => {
                     usage = Some(Usage {
                         input_tokens: f.usage.input_tokens,
@@ -173,7 +224,9 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
             .choice
             .iter()
             .filter_map(|c| match c {
-                AssistantContent::Text(t) if !t.text.is_empty() => Some(Block::Text { text: t.text.clone() }),
+                AssistantContent::Text(t) if !t.text.is_empty() => Some(Block::Text {
+                    text: t.text.clone(),
+                }),
                 AssistantContent::ToolCall(call) => Some(Block::ToolCall {
                     id: call.wire_call_id().to_string(),
                     name: call.function.name.clone(),
@@ -183,7 +236,11 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
                     let mut text = String::new();
                     let mut signature = None;
                     for part in &r.content {
-                        if let ReasoningContent::Text { text: t, signature: s } = part {
+                        if let ReasoningContent::Text {
+                            text: t,
+                            signature: s,
+                        } = part
+                        {
                             text.push_str(t);
                             signature = s.clone().or(signature);
                         }
@@ -193,7 +250,11 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
                 _ => None,
             })
             .collect();
-        Ok(Reply { blocks, usage, stop })
+        Ok(Reply {
+            blocks,
+            usage,
+            stop,
+        })
     }
 
     fn name(&self) -> String {
@@ -211,12 +272,19 @@ pub struct ScriptedLlm {
 
 impl ScriptedLlm {
     pub fn new(replies: impl IntoIterator<Item = Result<Reply>>) -> Self {
-        ScriptedLlm { replies: Mutex::new(replies.into_iter().collect()), requests: Mutex::new(vec![]) }
+        ScriptedLlm {
+            replies: Mutex::new(replies.into_iter().collect()),
+            requests: Mutex::new(vec![]),
+        }
     }
 
     /// A reply that only talks.
     pub fn say(text: &str) -> Result<Reply> {
-        Ok(Reply { blocks: vec![Block::Text { text: text.into() }], usage: None, stop: Some("stop".into()) })
+        Ok(Reply {
+            blocks: vec![Block::Text { text: text.into() }],
+            usage: None,
+            stop: Some("stop".into()),
+        })
     }
 
     /// A reply that calls tools.
@@ -225,8 +293,16 @@ impl ScriptedLlm {
         if !text.is_empty() {
             blocks.push(Block::Text { text: text.into() });
         }
-        blocks.extend(calls.iter().map(|(id, name, args)| Block::ToolCall { id: (*id).into(), name: (*name).into(), arguments: args.clone() }));
-        Ok(Reply { blocks, usage: None, stop: Some("tool_use".into()) })
+        blocks.extend(calls.iter().map(|(id, name, args)| Block::ToolCall {
+            id: (*id).into(),
+            name: (*name).into(),
+            arguments: args.clone(),
+        }));
+        Ok(Reply {
+            blocks,
+            usage: None,
+            stop: Some("tool_use".into()),
+        })
     }
 
     pub fn requests(&self) -> Vec<LlmRequest> {
@@ -235,9 +311,18 @@ impl ScriptedLlm {
 }
 
 impl Llm for ScriptedLlm {
-    async fn complete(&self, req: LlmRequest, on_delta: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+    async fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> Result<Reply> {
         self.requests.lock().unwrap().push(req);
-        let reply = self.replies.lock().unwrap().pop_front().unwrap_or_else(|| Err(Error::Model("the script ran out of replies".into())))?;
+        let reply = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(Error::Model("the script ran out of replies".into())))?;
         for b in &reply.blocks {
             match b {
                 Block::Text { text } => on_delta(Delta::Text(text.clone())),
@@ -264,13 +349,17 @@ pub struct Switchable<L> {
 
 impl<L> Clone for Switchable<L> {
     fn clone(&self) -> Self {
-        Switchable { inner: self.inner.clone() }
+        Switchable {
+            inner: self.inner.clone(),
+        }
     }
 }
 
 impl<L: Llm + Clone> Switchable<L> {
     pub fn new(llm: L) -> Self {
-        Switchable { inner: std::sync::Arc::new(Mutex::new(llm)) }
+        Switchable {
+            inner: std::sync::Arc::new(Mutex::new(llm)),
+        }
     }
 
     pub fn set(&self, llm: L) {
@@ -283,7 +372,11 @@ impl<L: Llm + Clone> Switchable<L> {
 }
 
 impl<L: Llm + Clone> Llm for Switchable<L> {
-    async fn complete(&self, req: LlmRequest, on_delta: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+    async fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> Result<Reply> {
         let llm = self.current();
         llm.complete(req, on_delta).await
     }
@@ -296,7 +389,11 @@ impl<L: Llm + Clone> Llm for Switchable<L> {
 // -- sharing and summarizing ---------------------------------------------------------------
 
 impl<T: Llm + ?Sized> Llm for std::sync::Arc<T> {
-    fn complete(&self, req: LlmRequest, on_delta: &mut (dyn FnMut(Delta) + Send)) -> impl Future<Output = Result<Reply>> + Send {
+    fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> impl Future<Output = Result<Reply>> + Send {
         (**self).complete(req, on_delta)
     }
     fn name(&self) -> String {
@@ -315,14 +412,25 @@ impl<L: Llm> crate::budget::Summarizer for LlmSummarizer<L> {
         // The notes are asked to stay short (`req.max_tokens` is what the budget plans for), but
         // the output limit is far wider: a reasoning model spends part of it thinking first, and
         // with only the notes' length to spend it can end with thinking and no notes at all.
-        let system = format!("{} Keep the notes under about {} words.", req.system, req.max_tokens * 3 / 4);
+        let system = format!(
+            "{} Keep the notes under about {} words.",
+            req.system,
+            req.max_tokens * 3 / 4
+        );
         let mut limit = req.max_tokens.saturating_mul(4).max(4096);
         let mut attempt = 0;
         loop {
             let reply = self
                 .llm
                 .complete(
-                    LlmRequest { system: system.clone(), messages: vec![Msg::User { text: req.transcript.clone() }], tools: vec![], max_tokens: Some(limit) },
+                    LlmRequest {
+                        system: system.clone(),
+                        messages: vec![Msg::User {
+                            text: req.transcript.clone(),
+                        }],
+                        tools: vec![],
+                        max_tokens: Some(limit),
+                    },
                     &mut |_| {},
                 )
                 .await?;
@@ -338,15 +446,32 @@ impl<L: Llm> crate::budget::Summarizer for LlmSummarizer<L> {
             if !text.trim().is_empty() {
                 return Ok(text);
             }
-            let thinking: usize = reply.blocks.iter().map(|b| if let Block::Thinking { text, .. } = b { text.chars().count() } else { 0 }).sum();
+            let thinking: usize = reply
+                .blocks
+                .iter()
+                .map(|b| {
+                    if let Block::Thinking { text, .. } = b {
+                        text.chars().count()
+                    } else {
+                        0
+                    }
+                })
+                .sum();
             // Only thinking: it ran out of room before the notes. Once more, with a lot more.
             if thinking > 0 && attempt == 0 {
                 attempt += 1;
                 limit = limit.saturating_mul(3);
                 continue;
             }
-            let what = if thinking > 0 { format!("only thinking ({thinking} characters) and no notes") } else { "nothing at all".to_string() };
-            let cost = reply.usage.map(|u| format!(", {} output tokens", u.output_tokens)).unwrap_or_default();
+            let what = if thinking > 0 {
+                format!("only thinking ({thinking} characters) and no notes")
+            } else {
+                "nothing at all".to_string()
+            };
+            let cost = reply
+                .usage
+                .map(|u| format!(", {} output tokens", u.output_tokens))
+                .unwrap_or_default();
             return Err(crate::error::Error::Model(format!(
                 "the summarizer returned {what} (stop: {}{cost}). If the model has a small context window, the text to summarize may not have fitted: set the window and reserve in Settings → Context",
                 reply.stop.as_deref().unwrap_or("unknown")

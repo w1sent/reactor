@@ -31,7 +31,11 @@ impl Tool for HistoryIndex {
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
             let store = ctx.store.lock().unwrap();
-            ToolOutput::ok(history::index_listing(&store, usize_arg(&args, "from").map(|n| n as u64), usize_arg(&args, "to").map(|n| n as u64)))
+            ToolOutput::ok(history::index_listing(
+                &store,
+                usize_arg(&args, "from").map(|n| n as u64),
+                usize_arg(&args, "to").map(|n| n as u64),
+            ))
         })
     }
 }
@@ -56,9 +60,16 @@ impl Tool for HistoryRead {
     }
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
-            let Some(id) = usize_arg(&args, "id") else { return ToolOutput::err("history_read needs an integer `id`") };
+            let Some(id) = usize_arg(&args, "id") else {
+                return ToolOutput::err("history_read needs an integer `id`");
+            };
             let store = ctx.store.lock().unwrap();
-            match history::read(&store, id as u64, usize_arg(&args, "offset"), usize_arg(&args, "limit")) {
+            match history::read(
+                &store,
+                id as u64,
+                usize_arg(&args, "offset"),
+                usize_arg(&args, "limit"),
+            ) {
                 Ok(t) => ToolOutput::ok(t),
                 Err(e) => ToolOutput::err(e.to_string()),
             }
@@ -86,8 +97,18 @@ impl Tool for HistorySearch {
     }
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
-            let Some(pattern) = str_arg(&args, "pattern") else { return ToolOutput::err("history_search needs a `pattern`") };
-            let kinds: Vec<String> = args.get("kinds").and_then(Value::as_array).map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            let Some(pattern) = str_arg(&args, "pattern") else {
+                return ToolOutput::err("history_search needs a `pattern`");
+            };
+            let kinds: Vec<String> = args
+                .get("kinds")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|k| k.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
             let limit = usize_arg(&args, "limit").unwrap_or(50);
             let store = ctx.store.lock().unwrap();
             match history::search(&store, pattern, &kinds, limit) {
@@ -135,14 +156,22 @@ impl Tool for UpdateSteps {
         Box::pin(async move {
             let steps: Vec<Step> = match args.get("steps").cloned().map(serde_json::from_value) {
                 Some(Ok(s)) => s,
-                _ => return ToolOutput::err("update_steps needs `steps`: a list of {summary, status}"),
+                _ => {
+                    return ToolOutput::err(
+                        "update_steps needs `steps`: a list of {summary, status}",
+                    );
+                }
             };
             let cfg = Settings::load(&ctx.paths).manifest;
             let mut store = ctx.store.lock().unwrap();
             let mut state = SessionState::load(&store).manifest;
             let out = manifest::update_steps(&mut state, &cfg, &steps);
             if out.persist {
-                let _ = save_state(&mut store, KEY_MANIFEST, serde_json::to_value(&state).unwrap());
+                let _ = save_state(
+                    &mut store,
+                    KEY_MANIFEST,
+                    serde_json::to_value(&state).unwrap(),
+                );
             }
             ToolOutput::ok(out.text)
         })
@@ -171,15 +200,21 @@ impl Tool for PhaseComplete {
 
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
-            let Some(summary) = str_arg(&args, "summary") else { return ToolOutput::err("reactor_phase_complete needs a `summary`") };
+            let Some(summary) = str_arg(&args, "summary") else {
+                return ToolOutput::err("reactor_phase_complete needs a `summary`");
+            };
             let adv = {
                 let mut store = ctx.store.lock().unwrap();
-                let mut sc = Scenario { dir: &ctx.scenarios_dir, state: SessionState::load(&store).scenario };
+                let mut sc = Scenario {
+                    dir: &ctx.scenarios_dir,
+                    state: SessionState::load(&store).scenario,
+                };
                 let adv = sc.advance(summary);
                 match &adv.persist {
                     Persist::Nothing => {}
                     Persist::Set(s) => {
-                        let _ = save_state(&mut store, KEY_SCENARIO, serde_json::to_value(s).unwrap());
+                        let _ =
+                            save_state(&mut store, KEY_SCENARIO, serde_json::to_value(s).unwrap());
                     }
                     Persist::Clear => {
                         let _ = save_state(&mut store, KEY_SCENARIO, Value::Null);

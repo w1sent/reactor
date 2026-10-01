@@ -67,8 +67,16 @@ fn parse_args() -> Result<Args, String> {
         match flag.as_str() {
             "--model" => a.model = Some(value("--model")?),
             "--summarizer" => a.summarizer = Some(value("--summarizer")?),
-            "--window" => a.window = Some(value("--window")?.parse().map_err(|_| "--window must be a number of tokens".to_string())?),
-            "--mode" => a.mode = parse_mode(&value("--mode")?).ok_or("--mode is fade, compact or auto")?,
+            "--window" => {
+                a.window = Some(
+                    value("--window")?
+                        .parse()
+                        .map_err(|_| "--window must be a number of tokens".to_string())?,
+                )
+            }
+            "--mode" => {
+                a.mode = parse_mode(&value("--mode")?).ok_or("--mode is fade, compact or auto")?
+            }
             "--cwd" => a.cwd = PathBuf::from(value("--cwd")?),
             "--resume" => a.resume = Some(PathBuf::from(value("--resume")?)),
             "--scenarios" => a.scenarios = Some(PathBuf::from(value("--scenarios")?)),
@@ -101,7 +109,10 @@ async fn main() {
 }
 
 async fn run(args: Args) -> Result<(), String> {
-    let spec = args.model.clone().ok_or("no model: pass --model provider/name or set REACTOR_MODEL")?;
+    let spec = args
+        .model
+        .clone()
+        .ok_or("no model: pass --model provider/name or set REACTOR_MODEL")?;
     let (llm, provider) = AnyLlm::from_spec(&spec).map_err(|e| e.to_string())?;
     let summarizer_llm = match &args.summarizer {
         Some(s) => AnyLlm::from_spec(s).map_err(|e| e.to_string())?.0,
@@ -112,20 +123,45 @@ async fn run(args: Args) -> Result<(), String> {
     let store = match &args.resume {
         Some(dir) => Store::open(dir).map_err(|e| e.to_string())?,
         None => {
-            let id = format!("{}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), std::process::id());
-            Store::create(paths.config_dir.join("sessions").join(&id), &id, &args.cwd).map_err(|e| e.to_string())?
+            let id = format!(
+                "{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                std::process::id()
+            );
+            Store::create(paths.config_dir.join("sessions").join(&id), &id, &args.cwd)
+                .map_err(|e| e.to_string())?
         }
     };
     eprintln!("session {}", store.dir().display());
 
-    let mut cfg = AgentConfig::new(args.cwd.clone(), paths, args.window.unwrap_or_else(|| default_window(&provider)));
+    let mut cfg = AgentConfig::new(
+        args.cwd.clone(),
+        paths,
+        args.window.unwrap_or_else(|| default_window(&provider)),
+    );
     cfg.budget.mode = args.mode;
-    if let Some(s) = args.scenarios.or_else(|| Some(PathBuf::from("prompts/scenarios")).filter(|p| p.is_dir())) {
+    if let Some(s) = args
+        .scenarios
+        .or_else(|| Some(PathBuf::from("prompts/scenarios")).filter(|p| p.is_dir()))
+    {
         cfg.scenarios_dir = s;
     }
-    cfg.skills_dir = args.skills.or_else(|| Some(PathBuf::from("skills")).filter(|p| p.is_dir()));
+    cfg.skills_dir = args
+        .skills
+        .or_else(|| Some(PathBuf::from("skills")).filter(|p| p.is_dir()));
 
-    let (agent, mut events) = Agent::new(llm, LlmSummarizer { llm: summarizer_llm }, store, Tools::standard(args.cwd.clone()), cfg);
+    let (agent, mut events) = Agent::new(
+        llm,
+        LlmSummarizer {
+            llm: summarizer_llm,
+        },
+        store,
+        Tools::standard(args.cwd.clone()),
+        cfg,
+    );
 
     // Print what happens, as it happens.
     tokio::spawn(async move {
@@ -136,12 +172,30 @@ async fn run(args: Args) -> Result<(), String> {
                     let _ = std::io::stdout().flush();
                 }
                 Event::Thinking(_) | Event::Appended(_) | Event::ToolCallStarted { .. } => {}
-                Event::ToolStart { name, args, .. } => eprintln!("\n\x1b[36m→ {name} {args}\x1b[0m"),
+                Event::ToolStart { name, args, .. } => {
+                    eprintln!("\n\x1b[36m→ {name} {args}\x1b[0m")
+                }
                 Event::ToolOutput { chunk, .. } => eprint!("\x1b[2m{chunk}\x1b[0m"),
-                Event::ToolEnd { entry, is_error, .. } => eprintln!("\x1b[36m  ← #{entry}{}\x1b[0m", if is_error { " (error)" } else { "" }),
-                Event::Usage(u) => eprintln!("\x1b[2m[{} in / {} out tokens]\x1b[0m", u.input_tokens, u.output_tokens),
-                Event::Reduced { entry, mode, trigger, before_tokens, after_tokens } => {
-                    eprintln!("\x1b[33m[context reduced #{entry}: {mode:?} ({trigger:?}) ~{before_tokens} → ~{after_tokens} tokens]\x1b[0m")
+                Event::ToolEnd {
+                    entry, is_error, ..
+                } => eprintln!(
+                    "\x1b[36m  ← #{entry}{}\x1b[0m",
+                    if is_error { " (error)" } else { "" }
+                ),
+                Event::Usage(u) => eprintln!(
+                    "\x1b[2m[{} in / {} out tokens]\x1b[0m",
+                    u.input_tokens, u.output_tokens
+                ),
+                Event::Reduced {
+                    entry,
+                    mode,
+                    trigger,
+                    before_tokens,
+                    after_tokens,
+                } => {
+                    eprintln!(
+                        "\x1b[33m[context reduced #{entry}: {mode:?} ({trigger:?}) ~{before_tokens} → ~{after_tokens} tokens]\x1b[0m"
+                    )
                 }
                 Event::Notice(n) => eprintln!("\x1b[33m{n}\x1b[0m"),
                 Event::Finished => println!(),
@@ -152,7 +206,9 @@ async fn run(args: Args) -> Result<(), String> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
         eprint!("\n\x1b[1m> \x1b[0m");
-        let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? else { break };
+        let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? else {
+            break;
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -174,7 +230,10 @@ async fn run(args: Args) -> Result<(), String> {
             c2.cancel();
         });
         match agent.prompt(&prompt, cancel).await {
-            Ok(o) => eprintln!("\x1b[2m[{} round(s), {} tool call(s), {} reduction(s)]\x1b[0m", o.rounds, o.tool_calls, o.reductions),
+            Ok(o) => eprintln!(
+                "\x1b[2m[{} round(s), {} tool call(s), {} reduction(s)]\x1b[0m",
+                o.rounds, o.tool_calls, o.reductions
+            ),
             Err(e) => eprintln!("\x1b[31mturn stopped: {e}\x1b[0m"),
         }
         interrupt.abort();
@@ -188,7 +247,10 @@ where
     L: reactor_agent::llm::Llm,
     S: reactor_agent::budget::Summarizer,
 {
-    let (name, rest) = cmd.split_once(' ').map(|(n, r)| (n, r.trim())).unwrap_or((cmd, ""));
+    let (name, rest) = cmd
+        .split_once(' ')
+        .map(|(n, r)| (n, r.trim()))
+        .unwrap_or((cmd, ""));
     match name {
         "preview" | "reduce" => {
             let mode = parse_mode(rest).unwrap_or(Mode::Compact);
@@ -196,7 +258,13 @@ where
                 match agent.preview(mode).await {
                     Ok(p) => println!(
                         "would reduce {} entries ({} mechanical ~{} tokens, {} conceptual ~{} tokens), keeping the newest; est. {} -> {} tokens",
-                        p.covers.len(), p.mechanical.len(), p.mechanical_tokens, p.conceptual.len(), p.conceptual_tokens, p.before_tokens, p.estimated_after_tokens
+                        p.covers.len(),
+                        p.mechanical.len(),
+                        p.mechanical_tokens,
+                        p.conceptual.len(),
+                        p.conceptual_tokens,
+                        p.before_tokens,
+                        p.estimated_after_tokens
                     ),
                     Err(e) => println!("{e}"),
                 }
@@ -221,13 +289,21 @@ where
             None
         }
         "history" => {
-            let mut nums = rest.split_whitespace().filter_map(|n| n.parse::<u64>().ok());
+            let mut nums = rest
+                .split_whitespace()
+                .filter_map(|n| n.parse::<u64>().ok());
             let (from, to) = (nums.next(), nums.next());
-            println!("{}", history::index_listing(&agent.store().lock().unwrap(), from, to));
+            println!(
+                "{}",
+                history::index_listing(&agent.store().lock().unwrap(), from, to)
+            );
             None
         }
         "context" => {
-            println!("~{} tokens in the projected messages", context_tokens_of(&agent.context()));
+            println!(
+                "~{} tokens in the projected messages",
+                context_tokens_of(&agent.context())
+            );
             None
         }
         other => match agent.command(other, rest) {

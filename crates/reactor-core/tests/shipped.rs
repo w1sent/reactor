@@ -6,7 +6,10 @@ use reactor_core::paths::{Paths, Shipped};
 use reactor_core::state::toolset_members;
 
 fn repo_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
 }
 
 /// Reads the checkout's files, so this fails the moment someone edits them
@@ -21,7 +24,11 @@ fn the_compiled_in_copies_are_the_checkouts_files() {
     let embedded = Paths::new("/nonexistent", Shipped::Embedded);
     let disk = paths();
     for name in reactor_core::paths::CONFIG_FILES {
-        assert_eq!(embedded.shipped_bytes(name).unwrap(), disk.shipped_bytes(name).unwrap(), "{name}");
+        assert_eq!(
+            embedded.shipped_bytes(name).unwrap(),
+            disk.shipped_bytes(name).unwrap(),
+            "{name}"
+        );
     }
 }
 
@@ -38,7 +45,12 @@ fn every_desc_fits_the_registry_budget() {
     // desc lands in every system prompt for as long as the tool is installed,
     // so it gets a length budget (ADR-0003/0006).
     for t in &load_catalogue(&paths()).unwrap().tools {
-        assert!(t.desc.chars().count() <= 80, "{}: desc is {} chars", t.id, t.desc.chars().count());
+        assert!(
+            t.desc.chars().count() <= 80,
+            "{}: desc is {} chars",
+            t.id,
+            t.desc.chars().count()
+        );
         assert!(!t.desc.contains('\n'), "{}: desc has a newline", t.id);
     }
 }
@@ -49,8 +61,15 @@ fn every_tool_declares_an_https_source() {
     // (note or oneliner) is trusted relative to, so every shipped entry must
     // have decided where its tool comes from, over https.
     for t in &load_catalogue(&paths()).unwrap().tools {
-        let src = t.source.as_deref().unwrap_or_else(|| panic!("{}: no source declared", t.id));
-        assert!(src.starts_with("https://"), "{}: source is not https: {src}", t.id);
+        let src = t
+            .source
+            .as_deref()
+            .unwrap_or_else(|| panic!("{}: no source declared", t.id));
+        assert!(
+            src.starts_with("https://"),
+            "{}: source is not https: {src}",
+            t.id
+        );
     }
 }
 
@@ -60,7 +79,9 @@ fn every_install_key_is_a_manager_or_deliberately_free_text() {
     for t in &cat.tools {
         for key in t.install.keys() {
             assert!(
-                cat.managers.contains_key(key) || key == "manual" || key == "manual-install-oneliner",
+                cat.managers.contains_key(key)
+                    || key == "manual"
+                    || key == "manual-install-oneliner",
                 "{}.install.{key}: neither a declared manager nor `manual` -- a distro name here would never be selected (ADR-0010)",
                 t.id
             );
@@ -72,20 +93,35 @@ fn every_install_key_is_a_manager_or_deliberately_free_text() {
 fn every_prefer_entry_names_a_declared_manager() {
     let cat = load_catalogue(&paths()).unwrap();
     for mid in &cat.prefer {
-        assert!(cat.managers.contains_key(mid), "[platform].prefer names undeclared manager {mid:?}");
+        assert!(
+            cat.managers.contains_key(mid),
+            "[platform].prefer names undeclared manager {mid:?}"
+        );
     }
 }
 
 #[test]
 fn shipped_toolsets_reference_real_tools_and_tags() {
     let cat = load_catalogue(&paths()).unwrap();
-    let tags: std::collections::HashSet<_> = cat.tools.iter().flat_map(|t| t.tags.iter().cloned()).collect();
+    let tags: std::collections::HashSet<_> = cat
+        .tools
+        .iter()
+        .flat_map(|t| t.tags.iter().cloned())
+        .collect();
     for ts in load_toolsets(&paths()).unwrap() {
         for tid in &ts.tools {
-            assert!(cat.contains(tid), "toolset {} names unknown tool {tid:?}", ts.id);
+            assert!(
+                cat.contains(tid),
+                "toolset {} names unknown tool {tid:?}",
+                ts.id
+            );
         }
         for tag in &ts.tags {
-            assert!(tags.contains(tag), "toolset {} names unused tag {tag:?}", ts.id);
+            assert!(
+                tags.contains(tag),
+                "toolset {} names unused tag {tag:?}",
+                ts.id
+            );
         }
     }
 }
@@ -94,7 +130,11 @@ fn shipped_toolsets_reference_real_tools_and_tags() {
 fn no_shipped_toolset_is_empty() {
     let cat = load_catalogue(&paths()).unwrap();
     for ts in load_toolsets(&paths()).unwrap() {
-        assert!(!toolset_members(&ts, &cat).is_empty(), "toolset {} selects nothing", ts.id);
+        assert!(
+            !toolset_members(&ts, &cat).is_empty(),
+            "toolset {} selects nothing",
+            ts.id
+        );
     }
 }
 
@@ -104,7 +144,11 @@ fn a_toolset_named_after_a_tag_selects_only_that_tag() {
     // inside it, and this checks the claim -- catching the toolset that reads as
     // narrow but is selected on some other tag entirely.
     let cat = load_catalogue(&paths()).unwrap();
-    let tags: std::collections::HashSet<_> = cat.tools.iter().flat_map(|t| t.tags.iter().cloned()).collect();
+    let tags: std::collections::HashSet<_> = cat
+        .tools
+        .iter()
+        .flat_map(|t| t.tags.iter().cloned())
+        .collect();
     for ts in load_toolsets(&paths()).unwrap() {
         if ts.everything || !tags.contains(&ts.id) {
             continue;
@@ -141,7 +185,11 @@ fn every_tool_belongs_to_a_toolset_other_than_all() {
         }
     }
     for t in &cat.tools {
-        assert!(placed.contains(&t.id), "{} is in no toolset but `all`", t.id);
+        assert!(
+            placed.contains(&t.id),
+            "{} is in no toolset but `all`",
+            t.id
+        );
     }
 }
 
@@ -152,7 +200,8 @@ fn every_service_count_pattern_compiles_under_the_regex_crate() {
     // does not.
     for t in &load_catalogue(&paths()).unwrap().tools {
         if let Some(p) = t.service_count.as_ref().and_then(|c| c.pattern.as_ref()) {
-            regex::Regex::new(p).unwrap_or_else(|e| panic!("{}: service count pattern {p:?}: {e}", t.id));
+            regex::Regex::new(p)
+                .unwrap_or_else(|e| panic!("{}: service count pattern {p:?}: {e}", t.id));
         }
     }
 }

@@ -63,18 +63,36 @@ impl Origin {
     pub fn source(self) -> &'static str {
         match self {
             Origin::Base => "The built-in base prompt of reactor-agent. The same in every session.",
-            Origin::Identity => "The working persona: `/identity`, stored in the session; saved identities are in settings.json.",
-            Origin::Registry => "The tool catalogue (tools.toml), probed on this machine: present and active tools only. Change it with the Tools panel or `/tool`.",
-            Origin::Skills => "Skills of active tools: REactor's own, and upstream skills fetched by `reactor setup`.",
-            Origin::Manifest => "The session manifest: `/goal`, `/guidelines` and the agent's own steps. `/manifest off` leaves it out.",
+            Origin::Identity => {
+                "The working persona: `/identity`, stored in the session; saved identities are in settings.json."
+            }
+            Origin::Registry => {
+                "The tool catalogue (tools.toml), probed on this machine: present and active tools only. Change it with the Tools panel or `/tool`."
+            }
+            Origin::Skills => {
+                "Skills of active tools: REactor's own, and upstream skills fetched by `reactor setup`."
+            }
+            Origin::Manifest => {
+                "The session manifest: `/goal`, `/guidelines` and the agent's own steps. `/manifest off` leaves it out."
+            }
             Origin::Reporting => "The reporting discipline: `/report on`, level and folder.",
             Origin::Scenario => "The current scenario phase's briefing: `/reactor-scenario`.",
-            Origin::ToolDefinition => "The tools the model may call, with their argument schemas. Sent with every request.",
+            Origin::ToolDefinition => {
+                "The tools the model may call, with their argument schemas. Sent with every request."
+            }
             Origin::User => "A prompt you sent.",
-            Origin::Assistant => "The model's own earlier reply: its text, thinking and tool calls.",
-            Origin::ToolResult => "What a tool returned. Long output was cut; the session log keeps all of it (`history_read`).",
-            Origin::Reduction => "A stand-in for a range of older entries that a context reduction took out. `/undo` brings them back.",
-            Origin::Reminder => "A reporting reminder added to this request only; it is never stored.",
+            Origin::Assistant => {
+                "The model's own earlier reply: its text, thinking and tool calls."
+            }
+            Origin::ToolResult => {
+                "What a tool returned. Long output was cut; the session log keeps all of it (`history_read`)."
+            }
+            Origin::Reduction => {
+                "A stand-in for a range of older entries that a context reduction took out. `/undo` brings them back."
+            }
+            Origin::Reminder => {
+                "A reporting reminder added to this request only; it is never stored."
+            }
         }
     }
 }
@@ -124,7 +142,16 @@ impl ContextPreview {
     pub fn by_origin(&self) -> Vec<(Origin, u64)> {
         let mut out: Vec<(Origin, u64)> = Origin::ALL
             .iter()
-            .map(|o| (*o, self.segments.iter().filter(|s| s.origin == *o).map(|s| s.tokens).sum::<u64>()))
+            .map(|o| {
+                (
+                    *o,
+                    self.segments
+                        .iter()
+                        .filter(|s| s.origin == *o)
+                        .map(|s| s.tokens)
+                        .sum::<u64>(),
+                )
+            })
             .filter(|(_, t)| *t > 0)
             .collect();
         out.sort_by_key(|o| std::cmp::Reverse(o.1));
@@ -135,7 +162,13 @@ impl ContextPreview {
     pub fn as_text(&self) -> String {
         let mut out = String::new();
         for s in &self.segments {
-            out.push_str(&format!("===== {} · {} · ~{} tokens =====\n{}\n\n", s.origin.label(), s.label, s.tokens, s.text));
+            out.push_str(&format!(
+                "===== {} · {} · ~{} tokens =====\n{}\n\n",
+                s.origin.label(),
+                s.label,
+                s.tokens,
+                s.text
+            ));
         }
         out
     }

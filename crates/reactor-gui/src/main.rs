@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::label::Label;
@@ -433,7 +434,7 @@ impl Render for SessionPicker {
             .gap_1()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         if rows.is_empty() {
             list = list.child(
                 div()

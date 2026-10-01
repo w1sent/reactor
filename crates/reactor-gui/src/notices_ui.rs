@@ -3,6 +3,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme};
@@ -72,7 +73,7 @@ pub fn history(app: &ReactorApp, weak: gpui_kit::WeakEntity<ReactorApp>, cx: &Ap
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // Wide enough for the date when some notice is from another day, so the times stay in a column.
     let stamp_width = if app.notifier.history().any(|n| n.date != today) { px(170.) } else { px(76.) };
-    let mut list = v_flex().id("notices-list").flex_1().min_h_0().overflow_y_scroll().gap_1();
+    let mut list = v_flex().id("notices-list").flex_1().min_h_0().overflow_y_scrollbar().gap_1();
     let mut any = false;
     for notice in app.notifier.history() {
         any = true;

@@ -2181,9 +2181,6 @@ fn palette_list(weak: &gpui_kit::WeakEntity<ReactorApp>, cx: &mut App) -> gpui_k
 
 impl Render for ReactorApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Root's overlay layers: notifications, dialogs (§6).
-        let notification_layer = Root::render_notification_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
 
         div()
             .id("reactor-workspace")
@@ -2249,7 +2246,5 @@ impl Render for ReactorApp {
                 crate::notices_ui::history(self, cx.weak_entity(), cx),
                 |el, popup| el.child(popup),
             )
-            .when_some(notification_layer, |el, layer| el.child(layer))
-            .when_some(dialog_layer, |el, layer| el.child(layer))
     }
 }

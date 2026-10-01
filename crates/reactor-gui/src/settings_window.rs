@@ -97,10 +97,8 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
-        // The component's notification layer, so popups (this window gets the same ones) show here.
-        let notifications = Root::render_notification_layer(window, cx);
         v_flex()
             .size_full()
             .relative()
@@ -123,7 +121,6 @@ impl Render for SettingsWindow {
                         ]),
                 ),
             )
-            .children(notifications)
     }
 }
 

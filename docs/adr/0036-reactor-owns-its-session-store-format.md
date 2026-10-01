@@ -33,7 +33,7 @@ reach.
 - **No session moves between pi and reactor-gui, in either direction.** A
   session started in one is finished in that one. This is a real loss against
   today, where a GUI session is a normal pi session file resumable from the
-  terminal (`gui/SPEC.md` §1), and it is the price of the two reasons above.
+  terminal (`crates/reactor-gui/SPEC.md` §1), and it is the price of the two reasons above.
 - **[ADR-0021](0021-context-editor-forks-or-filters-never-rewrites.md)'s
   constraint is lifted.** "Never rewrites history" was imposed by pi owning
   the session file. With originals retained and reductions recorded as

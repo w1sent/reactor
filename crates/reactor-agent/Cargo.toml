@@ -1,0 +1,22 @@
+[package]
+name = "reactor-agent"
+description = "REactor's agent: the session store, the loop over rig, the context budget manager, tools."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reactor-core = { path = "../reactor-core" }
+reactor-context = { path = "../reactor-context" }
+rig-core = "0.42"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "io-util", "io-std", "fs", "signal"] }
+tokio-util = "0.7"
+futures = "0.3"
+regex.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }

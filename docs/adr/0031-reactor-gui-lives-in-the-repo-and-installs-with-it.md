@@ -1,5 +1,11 @@
 # reactor-gui lives in this repo, and installs with it
 
+> **Amended by [ADR-0039](0039-the-executables-contain-no-python.md):** the GUI
+> still lives here and still degrades gracefully, but `scripts/install.py` is
+> gone. Until the GUI joins the root cargo workspace (MIGRATE.md phase 2) it is
+> built and installed with `cargo install --path gui/crates/reactor-gui`, and
+> `reactor setup` does not build anything.
+
 The GUI is a Rust workspace in `gui/` inside this repository — not a sibling
 repo like the catalogue's tools ([ADR-0002](0002-package-ships-assets-tools-are-sibling-repos.md)) —
 and `scripts/install.py` builds it by default, warning and continuing when
@@ -31,7 +37,7 @@ catalogue can pin; it is coupled to `extensions/`, which lives here.
 
 - The repo gains a Rust toolchain surface: `gui/Cargo.toml`, a pinned
   gpui-kit dependency, `cargo` as an optional component of install. The
-  python/node suites do not depend on it; `npm test` is untouched, and the
+  python/node suites do not depend on it; the test suites are untouched, and the
   GUI's tests are hermetic (`cargo test`, fake JSONL peer — live-pi tests
   are `#[ignore]`d).
 - `pi install` runs `git clean -fdx` inside the package on update, which

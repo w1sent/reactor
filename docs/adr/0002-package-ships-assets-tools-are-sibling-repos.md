@@ -1,5 +1,11 @@
 # The pi package ships assets only; standalone tools are sibling repos
 
+> **Amended by [ADR-0034](0034-reactor-cli-becomes-a-rust-library-with-a-binary.md)
+> and [ADR-0039](0039-the-executables-contain-no-python.md):** the CLI is a Rust
+> binary, not stdlib Python, and the second install step is `cargo install`
+> plus `reactor setup`, not `scripts/install.py`. The split itself — assets in
+> the package, everything else installed outside it — is unchanged.
+
 The REactor pi package contributes only things that need no build step:
 extensions (`.ts`, loaded directly by pi's `jiti`), skills, prompt templates and
 themes, plus a stdlib-only Python CLI. Standalone tools that REactor develops

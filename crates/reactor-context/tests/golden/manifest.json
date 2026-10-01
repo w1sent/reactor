@@ -1,0 +1,1165 @@
+[
+  {
+    "name": "walkthrough",
+    "config": null,
+    "ops": [
+      {
+        "op": "prompt",
+        "out": {
+          "appended": null,
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "x",
+            "status": "done"
+          }
+        ],
+        "out": {
+          "text": "update_steps is inactive until a session goal is set. Set one with /goal <text>.",
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: (none)\nguidelines: (none)\nsteps (0/20):\n  (none)\nswitch: on",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "usage: /goal <text> | /goal clear",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "  find the crash  ",
+        "out": {
+          "notify": [
+            {
+              "message": "goal set: find the crash",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "goal": "find the crash"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (0/20):\n\n(none yet)\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "status": "one two three four five"
+          },
+          {
+            "summary": "ok",
+            "status": "  done  "
+          }
+        ],
+        "out": {
+          "text": "Steps updated: 2 step(s).",
+          "notify": [],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "goal": "find the crash"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2/20):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: find the crash\nguidelines: (none)\nsteps (2/20):\n  1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n  2. [done] ok\nswitch: on",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "guidelines",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "usage: /guidelines <text> | /guidelines clear",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "guidelines",
+        "args": "never touch prod",
+        "out": {
+          "notify": [
+            {
+              "message": "guidelines set: never touch prod",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "goal": "find the crash",
+              "guidelines": "never touch prod"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2/20):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.\n\n## Session Guidelines\n\n\n\nnever touch prod",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "manifest",
+        "args": "off",
+        "out": {
+          "notify": [
+            {
+              "message": "goal-setting disabled",
+              "level": "warning"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "goal": "find the crash",
+              "guidelines": "never touch prod",
+              "enabled": false
+            }
+          ],
+          "advertised": false
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": null,
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "x",
+            "status": "y"
+          }
+        ],
+        "out": {
+          "text": "goal-setting is off. Run /manifest on to enable it.",
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: find the crash\nguidelines: never touch prod\nsteps (2/20):\n  1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n  2. [done] ok\nswitch: off",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "manifest",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal-setting enabled",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "goal": "find the crash",
+              "guidelines": "never touch prod",
+              "enabled": true
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "manifest",
+        "args": "bogus",
+        "out": {
+          "notify": [
+            {
+              "message": "manifest: unknown argument \"bogus\" -- try on, off or clear",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "guidelines",
+        "args": "CLEAR",
+        "out": {
+          "notify": [
+            {
+              "message": "guidelines cleared",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "goal": "find the crash",
+              "enabled": true
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2/20):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "clear",
+        "out": {
+          "notify": [
+            {
+              "message": "goal cleared",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "enabled": true
+            }
+          ],
+          "advertised": false
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": null,
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "x",
+            "status": "y"
+          }
+        ],
+        "out": {
+          "text": "update_steps is inactive until a session goal is set. Set one with /goal <text>.",
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "again",
+        "out": {
+          "notify": [
+            {
+              "message": "goal set: again",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+                  "status": "one two three"
+                },
+                {
+                  "summary": "ok",
+                  "status": "done"
+                }
+              ],
+              "goal": "again",
+              "enabled": true
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "manifest",
+        "args": "clear",
+        "out": {
+          "notify": [
+            {
+              "message": "manifest cleared -- goal, guidelines and steps are gone",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "enabled": true
+            }
+          ],
+          "advertised": false
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": null,
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: (none)\nguidelines: (none)\nsteps (0/20):\n  (none)\nswitch: on",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "guidelines-only",
+    "config": null,
+    "ops": [
+      {
+        "op": "command",
+        "name": "guidelines",
+        "args": "just rules",
+        "out": {
+          "notify": [
+            {
+              "message": "guidelines set: just rules",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "guidelines": "just rules"
+            }
+          ],
+          "advertised": false
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Guidelines\n\n\n\njust rules",
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "x",
+            "status": "y"
+          }
+        ],
+        "out": {
+          "text": "update_steps is inactive until a session goal is set. Set one with /goal <text>.",
+          "notify": [],
+          "entries": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: (none)\nguidelines: just rules\nsteps (0/20):\n  (none)\nswitch: on",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "limits-from-config",
+    "config": {
+      "softStepLimit": 2,
+      "maxDescription": 10,
+      "statusWords": 1,
+      "deriveContextChars": 100
+    },
+    "ops": [
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "small limits",
+        "out": {
+          "notify": [
+            {
+              "message": "goal set: small limits",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "goal": "small limits"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "a long summary here",
+            "status": "two words"
+          },
+          {
+            "summary": "step 1",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 2",
+            "status": "in progress"
+          }
+        ],
+        "out": {
+          "text": "Steps updated: 3 step(s).\n\nWARNING: step count (3) exceeds the soft limit (2). Consolidate or mark finished steps complete and rewrite the list via update_steps.",
+          "notify": [],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "a long su…",
+                  "status": "two"
+                },
+                {
+                  "summary": "step 1",
+                  "status": "in"
+                },
+                {
+                  "summary": "step 2",
+                  "status": "in"
+                }
+              ],
+              "goal": "small limits"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: small limits\n\n\n\nSteps (3/2):\n\n1. [two] a long su…\n2. [in] step 1\n3. [in] step 2\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: small limits\nguidelines: (none)\nsteps (3/2):\n  1. [two] a long su…\n  2. [in] step 1\n  3. [in] step 2\nswitch: on",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "over-the-default-soft-limit",
+    "config": null,
+    "ops": [
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "many",
+        "out": {
+          "notify": [
+            {
+              "message": "goal set: many",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "goal": "many"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "step 1",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 2",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 3",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 4",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 5",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 6",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 7",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 8",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 9",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 10",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 11",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 12",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 13",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 14",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 15",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 16",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 17",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 18",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 19",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 20",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 21",
+            "status": "in progress"
+          },
+          {
+            "summary": "step 22",
+            "status": "in progress"
+          }
+        ],
+        "out": {
+          "text": "Steps updated: 22 step(s).\n\nWARNING: step count (22) exceeds the soft limit (20). Consolidate or mark finished steps complete and rewrite the list via update_steps.",
+          "notify": [],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "step 1",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 2",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 3",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 4",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 5",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 6",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 7",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 8",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 9",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 10",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 11",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 12",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 13",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 14",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 15",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 16",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 17",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 18",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 19",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 20",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 21",
+                  "status": "in progress"
+                },
+                {
+                  "summary": "step 22",
+                  "status": "in progress"
+                }
+              ],
+              "goal": "many"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: many\n\n\n\nSteps (22/20):\n\n1. [in progress] step 1\n2. [in progress] step 2\n3. [in progress] step 3\n4. [in progress] step 4\n5. [in progress] step 5\n6. [in progress] step 6\n7. [in progress] step 7\n8. [in progress] step 8\n9. [in progress] step 9\n10. [in progress] step 10\n11. [in progress] step 11\n12. [in progress] step 12\n13. [in progress] step 13\n14. [in progress] step 14\n15. [in progress] step 15\n16. [in progress] step 16\n17. [in progress] step 17\n18. [in progress] step 18\n19. [in progress] step 19\n20. [in progress] step 20\n21. [in progress] step 21\n22. [in progress] step 22\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "js-string-lengths",
+    "config": null,
+    "ops": [
+      {
+        "op": "command",
+        "name": "goal",
+        "args": "unicode",
+        "out": {
+          "notify": [
+            {
+              "message": "goal set: unicode",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "goal": "unicode"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "steps": [
+          {
+            "summary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀bbbbbbbbbb",
+            "status": "déjà vu ✓ ok now"
+          }
+        ],
+        "out": {
+          "text": "Steps updated: 1 step(s).",
+          "notify": [],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀…",
+                  "status": "déjà vu ✓"
+                }
+              ],
+              "goal": "unicode"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: unicode\n\n\n\nSteps (1/20):\n\n1. [déjà vu ✓] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀…\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "derive",
+    "config": null,
+    "ops": [
+      {
+        "op": "derive",
+        "args": "",
+        "response": "```json\n{\"goal\": \"  crack the license check  \", \"guidelines\": \"be quiet\", \"steps\": [{\"summary\": \"find the check\", \"status\": \"in progress now really\"}, {\"summary\": \"  \", \"status\": \"x\"}, {\"status\": \"no summary\"}, {\"summary\": \"patch it\"}]}\n```",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the goal, guidelines and steps for this session. Respond with ONLY a JSON object of exactly this shape: {\"goal\": \"<one sentence>\", \"guidelines\": \"<standing constraints, or \"\" if none>\", \"steps\": [{\"summary\": \"<conceptual step>\", \"status\": \"<3 words>\"}]}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: goal: crack the license check, guidelines, steps: 2 -- /frame to review",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "find the check",
+                  "status": "in progress now"
+                },
+                {
+                  "summary": "patch it",
+                  "status": ""
+                }
+              ],
+              "goal": "crack the license check",
+              "guidelines": "be quiet"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "prompt",
+        "out": {
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: crack the license check\n\n\n\nSteps (2/20):\n\n1. [in progress now] find the check\n2. [] patch it\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.\n\n## Session Guidelines\n\n\n\nbe quiet",
+          "notify": [],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "goal",
+        "response": "Sure! Here you go: {\"goal\": \"second goal\", \"steps\": [{\"summary\": \"ignored\", \"status\": \"x\"}]} hope it helps",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the session goal for this session. Respond with ONLY a JSON object of exactly this shape: {\"goal\": \"<one sentence: what this session is trying to achieve>\"}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: goal: second goal -- /frame to review",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "find the check",
+                  "status": "in progress now"
+                },
+                {
+                  "summary": "patch it",
+                  "status": ""
+                }
+              ],
+              "goal": "second goal",
+              "guidelines": "be quiet"
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "GUIDELINES",
+        "response": "{\"guidelines\": \"\"}",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive standing guidelines for this session. Respond with ONLY a JSON object of exactly this shape: {\"guidelines\": \"<standing constraints the work implies, or \"\" if none>\"}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: guidelines -- /frame to review",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [
+                {
+                  "summary": "find the check",
+                  "status": "in progress now"
+                },
+                {
+                  "summary": "patch it",
+                  "status": ""
+                }
+              ],
+              "goal": "second goal",
+              "guidelines": ""
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "steps",
+        "response": "{\"steps\": []}",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the steps (covering the REMAINING work) for this session. Respond with ONLY a JSON object of exactly this shape: {\"steps\": [{\"summary\": \"<conceptual step, not a micro-action>\", \"status\": \"<3 words>\"}]}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: steps: 0 -- /frame to review",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "steps": [],
+              "goal": "second goal",
+              "guidelines": ""
+            }
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "name": "frame",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "goal: second goal\nguidelines: \nsteps (0/20):\n  (none)\nswitch: on",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "goal",
+        "response": "{\"goal\": \"   \"}",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the session goal for this session. Respond with ONLY a JSON object of exactly this shape: {\"goal\": \"<one sentence: what this session is trying to achieve>\"}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: the response was not the requested JSON -- nothing applied",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "all",
+        "response": "no json at all",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the goal, guidelines and steps for this session. Respond with ONLY a JSON object of exactly this shape: {\"goal\": \"<one sentence>\", \"guidelines\": \"<standing constraints, or \"\" if none>\", \"steps\": [{\"summary\": \"<conceptual step>\", \"status\": \"<3 words>\"}]}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: the response was not the requested JSON -- nothing applied",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "all",
+        "response": "} backwards {",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the goal, guidelines and steps for this session. Respond with ONLY a JSON object of exactly this shape: {\"goal\": \"<one sentence>\", \"guidelines\": \"<standing constraints, or \"\" if none>\", \"steps\": [{\"summary\": \"<conceptual step>\", \"status\": \"<3 words>\"}]}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: the response was not the requested JSON -- nothing applied",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "bogus",
+        "response": "{}",
+        "out": {
+          "notify": [
+            {
+              "message": "derive: unknown scope \"bogus\" -- try all, goal, guidelines or steps",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "derive",
+        "args": "steps",
+        "response": "{\"goal\": \"wrong scope\"}",
+        "out": {
+          "systemPrompt": "You derive a session manifest from a transcript. Respond with ONLY the requested JSON object -- no markdown fences, no commentary.",
+          "userMessage": "Based on the transcript below, derive the steps (covering the REMAINING work) for this session. Respond with ONLY a JSON object of exactly this shape: {\"steps\": [{\"summary\": \"<conceptual step, not a micro-action>\", \"status\": \"<3 words>\"}]}. Steps cover what remains, not history; statuses are 3 words each.\n\n--- session transcript (tail) ---\n",
+          "notify": [
+            {
+              "message": "derive: the response was not the requested JSON -- nothing applied",
+              "level": "warning"
+            }
+          ],
+          "entries": [],
+          "advertised": true
+        }
+      }
+    ]
+  }
+]

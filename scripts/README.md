@@ -2,45 +2,44 @@
 
 Repo-management scripts.
 
-## `install.py`
+## Installing REactor — `reactor setup`, not a script
 
-The second half of installing REactor. `pi install git:…/reactor` gets the
-assets; this gets everything that is not a pi resource.
+There is no installer script. `scripts/install.py` was retired with the Python
+CLI ([ADR-0039](../docs/adr/0039-the-executables-contain-no-python.md)): an
+installer that needs Python would put back the interpreter the Rust binary
+removed. What it did is now two commands:
 
 ```bash
-python3 scripts/install.py                 # symlink the CLI, seed config, fetch skills
-python3 scripts/install.py --copy          # copy the CLI instead of symlinking
-python3 scripts/install.py --cli-dest PATH # somewhere other than ~/.local/bin/reactor
-python3 scripts/install.py --no-skills     # skip the network step
-python3 scripts/install.py --no-completions # skip installing shell completions
-python3 scripts/install.py --dry-run       # say what would happen and stop
+cargo install --git https://github.com/w1sent/reactor reactor-cli   # the binary, onto ~/.cargo/bin
+cargo install --path crates/reactor-cli   # ...or from a checkout you already have
+reactor setup                             # seed config, skills, completions
+reactor setup --no-skills --no-completions --no-launcher --dry-run   # the switches
 ```
 
-What it does:
+`reactor setup` does the rest:
 
-1. Symlink (or copy) `bin/reactor` onto `PATH`. Warns if the destination
-   directory is not actually on `PATH`.
-2. Seed `~/.pi/reactor/tools.toml` and `toolsets.toml` from the shipped copies —
-   **only if absent**. Never clobbers; if they exist and differ, it says so and
-   points at `reactor diff-config`
+1. Seed `~/.reactor/tools.toml` and `toolsets.toml` from the copies compiled into
+   the binary — **only if absent**. Never clobbers; if they exist and differ, it
+   says so and points at `reactor diff-config`
    ([ADR-0004](../docs/adr/0004-config-updates-via-plain-diff.md)).
-3. Create `~/.pi/reactor/state.json` if absent.
-4. Fetch configured upstream skills into `~/.pi/reactor/skills/<tool>/`, pinned
-   to the ref in the catalogue, recording source, ref, resolved commit and fetch
+2. Create `~/.reactor/state.json` if absent.
+3. Fetch configured upstream skills into `~/.reactor/skills/<tool>/`, pinned to
+   the ref in the catalogue, recording source, ref, resolved commit and fetch
    time in `.reactor-skill.json`
-   ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)). This step is
-   `reactor skills fetch` in a subprocess rather than a second implementation.
-5. Write bash, zsh, and fish completion scripts — each is `reactor completion
-   <shell>` in a subprocess, written to that shell's conventional per-user
-   completions directory ([ADR-0015](../docs/adr/0015-shell-completion-generated-not-hand-written.md)).
-   Unlike the config files, these are reactor's own generated output, so they
-   are overwritten unconditionally rather than preserved. zsh needs one manual
-   step it cannot do for you — adding `~/.zfunc` to `fpath` before `compinit` —
-   and it prints a reminder every run.
+   ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)).
+4. Write bash, zsh, and fish completion scripts to each shell's conventional
+   per-user completions directory
+   ([ADR-0015](../docs/adr/0015-shell-completion-generated-not-hand-written.md)).
+   Unlike the config files these are reactor's own output, so they are
+   overwritten unconditionally. zsh needs one manual step — `~/.zfunc` on `fpath`
+   before `compinit` — and setup reminds you every run.
+5. On Linux, if `reactor-gui` is installed, write its desktop entry and icon under
+   `$XDG_DATA_HOME` (`~/.local/share`) so Wayland shows the icon; `--no-launcher` skips it.
 6. Report. Warn **only** where a configured skill could not be fetched — a tool
    with no configured skill is the normal case and gets no warning.
 
-Idempotent; re-running is the supported way to update.
+Idempotent; re-running is the supported way to update. Building `reactor-gui`
+is not part of it: `cargo install --path crates/reactor-gui`.
 
 ## `verify-recipes.py`
 
@@ -50,7 +49,7 @@ not exist.
 
 ```bash
 scripts/verify-recipes.py                # the shipped tools.toml
-scripts/verify-recipes.py ~/.pi/reactor/tools.toml
+scripts/verify-recipes.py ~/.reactor/tools.toml
 ```
 
 A wrong recipe is worse than an absent one, because `reactor install` will run
@@ -65,7 +64,7 @@ executed, so there is nothing to verify
 A declared manager with no checker in this script is itself reported, so adding
 a manager cannot silently opt out of verification.
 
-Deliberately **not** part of `tests/`: the test suite is offline and runs in
+Deliberately **not** part of `cargo test`: the test suite is offline and runs in
 about a second, and this is neither. Run it when you touch an install table.
 
 Two failure modes to keep in mind when adding a checker. It must be able to say
@@ -82,62 +81,3 @@ runtime package-availability probing ADR-0010 rejects. The cost that made
 probing wrong — a network round trip per candidate per tool, on a user's
 machine, to refine a recommendation they are about to read — is not a cost here,
 because it is paid once by whoever edits the catalogue.
-
-## `check-in-pi.mjs`
-
-Drives a **real** `pi --mode rpc` process, with every REactor extension loaded
-the way pi actually loads them, over the documented RPC protocol
-(`docs/rpc.md`), and watches for `extension_error` events.
-
-```bash
-scripts/check-in-pi.mjs                                   # the default smoke set
-scripts/check-in-pi.mjs "/reactor-status mute adb" "/reactor-status"
-```
-
-Exists because `tests/extensions/*.test.mjs` — for all that it runs through
-pi's own *loader* against the real CLI
-([ADR-0012](../docs/adr/0012-extensions-tested-through-pi-s-own-loader.md)) —
-is still a mock host underneath: `ctx` and `pi` are fakes this repo
-maintains. `/reactor-toolbox off` shipped with a real bug the mocked `ctx`
-could not have caught until `harness.mjs` grew a `guard` simulating it after
-the fact — pi invalidates a captured `ctx`/`pi` the instant `await
-ctx.reload()` resolves, and the handler used `ctx` again right after
-(`docs/pi-api-notes.md`). This script is the check that needs no simulation:
-a `/name` prompt over RPC runs the real extension command directly (no LLM
-call, no API key needed), and a thrown error surfaces as `extension_error` on
-stdout instead of being caught by an assertion that has to already know to
-look for it.
-
-Every run gets a fresh, throwaway `PI_CODING_AGENT_DIR`, `REACTOR_CONFIG_DIR`
-(empty, so `reactor` falls back to this checkout's own shipped
-`tools.toml`/`toolsets.toml`) and cwd — isolated from whatever is on the
-machine actually running it, and cleaned up after.
-
-Each command is sent and its own RPC `response` awaited (matched by `id`)
-before the next one goes out — not a fixed delay. This matters beyond
-pacing: `ctx.reload()` invalidates a whole extension instance, not just the
-handler that called it, so two commands from the *same* extension file
-genuinely in flight at once can race a reload from one against the other's
-still-suspended `await` — a real way to hit the same `extension_error`, but a
-different bug from the ordering-within-one-handler kind this script was
-written for (`docs/pi-api-notes.md`). Waiting for each response is what real
-usage already does by construction, so it is what this script does too.
-
-Deliberately **not** part of `tests/`, for the same reason as
-`verify-recipes.py`: it spawns a real process (~2–3 s for the default set)
-and needs `pi` on `PATH`, not stdlib-offline-in-a-second. Run it after
-touching anything that calls `ctx.reload()`, `ctx.newSession()`,
-`ctx.fork()`, or `ctx.switchSession()` — the class of bug it exists to catch.
-
-## Why installation is two steps
-
-pi never builds anything, never initialises submodules, and runs
-`git clean -fdx` inside the installed package on every update
-([ADR-0002](../docs/adr/0002-package-ships-assets-tools-are-sibling-repos.md)).
-So the CLI symlink, the seeded config and the fetched skills all have to happen
-outside pi's package tree, by something pi does not manage.
-
-A `postinstall` hook in `package.json` *would* fire — pi does not pass
-`--ignore-scripts` on package installs — and was rejected: it would run on every
-install and every update, and would put network fetches and filesystem writes in
-front of pi's startup.

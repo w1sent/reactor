@@ -1,6 +1,6 @@
 # REactor toolsets — SHIPPED COPY / SEED
 #
-# Copied to ~/.pi/reactor/toolsets.toml at install time; the installed copy is
+# Copied to ~/.reactor/toolsets.toml at install time; the installed copy is
 # what is read at runtime and is where user-defined toolsets go. Same update
 # rules as tools.toml: `reactor diff-config`, merge by hand.
 # See docs/adr/0004-config-updates-via-plain-diff.md.
@@ -116,7 +116,3 @@ tags = ["general"]
 [toolset.database]
 desc = "clients for talking to running database servers"
 tags = ["database"]
-
-[toolset.agent]
-desc = "delegate work to another agent — subagents, one-shot tasks"
-tags = ["agent"]

@@ -14,7 +14,7 @@ fact strengthened.
 ## Why
 
 **The GUI already treats the CLI as its source of truth, and pays a process
-per panel to do it.** `gui/SPEC.md` records the rule ("single source of truth:
+per panel to do it.** `crates/reactor-gui/SPEC.md` records the rule ("single source of truth:
 the CLI") and the cost: `reactor … --format json` spawned for the catalogue,
 the toolsets and the services, on every refresh. Linking the library keeps the
 rule and deletes the cost. The seam narrows; it does not move.
@@ -51,8 +51,11 @@ duplicated. The first is the cost above; the second is the drift
 - **Shell completion stays generated, not hand-written**
   ([ADR-0015](0015-shell-completion-generated-not-hand-written.md)) — the
   generator moves, the decision does not.
-- **`scripts/install.py` shrinks.** A built binary replaces the symlinked
-  script; seeding `~/.reactor/` and fetching upstream skills stay.
+- **`scripts/install.py` goes, and its job becomes `reactor setup`**
+  ([ADR-0039](0039-the-executables-contain-no-python.md)). A built binary
+  replaces the symlinked script; seeding `~/.reactor/`, fetching upstream skills
+  and writing completions stay, as the binary's own subcommand — an installer
+  that needs Python would put back the interpreter this ADR removes.
 
 ## Considered and rejected
 

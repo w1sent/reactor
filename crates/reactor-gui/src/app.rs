@@ -2181,7 +2181,6 @@ fn palette_list(weak: &gpui_kit::WeakEntity<ReactorApp>, cx: &mut App) -> gpui_k
 
 impl Render for ReactorApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-
         div()
             .id("reactor-workspace")
             .size_full()

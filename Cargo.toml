@@ -6,6 +6,7 @@ members = [
     "crates/reactor-agent",
     "crates/reactor-cli",
     "crates/reactor-client",
+    "crates/reactor-fs",
     "crates/reactor-gui",
 ]
 # reactor-gui pulls in a native windowing stack (fontconfig, xkbcommon, ...), so
@@ -16,6 +17,7 @@ default-members = [
     "crates/reactor-agent",
     "crates/reactor-cli",
     "crates/reactor-client",
+    "crates/reactor-fs",
 ]
 
 [workspace.package]

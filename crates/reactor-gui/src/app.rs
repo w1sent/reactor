@@ -303,6 +303,13 @@ impl ReactorApp {
                 .placeholder("Prompt…")
         });
         let cwd = args.cwd.clone();
+        let workdir_fs = Arc::new(reactor_fs::LocalFs::new(
+            &cwd,
+            cwd.file_name().map_or_else(
+                || cwd.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            ),
+        ));
 
         // Composer: Enter submits (queued while a turn runs).
         cx.subscribe_in(
@@ -327,6 +334,14 @@ impl ReactorApp {
         let toolsets = cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx));
         let context = cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx));
         let services = cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx));
+        let files = cx.new(|cx| {
+            crate::files::explorer::FilesPanel::new(
+                weak_app.clone(),
+                workdir_fs.clone(),
+                window,
+                cx,
+            )
+        });
         let console =
             cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx));
         let panels = crate::layout::Panels {
@@ -336,6 +351,7 @@ impl ReactorApp {
             toolsets: panel_handle(toolsets.clone()),
             context: panel_handle(context.clone()),
             services: panel_handle(services.clone()),
+            files: panel_handle(files.clone()),
             console: panel_handle(console.clone()),
             // `DockArea` removes by typed entity; the handles above have lost the type.
             remove: std::sync::Arc::new(move |kind, area, window, cx| {
@@ -347,6 +363,7 @@ impl ReactorApp {
                     Toolsets => area.remove_panel(toolsets.clone(), window, cx),
                     Context => area.remove_panel(context.clone(), window, cx),
                     Services => area.remove_panel(services.clone(), window, cx),
+                    Files => area.remove_panel(files.clone(), window, cx),
                     Console => area.remove_panel(console.clone(), window, cx),
                 }
             }),
@@ -412,7 +429,7 @@ impl ReactorApp {
 
         Self {
             menu_bar: crate::chrome::menu_bar(cx),
-            workdir_fs: Arc::new(reactor_fs::LocalFs::new(&cwd, ".")),
+            workdir_fs,
             host_fs: Arc::new(reactor_fs::LocalFs::new("/", "/")),
             cwd,
             backend,
@@ -1672,7 +1689,7 @@ impl ReactorApp {
                 Some(kind) => self.toggle_panel(kind, window, cx),
                 None => self.push_note(
                     "warning",
-                    "panel: transcript, tree, tools, toolsets, context, services or console",
+                    "panel: transcript, tree, tools, toolsets, context, services, files or console",
                 ),
             },
             "open" => {

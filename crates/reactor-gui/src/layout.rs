@@ -39,17 +39,19 @@ pub enum PanelKind {
     Toolsets,
     Context,
     Services,
+    Files,
     Console,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 7] = [
+    pub const ALL: [PanelKind; 8] = [
         PanelKind::Transcript,
         PanelKind::Tree,
         PanelKind::Tools,
         PanelKind::Toolsets,
         PanelKind::Context,
         PanelKind::Services,
+        PanelKind::Files,
         PanelKind::Console,
     ];
 
@@ -61,6 +63,7 @@ impl PanelKind {
             PanelKind::Toolsets => "Toolsets",
             PanelKind::Context => "Context",
             PanelKind::Services => "Services",
+            PanelKind::Files => "Files",
             PanelKind::Console => "Console",
         }
     }
@@ -74,6 +77,7 @@ impl PanelKind {
             PanelKind::Toolsets => "toolsets",
             PanelKind::Context => "context",
             PanelKind::Services => "services",
+            PanelKind::Files => "files",
             PanelKind::Console => "console",
         }
     }
@@ -106,6 +110,7 @@ pub struct Panels {
     pub toolsets: Arc<dyn PanelView>,
     pub context: Arc<dyn PanelView>,
     pub services: Arc<dyn PanelView>,
+    pub files: Arc<dyn PanelView>,
     pub console: Arc<dyn PanelView>,
     /// Takes a panel out of the dock. `DockArea` removes by typed entity, and the handles
     /// above have forgotten their type, so whoever built the panels supplies this.
@@ -121,6 +126,7 @@ impl Panels {
             PanelKind::Toolsets => &self.toolsets,
             PanelKind::Context => &self.context,
             PanelKind::Services => &self.services,
+            PanelKind::Files => &self.files,
             PanelKind::Console => &self.console,
         }
     }
@@ -224,7 +230,7 @@ impl LayoutPreset {
                 &[Transcript],
                 [
                     (&[], 0.),
-                    (&[Tools, Toolsets, Context, Services, Tree], 360.),
+                    (&[Tools, Toolsets, Context, Services, Files, Tree], 360.),
                     CONSOLE,
                 ],
             ),
@@ -232,7 +238,7 @@ impl LayoutPreset {
             LayoutPreset::Analysis => (
                 &[Transcript],
                 [
-                    (&[Tree], 280.),
+                    (&[Files, Tree], 280.),
                     (&[Tools, Toolsets, Context, Services], 360.),
                     CONSOLE,
                 ],

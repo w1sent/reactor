@@ -5,7 +5,9 @@
 //! Viewers are created on demand, any number of them, as tabs in the centre; the explorer is
 //! the one fixed panel ([`crate::layout::PanelKind::Files`]).
 
+pub mod explorer;
 pub mod hex;
+pub mod props;
 
 use gpui_kit::assets::IconName;
 use reactor_fs::FileRef;
@@ -50,9 +52,59 @@ pub fn suggest(_file: &FileRef) -> Viewer {
     Viewer::Hex
 }
 
+/// Hands a file or folder to the desktop's default program for it.
+pub fn open_external(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = Command::new("xdg-open");
+    let mut child = command
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // Reaped on a thread: the opener may outlive this call, and must not become a zombie.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// `1.5 MiB (1572864 bytes)`.
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024. && unit < UNITS.len() - 1 {
+        value /= 1024.;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1536), "1.5 KiB");
+        assert_eq!(human_size(3 << 30), "3.0 GiB");
+    }
 
     #[test]
     fn every_viewer_is_addressable_by_its_slug() {

@@ -248,7 +248,7 @@ pub fn commands() -> Vec<Entry> {
             "Window",
             Required,
             "Show or hide a panel",
-            "/panel transcript | tree | tools | toolsets | context | services | console",
+            "/panel transcript | tree | tools | toolsets | context | services | files | console",
         ),
         Entry::fixed(
             "open",

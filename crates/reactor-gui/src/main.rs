@@ -80,8 +80,8 @@ fn main() {
 /// lets the window answer them: they land on `ReactorApp`'s root, alongside
 /// the model and thinking pickers (see its `Render`).
 fn install_menus(cx: &mut App) {
-    use reactor_gui::app::{ApplyLayoutAction, MainWindow, OpenPalette, OpenSettings, ToggleDockAction};
-    use reactor_gui::layout::{DockSide, LayoutPreset};
+    use reactor_gui::app::{ApplyLayoutAction, MainWindow, OpenPalette, OpenSettings, TogglePanelAction, ToggleDockAction};
+    use reactor_gui::layout::{DockSide, LayoutPreset, PanelKind};
 
     // Global handlers, not `.on_action` on some element: a native menu bar
     // is application-wide, and `is_action_available` — what greys a menu
@@ -125,6 +125,20 @@ fn install_menus(cx: &mut App) {
         });
     });
 
+    cx.on_action(|action: &TogglePanelAction, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        let panel = action.panel;
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.toggle_panel(panel, window, cx));
+                }
+            });
+        });
+    });
+
     cx.on_action(|_: &OpenPalette, cx| {
         let Some(main) = cx.try_global::<MainWindow>().cloned() else {
             return;
@@ -161,6 +175,13 @@ fn install_menus(cx: &mut App) {
             format!("Show {}", side.label()),
             ToggleDockAction { side: *side },
         )
+    }));
+
+    items.push(MenuItem::Separator);
+    items.push(MenuItem::submenu(Menu {
+        name: "Panels".into(),
+        items: PanelKind::ALL.iter().map(|kind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind })).collect(),
+        disabled: false,
     }));
 
     reactor_gui::chrome::install_menus(

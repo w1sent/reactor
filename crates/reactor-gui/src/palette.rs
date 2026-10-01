@@ -90,6 +90,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::fixed("interrupt", "Session", None, "Interrupt the agent", "cancels the running turn"),
         Entry::fixed("layout", "Window", Required, "Apply a window layout", "/layout default | focus | analysis | catalogue"),
         Entry::fixed("dock", "Window", Required, "Show or hide a dock", "/dock left | right | bottom"),
+        Entry::fixed("panel", "Window", Required, "Show or hide a panel", "/panel transcript | tree | tools | toolsets | context | services | console"),
         Entry::fixed("console", "Window", Optional, "Open a console", "/console [command]"),
         Entry::fixed("notifications", "Window", None, "Show notifications", "the history behind the bell, newest first"),
         Entry::fixed("palette", "Window", None, "Open the command palette", "Ctrl+P / Cmd+P"),
@@ -156,6 +157,10 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
         ("Toggle the bottom dock", "", "dock bottom"),
     ] {
         add(Entry::generated("Commands", title, detail, run));
+    }
+
+    for kind in crate::layout::PanelKind::ALL {
+        add(Entry::generated("Panels", format!("Panels: {}", kind.label()), "show or hide", format!("panel {}", kind.slug())));
     }
 
     for model in &snapshot.models {

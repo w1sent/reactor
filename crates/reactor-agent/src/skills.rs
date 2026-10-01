@@ -28,15 +28,21 @@ pub struct Skill {
 /// `name`, `description` and `requires: [a, b]` from a SKILL.md's frontmatter.
 pub fn parse(file: &Path) -> Option<Skill> {
     let text = std::fs::read_to_string(file).ok()?;
-    let body = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n"))?;
+    let body = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
     let end = body.find("\n---")?;
     let (mut name, mut description, mut requires) = (None, None, Vec::new());
     for line in body[..end].lines() {
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let value = value.trim();
         match key.trim() {
             "name" => name = Some(value.trim_matches(|c| c == '"' || c == '\'').to_string()),
-            "description" => description = Some(value.trim_matches(|c| c == '"' || c == '\'').to_string()),
+            "description" => {
+                description = Some(value.trim_matches(|c| c == '"' || c == '\'').to_string())
+            }
             "requires" => {
                 requires = value
                     .trim_start_matches('[')
@@ -51,21 +57,39 @@ pub fn parse(file: &Path) -> Option<Skill> {
     }
     // A skill without a description is refused: there would be nothing to choose it by.
     let description = description.filter(|d| !d.is_empty())?;
-    Some(Skill { name: name.filter(|n| !n.is_empty())?, description, requires, file: file.to_path_buf() })
+    Some(Skill {
+        name: name.filter(|n| !n.is_empty())?,
+        description,
+        requires,
+        file: file.to_path_buf(),
+    })
 }
 
 /// Every `<dir>/*/SKILL.md`, by name.
 pub fn discover(dir: &Path) -> Vec<Skill> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
-    let mut skills: Vec<Skill> = entries.flatten().filter_map(|e| parse(&e.path().join("SKILL.md"))).collect();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut skills: Vec<Skill> = entries
+        .flatten()
+        .filter_map(|e| parse(&e.path().join("SKILL.md")))
+        .collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
 }
 
 /// The skills to offer: authored ones whose requirements are met, then the upstream
 /// ones the registry reported (`skill_dirs`, each holding a `SKILL.md`).
-pub fn offered(authored: &[Skill], usable_tools: &HashSet<String>, skill_dirs: &[String]) -> Vec<Skill> {
-    let mut out: Vec<Skill> = authored.iter().filter(|s| s.requires.iter().all(|r| usable_tools.contains(r))).cloned().collect();
+pub fn offered(
+    authored: &[Skill],
+    usable_tools: &HashSet<String>,
+    skill_dirs: &[String],
+) -> Vec<Skill> {
+    let mut out: Vec<Skill> = authored
+        .iter()
+        .filter(|s| s.requires.iter().all(|r| usable_tools.contains(r)))
+        .cloned()
+        .collect();
     for d in skill_dirs {
         if let Some(s) = parse(&Path::new(d).join("SKILL.md")) {
             out.push(s);
@@ -83,7 +107,12 @@ pub fn block(skills: &[Skill]) -> Option<String> {
         "## Skills\n\nInstructions for specific jobs. When one fits the task, read its file with `read` before starting -- the description is all you have until you do.\n",
     );
     for s in skills {
-        out.push_str(&format!("\n- **{}** -- {} (`{}`)", s.name, s.description, s.file.display()));
+        out.push_str(&format!(
+            "\n- **{}** -- {} (`{}`)",
+            s.name,
+            s.description,
+            s.file.display()
+        ));
     }
     Some(out)
 }

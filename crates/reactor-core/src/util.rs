@@ -30,7 +30,11 @@ pub fn run(argv: &[String], timeout: Duration) -> Run {
 }
 
 pub fn run_in(argv: &[String], cwd: Option<&Path>, timeout: Duration) -> Run {
-    let not_found = Run { completed: true, code: Some(127), output: String::new() };
+    let not_found = Run {
+        completed: true,
+        code: Some(127),
+        output: String::new(),
+    };
     let Some((program, rest)) = argv.split_first() else {
         return not_found;
     };
@@ -75,7 +79,11 @@ pub fn run_in(argv: &[String], cwd: Option<&Path>, timeout: Duration) -> Run {
             // Not joining the reader: a grandchild can hold the pipe open
             // long after its parent is dead, and a timed-out probe must not
             // wait for it.
-            return Run { completed: false, code: None, output: String::new() };
+            return Run {
+                completed: false,
+                code: None,
+                output: String::new(),
+            };
         }
         std::thread::sleep(Duration::from_millis(5));
     };
@@ -163,7 +171,10 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], max: usize, f: impl Fn(&T) -> R + 
             });
         }
     });
-    slots.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
+    slots
+        .into_iter()
+        .map(|m| m.into_inner().unwrap().unwrap())
+        .collect()
 }
 
 pub fn now_secs_f64() -> f64 {

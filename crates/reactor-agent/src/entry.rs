@@ -29,8 +29,14 @@ pub struct Entry {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Kind {
     /// The first line of every log: what this file is.
-    Session { version: u32, session: String, cwd: String },
-    User { text: String },
+    Session {
+        version: u32,
+        session: String,
+        cwd: String,
+    },
+    User {
+        text: String,
+    },
     Assistant {
         blocks: Vec<Block>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,26 +58,39 @@ pub enum Kind {
     },
     /// Session state owned by another module: `manifest`, `identity`, `reporting`,
     /// `scenario`, `settings`. The latest one on the branch wins.
-    Custom { key: String, data: Value },
+    Custom {
+        key: String,
+        data: Value,
+    },
     /// A context reduction: the original entries stay in the log and this says what
     /// stands in for them ([`Reduction`]).
     Reduction(Reduction),
     /// Undo a reduction: it no longer hides anything.
-    Restore { reduction: EntryId },
+    Restore {
+        reduction: EntryId,
+    },
     /// A human-readable marker (a branch's name, a note).
-    Label { text: String },
+    Label {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Block {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Thinking {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
-    ToolCall { id: String, name: String, arguments: Value },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

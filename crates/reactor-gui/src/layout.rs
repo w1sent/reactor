@@ -79,7 +79,9 @@ impl PanelKind {
     }
 
     pub fn from_slug(slug: &str) -> Option<PanelKind> {
-        PanelKind::ALL.into_iter().find(|kind| kind.slug().eq_ignore_ascii_case(slug))
+        PanelKind::ALL
+            .into_iter()
+            .find(|kind| kind.slug().eq_ignore_ascii_case(slug))
     }
 
     /// Where it reopens when the active preset does not place it anywhere.
@@ -220,14 +222,25 @@ impl LayoutPreset {
         match self {
             LayoutPreset::Default => (
                 &[Transcript],
-                [(&[], 0.), (&[Tools, Toolsets, Context, Services, Tree], 360.), CONSOLE],
+                [
+                    (&[], 0.),
+                    (&[Tools, Toolsets, Context, Services, Tree], 360.),
+                    CONSOLE,
+                ],
             ),
             LayoutPreset::Focus => (&[Transcript], [(&[], 0.), (&[], 0.), CONSOLE]),
             LayoutPreset::Analysis => (
                 &[Transcript],
-                [(&[Tree], 280.), (&[Tools, Toolsets, Context, Services], 360.), CONSOLE],
+                [
+                    (&[Tree], 280.),
+                    (&[Tools, Toolsets, Context, Services], 360.),
+                    CONSOLE,
+                ],
             ),
-            LayoutPreset::Catalogue => (&[Tools], [(&[Services], 280.), (&[Toolsets], 360.), CONSOLE]),
+            LayoutPreset::Catalogue => (
+                &[Tools],
+                [(&[Services], 280.), (&[Toolsets], 360.), CONSOLE],
+            ),
         }
     }
 
@@ -263,7 +276,8 @@ impl LayoutPreset {
     ) {
         let (center, sides) = self.plan();
         let center = panels.tabs(center, cx);
-        let docks = sides.map(|(kinds, size)| (!kinds.is_empty()).then(|| (panels.tabs(kinds, cx), px(size))));
+        let docks = sides
+            .map(|(kinds, size)| (!kinds.is_empty()).then(|| (panels.tabs(kinds, cx), px(size))));
         dock.update(cx, |area, cx| {
             area.set_center(center, window, cx);
             for (side, slot) in DockSide::ALL.into_iter().zip(docks) {
@@ -295,9 +309,18 @@ pub fn toggle_panel(
             return;
         }
         let (placement, size) = preset.home(kind);
-        area.add_panel_view(Arc::clone(panels.view(kind)), placement, Some(px(size)), window, cx);
+        area.add_panel_view(
+            Arc::clone(panels.view(kind)),
+            placement,
+            Some(px(size)),
+            window,
+            cx,
+        );
         // A dock the user collapsed would swallow the panel they just asked for.
-        if placement != DockPlacement::Center && area.has_dock(placement) && !area.is_dock_open(placement) {
+        if placement != DockPlacement::Center
+            && area.has_dock(placement)
+            && !area.is_dock_open(placement)
+        {
             area.toggle_dock(placement, window, cx);
         }
     });

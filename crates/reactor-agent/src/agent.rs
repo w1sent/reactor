@@ -33,12 +33,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::{self, BudgetConfig, Plan, Summarizer, context_tokens, needs_reduction, plan};
 use crate::context::{
-    self, Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source, estimate_tokens, msg_tokens, project, save_state,
+    self, Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
+    estimate_tokens, msg_tokens, project, save_state,
 };
 use crate::entry::{EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
-use crate::llm::{Delta, Llm, LlmRequest};
 use crate::inspect::ContextPreview;
+use crate::llm::{Delta, Llm, LlmRequest};
 use crate::prompt::{self, RegistryView};
 use crate::skills::{self, Skill};
 use crate::store::Store;
@@ -51,13 +52,32 @@ pub enum Event {
     Appended(EntryId),
     Text(String),
     Thinking(String),
-    ToolCallStarted { name: String },
-    ToolStart { id: String, name: String, args: Value },
+    ToolCallStarted {
+        name: String,
+    },
+    ToolStart {
+        id: String,
+        name: String,
+        args: Value,
+    },
     /// Live tool output, as it arrives.
-    ToolOutput { id: String, chunk: String },
-    ToolEnd { id: String, entry: EntryId, is_error: bool },
+    ToolOutput {
+        id: String,
+        chunk: String,
+    },
+    ToolEnd {
+        id: String,
+        entry: EntryId,
+        is_error: bool,
+    },
     Usage(Usage),
-    Reduced { entry: EntryId, mode: Mode, trigger: Trigger, before_tokens: u64, after_tokens: u64 },
+    Reduced {
+        entry: EntryId,
+        mode: Mode,
+        trigger: Trigger,
+        before_tokens: u64,
+        after_tokens: u64,
+    },
     /// Something a person should read that is not an error.
     Notice(String),
     Finished,
@@ -101,14 +121,22 @@ impl AgentConfig {
 
 /// The registry as `reactor-core` reports it, with the normal probe cache.
 pub fn registry_from_core(paths: Paths) -> Arc<dyn Fn() -> RegistryView + Send + Sync> {
-    Arc::new(move || match reactor_core::commands::registry(&paths, Default::default()) {
-        Ok(done) => RegistryView {
-            block: done.report.block.clone(),
-            skill_dirs: done.report.skill_paths.clone(),
-            usable: done.report.tools.iter().filter(|t| t.active && t.status == Status::Present).map(|t| t.id.clone()).collect(),
+    Arc::new(
+        move || match reactor_core::commands::registry(&paths, Default::default()) {
+            Ok(done) => RegistryView {
+                block: done.report.block.clone(),
+                skill_dirs: done.report.skill_paths.clone(),
+                usable: done
+                    .report
+                    .tools
+                    .iter()
+                    .filter(|t| t.active && t.status == Status::Present)
+                    .map(|t| t.id.clone())
+                    .collect(),
+            },
+            Err(_) => RegistryView::default(),
         },
-        Err(_) => RegistryView::default(),
-    })
+    )
 }
 
 /// How a turn ended.
@@ -183,9 +211,19 @@ pub struct Agent<L: Llm, S: Summarizer> {
 }
 
 impl<L: Llm, S: Summarizer> Agent<L, S> {
-    pub fn new(llm: L, summarizer: S, store: Store, tools: Tools, cfg: AgentConfig) -> (Self, UnboundedReceiver<Event>) {
+    pub fn new(
+        llm: L,
+        summarizer: S,
+        store: Store,
+        tools: Tools,
+        cfg: AgentConfig,
+    ) -> (Self, UnboundedReceiver<Event>) {
         let (events, rx) = unbounded_channel();
-        let authored_skills = cfg.skills_dir.as_deref().map(skills::discover).unwrap_or_default();
+        let authored_skills = cfg
+            .skills_dir
+            .as_deref()
+            .map(skills::discover)
+            .unwrap_or_default();
         (
             Agent {
                 llm,
@@ -230,14 +268,22 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// projected messages.
     async fn gather(&self) -> Result<Gathered> {
         let registry = self.cfg.registry.clone();
-        let view = tokio::task::spawn_blocking(move || registry()).await.map_err(|e| Error::Store(e.to_string()))?;
+        let view = tokio::task::spawn_blocking(move || registry())
+            .await
+            .map_err(|e| Error::Store(e.to_string()))?;
         let settings = self.settings();
         let (state, items) = {
             let store = self.store.lock().unwrap();
             (SessionState::load(&store), project(&store))
         };
         let offered = skills::offered(&self.authored_skills, &view.usable, &view.skill_dirs);
-        Ok(Gathered { view, settings, state, items, offered })
+        Ok(Gathered {
+            view,
+            settings,
+            state,
+            items,
+            offered,
+        })
     }
 
     fn system_parts(&self, g: &Gathered) -> Vec<(prompt::Part, String)> {
@@ -255,18 +301,44 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     async fn build(&self) -> Result<(LlmRequest, u64, Vec<Item>)> {
         let g = self.gather().await?;
         let system = prompt::join_parts(&self.system_parts(&g));
-        let Gathered { settings, state, items, .. } = g;
+        let Gathered {
+            settings,
+            state,
+            items,
+            ..
+        } = g;
         let tools = self.tools.specs(&state);
         let fixed = estimate_tokens(&system)
-            + tools.iter().map(|t| estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string())).sum::<u64>();
+            + tools
+                .iter()
+                .map(|t| {
+                    estimate_tokens(&t.name)
+                        + estimate_tokens(&t.description)
+                        + estimate_tokens(&t.parameters.to_string())
+                })
+                .sum::<u64>();
         let mut messages: Vec<Msg> = items.iter().map(|i| i.msg.clone()).collect();
 
         // Level 1 reporting: a reminder on every model call until the folder changes.
         // Ephemeral by design -- never stored, so it cannot pile up in a long session.
-        if let Some(nag) = self.tracker.lock().unwrap().nag(&state.reporting, &settings.reporting) {
+        if let Some(nag) = self
+            .tracker
+            .lock()
+            .unwrap()
+            .nag(&state.reporting, &settings.reporting)
+        {
             messages.push(Msg::User { text: nag });
         }
-        Ok((LlmRequest { system, messages, tools, max_tokens: self.cfg.max_tokens }, fixed, items))
+        Ok((
+            LlmRequest {
+                system,
+                messages,
+                tools,
+                max_tokens: self.cfg.max_tokens,
+            },
+            fixed,
+            items,
+        ))
     }
 
     /// The request as it would be sent now, taken apart: every piece with where it comes
@@ -290,47 +362,123 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 prompt::Part::Reporting => (Origin::Reporting, "Reporting"),
                 prompt::Part::Scenario => (Origin::Scenario, "Scenario phase"),
             };
-            segments.push(Segment { section: Section::System, origin, label: label.to_string(), tokens: estimate_tokens(&text), text, entry: None });
+            segments.push(Segment {
+                section: Section::System,
+                origin,
+                label: label.to_string(),
+                tokens: estimate_tokens(&text),
+                text,
+                entry: None,
+            });
         }
 
         for t in self.tools.specs(&g.state) {
-            let text = format!("{}\n\n{}", t.description, serde_json::to_string_pretty(&t.parameters).unwrap_or_default());
-            let tokens = estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string());
-            segments.push(Segment { section: Section::Tools, origin: Origin::ToolDefinition, label: t.name, text, tokens, entry: None });
+            let text = format!(
+                "{}\n\n{}",
+                t.description,
+                serde_json::to_string_pretty(&t.parameters).unwrap_or_default()
+            );
+            let tokens = estimate_tokens(&t.name)
+                + estimate_tokens(&t.description)
+                + estimate_tokens(&t.parameters.to_string());
+            segments.push(Segment {
+                section: Section::Tools,
+                origin: Origin::ToolDefinition,
+                label: t.name,
+                text,
+                tokens,
+                entry: None,
+            });
         }
 
         for item in &g.items {
             let (origin, label, text) = match (&item.msg, item.source) {
-                (Msg::User { text }, Source::Reduction(id)) => (Origin::Reduction, format!("#{id} reduction stand-in"), text.clone()),
-                (Msg::User { text }, Source::Entry(id)) => (Origin::User, format!("#{id} you"), text.clone()),
+                (Msg::User { text }, Source::Reduction(id)) => (
+                    Origin::Reduction,
+                    format!("#{id} reduction stand-in"),
+                    text.clone(),
+                ),
+                (Msg::User { text }, Source::Entry(id)) => {
+                    (Origin::User, format!("#{id} you"), text.clone())
+                }
                 (Msg::Assistant { blocks }, source) => {
                     let text = blocks
                         .iter()
                         .map(|b| match b {
                             crate::entry::Block::Text { text } => text.clone(),
-                            crate::entry::Block::Thinking { text, .. } => format!("[thinking]\n{text}"),
-                            crate::entry::Block::ToolCall { name, arguments, .. } => format!("[tool call] {name} {arguments}"),
+                            crate::entry::Block::Thinking { text, .. } => {
+                                format!("[thinking]\n{text}")
+                            }
+                            crate::entry::Block::ToolCall {
+                                name, arguments, ..
+                            } => format!("[tool call] {name} {arguments}"),
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n");
-                    (Origin::Assistant, format!("{} assistant", entry_label(source)), text)
+                    (
+                        Origin::Assistant,
+                        format!("{} assistant", entry_label(source)),
+                        text,
+                    )
                 }
-                (Msg::ToolResult { name, content, is_error, .. }, source) => {
-                    (Origin::ToolResult, format!("{} {name}{}", entry_label(source), if *is_error { " (error)" } else { "" }), content.clone())
-                }
+                (
+                    Msg::ToolResult {
+                        name,
+                        content,
+                        is_error,
+                        ..
+                    },
+                    source,
+                ) => (
+                    Origin::ToolResult,
+                    format!(
+                        "{} {name}{}",
+                        entry_label(source),
+                        if *is_error { " (error)" } else { "" }
+                    ),
+                    content.clone(),
+                ),
             };
             let entry = match item.source {
                 Source::Entry(id) => Some(id),
                 Source::Reduction(_) => None,
             };
-            segments.push(Segment { section: Section::Messages, origin, label, tokens: msg_tokens(&item.msg), text, entry });
+            segments.push(Segment {
+                section: Section::Messages,
+                origin,
+                label,
+                tokens: msg_tokens(&item.msg),
+                text,
+                entry,
+            });
         }
 
-        if let Some(nag) = self.tracker.lock().unwrap().nag(&g.state.reporting, &g.settings.reporting) {
-            segments.push(Segment { section: Section::Messages, origin: Origin::Reminder, label: "reporting reminder".into(), tokens: estimate_tokens(&nag) + 8, text: nag, entry: None });
+        if let Some(nag) = self
+            .tracker
+            .lock()
+            .unwrap()
+            .nag(&g.state.reporting, &g.settings.reporting)
+        {
+            segments.push(Segment {
+                section: Section::Messages,
+                origin: Origin::Reminder,
+                label: "reporting reminder".into(),
+                tokens: estimate_tokens(&nag) + 8,
+                text: nag,
+                entry: None,
+            });
         }
-        let total_tokens = system_tokens + segments.iter().filter(|s| s.section != Section::System).map(|s| s.tokens).sum::<u64>();
-        Ok(ContextPreview { segments, total_tokens, calibration: *self.ratio.lock().unwrap() })
+        let total_tokens = system_tokens
+            + segments
+                .iter()
+                .filter(|s| s.section != Section::System)
+                .map(|s| s.tokens)
+                .sum::<u64>();
+        Ok(ContextPreview {
+            segments,
+            total_tokens,
+            calibration: *self.ratio.lock().unwrap(),
+        })
     }
 
     // -- the budget ------------------------------------------------------------------------
@@ -359,18 +507,36 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     }
 
     /// The two stored layers of the context settings: (global, this session's).
-    pub fn context_layers(&self) -> (reactor_context::settings::ContextSettings, reactor_context::settings::ContextSettings) {
-        (self.settings().context, SessionState::load(&self.store.lock().unwrap()).context)
+    pub fn context_layers(
+        &self,
+    ) -> (
+        reactor_context::settings::ContextSettings,
+        reactor_context::settings::ContextSettings,
+    ) {
+        (
+            self.settings().context,
+            SessionState::load(&self.store.lock().unwrap()).context,
+        )
     }
 
     /// Set this session's layer of the context settings.
-    pub fn set_session_context(&self, layer: &reactor_context::settings::ContextSettings) -> Result<()> {
-        save_state(&mut self.store.lock().unwrap(), context::KEY_CONTEXT, serde_json::to_value(layer).unwrap())?;
+    pub fn set_session_context(
+        &self,
+        layer: &reactor_context::settings::ContextSettings,
+    ) -> Result<()> {
+        save_state(
+            &mut self.store.lock().unwrap(),
+            context::KEY_CONTEXT,
+            serde_json::to_value(layer).unwrap(),
+        )?;
         Ok(())
     }
 
     /// Make a layer the global default (`settings.json`).
-    pub fn set_global_context(&self, layer: reactor_context::settings::ContextSettings) -> Result<()> {
+    pub fn set_global_context(
+        &self,
+        layer: reactor_context::settings::ContextSettings,
+    ) -> Result<()> {
         let mut s = self.settings();
         s.context = layer;
         s.save(&self.cfg.paths)?;
@@ -384,32 +550,50 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// A person asking to reduce wants *more* gone than the budget would take: the keep
     /// window shrinks to the latest work (the last message and what followed it).
     fn manual_budget(&self) -> BudgetConfig {
-        BudgetConfig { keep: 0.0, ..self.scaled_budget() }
+        BudgetConfig {
+            keep: 0.0,
+            ..self.scaled_budget()
+        }
     }
 
     /// What a reduction would do right now, without doing it.
     pub async fn preview(&self, mode: Mode) -> Result<Plan> {
         let (_, fixed, items) = self.build().await?;
-        plan(fixed, &items, &self.manual_budget(), mode).map_err(|n| Error::Reduction(n.to_string()))
+        plan(fixed, &items, &self.manual_budget(), mode)
+            .map_err(|n| Error::Reduction(n.to_string()))
     }
 
     /// Reduce now, at a person's request. A manual reduction means *summarize* in every
     /// mode but `fade` (a manual fade exists for a burst of dumps that should just go).
     pub async fn reduce_now(&self, mode: Mode) -> Result<EntryId> {
         let (_, fixed, items) = self.build().await?;
-        let p = plan(fixed, &items, &self.manual_budget(), mode).map_err(|n| Error::Reduction(n.to_string()))?;
+        let p = plan(fixed, &items, &self.manual_budget(), mode)
+            .map_err(|n| Error::Reduction(n.to_string()))?;
         self.carry_out(&items, &p, Trigger::Manual).await
     }
 
     async fn carry_out(&self, items: &[Item], p: &Plan, trigger: Trigger) -> Result<EntryId> {
-        let prepared = budget::prepare(&self.store.lock().unwrap(), items, p, trigger, self.cfg.budget.summary_tokens)?;
+        let prepared = budget::prepare(
+            &self.store.lock().unwrap(),
+            items,
+            p,
+            trigger,
+            self.cfg.budget.summary_tokens,
+        )?;
         let summary = match &prepared.request {
             Some(req) => Some(budget::summarize(&self.summarizer, req.clone()).await?),
             None => None,
         };
         let id = budget::commit(&mut self.store.lock().unwrap(), prepared, summary)?;
-        if let Some(Kind::Reduction(r)) = self.store.lock().unwrap().get(id).map(|e| e.kind.clone()) {
-            self.emit(Event::Reduced { entry: id, mode: r.mode, trigger, before_tokens: r.before_tokens, after_tokens: r.after_tokens });
+        if let Some(Kind::Reduction(r)) = self.store.lock().unwrap().get(id).map(|e| e.kind.clone())
+        {
+            self.emit(Event::Reduced {
+                entry: id,
+                mode: r.mode,
+                trigger,
+                before_tokens: r.before_tokens,
+                after_tokens: r.after_tokens,
+            });
         }
         self.emit(Event::Appended(id));
         Ok(id)
@@ -432,14 +616,19 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     // still room, fatal once there is not.
                     let used = context_tokens(fixed, &items);
                     if used > cfg.hard() {
-                        return Err(Error::Reduction(format!("the context is full ({used} of {} tokens) and {nothing}", cfg.hard())));
+                        return Err(Error::Reduction(format!(
+                            "the context is full ({used} of {} tokens) and {nothing}",
+                            cfg.hard()
+                        )));
                     }
                     *in_a_row = 0;
                     return Ok(());
                 }
             };
             if *in_a_row >= self.cfg.max_reductions_in_a_row {
-                return Err(Error::ReductionBudget { attempts: *in_a_row });
+                return Err(Error::ReductionBudget {
+                    attempts: *in_a_row,
+                });
             }
             *in_a_row += 1;
             self.carry_out(&items, &p, Trigger::Budget).await?;
@@ -459,7 +648,11 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             let settings = self.settings();
             {
                 let state = SessionState::load(&self.store.lock().unwrap());
-                self.tracker.lock().unwrap().before_agent_start(&state.reporting, &settings.reporting, &next);
+                self.tracker.lock().unwrap().before_agent_start(
+                    &state.reporting,
+                    &settings.reporting,
+                    &next,
+                );
             }
             self.append(Kind::User { text: next.clone() })?;
 
@@ -469,7 +662,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 }
                 self.ensure_fits(&mut in_a_row, &mut outcome).await?;
                 let (req, _, _) = self.build().await?;
-                let estimated: u64 = context_tokens(0, &project(&self.store.lock().unwrap())) + estimate_tokens(&req.system);
+                let estimated: u64 = context_tokens(0, &project(&self.store.lock().unwrap()))
+                    + estimate_tokens(&req.system);
 
                 let mut on_delta = |d: Delta| {
                     self.emit(match d {
@@ -492,13 +686,28 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                         *r = (0.7 * *r + 0.3 * observed).clamp(0.25, 4.0);
                     }
                 }
-                let calls: Vec<(String, String, Value)> = reply.tool_calls().map(|(i, n, a)| (i.to_string(), n.to_string(), a.clone())).collect();
-                self.append(Kind::Assistant { blocks: reply.blocks.clone(), model: Some(self.llm.name()), usage: reply.usage, stop: reply.stop.clone() })?;
+                let calls: Vec<(String, String, Value)> = reply
+                    .tool_calls()
+                    .map(|(i, n, a)| (i.to_string(), n.to_string(), a.clone()))
+                    .collect();
+                self.append(Kind::Assistant {
+                    blocks: reply.blocks.clone(),
+                    model: Some(self.llm.name()),
+                    usage: reply.usage,
+                    stop: reply.stop.clone(),
+                })?;
 
                 if calls.is_empty() {
                     // The turn has settled. Level-2 reporting may send it back.
-                    let (state, settings) = (SessionState::load(&self.store.lock().unwrap()), self.settings());
-                    let verdict = self.tracker.lock().unwrap().settled(&state.reporting, &settings.reporting);
+                    let (state, settings) = (
+                        SessionState::load(&self.store.lock().unwrap()),
+                        self.settings(),
+                    );
+                    let verdict = self
+                        .tracker
+                        .lock()
+                        .unwrap()
+                        .settled(&state.reporting, &settings.reporting);
                     match verdict {
                         reporting::Settled::Revert => {
                             outcome.reverts += 1;
@@ -506,7 +715,12 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                             // the log as a dead branch, recoverable like everything else.
                             {
                                 let mut store = self.store.lock().unwrap();
-                                let last_user = store.branch().iter().rev().find(|e| matches!(e.kind, Kind::User { .. })).map(|e| e.id);
+                                let last_user = store
+                                    .branch()
+                                    .iter()
+                                    .rev()
+                                    .find(|e| matches!(e.kind, Kind::User { .. }))
+                                    .map(|e| e.id);
                                 if let Some(id) = last_user {
                                     store.set_head(id)?;
                                 }
@@ -522,10 +736,14 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
                 if outcome.rounds > self.cfg.max_rounds {
                     self.fill_results(&calls, "not run: the turn hit its round limit")?;
-                    return Err(Error::Model(format!("stopped after {} model round trips in one turn", self.cfg.max_rounds)));
+                    return Err(Error::Model(format!(
+                        "stopped after {} model round trips in one turn",
+                        self.cfg.max_rounds
+                    )));
                 }
                 outcome.tool_calls += calls.len();
-                self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome).await?;
+                self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome)
+                    .await?;
             }
         }
         self.emit(Event::Finished);
@@ -535,18 +753,34 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// Give every call in `calls` a recorded result, so the log stays replayable.
     fn fill_results(&self, calls: &[(String, String, Value)], why: &str) -> Result<()> {
         for (id, name, _) in calls {
-            self.append(Kind::ToolResult { call_id: id.clone(), name: name.clone(), content: why.to_string(), is_error: true, blob: None })?;
+            self.append(Kind::ToolResult {
+                call_id: id.clone(),
+                name: name.clone(),
+                content: why.to_string(),
+                is_error: true,
+                blob: None,
+            })?;
         }
         Ok(())
     }
 
-    async fn run_tools(&self, calls: &[(String, String, Value)], cancel: &CancellationToken, in_a_row: &mut usize, outcome: &mut Outcome) -> Result<()> {
+    async fn run_tools(
+        &self,
+        calls: &[(String, String, Value)],
+        cancel: &CancellationToken,
+        in_a_row: &mut usize,
+        outcome: &mut Outcome,
+    ) -> Result<()> {
         for (i, (id, name, args)) in calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 self.fill_results(&calls[i..], "not run: the turn was cancelled")?;
                 return Err(Error::Cancelled);
             }
-            self.emit(Event::ToolStart { id: id.clone(), name: name.clone(), args: args.clone() });
+            self.emit(Event::ToolStart {
+                id: id.clone(),
+                name: name.clone(),
+                args: args.clone(),
+            });
 
             let events = self.events.clone();
             let call_id = id.clone();
@@ -554,7 +788,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 cwd: self.cfg.cwd.clone(),
                 cancel: cancel.clone(),
                 emit: Arc::new(move |chunk: &str| {
-                    let _ = events.send(Event::ToolOutput { id: call_id.clone(), chunk: chunk.to_string() });
+                    let _ = events.send(Event::ToolOutput {
+                        id: call_id.clone(),
+                        chunk: chunk.to_string(),
+                    });
                 }),
                 store: self.store.clone(),
                 paths: self.cfg.paths.clone(),
@@ -567,18 +804,31 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             let is_error = out.is_error;
             let kind = self.finalize(id, name, out)?;
             let entry = self.append(kind)?;
-            self.emit(Event::ToolEnd { id: id.clone(), entry, is_error });
+            self.emit(Event::ToolEnd {
+                id: id.clone(),
+                entry,
+                is_error,
+            });
 
             // Reporting asks the filesystem, after every tool call, whether anything was written up.
             {
-                let (state, settings) = (SessionState::load(&self.store.lock().unwrap()), self.settings());
+                let (state, settings) = (
+                    SessionState::load(&self.store.lock().unwrap()),
+                    self.settings(),
+                );
                 let snap = reporting::take_snapshot(&self.cfg.cwd.join(&settings.reporting.folder));
-                self.tracker.lock().unwrap().tool_end(&state.reporting, snap);
+                self.tracker
+                    .lock()
+                    .unwrap()
+                    .tool_end(&state.reporting, snap);
             }
 
             // The boundary check: a dump can overflow the window inside one turn.
             if let Err(e) = self.ensure_fits(in_a_row, outcome).await {
-                self.fill_results(&calls[i + 1..], "not run: context reduction failed, so the turn stopped")?;
+                self.fill_results(
+                    &calls[i + 1..],
+                    "not run: context reduction failed, so the turn stopped",
+                )?;
                 return Err(e);
             }
         }
@@ -589,12 +839,20 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// is kept and addressable.
     fn finalize(&self, call_id: &str, name: &str, out: ToolOutput) -> Result<Kind> {
         let total = match &out.full {
-            Some(p) => std::fs::metadata(p).map(|m| m.len()).unwrap_or(out.text.len() as u64),
+            Some(p) => std::fs::metadata(p)
+                .map(|m| m.len())
+                .unwrap_or(out.text.len() as u64),
             None => out.text.len() as u64,
         };
         if !truncate::needs_cut(total) {
             let text = out.text.replace(truncate::CUT, "");
-            return Ok(Kind::ToolResult { call_id: call_id.into(), name: name.into(), content: text, is_error: out.is_error, blob: None });
+            return Ok(Kind::ToolResult {
+                call_id: call_id.into(),
+                name: name.into(),
+                content: text,
+                is_error: out.is_error,
+                blob: None,
+            });
         }
         let mut store = self.store.lock().unwrap();
         let entry_id = store.len() as EntryId;
@@ -604,7 +862,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             None => store.write_blob(&label, out.text.as_bytes())?,
         };
         let content = truncate::view(&out.text, total, entry_id);
-        Ok(Kind::ToolResult { call_id: call_id.into(), name: name.into(), content, is_error: out.is_error, blob: Some(blob) })
+        Ok(Kind::ToolResult {
+            call_id: call_id.into(),
+            name: name.into(),
+            content,
+            is_error: out.is_error,
+            blob: Some(blob),
+        })
     }
 
     // -- session commands ---------------------------------------------------------------------------
@@ -621,7 +885,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         match name {
             "goal" | "guidelines" | "manifest" | "frame" => {
                 let mut m = state.manifest.clone();
-                let Some(e) = manifest::command(&mut m, &settings.manifest, name, args) else { unreachable!() };
+                let Some(e) = manifest::command(&mut m, &settings.manifest, name, args) else {
+                    unreachable!()
+                };
                 if e.persist {
                     save_state(&mut store, KEY_MANIFEST, serde_json::to_value(&m).unwrap())?;
                 }
@@ -640,7 +906,12 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             }
             "report" => {
                 let mut s = state.reporting;
-                let e = reporting::command(&mut s, &mut self.tracker.lock().unwrap(), &mut settings.reporting, args);
+                let e = reporting::command(
+                    &mut s,
+                    &mut self.tracker.lock().unwrap(),
+                    &mut settings.reporting,
+                    args,
+                );
                 if e.persist {
                     save_state(&mut store, KEY_REPORTING, serde_json::to_value(s).unwrap())?;
                 }
@@ -650,7 +921,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 result.notices = e.notices;
             }
             "reactor-scenario" => {
-                let mut sc = scenario::Scenario { dir: &self.cfg.scenarios_dir, state: state.scenario.clone() };
+                let mut sc = scenario::Scenario {
+                    dir: &self.cfg.scenarios_dir,
+                    state: state.scenario.clone(),
+                };
                 let e = sc.command(args);
                 match &e.persist {
                     scenario::Persist::Nothing => {}
@@ -664,10 +938,19 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 drop(store);
                 // Additive and advisory: a phase starts whether or not the toolset can be enabled.
                 for t in &e.activate_toolsets {
-                    let _ = reactor_core::commands::set_activation(&self.cfg.paths, std::slice::from_ref(t), false, Some(true));
+                    let _ = reactor_core::commands::set_activation(
+                        &self.cfg.paths,
+                        std::slice::from_ref(t),
+                        false,
+                        Some(true),
+                    );
                 }
                 result.notices = e.notices;
-                result.trigger_turn = e.messages.into_iter().find(|m| m.trigger_turn).map(|m| m.content);
+                result.trigger_turn = e
+                    .messages
+                    .into_iter()
+                    .find(|m| m.trigger_turn)
+                    .map(|m| m.content);
                 return Ok(result);
             }
             other => return Err(Error::Store(format!("unknown command `{other}`"))),
@@ -680,7 +963,12 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub async fn measure(&self) -> Result<Measure> {
         let (_, fixed, items) = self.build().await?;
         let messages = context_tokens(0, &items);
-        Ok(Measure { fixed, messages, total: fixed + messages, calibration: *self.ratio.lock().unwrap() })
+        Ok(Measure {
+            fixed,
+            messages,
+            total: fixed + messages,
+            calibration: *self.ratio.lock().unwrap(),
+        })
     }
 
     /// The reductions in force on this branch, oldest first.
@@ -707,7 +995,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// Undo a reduction: an append, and the originals are back in the next request.
     pub fn restore(&self, reduction: EntryId) -> Result<()> {
         if !context::active_reductions(&self.store.lock().unwrap()).contains(&reduction) {
-            return Err(Error::Reduction(format!("#{reduction} is not a reduction in force")));
+            return Err(Error::Reduction(format!(
+                "#{reduction} is not a reduction in force"
+            )));
         }
         self.append(Kind::Restore { reduction })?;
         Ok(())

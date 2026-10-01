@@ -46,12 +46,33 @@ pub struct Entry {
 
 impl Entry {
     fn fixed(name: &str, group: &'static str, args: Args, title: &str, detail: &str) -> Entry {
-        Entry { key: name.to_string(), title: title.to_string(), name: Some(name.to_string()), detail: detail.to_string(), group, args, run: name.to_string() }
+        Entry {
+            key: name.to_string(),
+            title: title.to_string(),
+            name: Some(name.to_string()),
+            detail: detail.to_string(),
+            group,
+            args,
+            run: name.to_string(),
+        }
     }
 
-    fn generated(group: &'static str, title: impl Into<String>, detail: impl Into<String>, run: impl Into<String>) -> Entry {
+    fn generated(
+        group: &'static str,
+        title: impl Into<String>,
+        detail: impl Into<String>,
+        run: impl Into<String>,
+    ) -> Entry {
         let run = run.into();
-        Entry { key: run.clone(), title: title.into(), name: None, detail: detail.into(), group, args: Args::None, run }
+        Entry {
+            key: run.clone(),
+            title: title.into(),
+            name: None,
+            detail: detail.into(),
+            group,
+            args: Args::None,
+            run,
+        }
     }
 
     /// The texts a query is matched against.
@@ -68,33 +89,195 @@ impl Entry {
 pub fn commands() -> Vec<Entry> {
     use Args::*;
     vec![
-        Entry::fixed("goal", "Session", Required, "Set the session goal", "/goal <text> — or /goal clear"),
-        Entry::fixed("guidelines", "Session", Required, "Set the session guidelines", "/guidelines <text> — or /guidelines clear"),
-        Entry::fixed("manifest", "Session", Optional, "Manifest on, off or clear", "/manifest on | off | clear"),
-        Entry::fixed("frame", "Session", None, "Show the manifest", "what the model is told about goal, steps and guidelines"),
-        Entry::fixed("identity", "Session", Optional, "Select or write the working persona", "/identity <name> | custom <text>"),
-        Entry::fixed("report", "Session", Optional, "Reporting", "/report on | off | level <0-2> | status"),
-        Entry::fixed("reactor-scenario", "Session", Optional, "Scenarios", "/reactor-scenario list | start <id> | status | next | stop"),
-        Entry::fixed("model", "Model", Required, "Switch model", "/model provider/name"),
-        Entry::fixed("context", "Model", Optional, "Context settings", "/context <mode|window|reserve|pct|keep|summarizer> <value> | default | inherit"),
-        Entry::fixed("inspect", "Model", None, "Show the context window", "what the model would be sent, and where each piece comes from"),
-        Entry::fixed("preview", "Model", Optional, "Preview a context reduction", "/preview [auto|fade|compact]"),
-        Entry::fixed("reduce", "Model", Optional, "Reduce the context now", "/reduce [auto|fade|compact]"),
-        Entry::fixed("undo", "Model", Optional, "Undo a reduction", "/undo — the latest — or /undo <entry>"),
-        Entry::fixed("tool", "Tools", Required, "Enable or disable a tool", "/tool <id> [on|off]"),
-        Entry::fixed("toolset", "Tools", Required, "Enable or disable a toolset", "/toolset <id> [on|off]"),
-        Entry::fixed("install", "Tools", Required, "Install a tool", "/install <tool> — opens a console running it"),
-        Entry::fixed("activation", "Tools", Required, "Tool activation scope", "/activation default | inherit"),
-        Entry::fixed("refresh", "Tools", None, "Refresh tools, toolsets and services", "re-probes the machine"),
-        Entry::fixed("branch", "Session", Required, "Continue from another reply", "/branch <entry id> — see the session tree"),
-        Entry::fixed("interrupt", "Session", None, "Interrupt the agent", "cancels the running turn"),
-        Entry::fixed("layout", "Window", Required, "Apply a window layout", "/layout default | focus | analysis | catalogue"),
-        Entry::fixed("dock", "Window", Required, "Show or hide a dock", "/dock left | right | bottom"),
-        Entry::fixed("panel", "Window", Required, "Show or hide a panel", "/panel transcript | tree | tools | toolsets | context | services | console"),
-        Entry::fixed("console", "Window", Optional, "Open a console", "/console [command]"),
-        Entry::fixed("notifications", "Window", None, "Show notifications", "the history behind the bell, newest first"),
-        Entry::fixed("palette", "Window", None, "Open the command palette", "Ctrl+P / Cmd+P"),
-        Entry::fixed("settings", "Window", None, "Settings: fonts, sizes and behaviour", "Ctrl+, / Cmd+,"),
+        Entry::fixed(
+            "goal",
+            "Session",
+            Required,
+            "Set the session goal",
+            "/goal <text> — or /goal clear",
+        ),
+        Entry::fixed(
+            "guidelines",
+            "Session",
+            Required,
+            "Set the session guidelines",
+            "/guidelines <text> — or /guidelines clear",
+        ),
+        Entry::fixed(
+            "manifest",
+            "Session",
+            Optional,
+            "Manifest on, off or clear",
+            "/manifest on | off | clear",
+        ),
+        Entry::fixed(
+            "frame",
+            "Session",
+            None,
+            "Show the manifest",
+            "what the model is told about goal, steps and guidelines",
+        ),
+        Entry::fixed(
+            "identity",
+            "Session",
+            Optional,
+            "Select or write the working persona",
+            "/identity <name> | custom <text>",
+        ),
+        Entry::fixed(
+            "report",
+            "Session",
+            Optional,
+            "Reporting",
+            "/report on | off | level <0-2> | status",
+        ),
+        Entry::fixed(
+            "reactor-scenario",
+            "Session",
+            Optional,
+            "Scenarios",
+            "/reactor-scenario list | start <id> | status | next | stop",
+        ),
+        Entry::fixed(
+            "model",
+            "Model",
+            Required,
+            "Switch model",
+            "/model provider/name",
+        ),
+        Entry::fixed(
+            "context",
+            "Model",
+            Optional,
+            "Context settings",
+            "/context <mode|window|reserve|pct|keep|summarizer> <value> | default | inherit",
+        ),
+        Entry::fixed(
+            "inspect",
+            "Model",
+            None,
+            "Show the context window",
+            "what the model would be sent, and where each piece comes from",
+        ),
+        Entry::fixed(
+            "preview",
+            "Model",
+            Optional,
+            "Preview a context reduction",
+            "/preview [auto|fade|compact]",
+        ),
+        Entry::fixed(
+            "reduce",
+            "Model",
+            Optional,
+            "Reduce the context now",
+            "/reduce [auto|fade|compact]",
+        ),
+        Entry::fixed(
+            "undo",
+            "Model",
+            Optional,
+            "Undo a reduction",
+            "/undo — the latest — or /undo <entry>",
+        ),
+        Entry::fixed(
+            "tool",
+            "Tools",
+            Required,
+            "Enable or disable a tool",
+            "/tool <id> [on|off]",
+        ),
+        Entry::fixed(
+            "toolset",
+            "Tools",
+            Required,
+            "Enable or disable a toolset",
+            "/toolset <id> [on|off]",
+        ),
+        Entry::fixed(
+            "install",
+            "Tools",
+            Required,
+            "Install a tool",
+            "/install <tool> — opens a console running it",
+        ),
+        Entry::fixed(
+            "activation",
+            "Tools",
+            Required,
+            "Tool activation scope",
+            "/activation default | inherit",
+        ),
+        Entry::fixed(
+            "refresh",
+            "Tools",
+            None,
+            "Refresh tools, toolsets and services",
+            "re-probes the machine",
+        ),
+        Entry::fixed(
+            "branch",
+            "Session",
+            Required,
+            "Continue from another reply",
+            "/branch <entry id> — see the session tree",
+        ),
+        Entry::fixed(
+            "interrupt",
+            "Session",
+            None,
+            "Interrupt the agent",
+            "cancels the running turn",
+        ),
+        Entry::fixed(
+            "layout",
+            "Window",
+            Required,
+            "Apply a window layout",
+            "/layout default | focus | analysis | catalogue",
+        ),
+        Entry::fixed(
+            "dock",
+            "Window",
+            Required,
+            "Show or hide a dock",
+            "/dock left | right | bottom",
+        ),
+        Entry::fixed(
+            "panel",
+            "Window",
+            Required,
+            "Show or hide a panel",
+            "/panel transcript | tree | tools | toolsets | context | services | console",
+        ),
+        Entry::fixed(
+            "console",
+            "Window",
+            Optional,
+            "Open a console",
+            "/console [command]",
+        ),
+        Entry::fixed(
+            "notifications",
+            "Window",
+            None,
+            "Show notifications",
+            "the history behind the bell, newest first",
+        ),
+        Entry::fixed(
+            "palette",
+            "Window",
+            None,
+            "Open the command palette",
+            "Ctrl+P / Cmd+P",
+        ),
+        Entry::fixed(
+            "settings",
+            "Window",
+            None,
+            "Settings: fonts, sizes and behaviour",
+            "Ctrl+, / Cmd+,",
+        ),
         Entry::fixed("quit", "Window", None, "Quit REactor", "closes the window"),
         Entry::fixed("help", "Window", None, "List the slash commands", "/help"),
     ]
@@ -121,33 +304,89 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
     let mut add = |e: Entry| entries.push(e);
 
     for (title, detail, run) in [
-        ("Manifest: on", "include the manifest in the prompt", "manifest on"),
-        ("Manifest: off", "leave the manifest out of the prompt", "manifest off"),
-        ("Manifest: clear", "forget goal, steps and guidelines", "manifest clear"),
+        (
+            "Manifest: on",
+            "include the manifest in the prompt",
+            "manifest on",
+        ),
+        (
+            "Manifest: off",
+            "leave the manifest out of the prompt",
+            "manifest off",
+        ),
+        (
+            "Manifest: clear",
+            "forget goal, steps and guidelines",
+            "manifest clear",
+        ),
         ("Goal: clear", "remove the session goal", "goal clear"),
-        ("Guidelines: clear", "remove the session guidelines", "guidelines clear"),
+        (
+            "Guidelines: clear",
+            "remove the session guidelines",
+            "guidelines clear",
+        ),
         ("Reporting: on", "documenting as the work goes", "report on"),
         ("Reporting: off", "", "report off"),
         ("Reporting: status", "", "report status"),
         ("Reporting: level 0", "", "report level 0"),
         ("Reporting: level 1", "", "report level 1"),
         ("Reporting: level 2", "", "report level 2"),
-        ("Scenario: list", "the shipped scenarios", "reactor-scenario list"),
+        (
+            "Scenario: list",
+            "the shipped scenarios",
+            "reactor-scenario list",
+        ),
         ("Scenario: status", "", "reactor-scenario status"),
-        ("Scenario: next phase", "advance by hand", "reactor-scenario next"),
+        (
+            "Scenario: next phase",
+            "advance by hand",
+            "reactor-scenario next",
+        ),
         ("Scenario: stop", "", "reactor-scenario stop"),
-        ("Context: mode auto", "summarize, and drop what can be recovered", "context mode auto"),
-        ("Context: mode fade", "drop old messages, leave stubs", "context mode fade"),
-        ("Context: mode compact", "summarize old messages", "context mode compact"),
-        ("Context: make this session's settings the default", "for new sessions", "context default"),
-        ("Context: inherit the default settings", "drop this session's values", "context inherit"),
-        ("Reduce: preview summarize", "what it would do", "preview compact"),
+        (
+            "Context: mode auto",
+            "summarize, and drop what can be recovered",
+            "context mode auto",
+        ),
+        (
+            "Context: mode fade",
+            "drop old messages, leave stubs",
+            "context mode fade",
+        ),
+        (
+            "Context: mode compact",
+            "summarize old messages",
+            "context mode compact",
+        ),
+        (
+            "Context: make this session's settings the default",
+            "for new sessions",
+            "context default",
+        ),
+        (
+            "Context: inherit the default settings",
+            "drop this session's values",
+            "context inherit",
+        ),
+        (
+            "Reduce: preview summarize",
+            "what it would do",
+            "preview compact",
+        ),
         ("Reduce: preview fade", "what it would do", "preview fade"),
         ("Reduce now: summarize", "", "reduce compact"),
         ("Reduce now: fade", "", "reduce fade"),
         ("Reduce now: auto", "", "reduce auto"),
-        ("Tools: make this session's activation the default", "for new sessions", "activation default"),
-        ("Tools: inherit the default activation", "drop this session's override", "activation inherit"),
+        (
+            "Tools: make this session's activation the default",
+            "for new sessions",
+            "activation default",
+        ),
+        (
+            "Tools: inherit the default activation",
+            "drop this session's override",
+            "activation inherit",
+        ),
         ("Layout: default", "", "layout default"),
         ("Layout: focus", "", "layout focus"),
         ("Layout: analysis", "", "layout analysis"),
@@ -160,36 +399,86 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
     }
 
     for kind in crate::layout::PanelKind::ALL {
-        add(Entry::generated("Panels", format!("Panels: {}", kind.label()), "show or hide", format!("panel {}", kind.slug())));
+        add(Entry::generated(
+            "Panels",
+            format!("Panels: {}", kind.label()),
+            "show or hide",
+            format!("panel {}", kind.slug()),
+        ));
     }
 
     for model in &snapshot.models {
-        add(Entry::generated("Model", format!("Model: switch to {model}"), "", format!("model {model}")));
+        add(Entry::generated(
+            "Model",
+            format!("Model: switch to {model}"),
+            "",
+            format!("model {model}"),
+        ));
     }
     for (id, installed, active) in &snapshot.tools {
         if !installed {
-            add(Entry::generated("Tools", format!("Tool: install {id}"), "not installed here", format!("install {id}")));
+            add(Entry::generated(
+                "Tools",
+                format!("Tool: install {id}"),
+                "not installed here",
+                format!("install {id}"),
+            ));
         } else if *active {
-            add(Entry::generated("Tools", format!("Tool: disable {id}"), "stop advertising it", format!("tool {id} off")));
+            add(Entry::generated(
+                "Tools",
+                format!("Tool: disable {id}"),
+                "stop advertising it",
+                format!("tool {id} off"),
+            ));
         } else {
-            add(Entry::generated("Tools", format!("Tool: enable {id}"), "advertise it again", format!("tool {id} on")));
+            add(Entry::generated(
+                "Tools",
+                format!("Tool: enable {id}"),
+                "advertise it again",
+                format!("tool {id} on"),
+            ));
         }
     }
     for (id, active) in &snapshot.toolsets {
         if *active {
-            add(Entry::generated("Tools", format!("Toolset: disable {id}"), "", format!("toolset {id} off")));
+            add(Entry::generated(
+                "Tools",
+                format!("Toolset: disable {id}"),
+                "",
+                format!("toolset {id} off"),
+            ));
         } else {
-            add(Entry::generated("Tools", format!("Toolset: enable {id}"), "", format!("toolset {id} on")));
+            add(Entry::generated(
+                "Tools",
+                format!("Toolset: enable {id}"),
+                "",
+                format!("toolset {id} on"),
+            ));
         }
     }
     for id in &snapshot.scenarios {
-        add(Entry::generated("Session", format!("Scenario: start {id}"), "begins with its first briefing", format!("reactor-scenario start {id}")));
+        add(Entry::generated(
+            "Session",
+            format!("Scenario: start {id}"),
+            "begins with its first briefing",
+            format!("reactor-scenario start {id}"),
+        ));
     }
     for name in &snapshot.identities {
-        add(Entry::generated("Session", format!("Identity: {name}"), "", format!("identity {name}")));
+        add(Entry::generated(
+            "Session",
+            format!("Identity: {name}"),
+            "",
+            format!("identity {name}"),
+        ));
     }
     for id in &snapshot.reductions {
-        add(Entry::generated("Model", format!("Undo reduction #{id}"), "restore what it took out", format!("undo {id}")));
+        add(Entry::generated(
+            "Model",
+            format!("Undo reduction #{id}"),
+            "restore what it took out",
+            format!("undo {id}"),
+        ));
     }
     entries
 }
@@ -198,7 +487,10 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
 pub type Usage = BTreeMap<String, u32>;
 
 fn normalize(text: &str) -> Vec<char> {
-    text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn lcs(a: &[char], b: &[char]) -> usize {
@@ -207,7 +499,11 @@ fn lcs(a: &[char], b: &[char]) -> usize {
         let mut diagonal = 0;
         for (j, &y) in b.iter().enumerate() {
             let above = row[j + 1];
-            row[j + 1] = if x == y { diagonal + 1 } else { row[j + 1].max(row[j]) };
+            row[j + 1] = if x == y {
+                diagonal + 1
+            } else {
+                row[j + 1].max(row[j])
+            };
             diagonal = above;
         }
     }
@@ -296,17 +592,34 @@ mod tests {
     #[test]
     fn matching_chars_counts_what_lines_up_and_forgives_a_typo() {
         assert_eq!(matching_chars("reduce", "reduce"), 6);
-        assert_eq!(matching_chars("raduce", "reduce"), 5, "one wrong letter costs one match");
+        assert_eq!(
+            matching_chars("raduce", "reduce"),
+            5,
+            "one wrong letter costs one match"
+        );
         assert_eq!(matching_chars("redcue", "reduce"), 5, "a swap costs one");
-        assert_eq!(matching_chars("reduce", "rduce"), 5, "a missing letter costs one");
-        assert_eq!(matching_chars("Re-Duce", "reduce"), 6, "case and punctuation do not matter");
+        assert_eq!(
+            matching_chars("reduce", "rduce"),
+            5,
+            "a missing letter costs one"
+        );
+        assert_eq!(
+            matching_chars("Re-Duce", "reduce"),
+            6,
+            "case and punctuation do not matter"
+        );
         assert_eq!(matching_chars("", "reduce"), 0);
     }
 
     #[test]
     fn scattered_letters_in_a_long_title_do_not_add_up() {
         // r…e…d…u…c…e are all in there, but nowhere near each other.
-        assert!(matching_chars("reduce", "Tool: install ridiculously-unusual-compiler-extras") < 5);
+        assert!(
+            matching_chars(
+                "reduce",
+                "Tool: install ridiculously-unusual-compiler-extras"
+            ) < 5
+        );
     }
 
     #[test]
@@ -339,7 +652,10 @@ mod tests {
         let used = rank("re", &entries, &usage, true);
         assert_eq!(used[0].run, "report");
         assert_eq!(used[1].run, "refresh");
-        assert_ne!(first_plain, "report", "the test needs frequency to have changed something");
+        assert_ne!(
+            first_plain, "report",
+            "the test needs frequency to have changed something"
+        );
     }
 
     #[test]
@@ -348,7 +664,10 @@ mod tests {
         let mut usage = Usage::new();
         usage.insert("reduce".into(), 1000);
         let ranked = rank("report", &entries, &usage, true);
-        assert_eq!(ranked[0].run, "report", "an exact match beats a much-used near one");
+        assert_eq!(
+            ranked[0].run, "report",
+            "an exact match beats a much-used near one"
+        );
     }
 
     #[test]
@@ -369,7 +688,11 @@ mod tests {
 
     #[test]
     fn the_popup_offers_commands_only_and_the_palette_everything() {
-        let snapshot = Snapshot { models: vec!["ollama/qwen".into()], tools: vec![("adb".into(), true, true)], ..Default::default() };
+        let snapshot = Snapshot {
+            models: vec!["ollama/qwen".into()],
+            tools: vec![("adb".into(), true, true)],
+            ..Default::default()
+        };
         let entries = build(&snapshot);
         let popup = rank("", &entries, &Usage::new(), true);
         assert!(popup.iter().all(|e| e.name.is_some()));
@@ -380,7 +703,11 @@ mod tests {
 
     #[test]
     fn the_palette_finds_a_generated_entry_by_its_title() {
-        let snapshot = Snapshot { tools: vec![("frida".into(), false, false), ("adb".into(), true, false)], scenarios: vec!["investigation".into()], ..Default::default() };
+        let snapshot = Snapshot {
+            tools: vec![("frida".into(), false, false), ("adb".into(), true, false)],
+            scenarios: vec!["investigation".into()],
+            ..Default::default()
+        };
         let entries = build(&snapshot);
         let ranked = rank("install frida", &entries, &Usage::new(), false);
         assert_eq!(ranked[0].run, "install frida");
@@ -392,7 +719,10 @@ mod tests {
 
     #[test]
     fn a_tool_offers_only_the_action_that_changes_something() {
-        let snapshot = Snapshot { tools: vec![("adb".into(), true, true)], ..Default::default() };
+        let snapshot = Snapshot {
+            tools: vec![("adb".into(), true, true)],
+            ..Default::default()
+        };
         let runs: Vec<String> = build(&snapshot).into_iter().map(|e| e.run).collect();
         assert!(runs.contains(&"tool adb off".to_string()));
         assert!(!runs.contains(&"tool adb on".to_string()));

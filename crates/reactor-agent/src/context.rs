@@ -22,9 +22,18 @@ use reactor_context::{identity, manifest, reporting, scenario};
 /// A message as the loop and the model seam handle it — ours, not rig's.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Msg {
-    User { text: String },
-    Assistant { blocks: Vec<Block> },
-    ToolResult { call_id: String, name: String, content: String, is_error: bool },
+    User {
+        text: String,
+    },
+    Assistant {
+        blocks: Vec<Block>,
+    },
+    ToolResult {
+        call_id: String,
+        name: String,
+        content: String,
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +59,12 @@ pub fn active_reductions(store: &Store) -> Vec<EntryId> {
     for e in store.branch() {
         match &e.kind {
             Kind::Reduction(r) => {
-                let covered: Vec<EntryId> = r.covers.iter().copied().filter(|c| active.contains(c)).collect();
+                let covered: Vec<EntryId> = r
+                    .covers
+                    .iter()
+                    .copied()
+                    .filter(|c| active.contains(c))
+                    .collect();
                 active.retain(|a| !covered.contains(a));
                 superseded.insert(e.id, covered);
                 active.push(e.id);
@@ -113,21 +127,44 @@ pub fn project(store: &Store) -> Vec<Item> {
             && active.contains(rid)
             && let Some(Kind::Reduction(r)) = store.get(*rid).map(|x| &x.kind)
         {
-            out.push(Item { source: Source::Reduction(*rid), msg: Msg::User { text: render_reduction(r) } });
+            out.push(Item {
+                source: Source::Reduction(*rid),
+                msg: Msg::User {
+                    text: render_reduction(r),
+                },
+            });
         }
         if hidden.contains_key(&e.id) {
             continue;
         }
         let msg = match &e.kind {
             Kind::User { text } => Msg::User { text: text.clone() },
-            Kind::Assistant { blocks, .. } => Msg::Assistant { blocks: blocks.clone() },
-            Kind::ToolResult { call_id, name, content, is_error, .. } => {
-                Msg::ToolResult { call_id: call_id.clone(), name: name.clone(), content: content.clone(), is_error: *is_error }
-            }
+            Kind::Assistant { blocks, .. } => Msg::Assistant {
+                blocks: blocks.clone(),
+            },
+            Kind::ToolResult {
+                call_id,
+                name,
+                content,
+                is_error,
+                ..
+            } => Msg::ToolResult {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+            },
             // State, markers and the reductions themselves are not messages.
-            Kind::Session { .. } | Kind::Custom { .. } | Kind::Reduction(_) | Kind::Restore { .. } | Kind::Label { .. } => continue,
+            Kind::Session { .. }
+            | Kind::Custom { .. }
+            | Kind::Reduction(_)
+            | Kind::Restore { .. }
+            | Kind::Label { .. } => continue,
         };
-        out.push(Item { source: Source::Entry(e.id), msg });
+        out.push(Item {
+            source: Source::Entry(e.id),
+            msg,
+        });
     }
     out
 }
@@ -143,7 +180,10 @@ pub fn render_reduction(r: &Reduction) -> String {
     if !r.stubs.is_empty() {
         out.push_str("\nDropped from view (the originals are kept; read one back with `history_read` and its #address):\n");
         for s in &r.stubs {
-            out.push_str(&format!("- #{} {}: {} ({} bytes)\n", s.entry, s.what, s.detail, s.bytes));
+            out.push_str(&format!(
+                "- #{} {}: {} ({} bytes)\n",
+                s.entry, s.what, s.detail, s.bytes
+            ));
         }
     } else if r.summary.is_some() {
         out.push_str(&format!(
@@ -175,7 +215,9 @@ pub fn msg_tokens(msg: &Msg) -> u64 {
             .iter()
             .map(|b| match b {
                 Block::Text { text } | Block::Thinking { text, .. } => estimate_tokens(text),
-                Block::ToolCall { name, arguments, .. } => estimate_tokens(name) + estimate_tokens(&arguments.to_string()),
+                Block::ToolCall {
+                    name, arguments, ..
+                } => estimate_tokens(name) + estimate_tokens(&arguments.to_string()),
             })
             .sum(),
         Msg::ToolResult { content, name, .. } => estimate_tokens(content) + estimate_tokens(name),
@@ -206,13 +248,19 @@ impl SessionState {
     pub fn load(store: &Store) -> SessionState {
         let mut s = SessionState::default();
         for e in store.branch() {
-            let Kind::Custom { key, data } = &e.kind else { continue };
+            let Kind::Custom { key, data } = &e.kind else {
+                continue;
+            };
             match key.as_str() {
                 KEY_MANIFEST => s.manifest = manifest::State::normalize(data),
                 KEY_IDENTITY => s.identity = identity::State::normalize(data),
                 KEY_REPORTING => s.reporting = reporting::SessionState::normalize(data),
                 KEY_CONTEXT => s.context = ContextSettings::normalize(data),
-                KEY_SCENARIO => s.scenario = serde_json::from_value(data.clone()).ok().filter(|_: &scenario::State| !data.is_null()),
+                KEY_SCENARIO => {
+                    s.scenario = serde_json::from_value(data.clone())
+                        .ok()
+                        .filter(|_: &scenario::State| !data.is_null())
+                }
                 _ => {}
             }
         }
@@ -222,7 +270,10 @@ impl SessionState {
 
 /// Store a state module's value as this session's latest.
 pub fn save_state(store: &mut Store, key: &str, data: Value) -> crate::error::Result<EntryId> {
-    store.append(Kind::Custom { key: key.to_string(), data })
+    store.append(Kind::Custom {
+        key: key.to_string(),
+        data,
+    })
 }
 
 /// Entry ids covered by reductions in force — handy for the budget manager.

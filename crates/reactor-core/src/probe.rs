@@ -85,7 +85,12 @@ pub struct ProbeResult {
 
 impl ProbeResult {
     pub fn unknown() -> Self {
-        Self { status: Status::Unknown, path: None, version: None, service: None }
+        Self {
+            status: Status::Unknown,
+            path: None,
+            version: None,
+            service: None,
+        }
     }
 }
 
@@ -127,8 +132,12 @@ impl Cache {
             detect: BTreeMap::new(),
             service: BTreeMap::new(),
         };
-        let Ok(text) = std::fs::read_to_string(&cache.path) else { return cache };
-        let Ok(doc) = serde_json::from_str::<Value>(&text) else { return cache };
+        let Ok(text) = std::fs::read_to_string(&cache.path) else {
+            return cache;
+        };
+        let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+            return cache;
+        };
         if doc.get("version") == Some(&json!(1)) && doc.get("stamp") == Some(&json!(cat.stamp)) {
             let bucket = |name: &str| -> BTreeMap<String, Value> {
                 doc.get(name)
@@ -143,11 +152,18 @@ impl Cache {
     }
 
     fn bucket(&self, name: &str) -> &BTreeMap<String, Value> {
-        if name == "detect" { &self.detect } else { &self.service }
+        if name == "detect" {
+            &self.detect
+        } else {
+            &self.service
+        }
     }
 
     fn get(&self, bucket: &str, key: &str, ttl: i64, now: f64) -> Option<&Value> {
-        let entry = self.bucket(bucket).get(key).filter(|e| e.as_object().is_some_and(|o| !o.is_empty()))?;
+        let entry = self
+            .bucket(bucket)
+            .get(key)
+            .filter(|e| e.as_object().is_some_and(|o| !o.is_empty()))?;
         let ts = entry.get("ts").and_then(Value::as_f64).unwrap_or(0.0);
         if ttl >= 0 && now - ts > ttl as f64 {
             return None;
@@ -161,7 +177,11 @@ impl Cache {
 
     fn put(&mut self, bucket: &str, key: &str, mut value: Value, now: f64) {
         value["ts"] = json!(now);
-        let map = if bucket == "detect" { &mut self.detect } else { &mut self.service };
+        let map = if bucket == "detect" {
+            &mut self.detect
+        } else {
+            &mut self.service
+        };
         map.insert(key.to_string(), value);
     }
 
@@ -202,12 +222,20 @@ pub struct ProbeOpts {
 
 impl ProbeOpts {
     pub fn new() -> Self {
-        Self { services: true, ..Self::default() }
+        Self {
+            services: true,
+            ..Self::default()
+        }
     }
 }
 
 /// Detection (+ version, + service) for `ids`, cache-aware.
-pub fn probe(paths: &Paths, cat: &Catalogue, ids: &[String], opts: ProbeOpts) -> HashMap<String, ProbeResult> {
+pub fn probe(
+    paths: &Paths,
+    cat: &Catalogue,
+    ids: &[String],
+    opts: ProbeOpts,
+) -> HashMap<String, ProbeResult> {
     let now = now_secs_f64();
     let mut cache = Cache::load(paths, cat);
     if opts.refresh {
@@ -219,7 +247,11 @@ pub fn probe(paths: &Paths, cat: &Catalogue, ids: &[String], opts: ProbeOpts) ->
     let mut detect_todo: Vec<&Tool> = Vec::new();
 
     for t in &tools {
-        let mut hit = if opts.refresh { None } else { cache.get("detect", &t.id, cat.detect_ttl, now) };
+        let mut hit = if opts.refresh {
+            None
+        } else {
+            cache.get("detect", &t.id, cat.detect_ttl, now)
+        };
         if hit.is_none() && opts.cached_only {
             hit = cache.stale("detect", &t.id);
         }
@@ -228,7 +260,11 @@ pub fn probe(paths: &Paths, cat: &Catalogue, ids: &[String], opts: ProbeOpts) ->
             results.insert(
                 t.id.clone(),
                 ProbeResult {
-                    status: hit.get("status").and_then(Value::as_str).map(Status::parse).unwrap_or(Status::Unknown),
+                    status: hit
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(Status::parse)
+                        .unwrap_or(Status::Unknown),
                     path: text("path"),
                     version: text("version"),
                     service: None,
@@ -247,21 +283,38 @@ pub fn probe(paths: &Paths, cat: &Catalogue, ids: &[String], opts: ProbeOpts) ->
 
     let mut service_todo: Vec<&Tool> = Vec::new();
     for t in &tools {
-        let Some(_) = t.service_probe.as_ref().filter(|_| opts.services) else { continue };
-        let unknown = || ServiceInfo { label: t.service_label.clone(), state: ServiceState::Unknown, detail: None };
+        let Some(_) = t.service_probe.as_ref().filter(|_| opts.services) else {
+            continue;
+        };
+        let unknown = || ServiceInfo {
+            label: t.service_label.clone(),
+            state: ServiceState::Unknown,
+            detail: None,
+        };
         if results[&t.id].status != Status::Present {
             results.get_mut(&t.id).unwrap().service = Some(unknown());
             continue;
         }
-        let mut hit = if opts.refresh { None } else { cache.get("service", &t.id, cat.service_ttl, now) };
+        let mut hit = if opts.refresh {
+            None
+        } else {
+            cache.get("service", &t.id, cat.service_ttl, now)
+        };
         if hit.is_none() && opts.cached_only {
             hit = cache.stale("service", &t.id);
         }
         if let Some(hit) = hit {
             let info = ServiceInfo {
                 label: t.service_label.clone(),
-                state: hit.get("state").and_then(Value::as_str).map(ServiceState::parse).unwrap_or(ServiceState::Unknown),
-                detail: hit.get("detail").and_then(Value::as_str).map(str::to_string),
+                state: hit
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .map(ServiceState::parse)
+                    .unwrap_or(ServiceState::Unknown),
+                detail: hit
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             };
             results.get_mut(&t.id).unwrap().service = Some(info);
         } else if opts.cached_only {
@@ -290,7 +343,10 @@ fn probe_detect(
     cache: &mut Cache,
     now: f64,
 ) {
-    let modules: Vec<&&Tool> = tools.iter().filter(|t| t.detect_kind == DetectKind::PythonModule).collect();
+    let modules: Vec<&&Tool> = tools
+        .iter()
+        .filter(|t| t.detect_kind == DetectKind::PythonModule)
+        .collect();
     let mut found: HashMap<String, bool> = HashMap::new();
     if !modules.is_empty() {
         let mut argv = vec![cat.python.clone(), "-c".to_string(), FIND_SPEC.to_string()];
@@ -299,7 +355,10 @@ fn probe_detect(
         if r.ok()
             && let Ok(Value::Object(m)) = serde_json::from_str::<Value>(&first_line(&r.output))
         {
-            found = m.into_iter().map(|(k, v)| (k, v.as_bool().unwrap_or(false))).collect();
+            found = m
+                .into_iter()
+                .map(|(k, v)| (k, v.as_bool().unwrap_or(false)))
+                .collect();
         }
         // A timeout leaves `found` empty → unknown below.
     }
@@ -310,7 +369,11 @@ fn probe_detect(
             DetectKind::Binary => {
                 let where_ = which(&t.detect_value).map(|p| p.display().to_string());
                 ProbeResult {
-                    status: if where_.is_some() { Status::Present } else { Status::Absent },
+                    status: if where_.is_some() {
+                        Status::Present
+                    } else {
+                        Status::Absent
+                    },
                     path: where_,
                     version: None,
                     service: None,
@@ -322,7 +385,11 @@ fn probe_detect(
                 } else {
                     let here = found.get(&t.detect_value).copied().unwrap_or(false);
                     ProbeResult {
-                        status: if here { Status::Present } else { Status::Absent },
+                        status: if here {
+                            Status::Present
+                        } else {
+                            Status::Absent
+                        },
                         path: None,
                         version: None,
                         service: None,
@@ -340,7 +407,9 @@ fn probe_detect(
         .filter(|t| t.version_argv.is_some() && results[&t.id].status == Status::Present)
         .collect();
     if !versioned.is_empty() {
-        let outs = par_map(&versioned, 8, |t| run(t.version_argv.as_ref().unwrap(), timeout_of(cat)));
+        let outs = par_map(&versioned, 8, |t| {
+            run(t.version_argv.as_ref().unwrap(), timeout_of(cat))
+        });
         for (t, r) in versioned.iter().zip(outs) {
             if r.ok() {
                 results.get_mut(&t.id).unwrap().version = version_of(&first_line(&r.output));
@@ -383,7 +452,9 @@ fn probe_services(
     cache: &mut Cache,
     now: f64,
 ) {
-    let outs = par_map(tools, 8, |t| run(t.service_probe.as_ref().unwrap(), timeout_of(cat)));
+    let outs = par_map(tools, 8, |t| {
+        run(t.service_probe.as_ref().unwrap(), timeout_of(cat))
+    });
     for (t, r) in tools.iter().zip(outs) {
         let (state, detail) = if !r.completed {
             (ServiceState::Unknown, None)
@@ -392,9 +463,17 @@ fn probe_services(
         } else {
             (ServiceState::Down, None)
         };
-        cache.put("service", &t.id, json!({"state": state.as_str(), "detail": detail}), now);
-        results.get_mut(&t.id).unwrap().service =
-            Some(ServiceInfo { label: t.service_label.clone(), state, detail });
+        cache.put(
+            "service",
+            &t.id,
+            json!({"state": state.as_str(), "detail": detail}),
+            now,
+        );
+        results.get_mut(&t.id).unwrap().service = Some(ServiceInfo {
+            label: t.service_label.clone(),
+            state,
+            detail,
+        });
     }
 }
 
@@ -405,5 +484,9 @@ pub fn service_detail(tool: &Tool, out: &str) -> Option<String> {
     let rx = Regex::new(spec.pattern.as_ref()?).ok()?;
     let n = out.lines().filter(|l| rx.is_match(l)).count();
     let noun = spec.noun.as_deref().unwrap_or("item");
-    Some(if n == 1 { format!("{n} {noun}") } else { format!("{n} {noun}s") })
+    Some(if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    })
 }

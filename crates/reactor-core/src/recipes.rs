@@ -60,15 +60,29 @@ pub fn rank_recipes(
     let mut notes = OrderedMap::default();
     for (key, command) in tool.install.iter() {
         if let (true, Some(m)) = (present.contains_key(key), cat.managers.get(key)) {
-            candidates.push(Recipe { method: key.clone(), command: command.clone(), sudo: m.sudo });
+            candidates.push(Recipe {
+                method: key.clone(),
+                command: command.clone(),
+                sudo: m.sudo,
+            });
         } else {
             // Includes a known manager that is simply not on this machine: still
             // a note, so `reactor tools show` can say what would work elsewhere.
             notes.0.push((key.clone(), command.clone()));
         }
     }
-    let order = |method: &str| cat.prefer.iter().position(|p| p == method).unwrap_or(cat.prefer.len());
-    let declared = |method: &str| tool.install.keys().position(|k| k == method).unwrap_or(usize::MAX);
+    let order = |method: &str| {
+        cat.prefer
+            .iter()
+            .position(|p| p == method)
+            .unwrap_or(cat.prefer.len())
+    };
+    let declared = |method: &str| {
+        tool.install
+            .keys()
+            .position(|k| k == method)
+            .unwrap_or(usize::MAX)
+    };
     candidates.sort_by_key(|c| (order(&c.method), declared(&c.method)));
     (candidates, notes)
 }
@@ -133,7 +147,10 @@ pub fn shlex_split(s: &str) -> Vec<String> {
 
 /// `shlex.join`: quote only what needs it.
 pub fn shlex_join(argv: &[String]) -> String {
-    argv.iter().map(|a| shlex_quote(a)).collect::<Vec<_>>().join(" ")
+    argv.iter()
+        .map(|a| shlex_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn shlex_quote(s: &str) -> String {

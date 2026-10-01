@@ -48,24 +48,62 @@ pub fn default_window(provider: &str) -> u64 {
 impl AnyLlm {
     /// `anthropic/claude-…`, `openai/gpt-…`, `ollama/llama3`, …
     pub fn from_spec(spec: &str) -> Result<(AnyLlm, String)> {
-        let (provider, model) = spec
-            .split_once('/')
-            .ok_or_else(|| Error::Model(format!("model must be provider/name, e.g. anthropic/claude-sonnet-5-5 (providers: {})", PROVIDERS.join(", "))))?;
-        let fail = |e: rig_core::client::ProviderClientError| Error::Model(format!("{provider}: {e}"));
+        let (provider, model) = spec.split_once('/').ok_or_else(|| {
+            Error::Model(format!(
+                "model must be provider/name, e.g. anthropic/claude-sonnet-5-5 (providers: {})",
+                PROVIDERS.join(", ")
+            ))
+        })?;
+        let fail =
+            |e: rig_core::client::ProviderClientError| Error::Model(format!("{provider}: {e}"));
         let llm = match provider {
-            "anthropic" => AnyLlm::Anthropic(RigLlm::new(anthropic::Client::from_env().map_err(fail)?.completion_model(model), spec)),
-            "openai" => AnyLlm::OpenAi(RigLlm::new(openai::Client::from_env().map_err(fail)?.completion_model(model), spec)),
-            "gemini" => AnyLlm::Gemini(RigLlm::new(gemini::Client::from_env().map_err(fail)?.completion_model(model), spec)),
-            "openrouter" => AnyLlm::OpenRouter(RigLlm::new(openrouter::Client::from_env().map_err(fail)?.completion_model(model), spec)),
-            "ollama" => AnyLlm::Ollama(RigLlm::new(ollama::Client::from_env().map_err(fail)?.completion_model(model), spec)),
-            other => return Err(Error::Model(format!("unknown provider `{other}` (providers: {})", PROVIDERS.join(", ")))),
+            "anthropic" => AnyLlm::Anthropic(RigLlm::new(
+                anthropic::Client::from_env()
+                    .map_err(fail)?
+                    .completion_model(model),
+                spec,
+            )),
+            "openai" => AnyLlm::OpenAi(RigLlm::new(
+                openai::Client::from_env()
+                    .map_err(fail)?
+                    .completion_model(model),
+                spec,
+            )),
+            "gemini" => AnyLlm::Gemini(RigLlm::new(
+                gemini::Client::from_env()
+                    .map_err(fail)?
+                    .completion_model(model),
+                spec,
+            )),
+            "openrouter" => AnyLlm::OpenRouter(RigLlm::new(
+                openrouter::Client::from_env()
+                    .map_err(fail)?
+                    .completion_model(model),
+                spec,
+            )),
+            "ollama" => AnyLlm::Ollama(RigLlm::new(
+                ollama::Client::from_env()
+                    .map_err(fail)?
+                    .completion_model(model),
+                spec,
+            )),
+            other => {
+                return Err(Error::Model(format!(
+                    "unknown provider `{other}` (providers: {})",
+                    PROVIDERS.join(", ")
+                )));
+            }
         };
         Ok((llm, provider.to_string()))
     }
 }
 
 impl Llm for AnyLlm {
-    async fn complete(&self, req: LlmRequest, on_delta: &mut (dyn FnMut(Delta) + Send)) -> Result<Reply> {
+    async fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> Result<Reply> {
         match self {
             AnyLlm::Anthropic(m) => m.complete(req, on_delta).await,
             AnyLlm::OpenAi(m) => m.complete(req, on_delta).await,

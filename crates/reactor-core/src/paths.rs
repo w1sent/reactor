@@ -43,7 +43,12 @@ pub struct Paths {
 
 impl Paths {
     pub fn new(config_dir: impl Into<PathBuf>, shipped: Shipped) -> Self {
-        Self { config_dir: config_dir.into(), shipped, cwd: None, session_state: None }
+        Self {
+            config_dir: config_dir.into(),
+            shipped,
+            cwd: None,
+            session_state: None,
+        }
     }
 
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
@@ -73,7 +78,12 @@ impl Paths {
             Some(root) => Shipped::Dir(PathBuf::from(root)),
             None => Shipped::Embedded,
         };
-        Self { config_dir, shipped, cwd: std::env::current_dir().ok(), session_state: None }
+        Self {
+            config_dir,
+            shipped,
+            cwd: std::env::current_dir().ok(),
+            session_state: None,
+        }
     }
 
     pub fn live(&self, name: &str) -> PathBuf {
@@ -102,7 +112,8 @@ impl Paths {
             },
             Shipped::Dir(root) => {
                 let p = root.join(name);
-                std::fs::read(&p).map_err(|e| ReactorError::new(format!("{}: {}", p.display(), io_reason(&e))))
+                std::fs::read(&p)
+                    .map_err(|e| ReactorError::new(format!("{}: {}", p.display(), io_reason(&e))))
             }
         }
     }

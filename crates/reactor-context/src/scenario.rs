@@ -43,7 +43,9 @@ pub struct State {
 
 /// Scenario ids: the subdirectories of `dir`, sorted.
 pub fn list_scenarios(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
     let mut ids: Vec<String> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -66,7 +68,11 @@ fn field_re() -> &'static Regex {
 
 pub fn parse_step(raw: &str) -> Step {
     let Some(m) = frontmatter_re().captures(raw) else {
-        return Step { title: String::new(), toolset: None, body: js_trim(raw).to_string() };
+        return Step {
+            title: String::new(),
+            toolset: None,
+            body: js_trim(raw).to_string(),
+        };
     };
     let (mut title, mut toolset) = (String::new(), String::new());
     for line in m[1].split('\n') {
@@ -79,13 +85,19 @@ pub fn parse_step(raw: &str) -> Step {
             }
         }
     }
-    Step { title, toolset: (!toolset.is_empty()).then_some(toolset), body: js_trim(&m[2]).to_string() }
+    Step {
+        title,
+        toolset: (!toolset.is_empty()).then_some(toolset),
+        body: js_trim(&m[2]).to_string(),
+    }
 }
 
 /// A scenario's phases, in file-name order. Unknown or unreadable is empty.
 pub fn load_steps(dir: &Path, id: &str) -> Vec<Step> {
     let base = dir.join(id);
-    let Ok(entries) = std::fs::read_dir(&base) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return vec![];
+    };
     let mut files: Vec<String> = entries
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -101,8 +113,18 @@ pub fn load_steps(dir: &Path, id: &str) -> Vec<Step> {
 /// `## Phase 2/4: Static analysis`, then the phase's own body verbatim.
 pub fn briefing(steps: &[Step], index: usize) -> String {
     let step = &steps[index];
-    let title = if step.title.is_empty() { format!("step {}", index + 1) } else { step.title.clone() };
-    format!("## Phase {}/{}: {}\n\n{}", index + 1, steps.len(), title, step.body)
+    let title = if step.title.is_empty() {
+        format!("step {}", index + 1)
+    } else {
+        step.title.clone()
+    };
+    format!(
+        "## Phase {}/{}: {}\n\n{}",
+        index + 1,
+        steps.len(),
+        title,
+        step.body
+    )
 }
 
 // -- running one ------------------------------------------------------------------
@@ -135,10 +157,18 @@ pub struct Effects {
 
 impl Effects {
     fn none() -> Self {
-        Effects { notices: vec![], messages: vec![], persist: Persist::Nothing, activate_toolsets: vec![] }
+        Effects {
+            notices: vec![],
+            messages: vec![],
+            persist: Persist::Nothing,
+            activate_toolsets: vec![],
+        }
     }
     fn notice(n: Notice) -> Self {
-        Effects { notices: vec![n], ..Effects::none() }
+        Effects {
+            notices: vec![n],
+            ..Effects::none()
+        }
     }
 }
 
@@ -181,12 +211,20 @@ impl Scenario<'_> {
         if next >= steps.len() {
             self.state = None;
             return Advance {
-                text: format!("reactor: scenario \"{}\" complete -- {} phase(s) done.", state.scenario_id, steps.len()),
+                text: format!(
+                    "reactor: scenario \"{}\" complete -- {} phase(s) done.",
+                    state.scenario_id,
+                    steps.len()
+                ),
                 persist: Persist::Clear,
                 activate_toolset: None,
             };
         }
-        let new = State { scenario_id: state.scenario_id, step_index: next, summaries };
+        let new = State {
+            scenario_id: state.scenario_id,
+            step_index: next,
+            summaries,
+        };
         self.state = Some(new.clone());
         Advance {
             text: briefing(&steps, next),
@@ -213,7 +251,9 @@ impl Scenario<'_> {
             "start" => {
                 let id = rest.join(" ");
                 if id.is_empty() {
-                    return Effects::notice(Notice::error("reactor-scenario: start needs a scenario id -- try `list`"));
+                    return Effects::notice(Notice::error(
+                        "reactor-scenario: start needs a scenario id -- try `list`",
+                    ));
                 }
                 if let Some(s) = &self.state {
                     return Effects::notice(Notice::error(format!(
@@ -227,11 +267,21 @@ impl Scenario<'_> {
                         "reactor-scenario: unknown scenario \"{id}\" -- try `list`"
                     )));
                 }
-                let new = State { scenario_id: id.clone(), step_index: 0, summaries: vec![] };
+                let new = State {
+                    scenario_id: id.clone(),
+                    step_index: 0,
+                    summaries: vec![],
+                };
                 self.state = Some(new.clone());
                 Effects {
-                    notices: vec![Notice::info(format!("reactor: started \"{id}\" -- step 1/{}", steps.len()))],
-                    messages: vec![Message { content: briefing(&steps, 0), trigger_turn: true }],
+                    notices: vec![Notice::info(format!(
+                        "reactor: started \"{id}\" -- step 1/{}",
+                        steps.len()
+                    ))],
+                    messages: vec![Message {
+                        content: briefing(&steps, 0),
+                        trigger_turn: true,
+                    }],
                     persist: Persist::Set(new),
                     activate_toolsets: steps[0].toolset.clone().into_iter().collect(),
                 }
@@ -256,15 +306,24 @@ impl Scenario<'_> {
             },
             "next" => {
                 if self.state.is_none() {
-                    return Effects::notice(Notice::error("reactor: no scenario active -- `start` one first"));
+                    return Effects::notice(Notice::error(
+                        "reactor: no scenario active -- `start` one first",
+                    ));
                 }
                 // The human is the better judge of whether a phase is genuinely
                 // finished (ADR-0009); this bypasses the model entirely.
-                let summary = if rest.is_empty() { "(advanced manually)".to_string() } else { rest.join(" ") };
+                let summary = if rest.is_empty() {
+                    "(advanced manually)".to_string()
+                } else {
+                    rest.join(" ")
+                };
                 let adv = self.advance(&summary);
                 Effects {
                     notices: vec![],
-                    messages: vec![Message { content: adv.text, trigger_turn: true }],
+                    messages: vec![Message {
+                        content: adv.text,
+                        trigger_turn: true,
+                    }],
                     persist: adv.persist,
                     activate_toolsets: adv.activate_toolset.into_iter().collect(),
                 }
@@ -272,7 +331,10 @@ impl Scenario<'_> {
             "stop" => match self.state.take() {
                 None => Effects::notice(Notice::info("reactor: no scenario active")),
                 Some(s) => Effects {
-                    notices: vec![Notice::info(format!("reactor: stopped \"{}\"", s.scenario_id))],
+                    notices: vec![Notice::info(format!(
+                        "reactor: stopped \"{}\"",
+                        s.scenario_id
+                    ))],
                     persist: Persist::Clear,
                     ..Effects::none()
                 },

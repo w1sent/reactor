@@ -17,7 +17,10 @@ use tempfile::TempDir;
 /// three states to disagree about.
 fn fixture() -> TempDir {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    let dir = tempfile::Builder::new().prefix("reactor-agree-").tempdir().unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("reactor-agree-")
+        .tempdir()
+        .unwrap();
     let mut tools = std::fs::read_to_string(golden.join("tools.toml")).unwrap();
     tools.push_str(
         r#"
@@ -32,7 +35,11 @@ service = { probe = ["sh", "-c", "echo 'a device'; echo 'b device'"], label = "a
 "#,
     );
     std::fs::write(dir.path().join("tools.toml"), tools).unwrap();
-    std::fs::copy(golden.join("toolsets.toml"), dir.path().join("toolsets.toml")).unwrap();
+    std::fs::copy(
+        golden.join("toolsets.toml"),
+        dir.path().join("toolsets.toml"),
+    )
+    .unwrap();
     dir
 }
 
@@ -41,15 +48,29 @@ fn pair(dir: &TempDir) -> (LibClient, CliClient) {
     let mut cli = CliClient::new(Some(dir.path().to_path_buf()));
     cli.program = env!("CARGO_BIN_EXE_reactor").to_string();
     cli.envs = vec![
-        ("REACTOR_CONFIG_DIR".into(), dir.path().display().to_string()),
+        (
+            "REACTOR_CONFIG_DIR".into(),
+            dir.path().display().to_string(),
+        ),
         ("HOME".into(), dir.path().display().to_string()),
     ];
     (lib, cli)
 }
 
-fn same<T: std::fmt::Debug, E: std::fmt::Display>(what: &str, lib: Result<T, E>, cli: Result<T, E>) {
-    let (lib, cli) = (lib.unwrap_or_else(|e| panic!("{what}: lib failed: {e}")), cli.unwrap_or_else(|e| panic!("{what}: cli failed: {e}")));
-    assert_eq!(format!("{lib:#?}"), format!("{cli:#?}"), "{what}: the two paths disagree");
+fn same<T: std::fmt::Debug, E: std::fmt::Display>(
+    what: &str,
+    lib: Result<T, E>,
+    cli: Result<T, E>,
+) {
+    let (lib, cli) = (
+        lib.unwrap_or_else(|e| panic!("{what}: lib failed: {e}")),
+        cli.unwrap_or_else(|e| panic!("{what}: cli failed: {e}")),
+    );
+    assert_eq!(
+        format!("{lib:#?}"),
+        format!("{cli:#?}"),
+        "{what}: the two paths disagree"
+    );
 }
 
 fn read_everything(a: &dyn ReactorClient, b: &dyn ReactorClient) {
@@ -59,7 +80,11 @@ fn read_everything(a: &dyn ReactorClient, b: &dyn ReactorClient) {
     same("state", a.state(), b.state());
     same("registry", a.registry(), b.registry());
     for id in ["alpha", "beta", "gamma", "answering"] {
-        same(&format!("tool_detail({id})"), a.tool_detail(id), b.tool_detail(id));
+        same(
+            &format!("tool_detail({id})"),
+            a.tool_detail(id),
+            b.tool_detail(id),
+        );
     }
 }
 
@@ -80,8 +105,15 @@ fn every_read_agrees_whichever_path_probes_first() {
 fn a_real_service_reads_as_up_on_both_paths() {
     let dir = fixture();
     let (lib, cli) = pair(&dir);
-    for (name, services) in [("lib", lib.services(true).unwrap()), ("cli", cli.services(true).unwrap())] {
-        let row = services.services.iter().find(|s| s.id == "answering").unwrap_or_else(|| panic!("{name}: no row"));
+    for (name, services) in [
+        ("lib", lib.services(true).unwrap()),
+        ("cli", cli.services(true).unwrap()),
+    ] {
+        let row = services
+            .services
+            .iter()
+            .find(|s| s.id == "answering")
+            .unwrap_or_else(|| panic!("{name}: no row"));
         assert_eq!(row.state, "up", "{name}");
         assert_eq!(row.detail.as_deref(), Some("2 devices"), "{name}");
     }
@@ -95,7 +127,12 @@ fn writes_agree_and_leave_the_same_state() {
     let (lib, _) = pair(&dir_lib);
     let (_, cli) = pair(&dir_cli);
 
-    let norm = |v: Value, dir: &TempDir| Value::String(v.to_string().replace(&dir.path().display().to_string(), "<CFG>"));
+    let norm = |v: Value, dir: &TempDir| {
+        Value::String(
+            v.to_string()
+                .replace(&dir.path().display().to_string(), "<CFG>"),
+        )
+    };
     type Step = Box<dyn Fn(&dyn ReactorClient) -> Value>;
     let steps: Vec<Step> = vec![
         Box::new(|c| c.set_toolset("static", true).unwrap()),
@@ -104,7 +141,11 @@ fn writes_agree_and_leave_the_same_state() {
         Box::new(|c| c.set_toolset("static", false).unwrap()),
     ];
     for (i, step) in steps.iter().enumerate() {
-        assert_eq!(norm(step(&lib), &dir_lib), norm(step(&cli), &dir_cli), "step {i}");
+        assert_eq!(
+            norm(step(&lib), &dir_lib),
+            norm(step(&cli), &dir_cli),
+            "step {i}"
+        );
     }
     assert_eq!(
         std::fs::read_to_string(dir_lib.path().join("state.json")).unwrap(),
@@ -118,7 +159,10 @@ fn writes_agree_and_leave_the_same_state() {
 fn errors_agree_that_they_are_errors_and_say_why() {
     let dir = fixture();
     let (lib, cli) = pair(&dir);
-    let (l, c) = (lib.set_tool("ghost", true).unwrap_err().to_string(), cli.set_tool("ghost", true).unwrap_err().to_string());
+    let (l, c) = (
+        lib.set_tool("ghost", true).unwrap_err().to_string(),
+        cli.set_tool("ghost", true).unwrap_err().to_string(),
+    );
     assert!(l.contains("unknown tool(s): ghost"), "{l}");
     // The CLI's json-mode error arrives on stdout; the client must surface it.
     assert!(c.contains("unknown tool(s): ghost"), "{c}");
@@ -130,12 +174,19 @@ fn a_project_scoped_state_file_is_seen_from_the_clients_cwd_on_both_paths() {
     let dir = fixture();
     let project = dir.path().join("work");
     std::fs::create_dir_all(project.join(".reactor")).unwrap();
-    std::fs::write(project.join(".reactor/state.json"), r#"{"version":1,"toolsets":["pair"],"tools":{"enabled":[],"disabled":[]}}"#).unwrap();
+    std::fs::write(
+        project.join(".reactor/state.json"),
+        r#"{"version":1,"toolsets":["pair"],"tools":{"enabled":[],"disabled":[]}}"#,
+    )
+    .unwrap();
 
     let lib = LibClient::with_paths(Paths::new(dir.path(), Shipped::Embedded).with_cwd(&project));
     let mut cli = CliClient::new(Some(project.clone()));
     cli.program = env!("CARGO_BIN_EXE_reactor").to_string();
-    cli.envs = vec![("REACTOR_CONFIG_DIR".into(), dir.path().display().to_string())];
+    cli.envs = vec![(
+        "REACTOR_CONFIG_DIR".into(),
+        dir.path().display().to_string(),
+    )];
 
     let (l, c) = (lib.state().unwrap(), cli.state().unwrap());
     assert_eq!(l.scope.as_deref(), Some("project"));

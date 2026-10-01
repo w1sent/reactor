@@ -93,7 +93,11 @@ mod tests {
         h.back("half a thought");
         h.back("two");
         assert_eq!(h.forward().as_deref(), Some("two"));
-        assert_eq!(h.forward().as_deref(), Some("half a thought"), "the draft comes back");
+        assert_eq!(
+            h.forward().as_deref(),
+            Some("half a thought"),
+            "the draft comes back"
+        );
         assert!(!h.is_walking());
         assert_eq!(h.forward(), None, "down does nothing when not walking");
     }
@@ -114,7 +118,11 @@ mod tests {
         h.remember("two");
         assert!(!h.is_walking());
         assert_eq!(h.back(""), Some("two"));
-        assert_eq!(h.back("two"), Some("one"), "sending `two` again did not add a second `two`");
+        assert_eq!(
+            h.back("two"),
+            Some("one"),
+            "sending `two` again did not add a second `two`"
+        );
     }
 
     #[test]

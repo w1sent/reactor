@@ -10,14 +10,14 @@ use serde_json::Value;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{SelectableText, h_flex, v_flex};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::marker::{Marker, MarkerContent, MarkerIcon, MarkerLoadingStyle};
-use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, Theme};
@@ -263,7 +263,10 @@ pub struct ToolStyle {
 fn entry_background(item: &ChatItem, theme: &gpui_kit::component::Theme) -> Option<gpui_kit::Hsla> {
     match item {
         // An absolute lift: `lighten` scales, and a near-black window has nothing to scale.
-        ChatItem::User { .. } => Some(gpui_kit::Hsla { l: (theme.background.l + 0.04).min(1.0), ..theme.background }),
+        ChatItem::User { .. } => Some(gpui_kit::Hsla {
+            l: (theme.background.l + 0.04).min(1.0),
+            ..theme.background
+        }),
         ChatItem::Error { .. } => None,
         _ => Some(theme.background),
     }
@@ -297,44 +300,44 @@ fn render_item(
             } else {
                 IconName::ChevronRight
             };
-            v_flex()
-                .px_2()
-                .child(
-                    gpui_kit::component::collapsible::Collapsible::new()
-                        .open(thinking_expanded)
-                        .child(
-                            h_flex()
-                                .id(("thinking-trigger", index))
-                                .gap_1()
-                                .items_center()
-                                .cursor_pointer()
-                                .on_click(move |_, window, cx| toggle_thinking(index, window, cx))
-                                .child(
-                                    Icon::new(chevron)
-                                        .small()
-                                        .text_color(theme.muted_foreground),
-                                )
-                                .child(if *streaming {
-                                    // Still thinking: the library's shimmer sweeps over the word.
-                                    div()
-                                        .text_color(theme.muted_foreground)
-                                        .child(
-                                            gpui_kit::component::shimmer::ShimmerText::new("thinking…")
-                                                .id(("thinking-shimmer", index))
-                                                .highlight_color(theme.foreground),
-                                        )
-                                        .into_any_element()
-                                } else {
-                                    Label::new("thinking").text_color(theme.muted_foreground).into_any_element()
-                                }),
-                        )
-                        .content(
-                            div().child(
-                                TextView::markdown(format!("thinking-{index}"), text.clone())
-                                    .style(crate::theme::text_view_style(theme)),
-                            ),
+            v_flex().px_2().child(
+                gpui_kit::component::collapsible::Collapsible::new()
+                    .open(thinking_expanded)
+                    .child(
+                        h_flex()
+                            .id(("thinking-trigger", index))
+                            .gap_1()
+                            .items_center()
+                            .cursor_pointer()
+                            .on_click(move |_, window, cx| toggle_thinking(index, window, cx))
+                            .child(
+                                Icon::new(chevron)
+                                    .small()
+                                    .text_color(theme.muted_foreground),
+                            )
+                            .child(if *streaming {
+                                // Still thinking: the library's shimmer sweeps over the word.
+                                div()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        gpui_kit::component::shimmer::ShimmerText::new("thinking…")
+                                            .id(("thinking-shimmer", index))
+                                            .highlight_color(theme.foreground),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                Label::new("thinking")
+                                    .text_color(theme.muted_foreground)
+                                    .into_any_element()
+                            }),
+                    )
+                    .content(
+                        div().child(
+                            TextView::markdown(format!("thinking-{index}"), text.clone())
+                                .style(crate::theme::text_view_style(theme)),
                         ),
-                )
+                    ),
+            )
         }
         ChatItem::ToolCall {
             name,
@@ -356,7 +359,10 @@ fn render_item(
                 while !output.is_char_boundary(end) {
                     end -= 1;
                 }
-                format!("{}\n… truncated (the whole output is in the session log)", &output[..end])
+                format!(
+                    "{}\n… truncated (the whole output is in the session log)",
+                    &output[..end]
+                )
             } else {
                 output.clone()
             };
@@ -383,7 +389,10 @@ fn render_item(
                         .font_family(tools.family.clone())
                         .text_size(tools.size)
                         // Selectable, and whole: what is copied is the command as it ran.
-                        .child(SelectableText::new(("tool-command", index), command_text(args)).document_order(index as u64 * 10)),
+                        .child(
+                            SelectableText::new(("tool-command", index), command_text(args))
+                                .document_order(index as u64 * 10),
+                        ),
                 )
                 .when(!output.is_empty(), |el| {
                     el.child(
@@ -399,13 +408,29 @@ fn render_item(
                             .child(
                                 SelectableText::new(("tool-output", index), output)
                                     .document_order(index as u64 * 10 + 1)
-                                    .text_style(TextStyleRefinement { color: Some(if *is_error { theme.danger } else { theme.foreground }), ..Default::default() }),
+                                    .text_style(TextStyleRefinement {
+                                        color: Some(if *is_error {
+                                            theme.danger
+                                        } else {
+                                            theme.foreground
+                                        }),
+                                        ..Default::default()
+                                    }),
                             ),
                     )
                 })
                 .when(*is_error, |el| el.border_l_2().border_color(colour))
         }
-        ChatItem::Reduction { entry, mode, trigger, covers, before, after, active, summary } => {
+        ChatItem::Reduction {
+            entry,
+            mode,
+            trigger,
+            covers,
+            before,
+            after,
+            active,
+            summary,
+        } => {
             let entry = *entry;
             let active = *active;
             v_flex()
@@ -441,25 +466,36 @@ fn render_item(
                     )
                 })
         }
-        ChatItem::Stats { date, time, duration_ms, tokens, stream_ms } => {
+        ChatItem::Stats {
+            date,
+            time,
+            duration_ms,
+            tokens,
+            stream_ms,
+        } => {
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
             div()
                 .px_2()
                 .text_color(theme.muted_foreground)
                 .text_size(theme.font_size * 0.8)
-                .child(crate::session::stats_label(date, time, *duration_ms, *tokens, *stream_ms, &today))
+                .child(crate::session::stats_label(
+                    date,
+                    time,
+                    *duration_ms,
+                    *tokens,
+                    *stream_ms,
+                    &today,
+                ))
         }
-        ChatItem::Error { message } => v_flex()
-            .px_2()
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(theme.danger.opacity(0.2))
-                    .text_color(theme.danger)
-                    .child(message.clone()),
-            ),
+        ChatItem::Error { message } => v_flex().px_2().child(
+            div()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(theme.danger.opacity(0.2))
+                .text_color(theme.danger)
+                .child(message.clone()),
+        ),
     }
 }
 
@@ -495,7 +531,11 @@ impl Panel for TranscriptPanel {
         panel_title_row(IconName::MessageSquare, "Transcript")
     }
 
-    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
         Some(vec![close_button(&self.app, cx.entity())])
     }
 }
@@ -503,11 +543,19 @@ impl Panel for TranscriptPanel {
 impl Render for TranscriptPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let ui = self.app.upgrade().map(|a| a.read(cx).ui.clone()).unwrap_or_default();
+        let ui = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).ui.clone())
+            .unwrap_or_default();
         let (body_family, body_size) = ui.text(Slot::Transcript, &theme);
         let (tool_family, tool_size) = ui.text(Slot::Tools, &theme);
         let (prompt_family, prompt_size) = ui.text(Slot::Prompt, &theme);
-        let tool_style = ToolStyle { family: tool_family, size: tool_size, max_chars: ui.tool_output_chars };
+        let tool_style = ToolStyle {
+            family: tool_family,
+            size: tool_size,
+            max_chars: ui.tool_output_chars,
+        };
         let (items, hidden, phase, scheduled, last_error, run) = match self.app.upgrade() {
             Some(app) => {
                 let session = app.read(cx).session.read(cx);
@@ -517,7 +565,10 @@ impl Render for TranscriptPanel {
                     session.phase,
                     session.follow_up.clone(),
                     session.last_error.clone(),
-                    session.run.as_ref().map(|r| (r.elapsed(std::time::Instant::now()), r.tokens())),
+                    session
+                        .run
+                        .as_ref()
+                        .map(|r| (r.elapsed(std::time::Instant::now()), r.tokens())),
                 )
             }
             None => Default::default(),
@@ -596,7 +647,11 @@ impl Render for TranscriptPanel {
                     };
                     // What a reduction has taken out of the model's context stays on screen,
                     // dimmed: the log keeps everything, and so does the transcript.
-                    if dim_reduced && hidden.contains(&index) { row.opacity(0.45) } else { row }
+                    if dim_reduced && hidden.contains(&index) {
+                        row.opacity(0.45)
+                    } else {
+                        row
+                    }
                 },
             )
             // Entries touch: each has its own background, and the gap between rows is a hair.
@@ -626,8 +681,14 @@ impl Render for TranscriptPanel {
                     .text_color(theme.muted_foreground)
                     .content(MarkerContent::new().text(match run {
                         // How long this prompt has run and what it has streamed so far.
-                        Some((elapsed, tokens)) if tokens > 0 => format!("{label} · {} · {tokens} tokens", crate::session::format_duration(elapsed.as_millis() as u64)),
-                        Some((elapsed, _)) => format!("{label} · {}", crate::session::format_duration(elapsed.as_millis() as u64)),
+                        Some((elapsed, tokens)) if tokens > 0 => format!(
+                            "{label} · {} · {tokens} tokens",
+                            crate::session::format_duration(elapsed.as_millis() as u64)
+                        ),
+                        Some((elapsed, _)) => format!(
+                            "{label} · {}",
+                            crate::session::format_duration(elapsed.as_millis() as u64)
+                        ),
                         None => label.to_string(),
                     })),
             )
@@ -661,7 +722,14 @@ impl Render for TranscriptPanel {
         });
         let (slash_open, slash_items, slash_selected) = slash.unwrap_or_default();
         let popup = slash_open.then(|| {
-            let mut list = v_flex().id("slash-popup").gap_0p5().p_1().rounded_md().border_1().border_color(theme.border).bg(theme.popover);
+            let mut list = v_flex()
+                .id("slash-popup")
+                .gap_0p5()
+                .p_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover);
             for (i, entry) in slash_items.iter().enumerate() {
                 let selected = i == slash_selected;
                 list = list.child(
@@ -679,8 +747,20 @@ impl Render for TranscriptPanel {
                                 app.update(cx, |app, cx| app.slash_pick(i, window, cx));
                             }
                         }))
-                        .child(div().min_w(px(140.)).font_family(theme.mono_font_family.clone()).text_size(theme.mono_font_size).text_color(theme.accent).child(format!("/{}", entry.run)))
-                        .child(div().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(entry.detail.clone())),
+                        .child(
+                            div()
+                                .min_w(px(140.))
+                                .font_family(theme.mono_font_family.clone())
+                                .text_size(theme.mono_font_size)
+                                .text_color(theme.accent)
+                                .child(format!("/{}", entry.run)),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .text_size(theme.font_size * 0.85)
+                                .child(entry.detail.clone()),
+                        ),
                 );
             }
             list
@@ -774,8 +854,16 @@ pub struct TreePanel {
 }
 
 impl TreePanel {
-    pub fn new(app: gpui_kit::WeakEntity<ReactorApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self { app, focus: cx.focus_handle(), selection: None }
+    pub fn new(
+        app: gpui_kit::WeakEntity<ReactorApp>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            app,
+            focus: cx.focus_handle(),
+            selection: None,
+        }
     }
 }
 
@@ -785,7 +873,10 @@ impl Render for TreePanel {
         let (rows, streaming): (Vec<TreeRow>, bool) = match self.app.upgrade() {
             Some(app) => {
                 let read = app.read(cx);
-                (read.tree.clone(), read.session.read(cx).phase != AgentPhase::Idle)
+                (
+                    read.tree.clone(),
+                    read.session.read(cx).phase != AgentPhase::Idle,
+                )
             }
             None => (Vec::new(), true),
         };
@@ -814,21 +905,38 @@ impl Render for TreePanel {
                     // picked for "Continue from here" is Ayu's blue, with an edge, so the two
                     // never look alike.
                     .when(row.is_head, |el| el.bg(theme.tokens.list_active))
-                    .when(selected, |el| el.bg(theme.info.opacity(0.28)).border_l_2().border_color(theme.info))
-                    .when(!(row.is_head || selected), |el| el.hover(|style| style.bg(theme.list_hover)))
+                    .when(selected, |el| {
+                        el.bg(theme.info.opacity(0.28))
+                            .border_l_2()
+                            .border_color(theme.info)
+                    })
+                    .when(!(row.is_head || selected), |el| {
+                        el.hover(|style| style.bg(theme.list_hover))
+                    })
                     .px_2()
                     .py_1()
                     .when(row.can_switch, |el| {
-                        el.cursor_pointer().on_click(cx.listener(move |this, _, _window, cx| {
-                            this.selection = Some(id);
-                            cx.notify();
-                        }))
+                        el.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.selection = Some(id);
+                                cx.notify();
+                            }))
                     })
-                    .child(div().text_color(colour).text_size(theme.font_size * 0.85).child(row.label.clone())),
+                    .child(
+                        div()
+                            .text_color(colour)
+                            .text_size(theme.font_size * 0.85)
+                            .child(row.label.clone()),
+                    ),
             );
         }
         if rows.is_empty() {
-            list = list.child(div().px_2().text_color(theme.muted_foreground).child("no session tree yet — send a prompt"));
+            list = list.child(
+                div()
+                    .px_2()
+                    .text_color(theme.muted_foreground)
+                    .child("no session tree yet — send a prompt"),
+            );
         }
 
         let can_switch = self.selection.is_some_and(selectable) && !streaming;
@@ -840,7 +948,9 @@ impl Render for TreePanel {
                     Button::new("switch-branch")
                         .label("Continue from here")
                         .small()
-                        .tooltip("Make the selected reply the tip: the next prompt branches from it")
+                        .tooltip(
+                            "Make the selected reply the tip: the next prompt branches from it",
+                        )
                         .disabled(!can_switch)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             if let (Some(id), Some(app)) = (this.selection, this.app.upgrade()) {
@@ -849,7 +959,14 @@ impl Render for TreePanel {
                         })),
                 ),
             )
-            .child(div().id("scroll-panel").flex_1().min_h_0().overflow_y_scrollbar().child(list))
+            .child(
+                div()
+                    .id("scroll-panel")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(list),
+            )
     }
 }
 
@@ -865,7 +982,6 @@ impl gpui_kit::base::dock::Panel for TreePanel {
     fn panel_name(&self) -> &'static str {
         "tree"
     }
-
 }
 
 impl Panel for TreePanel {
@@ -873,7 +989,11 @@ impl Panel for TreePanel {
         panel_title_row(IconName::GitBranch, "Session Tree")
     }
 
-    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
         Some(vec![close_button(&self.app, cx.entity())])
     }
 }
@@ -1111,14 +1231,24 @@ impl Render for ToolsPanel {
             );
         }
 
-        let scope = self.app.upgrade().and_then(|a| a.read(cx).activation_scope.clone());
-        v_flex().size_full().child(scope_header(&self.app, scope.as_deref(), &theme)).child(list)
+        let scope = self
+            .app
+            .upgrade()
+            .and_then(|a| a.read(cx).activation_scope.clone());
+        v_flex()
+            .size_full()
+            .child(scope_header(&self.app, scope.as_deref(), &theme))
+            .child(list)
     }
 }
 
 /// The activation scope line above the tools and toolsets: whether toggles apply to this
 /// session only or to the machine, with the two ways to change that (ADR-0042).
-fn scope_header(app: &gpui_kit::WeakEntity<ReactorApp>, scope: Option<&str>, theme: &Theme) -> impl IntoElement {
+fn scope_header(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    scope: Option<&str>,
+    theme: &Theme,
+) -> impl IntoElement {
     let session = scope == Some("session");
     let (a, b) = (app.clone(), app.clone());
     h_flex()
@@ -1269,8 +1399,14 @@ impl Render for ToolsetsPanel {
             );
         }
 
-        let scope = self.app.upgrade().and_then(|a| a.read(cx).activation_scope.clone());
-        v_flex().size_full().child(scope_header(&self.app, scope.as_deref(), &theme)).child(list)
+        let scope = self
+            .app
+            .upgrade()
+            .and_then(|a| a.read(cx).activation_scope.clone());
+        v_flex()
+            .size_full()
+            .child(scope_header(&self.app, scope.as_deref(), &theme))
+            .child(list)
     }
 }
 
@@ -1445,7 +1581,14 @@ fn origin_badge(origin: reactor_context::settings::Origin, theme: &Theme) -> imp
         Origin::Session => ("this session", theme.accent),
         Origin::Default => ("default", theme.muted_foreground),
     };
-    div().px_1().rounded_sm().border_1().border_color(colour).text_color(colour).text_size(theme.font_size * 0.7).child(text)
+    div()
+        .px_1()
+        .rounded_sm()
+        .border_1()
+        .border_color(colour)
+        .text_color(colour)
+        .text_size(theme.font_size * 0.7)
+        .child(text)
 }
 
 pub struct ContextPanel {
@@ -1454,8 +1597,15 @@ pub struct ContextPanel {
 }
 
 impl ContextPanel {
-    pub fn new(app: gpui_kit::WeakEntity<ReactorApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self { app, focus: cx.focus_handle() }
+    pub fn new(
+        app: gpui_kit::WeakEntity<ReactorApp>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            app,
+            focus: cx.focus_handle(),
+        }
     }
 }
 
@@ -1478,7 +1628,11 @@ impl Panel for ContextPanel {
         panel_title_row(IconName::Layers, "Context")
     }
 
-    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
         Some(vec![close_button(&self.app, cx.entity())])
     }
 }
@@ -1492,19 +1646,44 @@ impl Render for ContextPanel {
         let (view, preview, busy, idle) = match self.app.upgrade() {
             Some(app) => {
                 let a = app.read(cx);
-                (a.context.clone(), a.preview.clone(), a.context_busy, a.session.read(cx).phase == AgentPhase::Idle)
+                (
+                    a.context.clone(),
+                    a.preview.clone(),
+                    a.context_busy,
+                    a.session.read(cx).phase == AgentPhase::Idle,
+                )
             }
             None => (None, None, false, false),
         };
-        let mut body = v_flex().id("context-body").p_2().gap_3().flex_1().min_h_0().overflow_y_scrollbar();
+        let mut body = v_flex()
+            .id("context-body")
+            .p_2()
+            .gap_3()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar();
         let Some(view) = view else {
-            return v_flex().size_full().child(body.child(loading_row("measuring the context…", &theme)));
+            return v_flex()
+                .size_full()
+                .child(body.child(loading_row("measuring the context…", &theme)));
         };
 
         // -- usage --
-        let fraction = if view.hard == 0 { 0.0 } else { (view.used as f32 / view.hard as f32).min(1.0) };
-        let trigger_at = if view.hard == 0 { 1.0 } else { (view.trigger as f32 / view.hard as f32).min(1.0) };
-        let bar_colour = if view.used > view.trigger { theme.warning } else { theme.accent };
+        let fraction = if view.hard == 0 {
+            0.0
+        } else {
+            (view.used as f32 / view.hard as f32).min(1.0)
+        };
+        let trigger_at = if view.hard == 0 {
+            1.0
+        } else {
+            (view.trigger as f32 / view.hard as f32).min(1.0)
+        };
+        let bar_colour = if view.used > view.trigger {
+            theme.warning
+        } else {
+            theme.accent
+        };
         body = body.child(
             v_flex()
                 .gap_1()
@@ -1531,13 +1710,25 @@ impl Render for ContextPanel {
         );
 
         // -- settings --
-        let origin_of = |key: &str| view.origins.iter().find(|(k, _)| k == key).map(|(_, o)| *o).unwrap_or(Origin::Default);
+        let origin_of = |key: &str| {
+            view.origins
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, o)| *o)
+                .unwrap_or(Origin::Default)
+        };
         let setting = |label: &'static str, value: String, key: &str| {
             h_flex()
                 .justify_between()
                 .items_center()
                 .child(Label::new(label).text_color(theme.muted_foreground))
-                .child(h_flex().gap_2().items_center().child(Label::new(value).font_family(theme.mono_font_family.clone())).child(origin_badge(origin_of(key), &theme)))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(value).font_family(theme.mono_font_family.clone()))
+                        .child(origin_badge(origin_of(key), &theme)),
+                )
         };
         let mode_button = |label: &'static str, mode: &'static str| {
             let active = view.mode == mode;
@@ -1548,7 +1739,15 @@ impl Render for ContextPanel {
                 .when(active, |b| b.primary())
                 .on_click(move |_, _window, cx| {
                     if let Some(app) = app.upgrade() {
-                        app.update(cx, |app, cx| app.set_context(ContextSettings { mode: Some(mode.to_string()), ..Default::default() }, cx));
+                        app.update(cx, |app, cx| {
+                            app.set_context(
+                                ContextSettings {
+                                    mode: Some(mode.to_string()),
+                                    ..Default::default()
+                                },
+                                cx,
+                            )
+                        });
                     }
                 })
         };
@@ -1600,11 +1799,21 @@ impl Render for ContextPanel {
         // -- reduction: preview, do, undo --
         let action = |id: &'static str, label: &'static str, mode: Mode, reduce: bool| {
             let app = self.app.clone();
-            Button::new(id).label(label).small().disabled(busy || !idle).on_click(move |_, _window, cx| {
-                if let Some(app) = app.upgrade() {
-                    app.update(cx, |app, cx| if reduce { app.reduce_now(mode, cx) } else { app.preview_reduction(mode, cx) });
-                }
-            })
+            Button::new(id)
+                .label(label)
+                .small()
+                .disabled(busy || !idle)
+                .on_click(move |_, _window, cx| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |app, cx| {
+                            if reduce {
+                                app.reduce_now(mode, cx)
+                            } else {
+                                app.preview_reduction(mode, cx)
+                            }
+                        });
+                    }
+                })
         };
         let mut reduction = v_flex()
             .gap_2()
@@ -1640,9 +1849,30 @@ impl Render for ContextPanel {
                     .p_2()
                     .rounded_md()
                     .bg(theme.secondary)
-                    .child(Label::new(format!("{:?}: would reduce {} entries, keeping the newest", p.mode, p.entries)))
-                    .child(Label::new(format!("{} tool results (~{} tokens) and {} messages (~{} tokens)", p.mechanical, p.mechanical_tokens, p.conceptual, p.conceptual_tokens)).text_color(theme.muted_foreground))
-                    .child(Label::new(format!("~{} → ~{} tokens{}", p.before_tokens, p.after_tokens, if p.needs_model { " · asks the model for a summary" } else { " · no model call" })).text_color(theme.muted_foreground)),
+                    .child(Label::new(format!(
+                        "{:?}: would reduce {} entries, keeping the newest",
+                        p.mode, p.entries
+                    )))
+                    .child(
+                        Label::new(format!(
+                            "{} tool results (~{} tokens) and {} messages (~{} tokens)",
+                            p.mechanical, p.mechanical_tokens, p.conceptual, p.conceptual_tokens
+                        ))
+                        .text_color(theme.muted_foreground),
+                    )
+                    .child(
+                        Label::new(format!(
+                            "~{} → ~{} tokens{}",
+                            p.before_tokens,
+                            p.after_tokens,
+                            if p.needs_model {
+                                " · asks the model for a summary"
+                            } else {
+                                " · no model call"
+                            }
+                        ))
+                        .text_color(theme.muted_foreground),
+                    ),
             );
         }
         body = body.child(reduction);
@@ -1650,7 +1880,11 @@ impl Render for ContextPanel {
         // -- reductions in force --
         let mut in_force = v_flex().gap_1().child(Label::new("In force"));
         if view.reductions.is_empty() {
-            in_force = in_force.child(Label::new("none").text_color(theme.muted_foreground).text_size(theme.font_size * 0.85));
+            in_force = in_force.child(
+                Label::new("none")
+                    .text_color(theme.muted_foreground)
+                    .text_size(theme.font_size * 0.85),
+            );
         }
         for r in &view.reductions {
             let (entry, app) = (r.entry, self.app.clone());
@@ -1658,12 +1892,28 @@ impl Render for ContextPanel {
                 h_flex()
                     .justify_between()
                     .items_center()
-                    .child(Label::new(format!("#{} {:?} · {} · {} entries · ~{} → ~{}", r.entry, r.mode, crate::backend::trigger_label(r.trigger), r.covers, r.before_tokens, r.after_tokens)).text_size(theme.font_size * 0.85))
-                    .child(Button::new(("undo", r.entry as usize)).label("undo").small().on_click(move |_, _window, cx| {
-                        if let Some(app) = app.upgrade() {
-                            app.update(cx, |app, cx| app.restore_reduction(entry, cx));
-                        }
-                    })),
+                    .child(
+                        Label::new(format!(
+                            "#{} {:?} · {} · {} entries · ~{} → ~{}",
+                            r.entry,
+                            r.mode,
+                            crate::backend::trigger_label(r.trigger),
+                            r.covers,
+                            r.before_tokens,
+                            r.after_tokens
+                        ))
+                        .text_size(theme.font_size * 0.85),
+                    )
+                    .child(
+                        Button::new(("undo", r.entry as usize))
+                            .label("undo")
+                            .small()
+                            .on_click(move |_, _window, cx| {
+                                if let Some(app) = app.upgrade() {
+                                    app.update(cx, |app, cx| app.restore_reduction(entry, cx));
+                                }
+                            }),
+                    ),
             );
         }
         body = body.child(in_force);
@@ -1947,7 +2197,11 @@ impl Render for ConsolePanel {
         self.last_line_count = new_len;
 
         let row_theme = theme.clone();
-        let ui = self.app.upgrade().map(|a| a.read(cx).ui.clone()).unwrap_or_default();
+        let ui = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).ui.clone())
+            .unwrap_or_default();
         let (console_family, console_size) = ui.text(Slot::Console, &theme);
         let input = self.input.clone();
         let row_count = lines.len();

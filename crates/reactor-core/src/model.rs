@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Serialize;
 
 use crate::catalogue::{Catalogue, DetectKind, OrderedMap, Toolset};
+use crate::paths::Paths;
 use crate::probe::{ProbeResult, ServiceInfo, Status};
 use crate::recipes::{Recipe, available_managers, rank_recipes};
 use crate::skills::{SkillStatus, skill_status};
-use crate::paths::Paths;
 use crate::state::{State, active_ids};
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,7 +82,11 @@ pub fn describe_using(
             let r = results.get(&t.id).unwrap_or(&unknown);
             let install = managers.map(|managers| {
                 let (candidates, notes) = rank_recipes(t, cat, managers);
-                InstallInfo { recommended: candidates.first().cloned(), candidates, notes }
+                InstallInfo {
+                    recommended: candidates.first().cloned(),
+                    candidates,
+                    notes,
+                }
             });
             ToolEntry {
                 id: t.id.clone(),
@@ -91,7 +95,10 @@ pub fn describe_using(
                 source: t.source.clone(),
                 invoke: t.invoke.clone(),
                 tags: t.tags.clone(),
-                detect: DetectSpec { kind: t.detect_kind, value: t.detect_value.clone() },
+                detect: DetectSpec {
+                    kind: t.detect_kind,
+                    value: t.detect_value.clone(),
+                },
                 status: r.status,
                 path: r.path.clone(),
                 version: r.version.clone(),

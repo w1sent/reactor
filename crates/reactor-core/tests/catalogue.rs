@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use reactor_core::catalogue::{DetectKind, find_toolset, load_catalogue, load_toolsets};
-use reactor_core::commands::{ToolsListFlags, ProbeFlags, doctor, DoctorFlags, tools_list};
+use reactor_core::commands::{DoctorFlags, ProbeFlags, ToolsListFlags, doctor, tools_list};
 use reactor_core::recipes::{available_managers, rank_recipes};
 use reactor_core::state::{active_ids, load_state, toggle, toolset_members};
 
@@ -18,8 +18,14 @@ fn loads_every_detect_kind() {
     let cat = load_catalogue(&fx.paths).unwrap();
     assert_eq!(cat.ids(), ["alpha", "beta", "gamma"]);
     assert_eq!(cat.get("alpha").unwrap().detect_kind, DetectKind::Binary);
-    assert_eq!(cat.get("beta").unwrap().detect_kind, DetectKind::PythonModule);
-    assert_eq!(cat.get("gamma").unwrap().service_probe.as_deref(), Some(&ids(&["gamma", "status"])[..]));
+    assert_eq!(
+        cat.get("beta").unwrap().detect_kind,
+        DetectKind::PythonModule
+    );
+    assert_eq!(
+        cat.get("gamma").unwrap().service_probe.as_deref(),
+        Some(&ids(&["gamma", "status"])[..])
+    );
 }
 
 #[test]
@@ -27,7 +33,10 @@ fn declaration_order_is_preserved() {
     // The registry's ordering is the catalogue's ordering, and a stable order
     // is what keeps the rendered block cache-friendly.
     let fx = Fx::new();
-    assert_eq!(load_catalogue(&fx.paths).unwrap().order(), ["alpha", "beta", "gamma"]);
+    assert_eq!(
+        load_catalogue(&fx.paths).unwrap().order(),
+        ["alpha", "beta", "gamma"]
+    );
 }
 
 #[test]
@@ -44,7 +53,9 @@ fn declaration_order_is_not_alphabetical() {
 #[test]
 fn rejects_unknown_detect_kind() {
     let fx = Fx::new();
-    fx.write_tools("version = 1\n[tool.x]\nname=\"X\"\ndesc=\"d\"\ninvoke=\"x\"\ndetect={ magic = \"x\" }\n");
+    fx.write_tools(
+        "version = 1\n[tool.x]\nname=\"X\"\ndesc=\"d\"\ninvoke=\"x\"\ndetect={ magic = \"x\" }\n",
+    );
     let e = load_catalogue(&fx.paths).unwrap_err();
     assert!(e.to_string().contains("unknown kind"), "{e}");
 }
@@ -144,10 +155,19 @@ fn list_ids(tags: &[&str]) -> Vec<String> {
     let fx = Fx::new();
     let flags = ToolsListFlags {
         tags: ids(tags),
-        probe: ProbeFlags { cached: true, refresh: false },
+        probe: ProbeFlags {
+            cached: true,
+            refresh: false,
+        },
         ..Default::default()
     };
-    tools_list(&fx.paths, &flags).unwrap().report.tools.into_iter().map(|t| t.id).collect()
+    tools_list(&fx.paths, &flags)
+        .unwrap()
+        .report
+        .tools
+        .into_iter()
+        .map(|t| t.id)
+        .collect()
 }
 
 #[test]
@@ -162,8 +182,21 @@ fn repeating_the_tag_filter_narrows() {
 #[test]
 fn doctor_reports_a_toolset_that_selects_nothing() {
     let fx = Fx::new();
-    let report = doctor(&fx.paths, DoctorFlags { cached: true, check_skills: false }).unwrap().report;
-    let empty: Vec<_> = report.problems.iter().filter(|p| p.kind == "toolset-empty").map(|p| p.toolset.clone().unwrap()).collect();
+    let report = doctor(
+        &fx.paths,
+        DoctorFlags {
+            cached: true,
+            check_skills: false,
+        },
+    )
+    .unwrap()
+    .report;
+    let empty: Vec<_> = report
+        .problems
+        .iter()
+        .filter(|p| p.kind == "toolset-empty")
+        .map(|p| p.toolset.clone().unwrap())
+        .collect();
     assert_eq!(empty, ["miss"]);
 }
 
@@ -172,12 +205,17 @@ fn doctor_reports_a_toolset_that_selects_nothing() {
 fn active(fx: &Fx, toolsets: &[&str], enabled: &[&str], disabled: &[&str]) -> Vec<String> {
     let cat = load_catalogue(&fx.paths).unwrap();
     let sets = load_toolsets(&fx.paths).unwrap();
-    active_ids(&cat, &sets, &fx.state(toolsets, enabled, disabled)).into_iter().collect()
+    active_ids(&cat, &sets, &fx.state(toolsets, enabled, disabled))
+        .into_iter()
+        .collect()
 }
 
 #[test]
 fn no_toolsets_means_everything() {
-    assert_eq!(active(&Fx::new(), &[], &[], &[]), ["alpha", "beta", "gamma"]);
+    assert_eq!(
+        active(&Fx::new(), &[], &[], &[]),
+        ["alpha", "beta", "gamma"]
+    );
 }
 
 #[test]
@@ -187,19 +225,28 @@ fn toolset_narrows() {
 
 #[test]
 fn enable_adds_outside_the_toolset() {
-    assert_eq!(active(&Fx::new(), &["static"], &["beta"], &[]), ["alpha", "beta"]);
+    assert_eq!(
+        active(&Fx::new(), &["static"], &["beta"], &[]),
+        ["alpha", "beta"]
+    );
 }
 
 #[test]
 fn disable_wins_over_enable() {
-    assert_eq!(active(&Fx::new(), &["static"], &["beta"], &["beta"]), ["alpha"]);
+    assert_eq!(
+        active(&Fx::new(), &["static"], &["beta"], &["beta"]),
+        ["alpha"]
+    );
 }
 
 #[test]
 fn unknown_toolset_is_ignored_not_fatal() {
     // A stale state.json naming a toolset the user has since deleted must not
     // make every command fail.
-    assert_eq!(active(&Fx::new(), &["static", "ghost"], &[], &[]), ["alpha"]);
+    assert_eq!(
+        active(&Fx::new(), &["static", "ghost"], &[], &[]),
+        ["alpha"]
+    );
 }
 
 #[test]
@@ -212,12 +259,20 @@ fn enabling_an_unknown_tool_activates_nothing() {
 #[test]
 fn a_project_state_file_wins_over_the_machine_one() {
     let fx = Fx::new();
-    std::fs::write(fx.dir.path().join("state.json"), r#"{"version":1,"toolsets":["pair"],"tools":{}}"#).unwrap();
+    std::fs::write(
+        fx.dir.path().join("state.json"),
+        r#"{"version":1,"toolsets":["pair"],"tools":{}}"#,
+    )
+    .unwrap();
     let project = tempfile::tempdir().unwrap();
     let nested = project.path().join("a").join("b");
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::create_dir_all(project.path().join(".reactor")).unwrap();
-    std::fs::write(project.path().join(".reactor/state.json"), r#"{"version":1,"toolsets":["static"],"tools":{}}"#).unwrap();
+    std::fs::write(
+        project.path().join(".reactor/state.json"),
+        r#"{"version":1,"toolsets":["static"],"tools":{}}"#,
+    )
+    .unwrap();
 
     let paths = fx.paths.clone().with_cwd(&nested);
     let state = load_state(&paths).unwrap();
@@ -244,7 +299,11 @@ fn no_state_file_is_the_default_scope() {
 // must leave state.json exactly as it was, or a selector accrues a pin per
 // idle keystroke and the toolsets stop meaning anything.
 
-fn toggle_tools(fx: &Fx, verb: &str, targets: &[&str]) -> reactor_core::Result<reactor_core::state::State> {
+fn toggle_tools(
+    fx: &Fx,
+    verb: &str,
+    targets: &[&str],
+) -> reactor_core::Result<reactor_core::state::State> {
     let cat = load_catalogue(&fx.paths).unwrap();
     let sets = load_toolsets(&fx.paths).unwrap();
     let mut state = load_state(&fx.paths).unwrap();
@@ -279,10 +338,16 @@ fn off_then_on_is_a_round_trip() {
     let fx = Fx::new();
     let before = fx.read_state_file();
     toggle_tools(&fx, "disable", &["alpha"]).unwrap();
-    assert_eq!(fx.read_state_file().unwrap()["tools"]["disabled"], serde_json::json!(["alpha"]));
+    assert_eq!(
+        fx.read_state_file().unwrap()["tools"]["disabled"],
+        serde_json::json!(["alpha"])
+    );
     toggle_tools(&fx, "enable", &["alpha"]).unwrap();
     let after = fx.read_state_file().unwrap();
-    assert_eq!(after["tools"], serde_json::json!({"enabled": [], "disabled": []}));
+    assert_eq!(
+        after["tools"],
+        serde_json::json!({"enabled": [], "disabled": []})
+    );
     if let Some(before) = before {
         assert_eq!(before, after);
     }
@@ -294,8 +359,14 @@ fn an_override_is_only_stored_against_the_toolsets() {
     // deviation and is stored; turning alpha on is not.
     let fx = Fx::new();
     fx.state(&["static"], &[], &[]).save().unwrap();
-    assert_eq!(toggle_tools(&fx, "enable", &["beta"]).unwrap().enabled, ["beta"]);
-    assert_eq!(toggle_tools(&fx, "enable", &["alpha"]).unwrap().enabled, ["beta"]);
+    assert_eq!(
+        toggle_tools(&fx, "enable", &["beta"]).unwrap().enabled,
+        ["beta"]
+    );
+    assert_eq!(
+        toggle_tools(&fx, "enable", &["alpha"]).unwrap().enabled,
+        ["beta"]
+    );
 }
 
 #[test]
@@ -320,12 +391,36 @@ fn toggling_a_toolset_on_and_off() {
     let cat = load_catalogue(&fx.paths).unwrap();
     let sets = load_toolsets(&fx.paths).unwrap();
     let mut state = load_state(&fx.paths).unwrap();
-    toggle(&cat, &sets, &mut state, &ids(&["static"]), false, Some(true)).unwrap();
+    toggle(
+        &cat,
+        &sets,
+        &mut state,
+        &ids(&["static"]),
+        false,
+        Some(true),
+    )
+    .unwrap();
     assert_eq!(state.toolsets, ["static"]);
     // Enabling twice does not duplicate.
-    toggle(&cat, &sets, &mut state, &ids(&["static"]), false, Some(true)).unwrap();
+    toggle(
+        &cat,
+        &sets,
+        &mut state,
+        &ids(&["static"]),
+        false,
+        Some(true),
+    )
+    .unwrap();
     assert_eq!(state.toolsets, ["static"]);
-    toggle(&cat, &sets, &mut state, &ids(&["static"]), false, Some(false)).unwrap();
+    toggle(
+        &cat,
+        &sets,
+        &mut state,
+        &ids(&["static"]),
+        false,
+        Some(false),
+    )
+    .unwrap();
     assert!(state.toolsets.is_empty());
     assert!(toggle(&cat, &sets, &mut state, &ids(&["ghost"]), false, Some(true)).is_err());
 }
@@ -333,25 +428,54 @@ fn toggling_a_toolset_on_and_off() {
 // -- TestRecipeRanking ------------------------------------------------------
 
 fn present(items: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
-    items.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    items
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 #[test]
 fn prefer_order_wins() {
     let fx = Fx::new();
     let cat = load_catalogue(&fx.paths).unwrap();
-    let (candidates, notes) = rank_recipes(cat.get("alpha").unwrap(), &cat, &present(&[("uv", "/bin/uv"), ("pacman", "/bin/pacman")]));
-    assert_eq!(candidates.iter().map(|c| c.method.as_str()).collect::<Vec<_>>(), ["pacman", "uv"]);
+    let (candidates, notes) = rank_recipes(
+        cat.get("alpha").unwrap(),
+        &cat,
+        &present(&[("uv", "/bin/uv"), ("pacman", "/bin/pacman")]),
+    );
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|c| c.method.as_str())
+            .collect::<Vec<_>>(),
+        ["pacman", "uv"]
+    );
     assert!(candidates[0].sudo);
-    assert_eq!(notes.0, [("manual".to_string(), "https://example.invalid/alpha".to_string())]);
+    assert_eq!(
+        notes.0,
+        [(
+            "manual".to_string(),
+            "https://example.invalid/alpha".to_string()
+        )]
+    );
 }
 
 #[test]
 fn absent_manager_is_not_a_candidate() {
     let fx = Fx::new();
     let cat = load_catalogue(&fx.paths).unwrap();
-    let (candidates, notes) = rank_recipes(cat.get("alpha").unwrap(), &cat, &present(&[("uv", "/bin/uv")]));
-    assert_eq!(candidates.iter().map(|c| c.method.as_str()).collect::<Vec<_>>(), ["uv"]);
+    let (candidates, notes) = rank_recipes(
+        cat.get("alpha").unwrap(),
+        &cat,
+        &present(&[("uv", "/bin/uv")]),
+    );
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|c| c.method.as_str())
+            .collect::<Vec<_>>(),
+        ["uv"]
+    );
     assert!(notes.contains_key("pacman"));
 }
 
@@ -374,8 +498,15 @@ fn ties_between_unranked_managers_break_by_declaration_order() {
         FIXTURE_TOOLSETS,
     );
     let cat = load_catalogue(&fx.paths).unwrap();
-    let (c, _) = rank_recipes(cat.get("t").unwrap(), &cat, &present(&[("m1", "/m1"), ("m2", "/m2")]));
-    assert_eq!(c.iter().map(|c| c.method.as_str()).collect::<Vec<_>>(), ["m2", "m1"]);
+    let (c, _) = rank_recipes(
+        cat.get("t").unwrap(),
+        &cat,
+        &present(&[("m1", "/m1"), ("m2", "/m2")]),
+    );
+    assert_eq!(
+        c.iter().map(|c| c.method.as_str()).collect::<Vec<_>>(),
+        ["m2", "m1"]
+    );
 }
 
 #[test]
@@ -409,10 +540,14 @@ fn http_source_is_rejected_by_the_loader() {
 
 mod session_scope {
     use super::*;
-    use reactor_core::commands::{clear_session_state, make_session_state_default, set_activation, state as state_report};
+    use reactor_core::commands::{
+        clear_session_state, make_session_state_default, set_activation, state as state_report,
+    };
 
     fn with_session(fx: &Fx) -> reactor_core::Paths {
-        fx.paths.clone().with_session_state(fx.dir.path().join("session-activation.json"))
+        fx.paths
+            .clone()
+            .with_session_state(fx.dir.path().join("session-activation.json"))
     }
 
     #[test]
@@ -433,23 +568,42 @@ mod session_scope {
         let paths = with_session(&fx);
 
         let done = set_activation(&paths, &ids(&["pair"]), false, Some(true)).unwrap();
-        assert_eq!(done.report.path, fx.dir.path().join("session-activation.json").display().to_string());
+        assert_eq!(
+            done.report.path,
+            fx.dir
+                .path()
+                .join("session-activation.json")
+                .display()
+                .to_string()
+        );
 
         // Seeded from what applied (`static`), then edited: both are on for this session.
         let st = state_report(&paths).unwrap().report;
         assert_eq!(st.scope.as_str(), "session");
         assert_eq!(st.state.toolsets, ["pair", "static"]);
         // The machine state is byte-for-byte what it was.
-        assert_eq!(std::fs::read_to_string(fx.dir.path().join("state.json")).unwrap(), machine_before);
+        assert_eq!(
+            std::fs::read_to_string(fx.dir.path().join("state.json")).unwrap(),
+            machine_before
+        );
         // And another session, with no override, still sees the machine's.
-        assert_eq!(state_report(&fx.paths).unwrap().report.state.toolsets, ["static"]);
+        assert_eq!(
+            state_report(&fx.paths).unwrap().report.state.toolsets,
+            ["static"]
+        );
     }
 
     #[test]
     fn two_sessions_do_not_share_activation() {
         let fx = Fx::new();
-        let a = fx.paths.clone().with_session_state(fx.dir.path().join("a.json"));
-        let b = fx.paths.clone().with_session_state(fx.dir.path().join("b.json"));
+        let a = fx
+            .paths
+            .clone()
+            .with_session_state(fx.dir.path().join("a.json"));
+        let b = fx
+            .paths
+            .clone()
+            .with_session_state(fx.dir.path().join("b.json"));
         set_activation(&a, &ids(&["static"]), false, Some(true)).unwrap();
         set_activation(&b, &ids(&["pair"]), false, Some(true)).unwrap();
         assert_eq!(state_report(&a).unwrap().report.state.toolsets, ["static"]);
@@ -460,14 +614,23 @@ mod session_scope {
     fn making_the_session_the_default_promotes_it_to_the_machine_state() {
         let fx = Fx::new();
         let paths = with_session(&fx);
-        assert!(make_session_state_default(&paths).is_err(), "nothing of its own to promote yet");
+        assert!(
+            make_session_state_default(&paths).is_err(),
+            "nothing of its own to promote yet"
+        );
 
         set_activation(&paths, &ids(&["narrow"]), false, Some(true)).unwrap();
         let done = make_session_state_default(&paths).unwrap().report;
         assert_eq!(done.state.toolsets, ["narrow"]);
         // Now a fresh session inherits it.
-        assert_eq!(state_report(&fx.paths).unwrap().report.state.toolsets, ["narrow"]);
-        assert_eq!(state_report(&fx.paths).unwrap().report.scope.as_str(), "machine");
+        assert_eq!(
+            state_report(&fx.paths).unwrap().report.state.toolsets,
+            ["narrow"]
+        );
+        assert_eq!(
+            state_report(&fx.paths).unwrap().report.scope.as_str(),
+            "machine"
+        );
     }
 
     #[test]
@@ -476,9 +639,15 @@ mod session_scope {
         fx.state(&["static"], &[], &[]).save().unwrap();
         let paths = with_session(&fx);
         set_activation(&paths, &ids(&["pair"]), false, Some(true)).unwrap();
-        assert_eq!(state_report(&paths).unwrap().report.scope.as_str(), "session");
+        assert_eq!(
+            state_report(&paths).unwrap().report.scope.as_str(),
+            "session"
+        );
         clear_session_state(&paths).unwrap();
         clear_session_state(&paths).unwrap(); // idempotent
-        assert_eq!(state_report(&paths).unwrap().report.scope.as_str(), "machine");
+        assert_eq!(
+            state_report(&paths).unwrap().report.scope.as_str(),
+            "machine"
+        );
     }
 }

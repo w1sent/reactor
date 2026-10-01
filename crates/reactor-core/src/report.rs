@@ -44,9 +44,15 @@ pub struct ErrorPayload<'a> {
 }
 
 pub fn json_of<T: Serialize>(payload: &T) -> String {
-    crate::json::to_string_pretty(&Envelope { schema: SCHEMA, payload })
+    crate::json::to_string_pretty(&Envelope {
+        schema: SCHEMA,
+        payload,
+    })
 }
 
 pub fn json_error(message: &str) -> String {
-    crate::json::to_string_pretty(&ErrorPayload { schema: SCHEMA, error: message })
+    crate::json::to_string_pretty(&ErrorPayload {
+        schema: SCHEMA,
+        error: message,
+    })
 }

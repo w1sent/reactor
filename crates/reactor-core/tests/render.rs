@@ -88,7 +88,10 @@ fn entries() -> Vec<reactor_core::model::ToolEntry> {
 
 #[test]
 fn identical_input_renders_identical_bytes() {
-    assert_eq!(render_registry(&entries()).as_bytes(), render_registry(&entries().clone()).as_bytes());
+    assert_eq!(
+        render_registry(&entries()).as_bytes(),
+        render_registry(&entries().clone()).as_bytes()
+    );
 }
 
 #[test]
@@ -172,11 +175,17 @@ fn the_block_is_byte_identical_to_the_python_renderers() {
     gone.status = Status::Absent;
     list.push(gone);
 
-    assert_eq!(render_registry(&list), include_str!("golden/registry-block.txt"));
+    assert_eq!(
+        render_registry(&list),
+        include_str!("golden/registry-block.txt")
+    );
 
     let mut x = entry("x");
     x.status = Status::Absent;
-    assert_eq!(render_registry(&[x]), include_str!("golden/registry-empty.txt"));
+    assert_eq!(
+        render_registry(&[x]),
+        include_str!("golden/registry-empty.txt")
+    );
 }
 
 // -- TestHelpers ------------------------------------------------------------
@@ -185,20 +194,29 @@ fn the_block_is_byte_identical_to_the_python_renderers() {
 fn version_extraction_drops_the_banner() {
     // Full --version banners carry build dates and hostnames; letting one into
     // the registry would rewrite the system prompt for no reason.
-    assert_eq!(version_of("ripgrep 14.1.1 (rev abc123)").as_deref(), Some("14.1.1"));
+    assert_eq!(
+        version_of("ripgrep 14.1.1 (rev abc123)").as_deref(),
+        Some("14.1.1")
+    );
     assert_eq!(version_of("GNU gdb (GDB) 16.2").as_deref(), Some("16.2"));
     assert_eq!(version_of("frida 17.2").as_deref(), Some("17.2"));
 }
 
 #[test]
 fn version_extraction_keeps_a_suffix() {
-    assert_eq!(version_of("ghidra 11.4.1-rc2 built").as_deref(), Some("11.4.1-rc2"));
+    assert_eq!(
+        version_of("ghidra 11.4.1-rc2 built").as_deref(),
+        Some("11.4.1-rc2")
+    );
 }
 
 #[test]
 fn version_extraction_survives_no_number() {
     assert_eq!(version_of(""), None);
-    assert_eq!(version_of("unknown build").as_deref(), Some("unknown build"));
+    assert_eq!(
+        version_of("unknown build").as_deref(),
+        Some("unknown build")
+    );
     // Truncated by characters, never bytes.
     let long = "é".repeat(40);
     assert_eq!(version_of(&long).unwrap().chars().count(), 32);

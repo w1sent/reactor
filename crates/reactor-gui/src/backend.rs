@@ -85,7 +85,10 @@ pub fn find_bundled(sub: &str) -> Option<PathBuf> {
 }
 
 fn new_session_id() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("{secs}-{}", std::process::id())
 }
 
@@ -114,14 +117,21 @@ impl Backend {
             None => {
                 let id = new_session_id();
                 let dir = paths.config_dir.join("sessions").join(&id);
-                (Store::create(&dir, &id, &opts.cwd).map_err(|e| e.to_string())?, dir)
+                (
+                    Store::create(&dir, &id, &opts.cwd).map_err(|e| e.to_string())?,
+                    dir,
+                )
             }
         };
         // Activation is per session (ADR-0038): this file, inside the session, wins over
         // the machine's.
         let paths = paths.with_session_state(session_dir.join("activation.json"));
 
-        let spec = opts.model.clone().or_else(|| settings.default_model.clone()).or_else(|| std::env::var("REACTOR_MODEL").ok());
+        let spec = opts
+            .model
+            .clone()
+            .or_else(|| settings.default_model.clone())
+            .or_else(|| std::env::var("REACTOR_MODEL").ok());
         let (llm, model, window) = llm_for(spec.as_deref());
         let llm = Switchable::new(llm);
         let summarizer = Switchable::new(llm.current());
@@ -131,7 +141,15 @@ impl Backend {
             cfg.scenarios_dir = d;
         }
         cfg.skills_dir = find_bundled("skills");
-        let (agent, mut events) = Agent::new(llm.clone(), LlmSummarizer { llm: summarizer.clone() }, store, Tools::standard(opts.cwd.clone()), cfg);
+        let (agent, mut events) = Agent::new(
+            llm.clone(),
+            LlmSummarizer {
+                llm: summarizer.clone(),
+            },
+            store,
+            Tools::standard(opts.cwd.clone()),
+            cfg,
+        );
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -254,7 +272,9 @@ impl Backend {
         let (model, window) = (self.model(), *self.default_window.lock().unwrap());
         self.runtime.spawn(async move {
             if let Ok(m) = agent.measure().await {
-                let _ = tx.send(UiEvent::Context(context_view(&agent, model, window, m.total)));
+                let _ = tx.send(UiEvent::Context(context_view(
+                    &agent, model, window, m.total,
+                )));
             }
         });
     }
@@ -262,7 +282,13 @@ impl Backend {
     pub fn preview(&self, mode: Mode) {
         let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
         self.runtime.spawn(async move {
-            let _ = tx.send(UiEvent::Preview(agent.preview(mode).await.map(|p| PlanView::of(&p, mode)).map_err(|e| e.to_string())));
+            let _ = tx.send(UiEvent::Preview(
+                agent
+                    .preview(mode)
+                    .await
+                    .map(|p| PlanView::of(&p, mode))
+                    .map_err(|e| e.to_string()),
+            ));
         });
     }
 
@@ -270,14 +296,18 @@ impl Backend {
     pub fn inspect(&self) {
         let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
         self.runtime.spawn(async move {
-            let _ = tx.send(UiEvent::Inspect(agent.context_preview().await.map_err(|e| e.to_string())));
+            let _ = tx.send(UiEvent::Inspect(
+                agent.context_preview().await.map_err(|e| e.to_string()),
+            ));
         });
     }
 
     pub fn reduce_now(&self, mode: Mode) {
         let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
         self.runtime.spawn(async move {
-            let _ = tx.send(UiEvent::Reduced(agent.reduce_now(mode).await.map_err(|e| e.to_string())));
+            let _ = tx.send(UiEvent::Reduced(
+                agent.reduce_now(mode).await.map_err(|e| e.to_string()),
+            ));
         });
         self.refresh_context();
     }
@@ -292,7 +322,9 @@ impl Backend {
     /// use [`Backend::inherit_context`] to drop the layer).
     pub fn set_session_context(&self, layer: ContextSettings) -> std::result::Result<(), String> {
         let (_, current) = self.agent.context_layers();
-        self.agent.set_session_context(&layer.over(&current)).map_err(|e| e.to_string())?;
+        self.agent
+            .set_session_context(&layer.over(&current))
+            .map_err(|e| e.to_string())?;
         self.sync_summarizer();
         self.refresh_context();
         Ok(())
@@ -304,11 +336,19 @@ impl Backend {
     }
 
     /// Store exactly this as the default's layer (`global`) or this session's.
-    pub fn replace_context_layer(&self, global: bool, layer: ContextSettings) -> std::result::Result<(), String> {
+    pub fn replace_context_layer(
+        &self,
+        global: bool,
+        layer: ContextSettings,
+    ) -> std::result::Result<(), String> {
         if global {
-            self.agent.set_global_context(layer).map_err(|e| e.to_string())?;
+            self.agent
+                .set_global_context(layer)
+                .map_err(|e| e.to_string())?;
         } else {
-            self.agent.set_session_context(&layer).map_err(|e| e.to_string())?;
+            self.agent
+                .set_session_context(&layer)
+                .map_err(|e| e.to_string())?;
         }
         self.sync_summarizer();
         self.refresh_context();
@@ -316,7 +356,9 @@ impl Backend {
     }
 
     pub fn inherit_context(&self) -> std::result::Result<(), String> {
-        self.agent.set_session_context(&ContextSettings::default()).map_err(|e| e.to_string())?;
+        self.agent
+            .set_session_context(&ContextSettings::default())
+            .map_err(|e| e.to_string())?;
         self.sync_summarizer();
         self.refresh_context();
         Ok(())
@@ -325,8 +367,12 @@ impl Backend {
     /// "Make this the default": this session's effective layer becomes the global one.
     pub fn make_context_default(&self) -> std::result::Result<(), String> {
         let (global, session) = self.agent.context_layers();
-        self.agent.set_global_context(session.over(&global)).map_err(|e| e.to_string())?;
-        self.agent.set_session_context(&ContextSettings::default()).map_err(|e| e.to_string())?;
+        self.agent
+            .set_global_context(session.over(&global))
+            .map_err(|e| e.to_string())?;
+        self.agent
+            .set_session_context(&ContextSettings::default())
+            .map_err(|e| e.to_string())?;
         self.refresh_context();
         Ok(())
     }
@@ -342,7 +388,11 @@ impl Backend {
         if self.is_running() {
             return Err("the agent is working -- interrupt it first".into());
         }
-        self.store().lock().unwrap().set_head(entry).map_err(|e| e.to_string())
+        self.store()
+            .lock()
+            .unwrap()
+            .set_head(entry)
+            .map_err(|e| e.to_string())
     }
 
     pub fn session_state(&self) -> SessionState {
@@ -370,8 +420,10 @@ pub struct TreeRow {
 /// are elided — a session of a thousand tool calls would otherwise be a thousand rows.
 pub fn tree_rows(store: &Store) -> Vec<TreeRow> {
     let head = store.head();
-    let on_branch: std::collections::HashSet<EntryId> = store.branch().iter().map(|e| e.id).collect();
-    let mut children: std::collections::HashMap<EntryId, Vec<EntryId>> = std::collections::HashMap::new();
+    let on_branch: std::collections::HashSet<EntryId> =
+        store.branch().iter().map(|e| e.id).collect();
+    let mut children: std::collections::HashMap<EntryId, Vec<EntryId>> =
+        std::collections::HashMap::new();
     for e in store.all() {
         if let Some(p) = e.parent {
             children.entry(p).or_default().push(e.id);
@@ -395,14 +447,29 @@ pub fn tree_rows(store: &Store) -> Vec<TreeRow> {
             let label = match &entry.kind {
                 Kind::User { text } => format!("you: {}", first_words(text, 60)),
                 Kind::Assistant { blocks, .. } => {
-                    let text = blocks.iter().find_map(|b| match b { Block::Text { text } => Some(text.as_str()), _ => None }).unwrap_or("");
+                    let text = blocks
+                        .iter()
+                        .find_map(|b| match b {
+                            Block::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or("");
                     format!("agent: {}", first_words(text, 60))
                 }
-                Kind::Reduction(r) => format!("context reduced ({:?}, {} entries)", r.mode, r.covers.len()),
+                Kind::Reduction(r) => {
+                    format!("context reduced ({:?}, {} entries)", r.mode, r.covers.len())
+                }
                 Kind::Label { text } => text.clone(),
                 _ => String::new(),
             };
-            rows.push(TreeRow { id, depth, label, on_branch: on_branch.contains(&id), is_head: id == head, can_switch: final_reply });
+            rows.push(TreeRow {
+                id,
+                depth,
+                label,
+                on_branch: on_branch.contains(&id),
+                is_head: id == head,
+                can_switch: final_reply,
+            });
         }
         // Children in log order; the first child continues at this depth, the others fork.
         for (i, k) in kids.iter().enumerate().rev() {
@@ -413,8 +480,16 @@ pub fn tree_rows(store: &Store) -> Vec<TreeRow> {
 }
 
 fn first_words(text: &str, n: usize) -> String {
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-    if line.chars().count() <= n { line.to_string() } else { format!("{}…", line.chars().take(n - 1).collect::<String>()) }
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if line.chars().count() <= n {
+        line.to_string()
+    } else {
+        format!("{}…", line.chars().take(n - 1).collect::<String>())
+    }
 }
 
 /// What the context panel shows.
@@ -438,11 +513,18 @@ pub struct ContextView {
 
 impl ContextView {
     pub fn percent(&self) -> u64 {
-        (self.used * 100).checked_div(self.hard).map_or(0, |p| p.min(999))
+        (self.used * 100)
+            .checked_div(self.hard)
+            .map_or(0, |p| p.min(999))
     }
 }
 
-pub fn context_view(agent: &GuiAgent, model: String, _default_window: u64, used: u64) -> ContextView {
+pub fn context_view(
+    agent: &GuiAgent,
+    model: String,
+    _default_window: u64,
+    used: u64,
+) -> ContextView {
     let b = agent.effective_budget();
     let (global, session) = agent.context_layers();
     ContextView {
@@ -461,7 +543,11 @@ pub fn context_view(agent: &GuiAgent, model: String, _default_window: u64, used:
         keep: b.keep,
         reserve: b.reserve,
         summarizer: session.over(&global).summarizer,
-        origins: session.origins().into_iter().map(|(k, o)| (k.to_string(), o)).collect(),
+        origins: session
+            .origins()
+            .into_iter()
+            .map(|(k, o)| (k.to_string(), o))
+            .collect(),
         reductions: agent.reductions(),
     }
 }
@@ -506,7 +592,9 @@ pub fn trigger_label(t: Trigger) -> &'static str {
 /// Session directories under `~/.reactor/sessions/`, newest first — the picker's feed.
 pub fn list_sessions(paths: &Paths, cwd: Option<&Path>) -> Vec<SessionSummary> {
     let dir = paths.config_dir.join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
     let mut out: Vec<SessionSummary> = entries
         .flatten()
         .filter_map(|e| {
@@ -526,7 +614,13 @@ pub fn list_sessions(paths: &Paths, cwd: Option<&Path>) -> Vec<SessionSummary> {
                 _ => None,
             });
             let ts = store.get(0).map(|e| e.ts).unwrap_or(0);
-            Some(SessionSummary { dir: path, cwd: session_cwd, first_prompt: first_user, started_ms: ts, entries: store.len() })
+            Some(SessionSummary {
+                dir: path,
+                cwd: session_cwd,
+                first_prompt: first_user,
+                started_ms: ts,
+                entries: store.len(),
+            })
         })
         .collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.started_ms));

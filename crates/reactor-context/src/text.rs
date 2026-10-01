@@ -42,7 +42,11 @@ pub fn truncate_words(s: &str, n: usize) -> String {
         // "".split(/\s+/) is [""], which joins to "".
         return String::new();
     }
-    t.split(js_space).filter(|w| !w.is_empty()).take(n).collect::<Vec<_>>().join(" ")
+    t.split(js_space)
+        .filter(|w| !w.is_empty())
+        .take(n)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// JS `\s` and `String.prototype.trim` whitespace: Unicode White_Space plus U+FEFF.

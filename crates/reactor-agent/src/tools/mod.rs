@@ -44,10 +44,17 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(text: impl Into<String>) -> Self {
-        ToolOutput { text: text.into(), ..Default::default() }
+        ToolOutput {
+            text: text.into(),
+            ..Default::default()
+        }
     }
     pub fn err(text: impl Into<String>) -> Self {
-        ToolOutput { text: text.into(), is_error: true, full: None }
+        ToolOutput {
+            text: text.into(),
+            is_error: true,
+            full: None,
+        }
     }
 }
 
@@ -108,7 +115,11 @@ impl Tools {
 
     /// What to advertise for this session state.
     pub fn specs(&self, state: &SessionState) -> Vec<ToolSpec> {
-        self.0.iter().filter(|t| t.available(state)).map(|t| t.spec()).collect()
+        self.0
+            .iter()
+            .filter(|t| t.available(state))
+            .map(|t| t.spec())
+            .collect()
     }
 
     pub fn find(&self, name: &str) -> Option<&Arc<dyn Tool>> {

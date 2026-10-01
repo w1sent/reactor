@@ -200,21 +200,31 @@ fn source_of(paths: &Paths, name: &str) -> Result<Source> {
             stamp: stamp_of(&live),
         });
     }
-    let bytes = paths.shipped_bytes(name).map_err(|_| {
-        err!("{}: not found -- run `reactor setup` first", live.display())
-    })?;
-    let text = String::from_utf8(bytes).map_err(|e| err!("{}: {}", paths.shipped_display(name), e))?;
+    let bytes = paths
+        .shipped_bytes(name)
+        .map_err(|_| err!("{}: not found -- run `reactor setup` first", live.display()))?;
+    let text =
+        String::from_utf8(bytes).map_err(|e| err!("{}: {}", paths.shipped_display(name), e))?;
     let stamp = match &paths.shipped {
         crate::paths::Shipped::Dir(root) => stamp_of(&root.join(name)),
         crate::paths::Shipped::Embedded => format!("embedded:{}", text.len()),
     };
-    Ok(Source { text, path: paths.shipped_display(name), shipped: true, stamp })
+    Ok(Source {
+        text,
+        path: paths.shipped_display(name),
+        shipped: true,
+        stamp,
+    })
 }
 
 fn stamp_of(path: &std::path::Path) -> String {
     use std::os::unix::fs::MetadataExt;
     match std::fs::metadata(path) {
-        Ok(m) => format!("{}:{}", m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128, m.len()),
+        Ok(m) => format!(
+            "{}:{}",
+            m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128,
+            m.len()
+        ),
         Err(_) => "0:0".to_string(),
     }
 }
@@ -296,11 +306,15 @@ pub fn load_catalogue(paths: &Paths) -> Result<Catalogue> {
     if let Some(entries) = table_of(doc.get("tool")) {
         for (tid, spec) in entries {
             let whence = format!("{path}: [tool.{tid}]");
-            let spec = spec.as_table().ok_or_else(|| err!("{whence} must be a table"))?;
+            let spec = spec
+                .as_table()
+                .ok_or_else(|| err!("{whence} must be a table"))?;
 
             let detect = table_of(spec.get("detect"))
                 .filter(|d| d.len() == 1)
-                .ok_or_else(|| err!("{whence}.detect: expected exactly one of binary, python_module"))?;
+                .ok_or_else(|| {
+                    err!("{whence}.detect: expected exactly one of binary, python_module")
+                })?;
             let (kind_name, value) = detect.iter().next().expect("length checked");
             let kind = match kind_name.as_str() {
                 "binary" => DetectKind::Binary,
@@ -373,9 +387,11 @@ pub fn load_catalogue(paths: &Paths) -> Result<Catalogue> {
                     .and_then(|s| s.get("label"))
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                service_count: table_of(service.and_then(|s| s.get("count"))).map(|c| ServiceCount {
-                    pattern: c.get("pattern").and_then(Value::as_str).map(str::to_string),
-                    noun: c.get("noun").and_then(Value::as_str).map(str::to_string),
+                service_count: table_of(service.and_then(|s| s.get("count"))).map(|c| {
+                    ServiceCount {
+                        pattern: c.get("pattern").and_then(Value::as_str).map(str::to_string),
+                        noun: c.get("noun").and_then(Value::as_str).map(str::to_string),
+                    }
                 }),
                 skill: table_of(spec.get("skill")).map(|s| SkillSpec {
                     source: s.get("source").and_then(Value::as_str).map(str::to_string),
@@ -417,10 +433,16 @@ pub fn load_toolsets(paths: &Paths) -> Result<Vec<Toolset>> {
     if let Some(sets) = table_of(doc.get("toolset")) {
         for (sid, spec) in sets {
             let whence = format!("{}: [toolset.{sid}]", src.path);
-            let spec = spec.as_table().ok_or_else(|| err!("{whence} must be a table"))?;
+            let spec = spec
+                .as_table()
+                .ok_or_else(|| err!("{whence} must be a table"))?;
             out.push(Toolset {
                 id: sid.clone(),
-                desc: spec.get("desc").and_then(Value::as_str).unwrap_or("").to_string(),
+                desc: spec
+                    .get("desc")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 tools: str_list(spec.get("tools"), &format!("{whence}.tools"))?,
                 tags: str_list(spec.get("tags"), &format!("{whence}.tags"))?,
                 everything: spec.get("all").and_then(Value::as_bool).unwrap_or(false),

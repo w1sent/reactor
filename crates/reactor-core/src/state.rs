@@ -59,12 +59,22 @@ pub struct StateTools {
 }
 
 fn sorted_unique(v: &[String]) -> Vec<String> {
-    v.iter().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+    v.iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 impl State {
     pub fn empty(path: PathBuf, scope: Scope) -> Self {
-        Self { path, scope, toolsets: vec![], enabled: vec![], disabled: vec![] }
+        Self {
+            path,
+            scope,
+            toolsets: vec![],
+            enabled: vec![],
+            disabled: vec![],
+        }
     }
 
     pub fn as_doc(&self) -> StateDoc {
@@ -114,7 +124,8 @@ pub fn load_state(paths: &Paths) -> Result<State> {
     if !path.is_file() {
         return Ok(State::empty(paths.state_file(), Scope::Default));
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| err!("{}: {}", path.display(), io_reason(&e)))?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| err!("{}: {}", path.display(), io_reason(&e)))?;
     let doc: Value = serde_json::from_str(&text).map_err(|e| err!("{}: {}", path.display(), e))?;
     let list = |v: Option<&Value>, what: &str| -> Result<Vec<String>> {
         match v {
@@ -124,7 +135,10 @@ pub fn load_state(paths: &Paths) -> Result<State> {
                 .map(|i| i.as_str().map(str::to_string))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| err!("{}: {what}: expected a list of strings", path.display())),
-            Some(_) => Err(err!("{}: {what}: expected a list of strings", path.display())),
+            Some(_) => Err(err!(
+                "{}: {what}: expected a list of strings",
+                path.display()
+            )),
         }
     };
     let tools = doc.get("tools");
@@ -148,8 +162,12 @@ pub fn toolset_members(ts: &Toolset, cat: &Catalogue) -> Vec<String> {
     if ts.everything {
         return cat.order();
     }
-    let mut members: BTreeSet<String> =
-        ts.tools.iter().filter(|t| cat.contains(t)).cloned().collect();
+    let mut members: BTreeSet<String> = ts
+        .tools
+        .iter()
+        .filter(|t| cat.contains(t))
+        .cloned()
+        .collect();
     if !ts.tags.is_empty() {
         for t in &cat.tools {
             if ts.tags.iter().all(|w| t.tags.contains(w)) {

@@ -58,20 +58,41 @@ pub enum Part {
 /// The system prompt's pieces, in the order they are sent, each with where it comes from.
 pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
     let mut parts: Vec<(Part, String)> = vec![(Part::Base, i.base.trim_end().to_string())];
-    let mut push = |part: Part, b: Option<String>| parts.extend(b.filter(|s| !s.is_empty()).map(|s| (part, s)));
+    let mut push = |part: Part, b: Option<String>| {
+        parts.extend(b.filter(|s| !s.is_empty()).map(|s| (part, s)))
+    };
 
-    push(Part::Identity, identity::block(&i.state.identity, &i.settings.identity));
-    push(Part::Registry, (!i.registry.block.is_empty()).then(|| i.registry.block.clone()));
+    push(
+        Part::Identity,
+        identity::block(&i.state.identity, &i.settings.identity),
+    );
+    push(
+        Part::Registry,
+        (!i.registry.block.is_empty()).then(|| i.registry.block.clone()),
+    );
     push(Part::Skills, skills_block(i.skills));
-    push(Part::Manifest, manifest::block(&i.state.manifest, &i.settings.manifest));
-    push(Part::Reporting, i.state.reporting.is_enabled().then(|| reporting::block(&i.settings.reporting)));
+    push(
+        Part::Manifest,
+        manifest::block(&i.state.manifest, &i.settings.manifest),
+    );
+    push(
+        Part::Reporting,
+        i.state
+            .reporting
+            .is_enabled()
+            .then(|| reporting::block(&i.settings.reporting)),
+    );
     push(Part::Scenario, scenario_block(i.state, i.scenarios_dir));
     parts
 }
 
 /// Pieces joined into the system prompt.
 pub fn join_parts(parts: &[(Part, String)]) -> String {
-    parts.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n\n")
+    parts
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// The system prompt for one request.
@@ -86,11 +107,20 @@ fn scenario_block(state: &SessionState, dir: &Path) -> Option<String> {
     if s.step_index >= steps.len() {
         return None;
     }
-    let mut out = format!("## Scenario: {}\n\n{}", s.scenario_id, scenario::briefing(&steps, s.step_index));
+    let mut out = format!(
+        "## Scenario: {}\n\n{}",
+        s.scenario_id,
+        scenario::briefing(&steps, s.step_index)
+    );
     if !s.summaries.is_empty() {
         out.push_str("\n\nCompleted phases:");
         for (i, summary) in s.summaries.iter().enumerate() {
-            let title = steps.get(i).map(|st| st.title.as_str()).filter(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| format!("phase {}", i + 1));
+            let title = steps
+                .get(i)
+                .map(|st| st.title.as_str())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("phase {}", i + 1));
             out.push_str(&format!("\n{}. {} -- {}", i + 1, title, summary));
         }
     }

@@ -19,11 +19,23 @@ pub const ENTRY_TYPE: &str = "pi-identity";
 /// The built-ins, in the order the TS declared them (which is the order
 /// `/identity` lists them in).
 pub const BUILTINS: [(&str, &str); 6] = [
-    ("reverse-engineer", include_str!("../identities/reverse-engineer.md")),
-    ("cyber-forensics", include_str!("../identities/cyber-forensics.md")),
+    (
+        "reverse-engineer",
+        include_str!("../identities/reverse-engineer.md"),
+    ),
+    (
+        "cyber-forensics",
+        include_str!("../identities/cyber-forensics.md"),
+    ),
     ("forensics", include_str!("../identities/forensics.md")),
-    ("software-engineer", include_str!("../identities/software-engineer.md")),
-    ("infrastructure", include_str!("../identities/infrastructure.md")),
+    (
+        "software-engineer",
+        include_str!("../identities/software-engineer.md"),
+    ),
+    (
+        "infrastructure",
+        include_str!("../identities/infrastructure.md"),
+    ),
     ("publisher", include_str!("../identities/publisher.md")),
 ];
 
@@ -57,7 +69,10 @@ impl UserIdentities {
         me
     }
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.0
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
     /// Overwrites in place, so a saved name keeps its position.
     pub fn set(&mut self, name: String, text: String) {
@@ -99,7 +114,9 @@ pub struct State {
 
 impl State {
     pub fn normalize(raw: &Value) -> State {
-        let Some(r) = raw.as_object() else { return State::default() };
+        let Some(r) = raw.as_object() else {
+            return State::default();
+        };
         State {
             active: r.get("active").and_then(Value::as_str).map(str::to_string),
             custom: r.get("custom").and_then(Value::as_str).map(str::to_string),
@@ -114,7 +131,11 @@ impl State {
         (!name.is_empty()).then_some(name)
     }
 
-    pub fn resolve_text<'a>(&'a self, cfg: &'a IdentitySettings, name: Option<&str>) -> Option<&'a str> {
+    pub fn resolve_text<'a>(
+        &'a self,
+        cfg: &'a IdentitySettings,
+        name: Option<&str>,
+    ) -> Option<&'a str> {
         let name = name.filter(|n| !n.is_empty())?;
         if name == "custom" {
             let t = self.custom.as_deref().map(js_trim).unwrap_or("");
@@ -141,7 +162,11 @@ pub fn available_names(cfg: &IdentitySettings) -> String {
 /// text, and the user's saved ones.
 pub fn selectable_names(state: &State, cfg: &IdentitySettings) -> Vec<String> {
     let mut v: Vec<String> = BUILTINS.iter().map(|(n, _)| n.to_string()).collect();
-    if state.custom.as_deref().is_some_and(|c| !js_trim(c).is_empty()) {
+    if state
+        .custom
+        .as_deref()
+        .is_some_and(|c| !js_trim(c).is_empty())
+    {
         v.push("custom".into());
     }
     v.extend(cfg.user.names().map(str::to_string));
@@ -161,22 +186,38 @@ pub struct Effects {
 
 impl Effects {
     fn note(n: Notice) -> Self {
-        Effects { notices: vec![n], ..Default::default() }
+        Effects {
+            notices: vec![n],
+            ..Default::default()
+        }
     }
     fn changed(n: Notice) -> Self {
-        Effects { notices: vec![n], persist: true, save_settings: false }
+        Effects {
+            notices: vec![n],
+            persist: true,
+            save_settings: false,
+        }
     }
 }
 
 fn select(state: &mut State, cfg: &IdentitySettings, name: &str) -> Effects {
-    let known = name == "custom" || builtin(name).is_some() || cfg.user.get(name).is_some_and(|t| !t.is_empty());
+    let known = name == "custom"
+        || builtin(name).is_some()
+        || cfg.user.get(name).is_some_and(|t| !t.is_empty());
     if !known {
         return Effects::note(Notice::warning(format!(
             "identity: unknown identity \"{name}\" -- available: {}",
             available_names(cfg)
         )));
     }
-    if name == "custom" && state.custom.as_deref().map(js_trim).unwrap_or("").is_empty() {
+    if name == "custom"
+        && state
+            .custom
+            .as_deref()
+            .map(js_trim)
+            .unwrap_or("")
+            .is_empty()
+    {
         return Effects::note(Notice::warning(
             "identity: the custom identity is empty -- write one with /identity write <text> or /identity editor",
         ));
@@ -188,7 +229,9 @@ fn select(state: &mut State, cfg: &IdentitySettings, name: &str) -> Effects {
 fn set_custom(state: &mut State, text: &str) -> Effects {
     state.active = Some("custom".into());
     state.custom = Some(text.to_string());
-    Effects::changed(Notice::info("identity: custom set -- save it with /identity save <name> if it proves useful"))
+    Effects::changed(Notice::info(
+        "identity: custom set -- save it with /identity save <name> if it proves useful",
+    ))
 }
 
 /// `/identity`. `cfg` is the *global* identity settings and is edited in place
@@ -201,7 +244,9 @@ pub fn command(state: &mut State, cfg: &mut IdentitySettings, args: &str) -> Eff
         let text = state.resolve_text(cfg, name);
         let mut lines = vec![format!("identity: {}", name.unwrap_or("(none)"))];
         if name == Some("custom") && text.is_none() {
-            lines.push("  (the custom identity is empty -- write one with /identity write <text>)".into());
+            lines.push(
+                "  (the custom identity is empty -- write one with /identity write <text>)".into(),
+            );
         }
         lines.push(format!("available: {}", available_names(cfg)));
         return Effects::note(Notice::info(lines.join("\n")));
@@ -232,15 +277,25 @@ pub fn command(state: &mut State, cfg: &mut IdentitySettings, args: &str) -> Eff
         return set_custom(state, text);
     }
     if arg == "save" || arg.starts_with("save ") {
-        let name = if arg == "save" { "" } else { js_trim(&arg["save ".len()..]) };
+        let name = if arg == "save" {
+            ""
+        } else {
+            js_trim(&arg["save ".len()..])
+        };
         if name.is_empty() {
             return Effects::note(Notice::warning("usage: /identity save <name>"));
         }
         if builtin(name).is_some() {
-            return Effects::note(Notice::warning(format!("identity: \"{name}\" is built in -- pick another name")));
+            return Effects::note(Notice::warning(format!(
+                "identity: \"{name}\" is built in -- pick another name"
+            )));
         }
         let text = if state.active.as_deref() == Some("custom") {
-            state.custom.as_deref().map(js_trim).filter(|t| !t.is_empty())
+            state
+                .custom
+                .as_deref()
+                .map(js_trim)
+                .filter(|t| !t.is_empty())
         } else {
             None
         };
@@ -254,7 +309,11 @@ pub fn command(state: &mut State, cfg: &mut IdentitySettings, args: &str) -> Eff
         return Effects {
             notices: vec![Notice::info(format!(
                 "identity: saved \"{name}\"{}",
-                if existed { " (overwrote an existing one)" } else { "" }
+                if existed {
+                    " (overwrote an existing one)"
+                } else {
+                    ""
+                }
             ))],
             persist: false,
             save_settings: true,
@@ -263,10 +322,14 @@ pub fn command(state: &mut State, cfg: &mut IdentitySettings, args: &str) -> Eff
     if let Some(rest) = arg.strip_prefix("delete ") {
         let name = js_trim(rest);
         if builtin(name).is_some() {
-            return Effects::note(Notice::warning(format!("identity: \"{name}\" is built in -- it cannot be deleted")));
+            return Effects::note(Notice::warning(format!(
+                "identity: \"{name}\" is built in -- it cannot be deleted"
+            )));
         }
         if !cfg.user.get(name).is_some_and(|t| !t.is_empty()) {
-            return Effects::note(Notice::warning(format!("identity: no saved identity \"{name}\"")));
+            return Effects::note(Notice::warning(format!(
+                "identity: no saved identity \"{name}\""
+            )));
         }
         cfg.user.remove(name);
         return Effects {
@@ -293,11 +356,15 @@ pub enum EditorResult {
 /// The tail of `/identity editor`, once the editor has run.
 pub fn apply_editor(state: &mut State, result: EditorResult) -> Effects {
     match result {
-        EditorResult::Cancelled => Effects::note(Notice::info("identity: editor exited without saving -- cancelled")),
+        EditorResult::Cancelled => Effects::note(Notice::info(
+            "identity: editor exited without saving -- cancelled",
+        )),
         EditorResult::Complete(content) => {
             let text = js_trim(&content);
             if text.is_empty() {
-                Effects::note(Notice::warning("identity: editor content was empty -- nothing set"))
+                Effects::note(Notice::warning(
+                    "identity: editor content was empty -- nothing set",
+                ))
             } else {
                 set_custom(state, text)
             }
@@ -307,5 +374,7 @@ pub fn apply_editor(state: &mut State, result: EditorResult) -> Effects {
 
 /// The editor needs a terminal.
 pub fn editor_needs_terminal() -> Effects {
-    Effects::note(Notice::warning("identity: the editor needs a terminal; use /identity write <text> here"))
+    Effects::note(Notice::warning(
+        "identity: the editor needs a terminal; use /identity write <text> here",
+    ))
 }

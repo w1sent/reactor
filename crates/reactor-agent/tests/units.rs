@@ -47,7 +47,15 @@ fn the_view_names_the_entry_and_counts_what_was_elided() {
     assert!(v.contains("the whole output is #42"));
     assert!(v.contains("history_read") && v.contains("history_search"));
     assert!(!v.contains(CUT), "the placeholder never reaches the model");
-    let elided: u64 = v.split("… [").nth(1).unwrap().split(" of ").next().unwrap().parse().unwrap();
+    let elided: u64 = v
+        .split("… [")
+        .nth(1)
+        .unwrap()
+        .split(" of ")
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     assert_eq!(elided + (HEAD_BYTES + TAIL_BYTES) as u64, 100_000);
 }
 
@@ -73,17 +81,32 @@ fn skill_file(dir: &std::path::Path, name: &str, frontmatter: &str) -> std::path
 #[test]
 fn a_skill_is_a_name_a_description_and_optional_requirements() {
     let dir = tempfile::tempdir().unwrap();
-    let f = skill_file(dir.path(), "a", "name: \"quoted\"\ndescription: 'does things'\nrequires: [bindiff, bn]");
+    let f = skill_file(
+        dir.path(),
+        "a",
+        "name: \"quoted\"\ndescription: 'does things'\nrequires: [bindiff, bn]",
+    );
     let s = skills::parse(&f).unwrap();
-    assert_eq!((s.name.as_str(), s.description.as_str()), ("quoted", "does things"));
+    assert_eq!(
+        (s.name.as_str(), s.description.as_str()),
+        ("quoted", "does things")
+    );
     assert_eq!(s.requires, ["bindiff", "bn"]);
-    assert_eq!(skills::parse(&skill_file(dir.path(), "b", "name: b\ndescription: d")).unwrap().requires, Vec::<String>::new());
+    assert_eq!(
+        skills::parse(&skill_file(dir.path(), "b", "name: b\ndescription: d"))
+            .unwrap()
+            .requires,
+        Vec::<String>::new()
+    );
 }
 
 #[test]
 fn a_skill_without_a_description_or_frontmatter_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(skills::parse(&skill_file(dir.path(), "a", "name: a")).is_none(), "nothing to choose it by");
+    assert!(
+        skills::parse(&skill_file(dir.path(), "a", "name: a")).is_none(),
+        "nothing to choose it by"
+    );
     assert!(skills::parse(&skill_file(dir.path(), "b", "description: d")).is_none());
     let f = dir.path().join("plain.md");
     std::fs::write(&f, "no frontmatter at all").unwrap();
@@ -98,7 +121,10 @@ fn discovery_is_sorted_by_name_and_skips_what_is_not_a_skill() {
     skill_file(dir.path(), "alpha", "name: alpha\ndescription: a");
     std::fs::create_dir_all(dir.path().join("empty")).unwrap();
     std::fs::write(dir.path().join("stray.md"), "x").unwrap();
-    let found: Vec<String> = skills::discover(dir.path()).into_iter().map(|s| s.name).collect();
+    let found: Vec<String> = skills::discover(dir.path())
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
     assert_eq!(found, ["alpha", "zeta"]);
     assert!(skills::discover(std::path::Path::new("/definitely/not/here")).is_empty());
 }
@@ -111,30 +137,61 @@ fn authored_skills_need_every_required_tool_present_and_active() {
         requires: requires.iter().map(|s| s.to_string()).collect(),
         file: format!("/skills/{name}/SKILL.md").into(),
     };
-    let authored = [mk("free", &[]), mk("both", &["a", "b"]), mk("half", &["a", "z"])];
+    let authored = [
+        mk("free", &[]),
+        mk("both", &["a", "b"]),
+        mk("half", &["a", "z"]),
+    ];
     let usable: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
-    let names: Vec<String> = skills::offered(&authored, &usable, &[]).into_iter().map(|s| s.name).collect();
+    let names: Vec<String> = skills::offered(&authored, &usable, &[])
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
     assert_eq!(names, ["free", "both"]);
 }
 
 #[test]
 fn the_skills_block_lists_name_description_and_path_or_is_absent() {
     assert_eq!(skills::block(&[]), None);
-    let b = skills::block(&[Skill { name: "n".into(), description: "does n".into(), requires: vec![], file: "/s/n/SKILL.md".into() }]).unwrap();
+    let b = skills::block(&[Skill {
+        name: "n".into(),
+        description: "does n".into(),
+        requires: vec![],
+        file: "/s/n/SKILL.md".into(),
+    }])
+    .unwrap();
     assert!(b.starts_with("## Skills") && b.contains("- **n** -- does n (`/s/n/SKILL.md`)"));
 }
 
 // -- the system prompt --------------------------------------------------------------------
 
-fn inputs<'a>(settings: &'a Settings, state: &'a SessionState, registry: &'a RegistryView, skills: &'a [Skill]) -> Inputs<'a> {
-    Inputs { base: "BASE", settings, state, registry, skills, scenarios_dir: std::path::Path::new("/nonexistent") }
+fn inputs<'a>(
+    settings: &'a Settings,
+    state: &'a SessionState,
+    registry: &'a RegistryView,
+    skills: &'a [Skill],
+) -> Inputs<'a> {
+    Inputs {
+        base: "BASE",
+        settings,
+        state,
+        registry,
+        skills,
+        scenarios_dir: std::path::Path::new("/nonexistent"),
+    }
 }
 
 #[test]
 fn an_untouched_session_is_the_base_and_the_registry_and_nothing_else() {
     let (settings, state) = (Settings::default(), SessionState::default());
-    let registry = RegistryView { block: "## Available RE tools (this machine)\n\nsh  shell".into(), ..Default::default() };
-    assert_eq!(prompt::system_prompt(&inputs(&settings, &state, &registry, &[])), "BASE\n\n## Available RE tools (this machine)\n\nsh  shell");
+    let registry = RegistryView {
+        block: "## Available RE tools (this machine)\n\nsh  shell".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        prompt::system_prompt(&inputs(&settings, &state, &registry, &[])),
+        "BASE\n\n## Available RE tools (this machine)\n\nsh  shell"
+    );
 }
 
 #[test]
@@ -145,21 +202,45 @@ fn the_blocks_come_in_a_fixed_order_so_an_unchanged_session_sends_the_same_bytes
     state.identity.active = Some("publisher".into());
     state.manifest.goal = Some("the goal".into());
     state.reporting.enabled = Some(true);
-    let registry = RegistryView { block: "## Available RE tools (this machine)".into(), ..Default::default() };
-    let skills = [Skill { name: "s".into(), description: "d".into(), requires: vec![], file: "/s".into() }];
+    let registry = RegistryView {
+        block: "## Available RE tools (this machine)".into(),
+        ..Default::default()
+    };
+    let skills = [Skill {
+        name: "s".into(),
+        description: "d".into(),
+        requires: vec![],
+        file: "/s".into(),
+    }];
 
     let a = prompt::system_prompt(&inputs(&settings, &state, &registry, &skills));
     let b = prompt::system_prompt(&inputs(&settings, &state, &registry, &skills));
     assert_eq!(a, b);
-    let at = |needle: &str| a.find(needle).unwrap_or_else(|| panic!("{needle} missing from:\n{a}"));
-    assert!(at("BASE") < at("## Identity") && at("## Identity") < at("## Available RE tools") && at("## Available RE tools") < at("## Skills"));
-    assert!(at("## Skills") < at("## Session Manifest") && at("## Session Manifest") < at("## Reporting mode"));
+    let at = |needle: &str| {
+        a.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing from:\n{a}"))
+    };
+    assert!(
+        at("BASE") < at("## Identity")
+            && at("## Identity") < at("## Available RE tools")
+            && at("## Available RE tools") < at("## Skills")
+    );
+    assert!(
+        at("## Skills") < at("## Session Manifest")
+            && at("## Session Manifest") < at("## Reporting mode")
+    );
 }
 
 #[test]
 fn the_default_base_prompt_tells_the_agent_where_history_went() {
     // The context-management contract: cut and dropped material must be findable.
-    for needle in ["history_read", "history_search", "history_index", "#id", "nothing is ever deleted"] {
+    for needle in [
+        "history_read",
+        "history_search",
+        "history_index",
+        "#id",
+        "nothing is ever deleted",
+    ] {
         assert!(prompt::DEFAULT_BASE.contains(needle), "{needle}");
     }
 }
@@ -168,8 +249,17 @@ fn the_default_base_prompt_tells_the_agent_where_history_went() {
 
 #[test]
 fn a_model_spec_must_name_a_known_provider() {
-    let e = |s: &str| AnyLlm::from_spec(s).err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(e("claude-sonnet").contains("provider/name"), "{}", e("claude-sonnet"));
+    let e = |s: &str| {
+        AnyLlm::from_spec(s)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+    };
+    assert!(
+        e("claude-sonnet").contains("provider/name"),
+        "{}",
+        e("claude-sonnet")
+    );
     assert!(e("nope/model").contains("unknown provider `nope`"));
     for p in PROVIDERS {
         assert!(e("nope/model").contains(p), "the error should list {p}");

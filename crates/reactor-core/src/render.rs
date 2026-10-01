@@ -32,7 +32,10 @@ pub fn service_glyph(state: ServiceState) -> &'static str {
 
 /// The block injected into the system prompt.
 pub fn render_registry(entries: &[ToolEntry]) -> String {
-    let listed: Vec<&ToolEntry> = entries.iter().filter(|e| e.active && e.status == Status::Present).collect();
+    let listed: Vec<&ToolEntry> = entries
+        .iter()
+        .filter(|e| e.active && e.status == Status::Present)
+        .collect();
     if listed.is_empty() {
         return format!(
             "{REGISTRY_HEADING}\n\n\
@@ -41,9 +44,17 @@ pub fn render_registry(entries: &[ToolEntry]) -> String {
         );
     }
 
-    let rows: Vec<(String, &str, String)> = listed.iter().map(|e| (label(e), e.desc.as_str(), annotation(e))).collect();
+    let rows: Vec<(String, &str, String)> = listed
+        .iter()
+        .map(|e| (label(e), e.desc.as_str(), annotation(e)))
+        .collect();
     let w_label = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
-    let w_desc = rows.iter().filter(|r| !r.2.is_empty()).map(|r| r.1.chars().count()).max().unwrap_or(0);
+    let w_desc = rows
+        .iter()
+        .filter(|r| !r.2.is_empty())
+        .map(|r| r.1.chars().count())
+        .max()
+        .unwrap_or(0);
 
     let mut lines = Vec::new();
     for (label, desc, ann) in &rows {
@@ -53,7 +64,10 @@ pub fn render_registry(entries: &[ToolEntry]) -> String {
         }
         lines.push(line.trim_end().to_string());
     }
-    format!("{REGISTRY_HEADING}\n\n{}\n\n{REGISTRY_FOOTER}", lines.join("\n"))
+    format!(
+        "{REGISTRY_HEADING}\n\n{}\n\n{REGISTRY_FOOTER}",
+        lines.join("\n")
+    )
 }
 
 /// The first column: what you type. A multi-word `invoke` is a usage example,
@@ -89,7 +103,9 @@ fn annotation(e: &ToolEntry) -> String {
 
 /// Left-aligned columns, two spaces apart, trailing space trimmed.
 pub fn table(rows: &[Vec<String>]) -> String {
-    let Some(first) = rows.first() else { return String::new() };
+    let Some(first) = rows.first() else {
+        return String::new();
+    };
     let widths: Vec<usize> = (0..first.len())
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
@@ -115,7 +131,11 @@ pub fn render_tool_list(entries: &[ToolEntry]) -> String {
                 glyph(e.status).to_string(),
                 e.id.clone(),
                 e.version.clone().unwrap_or_default(),
-                if e.active { String::new() } else { "(off)".into() },
+                if e.active {
+                    String::new()
+                } else {
+                    "(off)".into()
+                },
                 e.desc.clone(),
             ]
         })
@@ -124,25 +144,50 @@ pub fn render_tool_list(entries: &[ToolEntry]) -> String {
 }
 
 pub fn render_tool_show(e: &ToolEntry) -> String {
-    let title = if e.name == e.id { e.id.clone() } else { format!("{} -- {}", e.id, e.name) };
+    let title = if e.name == e.id {
+        e.id.clone()
+    } else {
+        format!("{} -- {}", e.id, e.name)
+    };
     let mut out = vec![title, String::new(), format!("  {}", e.desc), String::new()];
     out.push(format!(
         "  status    {}{}",
         e.status.as_str(),
-        e.path.as_ref().map(|p| format!(" ({p})")).unwrap_or_default()
+        e.path
+            .as_ref()
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default()
     ));
     out.push(format!("  invoke    {}", e.invoke));
     if let Some(v) = e.version.as_deref().filter(|v| !v.is_empty()) {
         out.push(format!("  version   {v}"));
     }
-    out.push(format!("  active    {}", if e.active { "yes" } else { "no" }));
-    out.push(format!("  tags      {}", if e.tags.is_empty() { "-".to_string() } else { e.tags.join(", ") }));
-    out.push(format!("  detect    {} = {}", e.detect.kind.as_str(), e.detect.value));
+    out.push(format!(
+        "  active    {}",
+        if e.active { "yes" } else { "no" }
+    ));
+    out.push(format!(
+        "  tags      {}",
+        if e.tags.is_empty() {
+            "-".to_string()
+        } else {
+            e.tags.join(", ")
+        }
+    ));
+    out.push(format!(
+        "  detect    {} = {}",
+        e.detect.kind.as_str(),
+        e.detect.value
+    ));
     if let Some(src) = &e.source {
         out.push(format!("  source    {src}"));
     }
     if let Some(svc) = &e.service {
-        let detail = svc.detail.as_ref().map(|d| format!(" ({d})")).unwrap_or_default();
+        let detail = svc
+            .detail
+            .as_ref()
+            .map(|d| format!(" ({d})"))
+            .unwrap_or_default();
         out.push(format!(
             "  service   {}: {}{detail}",
             svc.label.as_deref().unwrap_or("service"),

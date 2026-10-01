@@ -26,8 +26,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -247,14 +247,14 @@ impl CliClient {
             cmd.current_dir(cwd);
         }
         let mut child = cmd.spawn().map_err(Error::Spawn)?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Failed { code: None, stderr: "stdout not piped".into() })?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| Error::Failed { code: None, stderr: "stderr not piped".into() })?;
+        let mut stdout = child.stdout.take().ok_or_else(|| Error::Failed {
+            code: None,
+            stderr: "stdout not piped".into(),
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| Error::Failed {
+            code: None,
+            stderr: "stderr not piped".into(),
+        })?;
 
         // stderr on a side thread, so a chatty CLI cannot deadlock the read
         // of stdout by filling its pipe.
@@ -266,7 +266,8 @@ impl CliClient {
         });
 
         // Watchdog: on timeout, kill the child so the read below unblocks.
-        let killer: Arc<std::sync::Mutex<Option<Child>>> = Arc::new(std::sync::Mutex::new(Some(child)));
+        let killer: Arc<std::sync::Mutex<Option<Child>>> =
+            Arc::new(std::sync::Mutex::new(Some(child)));
         let watchdog_child = Arc::clone(&killer);
         let (done_tx, done_rx) = mpsc::channel::<()>();
         std::thread::Builder::new()
@@ -290,7 +291,10 @@ impl CliClient {
         let mut out = String::new();
         let read = std::io::Read::read_to_string(&mut stdout, &mut out);
         drop(done_tx); // unblock the watchdog: the read finished
-        read.map_err(|e| Error::Failed { code: None, stderr: e.to_string() })?;
+        read.map_err(|e| Error::Failed {
+            code: None,
+            stderr: e.to_string(),
+        })?;
         let stderr_text = stderr_thread.join().unwrap_or_default();
 
         // Reap and judge: stdout's EOF is not the process exiting, so wait()
@@ -316,7 +320,10 @@ impl CliClient {
             } else {
                 stderr_text
             };
-            return Err(Error::Failed { code: status.code(), stderr });
+            return Err(Error::Failed {
+                code: status.code(),
+                stderr,
+            });
         }
         Ok(out)
     }
@@ -443,7 +450,10 @@ impl LibClient {
 
 impl ReactorClient for LibClient {
     fn tools(&self) -> Result<ToolsPayload> {
-        Self::wire(reactor_core::commands::tools_list(&self.paths, &Default::default()))
+        Self::wire(reactor_core::commands::tools_list(
+            &self.paths,
+            &Default::default(),
+        ))
     }
 
     fn toolsets(&self) -> Result<ToolsetsPayload> {
@@ -451,7 +461,10 @@ impl ReactorClient for LibClient {
     }
 
     fn services(&self, refresh: bool) -> Result<ServicesPayload> {
-        let flags = reactor_core::commands::ProbeFlags { refresh, cached: false };
+        let flags = reactor_core::commands::ProbeFlags {
+            refresh,
+            cached: false,
+        };
         Self::wire(reactor_core::commands::services(&self.paths, flags))
     }
 
@@ -460,7 +473,11 @@ impl ReactorClient for LibClient {
     }
 
     fn tool_detail(&self, id: &str) -> Result<ToolDetailPayload> {
-        Self::wire(reactor_core::commands::tools_show(&self.paths, id, Default::default()))
+        Self::wire(reactor_core::commands::tools_show(
+            &self.paths,
+            id,
+            Default::default(),
+        ))
     }
 
     fn registry(&self) -> Result<String> {
@@ -472,12 +489,22 @@ impl ReactorClient for LibClient {
 
     fn set_tool(&self, id: &str, enable: bool) -> Result<Value> {
         let ids = [id.to_owned()];
-        Self::wire(reactor_core::commands::set_activation(&self.paths, &ids, true, Some(enable)))
+        Self::wire(reactor_core::commands::set_activation(
+            &self.paths,
+            &ids,
+            true,
+            Some(enable),
+        ))
     }
 
     fn set_toolset(&self, id: &str, enable: bool) -> Result<Value> {
         let ids = [id.to_owned()];
-        Self::wire(reactor_core::commands::set_activation(&self.paths, &ids, false, Some(enable)))
+        Self::wire(reactor_core::commands::set_activation(
+            &self.paths,
+            &ids,
+            false,
+            Some(enable),
+        ))
     }
 }
 
@@ -528,28 +555,52 @@ impl Client {
 
 impl ReactorClient for Client {
     fn tools(&self) -> Result<ToolsPayload> {
-        match self { Client::Lib(c) => c.tools(), Client::Cli(c) => c.tools() }
+        match self {
+            Client::Lib(c) => c.tools(),
+            Client::Cli(c) => c.tools(),
+        }
     }
     fn toolsets(&self) -> Result<ToolsetsPayload> {
-        match self { Client::Lib(c) => c.toolsets(), Client::Cli(c) => c.toolsets() }
+        match self {
+            Client::Lib(c) => c.toolsets(),
+            Client::Cli(c) => c.toolsets(),
+        }
     }
     fn services(&self, refresh: bool) -> Result<ServicesPayload> {
-        match self { Client::Lib(c) => c.services(refresh), Client::Cli(c) => c.services(refresh) }
+        match self {
+            Client::Lib(c) => c.services(refresh),
+            Client::Cli(c) => c.services(refresh),
+        }
     }
     fn state(&self) -> Result<StatePayload> {
-        match self { Client::Lib(c) => c.state(), Client::Cli(c) => c.state() }
+        match self {
+            Client::Lib(c) => c.state(),
+            Client::Cli(c) => c.state(),
+        }
     }
     fn tool_detail(&self, id: &str) -> Result<ToolDetailPayload> {
-        match self { Client::Lib(c) => c.tool_detail(id), Client::Cli(c) => c.tool_detail(id) }
+        match self {
+            Client::Lib(c) => c.tool_detail(id),
+            Client::Cli(c) => c.tool_detail(id),
+        }
     }
     fn registry(&self) -> Result<String> {
-        match self { Client::Lib(c) => c.registry(), Client::Cli(c) => c.registry() }
+        match self {
+            Client::Lib(c) => c.registry(),
+            Client::Cli(c) => c.registry(),
+        }
     }
     fn set_tool(&self, id: &str, enable: bool) -> Result<Value> {
-        match self { Client::Lib(c) => c.set_tool(id, enable), Client::Cli(c) => c.set_tool(id, enable) }
+        match self {
+            Client::Lib(c) => c.set_tool(id, enable),
+            Client::Cli(c) => c.set_tool(id, enable),
+        }
     }
     fn set_toolset(&self, id: &str, enable: bool) -> Result<Value> {
-        match self { Client::Lib(c) => c.set_toolset(id, enable), Client::Cli(c) => c.set_toolset(id, enable) }
+        match self {
+            Client::Lib(c) => c.set_toolset(id, enable),
+            Client::Cli(c) => c.set_toolset(id, enable),
+        }
     }
 }
 

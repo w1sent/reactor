@@ -69,7 +69,11 @@ pub struct DiffReport {
 
 impl Report for DiffReport {
     fn human(&self) -> String {
-        if self.diff.is_empty() { "no differences".into() } else { self.diff.clone() }
+        if self.diff.is_empty() {
+            "no differences".into()
+        } else {
+            self.diff.clone()
+        }
     }
 }
 
@@ -97,7 +101,8 @@ pub fn diff_config(paths: &Paths, file: Option<&str>) -> Result<Done<DiffReport>
             Shipped::Embedded => {
                 let dir = tempdir("reactor-diff-")?;
                 let p = dir.join(&name);
-                std::fs::write(&p, paths.shipped_bytes(&name)?).map_err(|e| err!("{}: {}", p.display(), io_reason(&e)))?;
+                std::fs::write(&p, paths.shipped_bytes(&name)?)
+                    .map_err(|e| err!("{}: {}", p.display(), io_reason(&e)))?;
                 (p, Some(dir))
             }
         };
@@ -123,7 +128,14 @@ pub fn diff_config(paths: &Paths, file: Option<&str>) -> Result<Done<DiffReport>
         }
     }
     let diff = chunks.join("\n");
-    Ok(Done::code(DiffReport { files, differ, diff }, if differ { 1 } else { 0 }))
+    Ok(Done::code(
+        DiffReport {
+            files,
+            differ,
+            diff,
+        },
+        if differ { 1 } else { 0 },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -153,13 +165,25 @@ fn timestamp() -> String {
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&t, &mut tm);
         let mut buf = [0u8; 32];
-        let n = libc::strftime(buf.as_mut_ptr() as *mut libc::c_char, buf.len(), c"%Y%m%d-%H%M%S".as_ptr(), &tm);
+        let n = libc::strftime(
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            c"%Y%m%d-%H%M%S".as_ptr(),
+            &tm,
+        );
         String::from_utf8_lossy(&buf[..n]).into_owned()
     }
 }
 
-pub fn overwrite_config(paths: &Paths, file: Option<&str>, host: &dyn Host) -> Result<Done<OverwriteReport>> {
-    let plan: Vec<String> = names_for(file).into_iter().filter(|n| config_drift(paths, n) != ConfigDrift::Same).collect();
+pub fn overwrite_config(
+    paths: &Paths,
+    file: Option<&str>,
+    host: &dyn Host,
+) -> Result<Done<OverwriteReport>> {
+    let plan: Vec<String> = names_for(file)
+        .into_iter()
+        .filter(|n| config_drift(paths, n) != ConfigDrift::Same)
+        .collect();
     if plan.is_empty() {
         return Ok(Done::ok(OverwriteReport {
             replaced: vec![],
@@ -168,7 +192,11 @@ pub fn overwrite_config(paths: &Paths, file: Option<&str>, host: &dyn Host) -> R
             human: "already identical to the shipped copies".into(),
         }));
     }
-    let prompt = format!("replace {} in {} with the shipped copies?", plan.join(", "), paths.config_dir.display());
+    let prompt = format!(
+        "replace {} in {} with the shipped copies?",
+        plan.join(", "),
+        paths.config_dir.display()
+    );
     if !host.confirm(&prompt) {
         return Ok(Done::code(
             OverwriteReport {
@@ -185,19 +213,31 @@ pub fn overwrite_config(paths: &Paths, file: Option<&str>, host: &dyn Host) -> R
         let live = paths.live(name);
         if live.is_file() {
             let backup = live.with_file_name(format!("{name}.{}.bak", timestamp()));
-            std::fs::copy(&live, &backup).map_err(|e| err!("{}: {}", backup.display(), io_reason(&e)))?;
+            std::fs::copy(&live, &backup)
+                .map_err(|e| err!("{}: {}", backup.display(), io_reason(&e)))?;
             backups.push(backup.display().to_string());
         }
-        std::fs::create_dir_all(&paths.config_dir).map_err(|e| err!("{}: {}", paths.config_dir.display(), io_reason(&e)))?;
-        std::fs::write(&live, paths.shipped_bytes(name)?).map_err(|e| err!("{}: {}", live.display(), io_reason(&e)))?;
+        std::fs::create_dir_all(&paths.config_dir)
+            .map_err(|e| err!("{}: {}", paths.config_dir.display(), io_reason(&e)))?;
+        std::fs::write(&live, paths.shipped_bytes(name)?)
+            .map_err(|e| err!("{}: {}", live.display(), io_reason(&e)))?;
         replaced.push(name.clone());
     }
     let human = format!(
         "replaced: {}{}",
         replaced.join(", "),
-        if backups.is_empty() { String::new() } else { format!("\nbackups: {}", backups.join(", ")) }
+        if backups.is_empty() {
+            String::new()
+        } else {
+            format!("\nbackups: {}", backups.join(", "))
+        }
     );
-    Ok(Done::ok(OverwriteReport { replaced, backups, message: None, human }))
+    Ok(Done::ok(OverwriteReport {
+        replaced,
+        backups,
+        message: None,
+        human,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +266,10 @@ impl Report for SetupReport {
         out.extend(self.warnings.iter().map(|w| format!("  ! {w}")));
         out.push(String::new());
         if !self.warnings.is_empty() {
-            out.push(format!("{} warning(s). REactor still works -- see above.", self.warnings.len()));
+            out.push(format!(
+                "{} warning(s). REactor still works -- see above.",
+                self.warnings.len()
+            ));
         }
         out.push("Next: `reactor doctor` for what is present and what is missing.".into());
         out.join("\n")
@@ -240,10 +283,14 @@ impl Report for SetupReport {
 fn completion_target(shell: &str) -> PathBuf {
     let home = home_dir();
     let xdg = |var: &str, fallback: PathBuf| {
-        std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or(fallback)
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or(fallback)
     };
     match shell {
-        "bash" => xdg("XDG_DATA_HOME", home.join(".local/share")).join("bash-completion/completions/reactor"),
+        "bash" => xdg("XDG_DATA_HOME", home.join(".local/share"))
+            .join("bash-completion/completions/reactor"),
         "zsh" => home.join(".zfunc/_reactor"),
         _ => xdg("XDG_CONFIG_HOME", home.join(".config")).join("fish/completions/reactor.fish"),
     }
@@ -252,11 +299,18 @@ fn completion_target(shell: &str) -> PathBuf {
 /// Where `reactor-gui` is installed: next to this binary (`cargo install` puts them in the same
 /// directory), else anywhere on `PATH`.
 fn gui_binary() -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("reactor-gui")));
-    let on_path = std::env::var_os("PATH")
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("reactor-gui")));
+    let on_path = std::env::var_os("PATH").into_iter().flat_map(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("reactor-gui"))
+            .collect::<Vec<_>>()
+    });
+    beside
         .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).map(|dir| dir.join("reactor-gui")).collect::<Vec<_>>());
-    beside.into_iter().chain(on_path).find(|candidate| candidate.is_file())
+        .chain(on_path)
+        .find(|candidate| candidate.is_file())
 }
 
 /// The desktop entry and icon that give `reactor-gui` its icon under Wayland, and its place in
@@ -265,11 +319,21 @@ fn gui_binary() -> Option<PathBuf> {
 /// the entry works when `~/.cargo/bin` is not on the desktop session's `PATH`.
 fn launcher_files(gui: &std::path::Path) -> [(PathBuf, Vec<u8>); 2] {
     let home = home_dir();
-    let data = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or(home.join(".local/share"));
-    let entry = include_str!("../launcher/reactor-gui.desktop").replace("@EXEC@", &gui.display().to_string());
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(home.join(".local/share"));
+    let entry = include_str!("../launcher/reactor-gui.desktop")
+        .replace("@EXEC@", &gui.display().to_string());
     [
-        (data.join("applications/reactor-gui.desktop"), entry.into_bytes()),
-        (data.join("icons/hicolor/256x256/apps/reactor-gui.png"), include_bytes!("../launcher/reactor-gui.png").to_vec()),
+        (
+            data.join("applications/reactor-gui.desktop"),
+            entry.into_bytes(),
+        ),
+        (
+            data.join("icons/hicolor/256x256/apps/reactor-gui.png"),
+            include_bytes!("../launcher/reactor-gui.png").to_vec(),
+        ),
     ]
 }
 
@@ -295,7 +359,9 @@ pub fn setup(paths: &Paths, opts: SetupOpts) -> Result<Done<SetupReport>> {
                 }
             }
             // Never clobber: this is the user's file now (ADR-0003/0004).
-            ConfigDrift::Differs => warnings.push(format!("{name} differs from the shipped copy -- `reactor diff-config`")),
+            ConfigDrift::Differs => warnings.push(format!(
+                "{name} differs from the shipped copy -- `reactor diff-config`"
+            )),
             ConfigDrift::Same => actions.push(format!("  {} (up to date)", live.display())),
         }
     }
@@ -306,7 +372,10 @@ pub fn setup(paths: &Paths, opts: SetupOpts) -> Result<Done<SetupReport>> {
             let empty = StateDoc {
                 version: 1,
                 toolsets: vec![],
-                tools: crate::state::StateTools { enabled: vec![], disabled: vec![] },
+                tools: crate::state::StateTools {
+                    enabled: vec![],
+                    disabled: vec![],
+                },
             };
             write_json_atomic(&state, &empty)?;
         }
@@ -378,17 +447,26 @@ pub fn setup(paths: &Paths, opts: SetupOpts) -> Result<Done<SetupReport>> {
             }
             actions.push(format!("{would}write {}", dest.display()));
             if !opts.dry_run {
-                let wrote = dest.parent().map(std::fs::create_dir_all).transpose().and_then(|_| std::fs::write(&dest, bytes));
+                let wrote = dest
+                    .parent()
+                    .map(std::fs::create_dir_all)
+                    .transpose()
+                    .and_then(|_| std::fs::write(&dest, bytes));
                 if let Err(e) = wrote {
                     warnings.push(format!("{}: {}", dest.display(), io_reason(&e)));
                 }
             }
         }
     } else {
-        actions.push("  reactor-gui is not installed (cargo install --path crates/reactor-gui), skipped".into());
+        actions.push(
+            "  reactor-gui is not installed (cargo install --path crates/reactor-gui), skipped"
+                .into(),
+        );
     }
 
-    if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    if let Some(exe) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         && !on_path(&exe)
     {
         warnings.push(format!("{} is not on your PATH", exe.display()));

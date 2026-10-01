@@ -18,12 +18,21 @@ pub struct Notice {
 
 impl Notice {
     pub fn info(message: impl Into<String>) -> Self {
-        Self { message: message.into(), level: Level::Info }
+        Self {
+            message: message.into(),
+            level: Level::Info,
+        }
     }
     pub fn warning(message: impl Into<String>) -> Self {
-        Self { message: message.into(), level: Level::Warning }
+        Self {
+            message: message.into(),
+            level: Level::Warning,
+        }
     }
     pub fn error(message: impl Into<String>) -> Self {
-        Self { message: message.into(), level: Level::Error }
+        Self {
+            message: message.into(),
+            level: Level::Error,
+        }
     }
 }

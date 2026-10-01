@@ -26,11 +26,19 @@ pub fn select(cat: &Catalogue, ids: &[String]) -> Result<Vec<String>> {
     if ids.is_empty() {
         return Ok(cat.order());
     }
-    let unknown: Vec<&str> = ids.iter().filter(|i| !cat.contains(i)).map(String::as_str).collect();
+    let unknown: Vec<&str> = ids
+        .iter()
+        .filter(|i| !cat.contains(i))
+        .map(String::as_str)
+        .collect();
     if !unknown.is_empty() {
         return Err(err!("unknown tool(s): {}", unknown.join(", ")));
     }
-    Ok(cat.order().into_iter().filter(|i| ids.contains(i)).collect())
+    Ok(cat
+        .order()
+        .into_iter()
+        .filter(|i| ids.contains(i))
+        .collect())
 }
 
 struct Loaded {
@@ -40,7 +48,11 @@ struct Loaded {
 }
 
 fn load(paths: &Paths) -> Result<Loaded> {
-    Ok(Loaded { cat: load_catalogue(paths)?, toolsets: load_toolsets(paths)?, state: load_state(paths)? })
+    Ok(Loaded {
+        cat: load_catalogue(paths)?,
+        toolsets: load_toolsets(paths)?,
+        state: load_state(paths)?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -79,13 +91,29 @@ impl Report for RegistryReport {
 pub fn registry(paths: &Paths, flags: ProbeFlags) -> Result<Done<RegistryReport>> {
     let l = load(paths)?;
     let active = active_ids(&l.cat, &l.toolsets, &l.state);
-    let ids: Vec<String> = l.cat.order().into_iter().filter(|i| active.contains(i)).collect();
-    let results = probe(paths, &l.cat, &ids, ProbeOpts { refresh: flags.refresh, cached_only: flags.cached, services: true });
+    let ids: Vec<String> = l
+        .cat
+        .order()
+        .into_iter()
+        .filter(|i| active.contains(i))
+        .collect();
+    let results = probe(
+        paths,
+        &l.cat,
+        &ids,
+        ProbeOpts {
+            refresh: flags.refresh,
+            cached_only: flags.cached,
+            services: true,
+        },
+    );
     let entries = describe(paths, &l.cat, &l.toolsets, &l.state, &ids, &results, false);
     let count = |s: Status| entries.iter().filter(|e| e.status == s).count();
     let mut skill_paths: Vec<String> = entries
         .iter()
-        .filter(|e| e.active && e.status == Status::Present && e.skill.as_ref().is_some_and(|s| s.fetched))
+        .filter(|e| {
+            e.active && e.status == Status::Present && e.skill.as_ref().is_some_and(|s| s.fetched)
+        })
         .map(|e| paths.skills_dir().join(&e.id).display().to_string())
         .collect();
     skill_paths.sort();
@@ -165,7 +193,11 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
         paths,
         &l.cat,
         &ids,
-        ProbeOpts { refresh: !flags.cached, cached_only: flags.cached, services: true },
+        ProbeOpts {
+            refresh: !flags.cached,
+            cached_only: flags.cached,
+            services: true,
+        },
     );
     let entries = describe(paths, &l.cat, &l.toolsets, &l.state, &ids, &results, true);
     let managers: Vec<String> = available_managers(&l.cat).into_keys().collect();
@@ -197,7 +229,10 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
             problems.push(Problem {
                 kind: "skill-missing",
                 tool: Some(e.id.clone()),
-                message: format!("{}: configured skill not fetched -- `reactor skills fetch {}`", e.id, e.id),
+                message: format!(
+                    "{}: configured skill not fetched -- `reactor skills fetch {}`",
+                    e.id, e.id
+                ),
                 ..Default::default()
             });
         }
@@ -210,7 +245,10 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
             problems.push(Problem {
                 kind: "toolset-empty",
                 toolset: Some(ts.id.clone()),
-                message: format!("toolset {}: selects no tool -- `reactor toolsets show {}`", ts.id, ts.id),
+                message: format!(
+                    "toolset {}: selects no tool -- `reactor toolsets show {}`",
+                    ts.id, ts.id
+                ),
                 ..Default::default()
             });
         }
@@ -220,11 +258,19 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
     if flags.check_skills {
         for e in &entries {
             let Some(sk) = e.skill.as_ref() else { continue };
-            let Some(have) = sk.commit.as_deref().filter(|_| sk.fetched) else { continue };
-            let Some(head) = l.cat.get(&e.id).and_then(skill_remote_head) else { continue };
+            let Some(have) = sk.commit.as_deref().filter(|_| sk.fetched) else {
+                continue;
+            };
+            let Some(head) = l.cat.get(&e.id).and_then(skill_remote_head) else {
+                continue;
+            };
             if head != have {
                 let cut = |s: &str| s.chars().take(12).collect::<String>();
-                stale.push(StaleSkill { tool: e.id.clone(), have: cut(have), remote: cut(&head) });
+                stale.push(StaleSkill {
+                    tool: e.id.clone(),
+                    have: cut(have),
+                    remote: cut(&head),
+                });
                 problems.push(Problem {
                     kind: "skill-stale",
                     tool: Some(e.id.clone()),
@@ -240,13 +286,21 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
     }
 
     Ok(Done::ok(DoctorReport {
-        platform: DoctorPlatform { sys_platform: sys_platform(), reactor: env!("CARGO_PKG_VERSION"), managers },
+        platform: DoctorPlatform {
+            sys_platform: sys_platform(),
+            reactor: env!("CARGO_PKG_VERSION"),
+            managers,
+        },
         config: DoctorConfig {
             dir: paths.config_dir.display().to_string(),
             catalogue: l.cat.path.clone(),
             shipped_fallback: l.cat.shipped,
             state_scope: l.state.scope,
-            active_toolsets: if l.state.toolsets.is_empty() { vec!["(all)".into()] } else { l.state.toolsets.clone() },
+            active_toolsets: if l.state.toolsets.is_empty() {
+                vec!["(all)".into()]
+            } else {
+                l.state.toolsets.clone()
+            },
         },
         tools: entries,
         skills_stale: stale,
@@ -262,25 +316,65 @@ impl Report for DoctorReport {
             format!("platform   {}", p.sys_platform),
             format!(
                 "managers   {}",
-                if p.managers.is_empty() { "none detected".to_string() } else { p.managers.join(", ") }
+                if p.managers.is_empty() {
+                    "none detected".to_string()
+                } else {
+                    p.managers.join(", ")
+                }
             ),
-            format!("config     {}{}", c.catalogue, if c.shipped_fallback { "  (SHIPPED FALLBACK)" } else { "" }),
-            format!("toolsets   {}  [{}]", c.active_toolsets.join(", "), c.state_scope.as_str()),
+            format!(
+                "config     {}{}",
+                c.catalogue,
+                if c.shipped_fallback {
+                    "  (SHIPPED FALLBACK)"
+                } else {
+                    ""
+                }
+            ),
+            format!(
+                "toolsets   {}  [{}]",
+                c.active_toolsets.join(", "),
+                c.state_scope.as_str()
+            ),
             String::new(),
         ];
-        let of = |s: Status| self.tools.iter().filter(move |e| e.status == s).collect::<Vec<_>>();
-        let (present, absent, unknown) = (of(Status::Present), of(Status::Absent), of(Status::Unknown));
+        let of = |s: Status| {
+            self.tools
+                .iter()
+                .filter(move |e| e.status == s)
+                .collect::<Vec<_>>()
+        };
+        let (present, absent, unknown) =
+            (of(Status::Present), of(Status::Absent), of(Status::Unknown));
 
         out.push(format!("present ({})", present.len()));
         let rows: Vec<Vec<String>> = present
             .iter()
-            .map(|e| vec![format!("  {}", e.id), e.version.clone().unwrap_or_default(), e.desc.clone()])
+            .map(|e| {
+                vec![
+                    format!("  {}", e.id),
+                    e.version.clone().unwrap_or_default(),
+                    e.desc.clone(),
+                ]
+            })
             .collect();
-        out.push(if rows.is_empty() { "  none".to_string() } else { table(&rows) });
+        out.push(if rows.is_empty() {
+            "  none".to_string()
+        } else {
+            table(&rows)
+        });
         if !unknown.is_empty() {
             out.push(String::new());
-            out.push(format!("unknown ({}) -- probe timed out; not reported as absent", unknown.len()));
-            out.push(table(&unknown.iter().map(|e| vec![format!("  {}", e.id), e.desc.clone()]).collect::<Vec<_>>()));
+            out.push(format!(
+                "unknown ({}) -- probe timed out; not reported as absent",
+                unknown.len()
+            ));
+            out.push(table(
+                &unknown
+                    .iter()
+                    .map(|e| vec![format!("  {}", e.id), e.desc.clone()])
+                    .collect::<Vec<_>>(),
+            ));
         }
         if !absent.is_empty() {
             out.push(String::new());
@@ -343,7 +437,12 @@ pub fn tools_list(paths: &Paths, flags: &ToolsListFlags) -> Result<Done<ToolsRep
     if !flags.tags.is_empty() {
         // Repeating --tag narrows, the same way a toolset's tag list does
         // (ADR-0013). One spelling of "a list of tags", one meaning.
-        ids.retain(|i| flags.tags.iter().all(|w| l.cat.get(i).unwrap().tags.contains(w)));
+        ids.retain(|i| {
+            flags
+                .tags
+                .iter()
+                .all(|w| l.cat.get(i).unwrap().tags.contains(w))
+        });
     }
     if flags.active {
         let active = active_ids(&l.cat, &l.toolsets, &l.state);
@@ -353,7 +452,11 @@ pub fn tools_list(paths: &Paths, flags: &ToolsListFlags) -> Result<Done<ToolsRep
         paths,
         &l.cat,
         &ids,
-        ProbeOpts { refresh: flags.probe.refresh, cached_only: flags.probe.cached, services: false },
+        ProbeOpts {
+            refresh: flags.probe.refresh,
+            cached_only: flags.probe.cached,
+            services: false,
+        },
     );
     let mut entries = describe(paths, &l.cat, &l.toolsets, &l.state, &ids, &results, false);
     if flags.present {
@@ -382,7 +485,11 @@ pub fn tools_show(paths: &Paths, id: &str, flags: ProbeFlags) -> Result<Done<Too
         paths,
         &l.cat,
         &ids,
-        ProbeOpts { refresh: flags.refresh, cached_only: flags.cached, services: true },
+        ProbeOpts {
+            refresh: flags.refresh,
+            cached_only: flags.cached,
+            services: true,
+        },
     );
     let entry = describe(paths, &l.cat, &l.toolsets, &l.state, &ids, &results, true).remove(0);
     Ok(Done::ok(ToolReport { tool: entry }))
@@ -401,11 +508,22 @@ pub struct ToggleReport {
 
 impl Report for ToggleReport {
     fn human(&self) -> String {
-        format!("{}: {}\n{} tool(s) active -- {}", self.verb, self.ids.join(", "), self.active.len(), self.path)
+        format!(
+            "{}: {}\n{} tool(s) active -- {}",
+            self.verb,
+            self.ids.join(", "),
+            self.active.len(),
+            self.path
+        )
     }
 }
 
-pub fn set_activation(paths: &Paths, ids: &[String], tools: bool, on: Option<bool>) -> Result<Done<ToggleReport>> {
+pub fn set_activation(
+    paths: &Paths,
+    ids: &[String],
+    tools: bool,
+    on: Option<bool>,
+) -> Result<Done<ToggleReport>> {
     let mut l = load(paths)?;
     toggle(&l.cat, &l.toolsets, &mut l.state, ids, tools, on)?;
     if let Some(session) = &paths.session_state {
@@ -417,7 +535,9 @@ pub fn set_activation(paths: &Paths, ids: &[String], tools: bool, on: Option<boo
         l.state.path = paths.state_file();
     }
     l.state.save()?;
-    let active: Vec<String> = active_ids(&l.cat, &l.toolsets, &l.state).into_iter().collect();
+    let active: Vec<String> = active_ids(&l.cat, &l.toolsets, &l.state)
+        .into_iter()
+        .collect();
     let verb = match on {
         Some(true) => "enabled",
         Some(false) => "disabled",
@@ -457,7 +577,11 @@ impl Report for ToolsetsReport {
                 .iter()
                 .map(|t| {
                     vec![
-                        if t.active { "[x]".to_string() } else { "[ ]".to_string() },
+                        if t.active {
+                            "[x]".to_string()
+                        } else {
+                            "[ ]".to_string()
+                        },
                         t.id.clone(),
                         t.tools.len().to_string(),
                         t.desc.clone(),
@@ -500,15 +624,32 @@ pub struct ToolsetReport {
 
 impl Report for ToolsetReport {
     fn human(&self) -> String {
-        format!("{} -- {}\n\n{}", self.toolset.id, self.toolset.desc, render_tool_list(&self.toolset.members))
+        format!(
+            "{} -- {}\n\n{}",
+            self.toolset.id,
+            self.toolset.desc,
+            render_tool_list(&self.toolset.members)
+        )
     }
 }
 
 pub fn toolsets_show(paths: &Paths, id: &str) -> Result<Done<ToolsetReport>> {
     let l = load(paths)?;
-    let ts = l.toolsets.iter().find(|t| t.id == id).ok_or_else(|| err!("unknown toolset: {id}"))?;
+    let ts = l
+        .toolsets
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| err!("unknown toolset: {id}"))?;
     let members = toolset_members(ts, &l.cat);
-    let results = probe(paths, &l.cat, &members, ProbeOpts { cached_only: true, ..Default::default() });
+    let results = probe(
+        paths,
+        &l.cat,
+        &members,
+        ProbeOpts {
+            cached_only: true,
+            ..Default::default()
+        },
+    );
     Ok(Done::ok(ToolsetReport {
         toolset: ToolsetDetail {
             id: ts.id.clone(),
@@ -516,7 +657,15 @@ pub fn toolsets_show(paths: &Paths, id: &str) -> Result<Done<ToolsetReport>> {
             tools: ts.tools.clone(),
             tags: ts.tags.clone(),
             active: l.state.toolsets.contains(&ts.id),
-            members: describe(paths, &l.cat, &l.toolsets, &l.state, &members, &results, false),
+            members: describe(
+                paths,
+                &l.cat,
+                &l.toolsets,
+                &l.state,
+                &members,
+                &results,
+                false,
+            ),
         },
     }))
 }
@@ -533,7 +682,13 @@ pub struct StateReport {
 
 impl Report for StateReport {
     fn human(&self) -> String {
-        let join = |v: &[String], empty: &str| if v.is_empty() { empty.to_string() } else { v.join(", ") };
+        let join = |v: &[String], empty: &str| {
+            if v.is_empty() {
+                empty.to_string()
+            } else {
+                v.join(", ")
+            }
+        };
         format!(
             "scope      {} ({})\ntoolsets   {}\nenabled    {}\ndisabled   {}\nactive     {} tool(s)",
             self.scope.as_str(),
@@ -548,7 +703,9 @@ impl Report for StateReport {
 
 pub fn state(paths: &Paths) -> Result<Done<StateReport>> {
     let l = load(paths)?;
-    let active = active_ids(&l.cat, &l.toolsets, &l.state).into_iter().collect();
+    let active = active_ids(&l.cat, &l.toolsets, &l.state)
+        .into_iter()
+        .collect();
     Ok(Done::ok(StateReport {
         state: l.state.as_doc(),
         scope: l.state.scope,
@@ -581,14 +738,28 @@ impl Report for SkillsListReport {
             .iter()
             .map(|s| {
                 vec![
-                    if s.status.fetched { "[+]".to_string() } else { "[-]".to_string() },
+                    if s.status.fetched {
+                        "[+]".to_string()
+                    } else {
+                        "[-]".to_string()
+                    },
                     s.tool.clone(),
-                    s.status.commit.as_deref().unwrap_or("").chars().take(12).collect(),
+                    s.status
+                        .commit
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(12)
+                        .collect(),
                     s.status.source.clone().unwrap_or_default(),
                 ]
             })
             .collect();
-        if rows.is_empty() { "no upstream skills configured".to_string() } else { table(&rows) }
+        if rows.is_empty() {
+            "no upstream skills configured".to_string()
+        } else {
+            table(&rows)
+        }
     }
 }
 
@@ -597,7 +768,12 @@ pub fn skills_list(paths: &Paths) -> Result<Done<SkillsListReport>> {
     let skills = cat
         .tools
         .iter()
-        .filter_map(|t| skill_status(paths, t).map(|status| SkillRow { tool: t.id.clone(), status }))
+        .filter_map(|t| {
+            skill_status(paths, t).map(|status| SkillRow {
+                tool: t.id.clone(),
+                status,
+            })
+        })
         .collect();
     Ok(Done::ok(SkillsListReport { skills }))
 }
@@ -627,10 +803,21 @@ pub fn skills_show(paths: &Paths, id: &str) -> Result<Done<SkillShowReport>> {
     }
     let path = paths.skills_dir().join(id).join("SKILL.md");
     if !path.is_file() {
-        return Err(err!("{id}: no fetched skill -- `reactor skills fetch {id}`"));
+        return Err(err!(
+            "{id}: no fetched skill -- `reactor skills fetch {id}`"
+        ));
     }
-    let content = String::from_utf8_lossy(&std::fs::read(&path).map_err(|e| err!("{}: {}", path.display(), e))?).into_owned();
-    Ok(Done::ok(SkillShowReport { skill: SkillBody { tool: id.to_string(), path: path.display().to_string(), content } }))
+    let content = String::from_utf8_lossy(
+        &std::fs::read(&path).map_err(|e| err!("{}: {}", path.display(), e))?,
+    )
+    .into_owned();
+    Ok(Done::ok(SkillShowReport {
+        skill: SkillBody {
+            tool: id.to_string(),
+            path: path.display().to_string(),
+            content,
+        },
+    }))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -643,7 +830,14 @@ impl Report for SkillsFetchReport {
     fn human(&self) -> String {
         self.fetched
             .iter()
-            .map(|r| format!("{}{}: {}", if r.ok { "  " } else { "! " }, r.tool, r.message))
+            .map(|r| {
+                format!(
+                    "{}{}: {}",
+                    if r.ok { "  " } else { "! " },
+                    r.tool,
+                    r.message
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -652,13 +846,22 @@ impl Report for SkillsFetchReport {
 pub fn skills_fetch(paths: &Paths, ids: &[String]) -> Result<Done<SkillsFetchReport>> {
     let cat = load_catalogue(paths)?;
     let selected = select(&cat, ids)?;
-    let targets: Vec<_> = selected.iter().filter_map(|i| cat.get(i)).filter(|t| t.skill.is_some()).collect();
+    let targets: Vec<_> = selected
+        .iter()
+        .filter_map(|i| cat.get(i))
+        .filter(|t| t.skill.is_some())
+        .collect();
     if targets.is_empty() {
-        return Err(err!("no configured upstream skills among the selected tools"));
+        return Err(err!(
+            "no configured upstream skills among the selected tools"
+        ));
     }
     let fetched: Vec<FetchResult> = targets.iter().map(|t| fetch_skill(paths, t)).collect();
     let failed = fetched.iter().filter(|r| !r.ok).count();
-    Ok(Done::code(SkillsFetchReport { fetched, failed }, if failed > 0 { 1 } else { 0 }))
+    Ok(Done::code(
+        SkillsFetchReport { fetched, failed },
+        if failed > 0 { 1 } else { 0 },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -709,12 +912,22 @@ impl Report for ServicesReport {
 /// for a status line to ask on every turn (ADR-0014).
 pub fn services(paths: &Paths, flags: ProbeFlags) -> Result<Done<ServicesReport>> {
     let l = load(paths)?;
-    let ids: Vec<String> = l.cat.tools.iter().filter(|t| t.service_probe.is_some()).map(|t| t.id.clone()).collect();
+    let ids: Vec<String> = l
+        .cat
+        .tools
+        .iter()
+        .filter(|t| t.service_probe.is_some())
+        .map(|t| t.id.clone())
+        .collect();
     let results = probe(
         paths,
         &l.cat,
         &ids,
-        ProbeOpts { refresh: flags.refresh, cached_only: flags.cached, services: true },
+        ProbeOpts {
+            refresh: flags.refresh,
+            cached_only: flags.cached,
+            services: true,
+        },
     );
     let entries = describe(paths, &l.cat, &l.toolsets, &l.state, &ids, &results, false);
 
@@ -735,12 +948,18 @@ pub fn services(paths: &Paths, flags: ProbeFlags) -> Result<Done<ServicesReport>
             ServiceState::Unknown => unknown += 1,
         }
         let label = svc.and_then(|s| s.label.clone()).filter(|l| !l.is_empty());
-        let detail = if st == ServiceState::Up { svc.and_then(|s| s.detail.clone()) } else { None };
+        let detail = if st == ServiceState::Up {
+            svc.and_then(|s| s.detail.clone())
+        } else {
+            None
+        };
         rows.push(vec![
             service_glyph(st).to_string(),
             e.id.clone(),
             label.clone().unwrap_or_default(),
-            svc.and_then(|s| s.detail.clone()).filter(|d| !d.is_empty()).unwrap_or_else(|| st.as_str().to_string()),
+            svc.and_then(|s| s.detail.clone())
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| st.as_str().to_string()),
         ]);
         services.push(ServiceRow {
             id: e.id.clone(),
@@ -752,7 +971,11 @@ pub fn services(paths: &Paths, flags: ProbeFlags) -> Result<Done<ServicesReport>
             active: e.active,
         });
     }
-    Ok(Done::ok(ServicesReport { services, summary: ServiceSummary { up, down, unknown }, rows }))
+    Ok(Done::ok(ServicesReport {
+        services,
+        summary: ServiceSummary { up, down, unknown },
+        rows,
+    }))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -773,10 +996,24 @@ pub fn refresh(paths: &Paths) -> Result<Done<RefreshReport>> {
     cache.clear();
     cache.save();
     let ids = cat.order();
-    let results: HashMap<String, ProbeResult> =
-        probe(paths, &cat, &ids, ProbeOpts { refresh: true, cached_only: false, services: true });
-    let present = results.values().filter(|r| r.status == Status::Present).count();
-    Ok(Done::ok(RefreshReport { probed: ids.len(), present }))
+    let results: HashMap<String, ProbeResult> = probe(
+        paths,
+        &cat,
+        &ids,
+        ProbeOpts {
+            refresh: true,
+            cached_only: false,
+            services: true,
+        },
+    );
+    let present = results
+        .values()
+        .filter(|r| r.status == Status::Present)
+        .count();
+    Ok(Done::ok(RefreshReport {
+        probed: ids.len(),
+        present,
+    }))
 }
 
 /// `reactor __complete tools|toolsets`: bare ids, no probing — a <TAB> press
@@ -802,7 +1039,10 @@ pub struct PromoteReport {
 
 impl Report for PromoteReport {
     fn human(&self) -> String {
-        format!("made this session's activation the default -- {}", self.path)
+        format!(
+            "made this session's activation the default -- {}",
+            self.path
+        )
     }
 }
 
@@ -816,7 +1056,10 @@ pub fn make_session_state_default(paths: &Paths) -> Result<Done<PromoteReport>> 
     let doc = l.state.as_doc();
     let target = paths.state_file();
     crate::json::write_json_atomic(&target, &doc)?;
-    Ok(Done::ok(PromoteReport { path: target.display().to_string(), state: doc }))
+    Ok(Done::ok(PromoteReport {
+        path: target.display().to_string(),
+        state: doc,
+    }))
 }
 
 /// Drop the session's override: it inherits the project or machine state again.

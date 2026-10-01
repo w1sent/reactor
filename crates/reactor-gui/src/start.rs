@@ -38,7 +38,10 @@ impl ResolvedLaunch {
             return Some(dir.clone());
         }
         if self.launch_args.continue_recent {
-            return crate::backend::list_sessions(paths, Some(&self.cwd)).into_iter().next().map(|s| s.dir);
+            return crate::backend::list_sessions(paths, Some(&self.cwd))
+                .into_iter()
+                .next()
+                .map(|s| s.dir);
         }
         None
     }
@@ -77,11 +80,15 @@ pub fn parse_args(args: &[String]) -> LaunchArgs {
 /// root is `~/.reactor/`; the old `~/.pi/reactor-gui.json` is read once if the new file
 /// does not exist yet.
 pub fn config_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".reactor").join("gui.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".reactor")
+        .join("gui.json")
 }
 
 fn legacy_config_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".pi").join("reactor-gui.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".pi")
+        .join("reactor-gui.json")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -178,22 +185,45 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = reactor_core::Paths::new(dir.path(), reactor_core::paths::Shipped::Embedded);
         let make = |id: &str, cwd: &str, prompt: &str| {
-            let mut s = Store::create(dir.path().join("sessions").join(id), id, Path::new(cwd)).unwrap();
-            s.append(Kind::User { text: prompt.into() }).unwrap();
+            let mut s =
+                Store::create(dir.path().join("sessions").join(id), id, Path::new(cwd)).unwrap();
+            s.append(Kind::User {
+                text: prompt.into(),
+            })
+            .unwrap();
         };
         make("a", "/work", "the older one");
         std::thread::sleep(std::time::Duration::from_millis(5));
         make("b", "/work", "the newer one");
         make("c", "/elsewhere", "a different project");
 
-        let launch = ResolvedLaunch { cwd: "/work".into(), launch_args: LaunchArgs { continue_recent: true, ..Default::default() } };
+        let launch = ResolvedLaunch {
+            cwd: "/work".into(),
+            launch_args: LaunchArgs {
+                continue_recent: true,
+                ..Default::default()
+            },
+        };
         assert!(launch.resume_dir(&paths).unwrap().ends_with("sessions/b"));
         let listed = crate::backend::list_sessions(&paths, Some(Path::new("/work")));
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].first_prompt.as_deref(), Some("the newer one"));
 
-        let named = ResolvedLaunch { cwd: "/work".into(), launch_args: LaunchArgs { session: Some("/x/y".into()), ..Default::default() } };
+        let named = ResolvedLaunch {
+            cwd: "/work".into(),
+            launch_args: LaunchArgs {
+                session: Some("/x/y".into()),
+                ..Default::default()
+            },
+        };
         assert_eq!(named.resume_dir(&paths).as_deref(), Some(Path::new("/x/y")));
-        assert!(ResolvedLaunch { cwd: "/work".into(), launch_args: LaunchArgs::default() }.resume_dir(&paths).is_none());
+        assert!(
+            ResolvedLaunch {
+                cwd: "/work".into(),
+                launch_args: LaunchArgs::default()
+            }
+            .resume_dir(&paths)
+            .is_none()
+        );
     }
 }

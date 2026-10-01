@@ -47,15 +47,27 @@ fn a_torn_last_line_is_dropped_and_the_next_append_starts_clean() {
     user(&mut s, "two");
     let path = s.dir().to_path_buf();
     drop(s);
-    let mut f = std::fs::OpenOptions::new().append(true).open(path.join("session.jsonl")).unwrap();
-    f.write_all(b"{\"id\":3,\"parent\":2,\"ts\":1,\"type\":\"user\",\"te").unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path.join("session.jsonl"))
+        .unwrap();
+    f.write_all(b"{\"id\":3,\"parent\":2,\"ts\":1,\"type\":\"user\",\"te")
+        .unwrap();
     drop(f);
 
     let mut s = Store::open(&path).unwrap();
-    assert_eq!(s.len(), 3, "session header + two entries; the torn one is gone");
+    assert_eq!(
+        s.len(),
+        3,
+        "session header + two entries; the torn one is gone"
+    );
     user(&mut s, "three");
     let text = std::fs::read_to_string(path.join("session.jsonl")).unwrap();
-    assert!(text.lines().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()), "every line parses");
+    assert!(
+        text.lines()
+            .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()),
+        "every line parses"
+    );
     assert_eq!(Store::open(&path).unwrap().len(), 4);
 }
 
@@ -80,14 +92,22 @@ fn a_branch_is_a_parent_pointer_and_forking_rewrites_nothing() {
     let (_dir, mut s) = store();
     let u = user(&mut s, "question");
     let a1 = assistant(&mut s, "first answer");
-    let bytes_before = std::fs::metadata(s.dir().join("session.jsonl")).unwrap().len();
+    let bytes_before = std::fs::metadata(s.dir().join("session.jsonl"))
+        .unwrap()
+        .len();
 
     s.set_head(u).unwrap();
     let a2 = assistant(&mut s, "second answer");
 
     assert_eq!(s.get(a2).unwrap().parent, Some(u));
-    assert_eq!(s.branch().iter().map(|e| e.id).collect::<Vec<_>>(), [0, u, a2]);
-    assert_eq!(s.path_to(a1).iter().map(|e| e.id).collect::<Vec<_>>(), [0, u, a1]);
+    assert_eq!(
+        s.branch().iter().map(|e| e.id).collect::<Vec<_>>(),
+        [0, u, a2]
+    );
+    assert_eq!(
+        s.path_to(a1).iter().map(|e| e.id).collect::<Vec<_>>(),
+        [0, u, a1]
+    );
     assert_eq!(s.children(u), [a1, a2]);
     assert_eq!(s.leaves(), [a1, a2]);
     // The original branch's bytes are untouched: the log only grew.
@@ -136,16 +156,28 @@ fn the_index_is_derived_and_rebuilt_when_stale() {
 #[test]
 fn history_reads_a_truncated_result_back_from_its_blob() {
     let (_dir, mut s) = store();
-    let full = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    let full = (1..=100)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let blob = s.write_blob("strings", full.as_bytes()).unwrap();
     let id = s
-        .append(Kind::ToolResult { call_id: "c".into(), name: "bash".into(), content: "line 1\n… cut …\nline 100".into(), is_error: false, blob: Some(blob) })
+        .append(Kind::ToolResult {
+            call_id: "c".into(),
+            name: "bash".into(),
+            content: "line 1\n… cut …\nline 100".into(),
+            is_error: false,
+            blob: Some(blob),
+        })
         .unwrap();
 
     let all = history::read(&s, id, None, None).unwrap();
     assert!(all.starts_with("line 1\nline 2"));
     assert!(all.ends_with("line 100"));
-    assert_eq!(history::read(&s, id, Some(50), Some(2)).unwrap(), "line 50\nline 51\n… [49 more line(s); continue with offset 52]");
+    assert_eq!(
+        history::read(&s, id, Some(50), Some(2)).unwrap(),
+        "line 50\nline 51\n… [49 more line(s); continue with offset 52]"
+    );
     assert!(history::read(&s, id, Some(500), None).is_err());
     assert!(history::read(&s, 12345, None, None).is_err());
 }
@@ -154,30 +186,67 @@ fn history_reads_a_truncated_result_back_from_its_blob() {
 fn history_search_reaches_blobs_and_every_kind_of_entry() {
     let (_dir, mut s) = store();
     user(&mut s, "find the license check");
-    let blob = s.write_blob("dump", b"aaa\nthe key is 0xDEADBEEF\nzzz").unwrap();
-    s.append(Kind::ToolResult { call_id: "c".into(), name: "bash".into(), content: "aaa".into(), is_error: false, blob: Some(blob) }).unwrap();
+    let blob = s
+        .write_blob("dump", b"aaa\nthe key is 0xDEADBEEF\nzzz")
+        .unwrap();
+    s.append(Kind::ToolResult {
+        call_id: "c".into(),
+        name: "bash".into(),
+        content: "aaa".into(),
+        is_error: false,
+        blob: Some(blob),
+    })
+    .unwrap();
 
     let hits = history::search(&s, "DEADBEEF", &[], 10).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!((hits[0].kind, hits[0].line), ("tool_result", 2));
-    assert_eq!(history::search(&s, "license", &["user".into()], 10).unwrap().len(), 1);
-    assert!(history::search(&s, "license", &["tool_result".into()], 10).unwrap().is_empty());
+    assert_eq!(
+        history::search(&s, "license", &["user".into()], 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        history::search(&s, "license", &["tool_result".into()], 10)
+            .unwrap()
+            .is_empty()
+    );
     assert!(history::search(&s, "(unclosed", &[], 10).is_err());
-    assert_eq!(history::search(&s, ".", &[], 2).unwrap().len(), 2, "the limit holds");
+    assert_eq!(
+        history::search(&s, ".", &[], 2).unwrap().len(),
+        2,
+        "the limit holds"
+    );
 }
 
 // -- projection and reductions -------------------------------------------------------------
 
 fn reduction(covers: Vec<u64>, summary: Option<&str>, stubs: Vec<Stub>) -> Kind {
-    Kind::Reduction(Reduction { mode: Mode::Auto, trigger: Trigger::Manual, covers, summary: summary.map(str::to_string), stubs, before_tokens: 100, after_tokens: 10 })
+    Kind::Reduction(Reduction {
+        mode: Mode::Auto,
+        trigger: Trigger::Manual,
+        covers,
+        summary: summary.map(str::to_string),
+        stubs,
+        before_tokens: 100,
+        after_tokens: 10,
+    })
 }
 
 #[test]
 fn an_unreduced_branch_projects_to_its_messages_and_skips_state_entries() {
     let (_dir, mut s) = store();
     user(&mut s, "q");
-    s.append(Kind::Custom { key: "manifest".into(), data: json!({"steps": []}) }).unwrap();
-    s.append(Kind::Label { text: "note".into() }).unwrap();
+    s.append(Kind::Custom {
+        key: "manifest".into(),
+        data: json!({"steps": []}),
+    })
+    .unwrap();
+    s.append(Kind::Label {
+        text: "note".into(),
+    })
+    .unwrap();
     bash(&mut s, "c1", "ls", "a b");
     let items = project(&s);
     assert_eq!(items.len(), 3, "user, assistant call, tool result");
@@ -195,14 +264,21 @@ fn a_reduction_replaces_its_range_with_one_message_at_the_first_hidden_position(
         .append(reduction(
             vec![u1, a, r],
             Some("looked at strings; nothing"),
-            vec![Stub { entry: r, what: "tool result".into(), detail: "bash strings x".into(), bytes: 14 }],
+            vec![Stub {
+                entry: r,
+                what: "tool result".into(),
+                detail: "bash strings x".into(),
+                bytes: 14,
+            }],
         ))
         .unwrap();
 
     let items = project(&s);
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].source, Source::Reduction(red));
-    let Msg::User { text } = &items[0].msg else { panic!() };
+    let Msg::User { text } = &items[0].msg else {
+        panic!()
+    };
     assert!(text.contains("looked at strings; nothing"));
     assert!(text.contains(&format!("#{r} tool result: bash strings x (14 bytes)")));
     assert_eq!(items[1].source, Source::Entry(u2));
@@ -216,7 +292,12 @@ fn the_rendering_of_a_reduction_is_deterministic() {
         trigger: Trigger::Budget,
         covers: vec![3, 4, 5],
         summary: Some("  notes  ".into()),
-        stubs: vec![Stub { entry: 5, what: "tool result".into(), detail: "bash ls".into(), bytes: 9 }],
+        stubs: vec![Stub {
+            entry: 5,
+            what: "tool result".into(),
+            detail: "bash ls".into(),
+            bytes: 9,
+        }],
         before_tokens: 0,
         after_tokens: 0,
     };
@@ -233,7 +314,9 @@ fn restoring_a_reduction_brings_the_originals_back() {
     let u1 = user(&mut s, "old");
     let a1 = assistant(&mut s, "older answer");
     user(&mut s, "new");
-    let red = s.append(reduction(vec![u1, a1], Some("summary"), vec![])).unwrap();
+    let red = s
+        .append(reduction(vec![u1, a1], Some("summary"), vec![]))
+        .unwrap();
     assert_eq!(project(&s).len(), 2);
 
     s.append(Kind::Restore { reduction: red }).unwrap();
@@ -248,11 +331,19 @@ fn a_later_reduction_supersedes_an_earlier_one_and_restoring_it_revives_the_earl
     let (_dir, mut s) = store();
     let u1 = user(&mut s, "one");
     let a1 = assistant(&mut s, "two");
-    let r1 = s.append(reduction(vec![u1, a1], Some("first"), vec![])).unwrap();
+    let r1 = s
+        .append(reduction(vec![u1, a1], Some("first"), vec![]))
+        .unwrap();
     let u2 = user(&mut s, "three");
     let a2 = assistant(&mut s, "four");
     user(&mut s, "five");
-    let r2 = s.append(reduction(vec![r1, u2, a2], Some("second, containing the first"), vec![])).unwrap();
+    let r2 = s
+        .append(reduction(
+            vec![r1, u2, a2],
+            Some("second, containing the first"),
+            vec![],
+        ))
+        .unwrap();
 
     assert_eq!(active_reductions(&s), [r2]);
     let items = project(&s);
@@ -272,7 +363,8 @@ fn a_reduction_only_applies_on_the_branch_that_made_it() {
     let u = user(&mut s, "shared start");
     let a = assistant(&mut s, "answer on branch one");
     user(&mut s, "follow-up");
-    s.append(reduction(vec![u, a], Some("branch one only"), vec![])).unwrap();
+    s.append(reduction(vec![u, a], Some("branch one only"), vec![]))
+        .unwrap();
 
     // Fork from the first entry: the other branch never saw that reduction.
     s.set_head(u).unwrap();
@@ -289,7 +381,11 @@ fn session_state_is_the_latest_custom_entry_per_key_on_the_branch() {
     save(&mut s, "manifest", json!({"goal": "one", "steps": []}));
     save(&mut s, "manifest", json!({"goal": "two", "steps": []}));
     save(&mut s, "identity", json!({"active": "publisher"}));
-    save(&mut s, "scenario", json!({"scenarioId": "investigation", "stepIndex": 1, "summaries": ["x"]}));
+    save(
+        &mut s,
+        "scenario",
+        json!({"scenarioId": "investigation", "stepIndex": 1, "summaries": ["x"]}),
+    );
     save(&mut s, "reporting", json!({"enabled": true, "level": 2}));
 
     let st = context::SessionState::load(&s);

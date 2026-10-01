@@ -32,7 +32,10 @@ use reactor_context::settings::{ContextSettings, Settings};
 
 use crate::backend::{Backend, ContextView, PlanView, StartOptions, TreeRow, UiEvent};
 use crate::palette::{self, Args, Entry, Usage};
-use crate::panels::{ConsolePanel, ContextPanel, ServicesPanel, ToolsPanel, ToolsetsPanel, TranscriptPanel, TreePanel};
+use crate::panels::{
+    ConsolePanel, ContextPanel, ServicesPanel, ToolsPanel, ToolsetsPanel, TranscriptPanel,
+    TreePanel,
+};
 use crate::session::{AgentPhase, ChatItem, Session, status_items};
 
 /// How often the event pump drains the backend's channel (SPEC.md §2).
@@ -248,13 +251,20 @@ impl ReactorApp {
         let mut config = crate::start::GuiConfig::load();
         config.push_workdir(&args.cwd);
 
-        let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(None, gpui_kit::size(px(1420.), px(920.)), cx));
+        let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(
+            None,
+            gpui_kit::size(px(1420.), px(920.)),
+            cx,
+        ));
         let mut app_entity: Option<Entity<ReactorApp>> = None;
         let _handle = cx.open_window(crate::chrome::window_options(bounds), |window, cx| {
             crate::theme::install_ayu_dark(cx);
             let app: Entity<ReactorApp> = cx.new(|cx| ReactorApp::new(window, cx, args));
             app_entity = Some(app.clone());
-            cx.set_global(MainWindow { handle: window.window_handle(), app: app.downgrade() });
+            cx.set_global(MainWindow {
+                handle: window.window_handle(),
+                app: app.downgrade(),
+            });
             let root_view: gpui_kit::AnyView = app.into();
             cx.new(|cx| Root::new(root_view, window, cx))
         })?;
@@ -275,7 +285,11 @@ impl ReactorApp {
         Ok(())
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>, args: &crate::start::ResolvedLaunch) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        args: &crate::start::ResolvedLaunch,
+    ) -> Self {
         let session = cx.new(|_| Session::new());
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -286,11 +300,15 @@ impl ReactorApp {
         let cwd = args.cwd.clone();
 
         // Composer: Enter submits (queued while a turn runs).
-        cx.subscribe_in(&composer, window, |this, _composer, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { shift, .. } if !*shift => this.send_composer(window, cx),
-            InputEvent::Change => this.refresh_slash(true, cx),
-            _ => {}
-        })
+        cx.subscribe_in(
+            &composer,
+            window,
+            |this, _composer, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { shift, .. } if !*shift => this.send_composer(window, cx),
+                InputEvent::Change => this.refresh_slash(true, cx),
+                _ => {}
+            },
+        )
         .detach();
 
         let weak_app = cx.weak_entity();
@@ -304,7 +322,8 @@ impl ReactorApp {
         let toolsets = cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx));
         let context = cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx));
         let services = cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx));
-        let console = cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx));
+        let console =
+            cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx));
         let panels = crate::layout::Panels {
             transcript: panel_handle(transcript.clone()),
             tree: panel_handle(tree.clone()),
@@ -360,14 +379,29 @@ impl ReactorApp {
             });
         }
 
-        let scenarios_dir = crate::backend::find_bundled("prompts/scenarios").unwrap_or_else(|| PathBuf::from("prompts/scenarios"));
+        let scenarios_dir = crate::backend::find_bundled("prompts/scenarios")
+            .unwrap_or_else(|| PathBuf::from("prompts/scenarios"));
         let models = backend.as_ref().map(|b| b.models()).unwrap_or_default();
         let tree = backend.as_ref().map(|b| b.tree()).unwrap_or_default();
         let leaf_id = backend.as_ref().map(|b| b.store().lock().unwrap().head());
         // A resumed session brings its earlier messages with it.
         let prompt_history = backend
             .as_ref()
-            .map(|b| b.store().lock().unwrap().branch().into_iter().filter_map(|e| if let reactor_agent::entry::Kind::User { text } = &e.kind { Some(text.clone()) } else { None }).collect::<Vec<String>>())
+            .map(|b| {
+                b.store()
+                    .lock()
+                    .unwrap()
+                    .branch()
+                    .into_iter()
+                    .filter_map(|e| {
+                        if let reactor_agent::entry::Kind::User { text } = &e.kind {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<String>>()
+            })
             .map(crate::prompt_history::PromptHistory::from_messages)
             .unwrap_or_default();
 
@@ -455,7 +489,9 @@ impl ReactorApp {
     /// that is derived from the store (tree, statuses, context) is recomputed.
     fn ingest(&mut self, event: UiEvent, cx: &mut Context<Self>) {
         use reactor_agent::agent::Event;
-        let Some(backend) = self.backend.clone() else { return };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         match event {
             UiEvent::Agent(e) => {
                 match &e {
@@ -467,7 +503,8 @@ impl ReactorApp {
                     _ => {}
                 }
                 let store = backend.store();
-                self.session.update(cx, |s, _| s.apply(&e, &store.lock().unwrap()));
+                self.session
+                    .update(cx, |s, _| s.apply(&e, &store.lock().unwrap()));
                 if matches!(e, Event::Appended(_)) {
                     self.refresh_tree(cx);
                     self.refresh_statuses(cx);
@@ -490,9 +527,16 @@ impl ReactorApp {
                         "tokens": run.tokens(),
                         "stream_ms": run.stream_time().as_millis() as u64,
                     });
-                    let _ = store.lock().unwrap().append(reactor_agent::entry::Kind::Custom { key: crate::session::STATS_KEY.to_string(), data });
+                    let _ = store
+                        .lock()
+                        .unwrap()
+                        .append(reactor_agent::entry::Kind::Custom {
+                            key: crate::session::STATS_KEY.to_string(),
+                            data,
+                        });
                 }
-                self.session.update(cx, |s, _| s.end_turn(&store.lock().unwrap()));
+                self.session
+                    .update(cx, |s, _| s.end_turn(&store.lock().unwrap()));
                 match result {
                     Ok(_) => {}
                     Err(e) if e == "cancelled" => self.push_note("info", "interrupted"),
@@ -505,7 +549,11 @@ impl ReactorApp {
                 self.refresh_statuses(cx);
                 backend.refresh_context();
                 // Messages scheduled while it ran go next, oldest first.
-                if ok && let Some(next) = self.session.update(cx, |s, _| (!s.follow_up.is_empty()).then(|| s.follow_up.remove(0))) {
+                if ok
+                    && let Some(next) = self.session.update(cx, |s, _| {
+                        (!s.follow_up.is_empty()).then(|| s.follow_up.remove(0))
+                    })
+                {
                     self.start_turn(next, cx);
                 }
             }
@@ -517,7 +565,10 @@ impl ReactorApp {
                     s.rebuild(&store.lock().unwrap());
                 });
                 match result {
-                    Ok(id) => self.push_note("info", format!("reduced (#{id}) — undo it from the Context panel")),
+                    Ok(id) => self.push_note(
+                        "info",
+                        format!("reduced (#{id}) — undo it from the Context panel"),
+                    ),
                     Err(e) => self.push_note("error", e),
                 }
                 self.refresh_tree(cx);
@@ -548,7 +599,8 @@ impl ReactorApp {
                 }
             }
             UiEvent::Context(view) => {
-                self.session.update(cx, |s, _| s.context_percent = Some(view.percent()));
+                self.session
+                    .update(cx, |s, _| s.context_percent = Some(view.percent()));
                 self.context = Some(view);
             }
         }
@@ -561,7 +613,10 @@ impl ReactorApp {
         let level = crate::notifications::Level::from_kind(&kind.into());
         let message = message.into().to_string();
         let now = chrono::Local::now();
-        let (date, time) = (now.format("%Y-%m-%d").to_string(), now.format("%H:%M:%S").to_string());
+        let (date, time) = (
+            now.format("%Y-%m-%d").to_string(),
+            now.format("%H:%M:%S").to_string(),
+        );
         let id = self.notifier.push(level, message.clone(), date, time);
         self.pending_toasts.push((id, level, message));
     }
@@ -594,12 +649,16 @@ impl ReactorApp {
             self.live_toasts.push((id, now + timeout));
         }
 
-        let (due, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.live_toasts).into_iter().partition(|(_, deadline)| *deadline <= now);
+        let (due, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.live_toasts)
+            .into_iter()
+            .partition(|(_, deadline)| *deadline <= now);
         self.live_toasts = live;
         for (id, _) in due {
             window.remove_notification1::<NoticeKind>(id as usize, cx);
             if let Some(h) = settings {
-                let _ = h.update(cx, |_, w, cx| w.remove_notification1::<NoticeKind>(id as usize, cx));
+                let _ = h.update(cx, |_, w, cx| {
+                    w.remove_notification1::<NoticeKind>(id as usize, cx)
+                });
             }
         }
     }
@@ -609,7 +668,9 @@ impl ReactorApp {
         cx.spawn(async move |this, cx| {
             let mut ticks = 0u32;
             loop {
-                cx.background_executor().timer(Duration::from_millis(100)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
                 ticks = ticks.wrapping_add(1);
                 if this.upgrade().is_none() {
                     break;
@@ -641,7 +702,9 @@ impl ReactorApp {
             return;
         }
         let focus = cx.focus_handle();
-        self.notices = Some(crate::notices_ui::NoticesUi { focus: focus.clone() });
+        self.notices = Some(crate::notices_ui::NoticesUi {
+            focus: focus.clone(),
+        });
         self.notifier.mark_read();
         window.defer(cx, move |window, cx| window.focus(&focus, cx));
         cx.notify();
@@ -649,7 +712,8 @@ impl ReactorApp {
 
     pub fn close_notices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.notices.take().is_some() {
-            self.composer.update(cx, |state, cx| state.focus(window, cx));
+            self.composer
+                .update(cx, |state, cx| state.focus(window, cx));
             cx.notify();
         }
     }
@@ -670,7 +734,9 @@ impl ReactorApp {
 
     /// The status bar's left side, from the session's state modules.
     pub fn refresh_statuses(&mut self, cx: &mut Context<Self>) {
-        let Some(b) = self.backend.clone() else { return };
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
         let (state, settings) = (b.session_state(), Settings::load(&b.paths));
         let items = status_items(&state, &settings, &self.scenarios_dir);
         self.session.update(cx, |s, _| s.statuses = items);
@@ -681,11 +747,21 @@ impl ReactorApp {
         self.catalogue_loading = true;
         cx.spawn(async move |this, cx| {
             let (tools, toolsets, state) = cx
-                .background_spawn(async move { (ReactorClient::tools(&reactor), ReactorClient::toolsets(&reactor), ReactorClient::state(&reactor)) })
+                .background_spawn(async move {
+                    (
+                        ReactorClient::tools(&reactor),
+                        ReactorClient::toolsets(&reactor),
+                        ReactorClient::state(&reactor),
+                    )
+                })
                 .await;
             this.update(cx, |app, cx| {
                 // A failure is said, not shown as an empty catalogue.
-                for failure in [tools.as_ref().err(), toolsets.as_ref().err()].into_iter().flatten().take(1) {
+                for failure in [tools.as_ref().err(), toolsets.as_ref().err()]
+                    .into_iter()
+                    .flatten()
+                    .take(1)
+                {
                     app.push_note("error", format!("catalogue: {failure}"));
                 }
                 app.catalogue = tools.ok();
@@ -703,7 +779,9 @@ impl ReactorApp {
         let reactor = self.reactor.clone();
         self.services_loading = true;
         cx.spawn(async move |this, cx| {
-            let services = cx.background_spawn(async move { ReactorClient::services(&reactor, refresh) }).await;
+            let services = cx
+                .background_spawn(async move { ReactorClient::services(&reactor, refresh) })
+                .await;
             this.update(cx, |app, cx| {
                 match services {
                     Ok(payload) => app.services = Some(payload),
@@ -718,27 +796,48 @@ impl ReactorApp {
     }
 
     /// Rearrange the window into a named preset (`crate::layout`).
-    pub fn apply_layout(&mut self, preset: crate::layout::LayoutPreset, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn apply_layout(
+        &mut self,
+        preset: crate::layout::LayoutPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         preset.apply(&self.panels, &self.dock_area, window, cx);
         self.layout = preset;
         cx.notify();
     }
 
     /// Show or hide one dock, from the Layout menu.
-    pub fn toggle_dock(&mut self, side: crate::layout::DockSide, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_dock(
+        &mut self,
+        side: crate::layout::DockSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         crate::layout::toggle_dock(side, &self.dock_area, window, cx);
         cx.notify();
     }
 
     /// Take one panel out of the dock — what a panel's own close button does.
-    pub fn close_panel<P: gpui_kit::base::dock::Panel>(&mut self, panel: Entity<P>, window: &mut Window, cx: &mut Context<Self>) {
-        self.dock_area.update(cx, |area, cx| area.remove_panel(panel, window, cx));
+    pub fn close_panel<P: gpui_kit::base::dock::Panel>(
+        &mut self,
+        panel: Entity<P>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dock_area
+            .update(cx, |area, cx| area.remove_panel(panel, window, cx));
         cx.notify();
     }
 
     /// Close a panel that is open, open one that is closed — from the menu, the palette or a
     /// panel's own close button.
-    pub fn toggle_panel(&mut self, kind: crate::layout::PanelKind, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_panel(
+        &mut self,
+        kind: crate::layout::PanelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         crate::layout::toggle_panel(kind, self.layout, &self.panels, &self.dock_area, window, cx);
         cx.notify();
     }
@@ -749,10 +848,16 @@ impl ReactorApp {
     /// exist, in the bottom dock (created if need be). `initial`, when given, is a command
     /// run immediately — how installing a catalogued tool opens its own terminal already
     /// running `reactor install <id>`.
-    pub fn open_console(&mut self, initial: Option<(String, Vec<String>)>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_console(
+        &mut self,
+        initial: Option<(String, Vec<String>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let weak_app = cx.weak_entity();
         let cwd = Some(self.cwd.clone());
-        let panel = cx.new(|cx| crate::panels::ConsolePanel::new(weak_app, cwd, initial, window, cx));
+        let panel =
+            cx.new(|cx| crate::panels::ConsolePanel::new(weak_app, cwd, initial, window, cx));
         let handle = panel_handle(panel);
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(handle, DockPlacement::Bottom, None, window, cx);
@@ -833,7 +938,10 @@ impl ReactorApp {
     fn show_in_prompt(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_kit::component::input::Position;
         let (line, character) = match text.rsplit_once('\n') {
-            Some((before, last)) => (before.matches('\n').count() as u32 + 1, last.encode_utf16().count() as u32),
+            Some((before, last)) => (
+                before.matches('\n').count() as u32 + 1,
+                last.encode_utf16().count() as u32,
+            ),
             None => (0, text.encode_utf16().count() as u32),
         };
         self.composer.update(cx, |state, cx| {
@@ -858,7 +966,8 @@ impl ReactorApp {
                 return;
             }
         }
-        if self.slash.is_open() || self.prompt_history.is_empty() || !self.cursor_at_edge(true, cx) {
+        if self.slash.is_open() || self.prompt_history.is_empty() || !self.cursor_at_edge(true, cx)
+        {
             cx.propagate();
             return;
         }
@@ -873,7 +982,10 @@ impl ReactorApp {
 
     /// Down on the bottom line: the next message, and past the newest, what was being typed.
     pub fn history_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.prompt_history.is_walking() || self.slash.is_open() || !self.cursor_at_edge(false, cx) {
+        if !self.prompt_history.is_walking()
+            || self.slash.is_open()
+            || !self.cursor_at_edge(false, cx)
+        {
             cx.propagate();
             return;
         }
@@ -907,20 +1019,39 @@ impl ReactorApp {
     /// Every entry the palette can offer right now: the commands, and what the session's
     /// state makes possible (each model, each tool, each scenario …).
     fn palette_entries(&self) -> Vec<Entry> {
-        let mut snapshot = palette::Snapshot { models: self.models.clone(), working: false, ..Default::default() };
+        let mut snapshot = palette::Snapshot {
+            models: self.models.clone(),
+            working: false,
+            ..Default::default()
+        };
         if let Some(c) = &self.catalogue {
-            snapshot.tools = c.tools.iter().map(|t| (t.id.clone(), t.status == "present", t.active)).collect();
+            snapshot.tools = c
+                .tools
+                .iter()
+                .map(|t| (t.id.clone(), t.status == "present", t.active))
+                .collect();
         }
         if let Some(t) = &self.toolsets {
-            snapshot.toolsets = t.toolsets.iter().map(|t| (t.id.clone(), t.active)).collect();
+            snapshot.toolsets = t
+                .toolsets
+                .iter()
+                .map(|t| (t.id.clone(), t.active))
+                .collect();
         }
         if let Ok(read) = std::fs::read_dir(&self.scenarios_dir) {
-            snapshot.scenarios = read.flatten().filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().to_str().map(str::to_string)).collect();
+            snapshot.scenarios = read
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .collect();
             snapshot.scenarios.sort();
         }
         if let Some(b) = &self.backend {
             let settings = Settings::load(&b.paths);
-            snapshot.identities = reactor_context::identity::selectable_names(&b.session_state().identity, &settings.identity);
+            snapshot.identities = reactor_context::identity::selectable_names(
+                &b.session_state().identity,
+                &settings.identity,
+            );
             snapshot.reductions = b.agent.reductions().iter().map(|r| r.entry).collect();
         }
         palette::build(&snapshot)
@@ -940,13 +1071,25 @@ impl ReactorApp {
             self.push_note("error", "the agent is not running");
             return;
         };
-        self.inspect = Some(crate::inspect_ui::InspectUi { data: None, loading: true, error: None, selected: 0, filter: None });
+        self.inspect = Some(crate::inspect_ui::InspectUi {
+            data: None,
+            loading: true,
+            error: None,
+            selected: 0,
+            filter: None,
+        });
         backend.inspect();
         let weak = cx.weak_entity();
         window.open_dialog(cx, move |dialog, window, _cx| {
             let weak = weak.clone();
             let height = window.viewport_size().height * 0.72;
-            dialog.w(px(1040.)).margin_top(px(32.)).close_button(false).content(move |content, _window, cx| content.child(crate::inspect_ui::view(&weak, height, cx)))
+            dialog
+                .w(px(1040.))
+                .margin_top(px(32.))
+                .close_button(false)
+                .content(move |content, _window, cx| {
+                    content.child(crate::inspect_ui::view(&weak, height, cx))
+                })
         });
         cx.notify();
     }
@@ -957,7 +1100,8 @@ impl ReactorApp {
             window.close_dialog(cx);
         }
         if self.inspect.take().is_some() {
-            self.composer.update(cx, |state, cx| state.focus(window, cx));
+            self.composer
+                .update(cx, |state, cx| state.focus(window, cx));
             cx.notify();
         }
     }
@@ -979,11 +1123,20 @@ impl ReactorApp {
     }
 
     /// Show only one source's pieces; choosing it again shows all.
-    pub fn inspect_filter(&mut self, origin: reactor_agent::inspect::Origin, cx: &mut Context<Self>) {
+    pub fn inspect_filter(
+        &mut self,
+        origin: reactor_agent::inspect::Origin,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(i) = &mut self.inspect {
-            i.filter = if i.filter == Some(origin) { None } else { Some(origin) };
+            i.filter = if i.filter == Some(origin) {
+                None
+            } else {
+                Some(origin)
+            };
             if let Some(d) = &i.data
-                && i.filter.is_some_and(|f| d.segments.get(i.selected).is_none_or(|s| s.origin != f))
+                && i.filter
+                    .is_some_and(|f| d.segments.get(i.selected).is_none_or(|s| s.origin != f))
                 && let Some(first) = d.segments.iter().position(|s| Some(s.origin) == i.filter)
             {
                 i.selected = first;
@@ -1014,7 +1167,11 @@ impl ReactorApp {
     }
 
     /// Change the settings, then keep everything in step: normalize, save, restyle the theme.
-    pub fn update_ui(&mut self, change: impl FnOnce(&mut crate::settings::UiSettings), cx: &mut Context<Self>) {
+    pub fn update_ui(
+        &mut self,
+        change: impl FnOnce(&mut crate::settings::UiSettings),
+        cx: &mut Context<Self>,
+    ) {
         change(&mut self.ui);
         self.ui.normalize();
         crate::start::GuiConfig::save_ui(&self.ui);
@@ -1024,12 +1181,20 @@ impl ReactorApp {
 
     /// The text shown in a font family field: what is being typed, else what is set.
     pub fn family_text(&self, slot: crate::settings::Slot) -> String {
-        self.family_drafts.get(&slot).cloned().unwrap_or_else(|| self.ui.family(slot).unwrap_or("").to_string())
+        self.family_drafts
+            .get(&slot)
+            .cloned()
+            .unwrap_or_else(|| self.ui.family(slot).unwrap_or("").to_string())
     }
 
     /// A font family typed into a field: empty clears it, an installed font is applied, and
     /// anything else (half a name) is kept as typed but not applied.
-    pub fn set_family_text(&mut self, slot: crate::settings::Slot, text: &str, cx: &mut Context<Self>) {
+    pub fn set_family_text(
+        &mut self,
+        slot: crate::settings::Slot,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
         let typed = text.trim();
         self.family_drafts.insert(slot, text.to_string());
         if typed.is_empty() {
@@ -1044,14 +1209,34 @@ impl ReactorApp {
     }
 
     /// A size from a number field. Equal to the default is the same as unset.
-    pub fn set_font_size(&mut self, slot: crate::settings::Slot, size: f64, default: f64, cx: &mut Context<Self>) {
+    pub fn set_font_size(
+        &mut self,
+        slot: crate::settings::Slot,
+        size: f64,
+        default: f64,
+        cx: &mut Context<Self>,
+    ) {
         let unset = (size - default).abs() < 0.5;
-        self.update_ui(|ui| ui.set_size(slot, if unset { None } else { Some(size.round() as f32) }), cx);
+        self.update_ui(
+            |ui| {
+                ui.set_size(
+                    slot,
+                    if unset {
+                        None
+                    } else {
+                        Some(size.round() as f32)
+                    },
+                )
+            },
+            cx,
+        );
     }
 
     /// Whether this slot differs from the defaults (its reset button shows).
     pub fn font_is_set(&self, slot: crate::settings::Slot) -> bool {
-        self.ui.family(slot).is_some() || self.ui.size(slot).is_some() || self.family_drafts.contains_key(&slot)
+        self.ui.family(slot).is_some()
+            || self.ui.size(slot).is_some()
+            || self.family_drafts.contains_key(&slot)
     }
 
     pub fn reset_font(&mut self, slot: crate::settings::Slot, cx: &mut Context<Self>) {
@@ -1079,8 +1264,14 @@ impl ReactorApp {
     }
 
     /// Change `settings.json`'s model keys and the picker that shows them.
-    fn change_model_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+    fn change_model_settings(
+        &mut self,
+        change: impl FnOnce(&mut Settings),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         let mut settings = Settings::load(&backend.paths);
         change(&mut settings);
         match settings.save(&backend.paths) {
@@ -1100,13 +1291,26 @@ impl ReactorApp {
         Some(format!("{}/{}", self.model_draft.provider, name))
     }
 
-    pub fn set_typed_model(&mut self, what: crate::settings_window::ModelUse, cx: &mut Context<Self>) {
+    pub fn set_typed_model(
+        &mut self,
+        what: crate::settings_window::ModelUse,
+        cx: &mut Context<Self>,
+    ) {
         use crate::settings_window::ModelUse;
-        let Some(spec) = self.typed_model() else { return };
+        let Some(spec) = self.typed_model() else {
+            return;
+        };
         match what {
             ModelUse::Default => self.set_default_model(Some(spec), cx),
             ModelUse::Now => self.set_model(&spec, cx),
-            ModelUse::List => self.change_model_settings(|s| if !s.models.contains(&spec) { s.models.push(spec) }, cx),
+            ModelUse::List => self.change_model_settings(
+                |s| {
+                    if !s.models.contains(&spec) {
+                        s.models.push(spec)
+                    }
+                },
+                cx,
+            ),
         }
     }
 
@@ -1139,7 +1343,13 @@ impl ReactorApp {
 
     /// This session's model becomes the default for new sessions.
     pub fn promote_model(&mut self, cx: &mut Context<Self>) {
-        match self.session.read(cx).model.clone().filter(|m| !m.is_empty()) {
+        match self
+            .session
+            .read(cx)
+            .model
+            .clone()
+            .filter(|m| !m.is_empty())
+        {
             Some(model) => {
                 self.set_default_model(Some(model.clone()), cx);
                 self.push_note("info", format!("{model} is now the default model"));
@@ -1160,8 +1370,14 @@ impl ReactorApp {
     }
 
     /// Change the layer being edited: read it, let `edit` change it, store it back.
-    pub fn context_edit(&mut self, edit: impl FnOnce(&mut ContextSettings), cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+    pub fn context_edit(
+        &mut self,
+        edit: impl FnOnce(&mut ContextSettings),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         let scope = self.context_scope;
         let global = scope == crate::settings_window::ContextScope::Default;
         let before = self.context_layer(scope);
@@ -1202,17 +1418,30 @@ impl ReactorApp {
             return;
         }
         let entries = self.palette_entries();
-        let shown = palette::rank("", &entries, &self.usage, false).into_iter().cloned().collect();
+        let shown = palette::rank("", &entries, &self.usage, false)
+            .into_iter()
+            .cloned()
+            .collect();
         let list = cx.new(|cx| CommandState::new(window, cx));
-        self.palette = Some(PaletteUi { list: list.clone(), entries, shown });
+        self.palette = Some(PaletteUi {
+            list: list.clone(),
+            entries,
+            shown,
+        });
 
         let weak = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let weak = weak.clone();
-            dialog.w(px(640.)).margin_top(px(72.)).close_button(false).content(move |content, _window, cx| content.child(palette_list(&weak, cx)))
+            dialog
+                .w(px(640.))
+                .margin_top(px(72.))
+                .close_button(false)
+                .content(move |content, _window, cx| content.child(palette_list(&weak, cx)))
         });
         // After this frame renders: a view that is not in the tree yet cannot take focus.
-        window.defer(cx, move |window, cx| list.update(cx, |state, cx| state.focus(window, cx)));
+        window.defer(cx, move |window, cx| {
+            list.update(cx, |state, cx| state.focus(window, cx))
+        });
         cx.notify();
     }
 
@@ -1223,7 +1452,8 @@ impl ReactorApp {
             window.close_dialog(cx);
         }
         if self.palette.take().is_some() {
-            self.composer.update(cx, |state, cx| state.focus(window, cx));
+            self.composer
+                .update(cx, |state, cx| state.focus(window, cx));
             cx.notify();
         }
     }
@@ -1231,14 +1461,23 @@ impl ReactorApp {
     /// The palette's query changed: rank again.
     fn palette_query(&mut self, query: &str, cx: &mut Context<Self>) {
         if let Some(p) = &mut self.palette {
-            p.shown = palette::rank(query, &p.entries, &self.usage, false).into_iter().cloned().collect();
+            p.shown = palette::rank(query, &p.entries, &self.usage, false)
+                .into_iter()
+                .cloned()
+                .collect();
             cx.notify();
         }
     }
 
     /// Choose the `row`th entry shown.
     fn palette_confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.palette.as_ref().and_then(|p| p.shown.get(row).cloned()) else { return };
+        let Some(entry) = self
+            .palette
+            .as_ref()
+            .and_then(|p| p.shown.get(row).cloned())
+        else {
+            return;
+        };
         self.close_palette(window, cx);
         self.record_use(&entry.key);
         self.run_entry(&entry, window, cx);
@@ -1266,7 +1505,11 @@ impl ReactorApp {
         let items: Vec<Entry> = match palette::slash_query(&text) {
             Some(query) => {
                 let commands = palette::commands();
-                palette::rank(query, &commands, &self.usage, true).into_iter().take(SLASH_ROWS).cloned().collect()
+                palette::rank(query, &commands, &self.usage, true)
+                    .into_iter()
+                    .take(SLASH_ROWS)
+                    .cloned()
+                    .collect()
             }
             None => Vec::new(),
         };
@@ -1283,7 +1526,8 @@ impl ReactorApp {
     pub fn slash_move(&mut self, by: isize, cx: &mut Context<Self>) {
         let n = self.slash.items.len();
         if n > 0 {
-            self.slash.selected = (self.slash.selected as isize + by).rem_euclid(n as isize) as usize;
+            self.slash.selected =
+                (self.slash.selected as isize + by).rem_euclid(n as isize) as usize;
             cx.notify();
         }
     }
@@ -1296,10 +1540,13 @@ impl ReactorApp {
     /// Take the highlighted completion: commands that need nothing more run, the others are
     /// completed in the composer with a space after them.
     pub fn accept_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.slash.items.get(self.slash.selected).cloned() else { return };
+        let Some(entry) = self.slash.items.get(self.slash.selected).cloned() else {
+            return;
+        };
         self.record_use(&entry.key);
         if entry.args == Args::None {
-            self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+            self.composer
+                .update(cx, |state, cx| state.set_value("", window, cx));
             self.refresh_slash(true, cx);
             self.run_command(&entry.run, window, cx);
         } else {
@@ -1323,7 +1570,10 @@ impl ReactorApp {
     /// A `/command`, from the composer or the palette. Every user-facing feature is reachable
     /// through here (`crate::palette` lists them).
     pub fn run_command(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (name, args) = cmd.split_once(char::is_whitespace).map(|(n, a)| (n, a.trim())).unwrap_or((cmd, ""));
+        let (name, args) = cmd
+            .split_once(char::is_whitespace)
+            .map(|(n, a)| (n, a.trim()))
+            .unwrap_or((cmd, ""));
         let mode = || match args {
             "fade" => Mode::Fade,
             "auto" => Mode::Auto,
@@ -1331,7 +1581,10 @@ impl ReactorApp {
         };
         match name {
             "help" => {
-                let lines: Vec<String> = palette::commands().iter().map(|e| format!("/{} — {}", e.run, e.detail)).collect();
+                let lines: Vec<String> = palette::commands()
+                    .iter()
+                    .map(|e| format!("/{} — {}", e.run, e.detail))
+                    .collect();
                 self.push_note("info", lines.join("\n"));
             }
             "palette" => self.toggle_palette(window, cx),
@@ -1349,7 +1602,10 @@ impl ReactorApp {
                 }
             }
             "interrupt" => self.interrupt(window, cx),
-            "layout" => match crate::layout::LayoutPreset::ALL.iter().find(|p| p.label().eq_ignore_ascii_case(args)) {
+            "layout" => match crate::layout::LayoutPreset::ALL
+                .iter()
+                .find(|p| p.label().eq_ignore_ascii_case(args))
+            {
                 Some(p) => self.apply_layout(*p, window, cx),
                 None => self.push_note("warning", "layout: default, focus, analysis or catalogue"),
             },
@@ -1361,14 +1617,25 @@ impl ReactorApp {
             },
             "panel" => match crate::layout::PanelKind::from_slug(args) {
                 Some(kind) => self.toggle_panel(kind, window, cx),
-                None => self.push_note("warning", "panel: transcript, tree, tools, toolsets, context, services or console"),
+                None => self.push_note(
+                    "warning",
+                    "panel: transcript, tree, tools, toolsets, context, services or console",
+                ),
             },
             "console" => {
-                let initial = (!args.is_empty()).then(|| ("sh".to_owned(), vec!["-c".to_owned(), args.to_owned()]));
+                let initial = (!args.is_empty())
+                    .then(|| ("sh".to_owned(), vec!["-c".to_owned(), args.to_owned()]));
                 self.open_console(initial, window, cx);
             }
             "install" => match args.split_whitespace().next() {
-                Some(id) => self.open_console(Some(("reactor".to_owned(), vec!["install".to_owned(), id.to_owned()])), window, cx),
+                Some(id) => self.open_console(
+                    Some((
+                        "reactor".to_owned(),
+                        vec!["install".to_owned(), id.to_owned()],
+                    )),
+                    window,
+                    cx,
+                ),
                 None => self.push_note("warning", "install: which tool?"),
             },
             "tool" | "toolset" => self.run_toggle(name, args, cx),
@@ -1380,7 +1647,10 @@ impl ReactorApp {
             "context" => self.run_context(args, cx),
             "branch" => match args.trim_start_matches('#').parse::<EntryId>() {
                 Ok(id) => self.switch_branch(id, cx),
-                Err(_) => self.push_note("warning", "branch: an entry id, as the session tree shows them"),
+                Err(_) => self.push_note(
+                    "warning",
+                    "branch: an entry id, as the session tree shows them",
+                ),
             },
             _ if self.backend.is_none() => self.push_note("error", "the agent is not running"),
             "model" => self.set_model(args, cx),
@@ -1388,7 +1658,10 @@ impl ReactorApp {
             "reduce" => self.reduce_now(mode(), cx),
             "undo" => {
                 let target = match args.trim_start_matches('#') {
-                    "" => self.backend.as_ref().and_then(|b| b.agent.reductions().last().map(|r| r.entry)),
+                    "" => self
+                        .backend
+                        .as_ref()
+                        .and_then(|b| b.agent.reductions().last().map(|r| r.entry)),
                     n => n.parse::<EntryId>().ok(),
                 };
                 match target {
@@ -1397,7 +1670,9 @@ impl ReactorApp {
                 }
             }
             other => {
-                let Some(backend) = self.backend.clone() else { return };
+                let Some(backend) = self.backend.clone() else {
+                    return;
+                };
                 match backend.command(other, args) {
                     Ok(result) => {
                         for n in result.notices {
@@ -1429,13 +1704,22 @@ impl ReactorApp {
     fn run_toggle(&mut self, kind: &str, args: &str, cx: &mut Context<Self>) {
         let mut parts = args.split_whitespace();
         let Some(id) = parts.next() else {
-            self.push_note("warning", format!("{kind}: which one? /{kind} <id> [on|off]"));
+            self.push_note(
+                "warning",
+                format!("{kind}: which one? /{kind} <id> [on|off]"),
+            );
             return;
         };
         let current = if kind == "tool" {
-            self.catalogue.as_ref().and_then(|c| c.tools.iter().find(|t| t.id == id)).map(|t| t.active)
+            self.catalogue
+                .as_ref()
+                .and_then(|c| c.tools.iter().find(|t| t.id == id))
+                .map(|t| t.active)
         } else {
-            self.toolsets.as_ref().and_then(|c| c.toolsets.iter().find(|t| t.id == id)).map(|t| t.active)
+            self.toolsets
+                .as_ref()
+                .and_then(|c| c.toolsets.iter().find(|t| t.id == id))
+                .map(|t| t.active)
         };
         let enable = match parts.next() {
             Some("on") => true,
@@ -1459,7 +1743,10 @@ impl ReactorApp {
 
     /// `/context`: show the settings, set one for this session, or promote/drop them.
     fn run_context(&mut self, args: &str, cx: &mut Context<Self>) {
-        let (key, value) = args.split_once(char::is_whitespace).map(|(k, v)| (k, v.trim())).unwrap_or((args, ""));
+        let (key, value) = args
+            .split_once(char::is_whitespace)
+            .map(|(k, v)| (k, v.trim()))
+            .unwrap_or((args, ""));
         let number = |v: &str| -> Option<u64> {
             let v = v.to_ascii_lowercase();
             match v.strip_suffix('k') {
@@ -1467,14 +1754,24 @@ impl ReactorApp {
                 None => v.parse().ok(),
             }
         };
-        let fraction = |v: &str| v.trim_end_matches('%').parse::<f64>().ok().map(|n| if n > 1.0 { n / 100.0 } else { n });
+        let fraction = |v: &str| {
+            v.trim_end_matches('%')
+                .parse::<f64>()
+                .ok()
+                .map(|n| if n > 1.0 { n / 100.0 } else { n })
+        };
         let mut layer = ContextSettings::default();
         match (key, value) {
             ("", _) => {
                 let note = match &self.context {
                     Some(c) => format!(
                         "context: mode {}, window {}, reserve {}, reduce at {:.0}%, keep {:.0}%, summarizer {}",
-                        c.mode, c.window, c.reserve, c.pct * 100.0, c.keep * 100.0, c.summarizer.as_deref().unwrap_or("the session's model")
+                        c.mode,
+                        c.window,
+                        c.reserve,
+                        c.pct * 100.0,
+                        c.keep * 100.0,
+                        c.summarizer.as_deref().unwrap_or("the session's model")
                     ),
                     None => "context: not measured yet".to_string(),
                 };
@@ -1483,7 +1780,9 @@ impl ReactorApp {
             }
             ("default", _) => return self.make_context_default(cx),
             ("inherit", _) => return self.inherit_context(cx),
-            ("mode", v) if reactor_context::settings::CONTEXT_MODES.contains(&v) => layer.mode = Some(v.to_string()),
+            ("mode", v) if reactor_context::settings::CONTEXT_MODES.contains(&v) => {
+                layer.mode = Some(v.to_string())
+            }
             ("window", v) if number(v).is_some() => layer.window = number(v),
             ("reserve", v) if number(v).is_some() => layer.reserve = number(v),
             ("pct", v) if fraction(v).is_some() => layer.pct = fraction(v),
@@ -1499,22 +1798,30 @@ impl ReactorApp {
 
     /// Interrupt: cancel the turn, and give anything scheduled back to the composer.
     pub fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         backend.cancel();
-        let queued = self.session.update(cx, |s, _| std::mem::take(&mut s.follow_up));
+        let queued = self
+            .session
+            .update(cx, |s, _| std::mem::take(&mut s.follow_up));
         if !queued.is_empty() {
             let text = queued.join("\n");
-            self.composer.update(cx, |state, cx| state.set_value(&text, window, cx));
+            self.composer
+                .update(cx, |state, cx| state.set_value(&text, window, cx));
         }
         self.push_note("info", "interrupting…");
         cx.notify();
     }
 
     pub fn set_model(&mut self, spec: &str, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         match backend.set_model(spec) {
             Ok(()) => {
-                self.session.update(cx, |s, _| s.model = Some(spec.to_string()));
+                self.session
+                    .update(cx, |s, _| s.model = Some(spec.to_string()));
                 self.models = backend.models();
                 backend.refresh_context();
                 self.push_note("info", format!("model: {spec}"));
@@ -1536,24 +1843,30 @@ impl ReactorApp {
     }
 
     pub fn reduce_now(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         if self.session.read(cx).phase != AgentPhase::Idle {
             self.push_note("warning", "wait for the agent to finish, or interrupt it");
             return;
         }
         self.context_busy = true;
         self.preview = None;
-        self.session.update(cx, |s, _| s.phase = AgentPhase::Compacting);
+        self.session
+            .update(cx, |s, _| s.phase = AgentPhase::Compacting);
         backend.reduce_now(mode);
         cx.notify();
     }
 
     pub fn restore_reduction(&mut self, entry: EntryId, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         match backend.restore(entry) {
             Ok(()) => {
                 let store = backend.store();
-                self.session.update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
+                self.session
+                    .update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
                 self.preview = None;
                 self.push_note("info", format!("restored #{entry}"));
             }
@@ -1587,7 +1900,10 @@ impl ReactorApp {
     pub fn make_context_default(&mut self, cx: &mut Context<Self>) {
         if let Some(b) = &self.backend {
             match b.make_context_default() {
-                Ok(()) => self.push_note("info", "these settings are now the default for new sessions"),
+                Ok(()) => self.push_note(
+                    "info",
+                    "these settings are now the default for new sessions",
+                ),
                 Err(e) => self.push_note("error", e),
             }
         }
@@ -1600,7 +1916,9 @@ impl ReactorApp {
         let reactor = self.reactor.clone();
         let id = id.to_owned();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { ReactorClient::set_tool(&reactor, &id, enable) }).await;
+            let result = cx
+                .background_spawn(async move { ReactorClient::set_tool(&reactor, &id, enable) })
+                .await;
             this.update(cx, |app, cx| match result {
                 Ok(_) => {
                     app.refresh_catalogue(cx);
@@ -1620,7 +1938,9 @@ impl ReactorApp {
         let reactor = self.reactor.clone();
         let id = id.to_owned();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { ReactorClient::set_toolset(&reactor, &id, enable) }).await;
+            let result = cx
+                .background_spawn(async move { ReactorClient::set_toolset(&reactor, &id, enable) })
+                .await;
             this.update(cx, |app, cx| match result {
                 Ok(_) => {
                     app.refresh_catalogue(cx);
@@ -1637,12 +1957,21 @@ impl ReactorApp {
 
     /// "Make this the default": copy this session's activation to the machine's.
     pub fn make_activation_default(&mut self, cx: &mut Context<Self>) {
-        let Some(paths) = self.backend.as_ref().map(|b| b.paths.clone()) else { return };
+        let Some(paths) = self.backend.as_ref().map(|b| b.paths.clone()) else {
+            return;
+        };
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { reactor_core::commands::make_session_state_default(&paths).map(|_| ()) }).await;
+            let result = cx
+                .background_spawn(async move {
+                    reactor_core::commands::make_session_state_default(&paths).map(|_| ())
+                })
+                .await;
             this.update(cx, |app, cx| {
                 match result {
-                    Ok(()) => app.push_note("info", "this session's tools are now the default for new sessions"),
+                    Ok(()) => app.push_note(
+                        "info",
+                        "this session's tools are now the default for new sessions",
+                    ),
                     Err(e) => app.push_note("warning", e.to_string()),
                 }
                 app.refresh_catalogue(cx);
@@ -1654,9 +1983,15 @@ impl ReactorApp {
 
     /// Drop this session's activation override: it inherits the machine's again.
     pub fn inherit_activation(&mut self, cx: &mut Context<Self>) {
-        let Some(paths) = self.backend.as_ref().map(|b| b.paths.clone()) else { return };
+        let Some(paths) = self.backend.as_ref().map(|b| b.paths.clone()) else {
+            return;
+        };
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { reactor_core::commands::clear_session_state(&paths) }).await;
+            let result = cx
+                .background_spawn(
+                    async move { reactor_core::commands::clear_session_state(&paths) },
+                )
+                .await;
             this.update(cx, |app, cx| {
                 if let Err(e) = result {
                     app.push_note("error", e.to_string());
@@ -1675,11 +2010,14 @@ impl ReactorApp {
 
     /// Continue from another branch's reply. Disabled while the agent works.
     pub fn switch_branch(&mut self, entry: EntryId, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else { return };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         match backend.switch_branch(entry) {
             Ok(()) => {
                 let store = backend.store();
-                self.session.update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
+                self.session
+                    .update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
                 self.refresh_tree(cx);
                 self.refresh_statuses(cx);
                 backend.refresh_context();
@@ -1693,7 +2031,11 @@ impl ReactorApp {
 impl ReactorApp {
     /// The status bar (SPEC.md §6): what the manifest, identity, reporting and scenario
     /// are doing on the left; model and context use on the right.
-    fn render_status_bar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status_bar(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let session = self.session.read(cx);
         let statuses = session.statuses.clone();
         let model = session.model.clone();
@@ -1701,7 +2043,12 @@ impl ReactorApp {
 
         let mut left = h_flex().gap_3().items_center();
         for (_, text) in &statuses {
-            left = left.child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child(text.clone()));
+            left = left.child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(cx.theme().font_size * 0.85)
+                    .child(text.clone()),
+            );
         }
 
         let models = self.models.clone();
@@ -1709,7 +2056,11 @@ impl ReactorApp {
         if let Some(p) = percent {
             right = right.child(
                 div()
-                    .text_color(if p >= 90 { cx.theme().warning } else { cx.theme().muted_foreground })
+                    .text_color(if p >= 90 {
+                        cx.theme().warning
+                    } else {
+                        cx.theme().muted_foreground
+                    })
                     .text_size(cx.theme().font_size * 0.85)
                     .child(format!("context {p}%")),
             );
@@ -1722,7 +2073,10 @@ impl ReactorApp {
                 .disabled(models.is_empty())
                 .dropdown_menu(move |mut menu, _window, _cx| {
                     for spec in &models {
-                        menu = menu.menu(spec.clone(), Box::new(SelectModelAction { spec: spec.clone() }));
+                        menu = menu.menu(
+                            spec.clone(),
+                            Box::new(SelectModelAction { spec: spec.clone() }),
+                        );
                     }
                     menu
                 }),
@@ -1737,21 +2091,44 @@ impl ReactorApp {
 /// (`crate::palette`), so its own filtering is off. The dialog builds this again on every frame,
 /// so it reads the app's current state each time.
 fn palette_list(weak: &gpui_kit::WeakEntity<ReactorApp>, cx: &mut App) -> gpui_kit::AnyElement {
-    let Some(app) = weak.upgrade() else { return div().into_any_element() };
-    let Some((list, shown)) = app.read(cx).palette.as_ref().map(|p| (p.list.clone(), p.shown.clone())) else { return div().into_any_element() };
+    let Some(app) = weak.upgrade() else {
+        return div().into_any_element();
+    };
+    let Some((list, shown)) = app
+        .read(cx)
+        .palette
+        .as_ref()
+        .map(|p| (p.list.clone(), p.shown.clone()))
+    else {
+        return div().into_any_element();
+    };
 
     let items: Vec<CommandItem> = shown
         .iter()
         .map(|entry| {
-            let (title, detail) = (entry.title.clone(), entry.name.as_ref().map(|n| format!("/{n}")).unwrap_or_else(|| entry.group.to_string()));
-            CommandItem::new().label(title.clone()).child(move |_window, cx| {
-                h_flex()
-                    .w_full()
-                    .justify_between()
-                    .gap_3()
-                    .child(div().child(title.clone()))
-                    .child(div().text_color(cx.theme().muted_foreground).text_size(cx.theme().font_size * 0.85).child(detail.clone()))
-            })
+            let (title, detail) = (
+                entry.title.clone(),
+                entry
+                    .name
+                    .as_ref()
+                    .map(|n| format!("/{n}"))
+                    .unwrap_or_else(|| entry.group.to_string()),
+            );
+            CommandItem::new()
+                .label(title.clone())
+                .child(move |_window, cx| {
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .gap_3()
+                        .child(div().child(title.clone()))
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .text_size(cx.theme().font_size * 0.85)
+                                .child(detail.clone()),
+                        )
+                })
         })
         .collect();
 
@@ -1765,24 +2142,37 @@ fn palette_list(weak: &gpui_kit::WeakEntity<ReactorApp>, cx: &mut App) -> gpui_k
         .placeholder("Type a command")
         .max_h(px(380.))
         .on_query(move |query, _window, cx| {
-            on_query.update(cx, |app, cx| app.palette_query(query, cx)).ok();
+            on_query
+                .update(cx, |app, cx| app.palette_query(query, cx))
+                .ok();
         })
         .on_confirm(move |index, window, cx| {
-            on_confirm.update(cx, |app, cx| app.palette_confirm(index.row, window, cx)).ok();
+            on_confirm
+                .update(cx, |app, cx| app.palette_confirm(index.row, window, cx))
+                .ok();
         })
         .on_cancel(move |window, cx| {
             // The dialog closes itself on this Esc; the app only forgets the palette, after the
             // dispatch, so the window's own Esc handler still sees it open.
             let weak = on_cancel.clone();
             window.defer(cx, move |window, cx| {
-                weak.update(cx, |app, cx| app.close_palette(window, cx)).ok();
+                weak.update(cx, |app, cx| app.close_palette(window, cx))
+                    .ok();
             });
         })
-        .empty(|_state, _window, cx| div().p_3().text_color(cx.theme().muted_foreground).child("no command matches"));
+        .empty(|_state, _window, cx| {
+            div()
+                .p_3()
+                .text_color(cx.theme().muted_foreground)
+                .child("no command matches")
+        });
 
     // `ReactorPalette`: the context `ClosePalette`'s key binding hangs on, so Esc always closes —
     // the list's own Esc only clears a typed query first.
-    div().key_context("ReactorPalette").child(commands).into_any_element()
+    div()
+        .key_context("ReactorPalette")
+        .child(commands)
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -1803,17 +2193,29 @@ impl Render for ReactorApp {
             .relative()
             // The status bar's model picker dispatches this from a `PopupMenu`, which
             // bubbles up the dispatch tree — this is the ancestor that answers it.
-            .on_action(cx.listener(|this, action: &SelectModelAction, _window, cx| {
-                this.set_model(&action.spec, cx);
-            }))
-            .on_action(cx.listener(|this, _: &HistoryPrev, window, cx| this.history_prev(window, cx)))
-            .on_action(cx.listener(|this, _: &HistoryNext, window, cx| this.history_next(window, cx)))
+            .on_action(
+                cx.listener(|this, action: &SelectModelAction, _window, cx| {
+                    this.set_model(&action.spec, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &HistoryPrev, window, cx| this.history_prev(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &HistoryNext, window, cx| this.history_next(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SlashUp, _window, cx| this.slash_move(-1, cx)))
             .on_action(cx.listener(|this, _: &SlashDown, _window, cx| this.slash_move(1, cx)))
-            .on_action(cx.listener(|this, _: &SlashAccept, window, cx| this.accept_slash(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &SlashAccept, window, cx| this.accept_slash(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SlashDismiss, _window, cx| this.slash_dismiss(cx)))
-            .on_action(cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &CloseNotices, window, cx| this.close_notices(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &CloseNotices, window, cx| this.close_notices(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ComposerEsc, window, cx| {
                 // Esc closes the palette wherever focus is — this is the handler every Esc
                 // reaches — and must not also interrupt the agent.
@@ -1843,7 +2245,10 @@ impl Render for ReactorApp {
             ))
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
-            .when_some(crate::notices_ui::history(self, cx.weak_entity(), cx), |el, popup| el.child(popup))
+            .when_some(
+                crate::notices_ui::history(self, cx.weak_entity(), cx),
+                |el, popup| el.child(popup),
+            )
             .when_some(notification_layer, |el, layer| el.child(layer))
             .when_some(dialog_layer, |el, layer| el.child(layer))
     }

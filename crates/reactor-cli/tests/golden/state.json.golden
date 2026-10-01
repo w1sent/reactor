@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "state": {
+    "version": 1,
+    "toolsets": [],
+    "tools": {
+      "enabled": [],
+      "disabled": []
+    }
+  },
+  "scope": "default",
+  "path": "<CFG>/state.json",
+  "active": [
+    "alpha",
+    "beta",
+    "gamma"
+  ]
+}

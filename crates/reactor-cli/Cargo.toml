@@ -1,0 +1,21 @@
+[package]
+name = "reactor-cli"
+description = "The `reactor` command: a thin binary over reactor-core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "reactor"
+path = "src/main.rs"
+
+[dependencies]
+reactor-core = { path = "../reactor-core" }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+reactor-client = { path = "../reactor-client" }
+tempfile.workspace = true
+serde_json.workspace = true

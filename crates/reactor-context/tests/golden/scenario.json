@@ -1,0 +1,1104 @@
+[
+  {
+    "name": "shipped-investigation",
+    "scenarios": {
+      "investigation": [
+        "---\ntitle: Stage A — Scoping & Collection Planning\ntoolset: forensics\n---\n**Goal:** Define the investigation's questions, scope, legal authority and a prioritised evidence-collection plan before touching evidence.\n\n**Entry criteria:** An incident or request exists with a point of contact and a rough description.\n\n**Activities:**\n- Identify the questions to answer and success criteria; determine the platforms, architectures and device types in scope.\n- Enumerate candidate evidence sources (endpoints, servers, mobile and embedded devices, volatile memory, network captures, cloud and SaaS logs, backups).\n- Classify sources by order of volatility and by accessibility constraints (locked devices, encrypted storage, soldered flash, vendor-controlled cloud data).\n- Determine legal authority, jurisdiction, privacy constraints and data-handling rules; select acquisition methods and validate tools per ISO/IEC 27041.\n- Define storage, naming and chain-of-custody procedures; assign roles.\n\n**Decision points:** Live vs. dead acquisition? Full image vs. targeted/logical collection? Which sources are technically reachable at all? In-scope vs. out-of-scope systems?\n\n**Iteration:** Revisit scope as new affected systems surface during analysis.\n\n**Pitfalls:** Over-collecting; under-scoping and missing patient zero; ignoring volatile data; assuming a desktop-style acquisition path applies to a mobile or embedded target; no legal sign-off.\n\n**Deliverables:** Collection plan, scope statement, volatility-ordered evidence source list, chain-of-custody template. Feeds Stage B.\n\nCall `reactor_phase_complete` once the collection plan and scope statement exist.\n",
+        "---\ntitle: Stage B — Evidence Acquisition & Preservation\ntoolset: forensics\n---\n**Goal:** Acquire relevant data defensibly while preserving integrity (NIST SP 800-86 \"Collection\"; ISO/IEC 27037).\n\n**Entry criteria:** Approved collection plan.\n\n**Activities:**\n- Follow order of volatility -- capture volatile memory and running state before persistent storage, and persistent storage before archived or derived data.\n- Use read-only or write-blocked acquisition where the platform permits, and document the method and its side effects where it does not.\n- Select the acquisition depth the platform supports (physical image, full-filesystem or logical extraction, chip-off or flash dump, agent-based collection, cloud export).\n- Compute cryptographic hashes at acquisition and record them; capture volatile context (processes, connections, logged-on users, loaded modules).\n- Document tool, version, operator, timestamps, source identity and method contemporaneously.\n\n**Decision points:** If acquisition may be interrupted (battery, remote wipe, tamper response), prioritise the highest-value data first. If the device cannot be imaged without alteration, record the justification.\n\n**Pitfalls:** Powering off a live compromised system and losing memory-resident keys and fileless code; triggering device wipe or re-encryption; missing hashes; broken custody.\n\n**Quality checks:** Post-acquisition hash verification; auditable and repeatable process; complete custody entries.\n\n**Deliverables:** Verified images, extractions, memory dumps and captures with hashes and custody records. Feeds Stages C--H.\n\nCall `reactor_phase_complete` once acquisition is verified -- hashes match, custody entries complete.\n",
+        "---\ntitle: Stage C — Triage\ntoolset: triage\n---\n**Goal:** Rapidly separate signal from noise, prioritise systems and artifacts, and decide where deep analysis is warranted.\n\n**Entry criteria:** Acquired or live-accessible evidence exists.\n\n**Activities:**\n- Run rapid collection and parse the platform's key execution, persistence and account artifacts.\n- Hash suspect files and check reputation and known-bad sets.\n- Extract static properties of suspect artifacts (format, strings, imports or symbols, packing indicators, entropy, signing state).\n- Take a first pass over volatile memory (process inventory, injected regions, network connections).\n- Form initial hypotheses; rank systems and devices by likelihood of compromise and evidentiary value.\n\n**Decision points:** Malware incident (Cyber-Forensics / Reverse Engineer territory) or general system investigation (Forensics territory)? Which systems get full acquisition? Is immediate escalation or containment needed?\n\n**Iteration:** Re-triage additional systems using indicators discovered in early passes.\n\n**Pitfalls:** Deep-diving before triage; trusting a single automated verdict; lacking a platform baseline so legitimate security agents and normal OS behaviour look malicious.\n\n**Deliverables:** Triage report, prioritised system/artifact list, initial IOCs and hypotheses. Feeds Stages D--I.\n\nCall `reactor_phase_complete` once systems are ranked and initial hypotheses are on record.\n",
+        "---\ntitle: Stage D — Static Analysis\ntoolset: native\n---\n**Goal:** Extract everything possible from a specimen without executing it.\n\n**Entry criteria:** A suspect artifact is isolated in the lab.\n\n**Activities:**\n- Identify format, architecture, target platform and toolchain; compute hashes and format-appropriate fuzzy or import hashes.\n- Extract and decode strings; parse the container structure (headers, sections/segments, imports/exports and symbols, resources, manifests and permissions, signing and certificate data).\n- Assess entropy and detect packing or encryption; run existing detection rules; note anti-analysis indicators.\n- Hypothesise capability from imported APIs, requested permissions or referenced syscalls.\n\n**Decision points:** Packed or obfuscated -> route to Stage F. Already classifiable to a known family? Script, document or bytecode payload -> deobfuscation path.\n\n**Iteration:** Re-run static analysis on each unpacked or decoded layer.\n\n**Pitfalls:** Trusting strings and imports from a packed artifact; over-reading capability from imports alone; missing payloads embedded in resources, overlays or asset directories.\n\n**Deliverables:** Static analysis notes, extracted strings and structure data, candidate IOCs, packing status. Feeds Stages E and F.\n\nCall `reactor_phase_complete` once static properties are catalogued and capability hypotheses are on record.\n",
+        "---\ntitle: Stage E — Dynamic / Behavioural Analysis\ntoolset: dynamic\n---\n**Goal:** Observe runtime behaviour safely to reveal what static analysis cannot.\n\n**Entry criteria:** Isolation confirmed by Infrastructure and a clean-state snapshot or baseline taken.\n\n**Activities:**\n- Baseline the clean environment; execute the specimen in a platform-appropriate instrumented environment (virtual machine, container, emulator, instrumented device or hardware bench).\n- Monitor process, file, configuration, permission and network activity with platform-native or injected instrumentation.\n- Redirect and capture network callbacks with simulated services; capture dropped artifacts and memory-resident state.\n- Iterate by supplying expected inputs, arguments, environment conditions or simulated server responses to unlock further behaviour; characterise C2 patterns and timing.\n\n**Decision points:** Does the specimen detect the analysis environment, require specific hardware, or refuse to run? (Anti-analysis handling is Stage F.) Is code-level insight needed to progress?\n\n**Iteration:** Revert to clean state and re-run under modified conditions until behaviour is characterised.\n\n**Pitfalls:** Allowing real network egress; concluding \"benign\" from a single evasive run; contaminating the host or the wider device lab; ignoring behaviour that only triggers on real hardware or with real peripherals.\n\n**Deliverables:** Behavioural report, captured traffic, dropped artifacts, runtime IOCs, C2 details. Feeds Stages F, I, J.\n\nCall `reactor_phase_complete` once behaviour is characterised -- or the refusal to run is itself documented.\n",
+        "---\ntitle: Stage F — Deep Reverse Engineering / Unpacking\ntoolset: debugging\n---\n**Goal:** Recover the true code, algorithms, protocols and cryptography through unpacking, deobfuscation, disassembly, decompilation and emulation.\n\n**Entry criteria:** Static or dynamic analysis indicates packing, obfuscation or unanswered questions requiring code-level insight.\n\n**Activities:**\n- Identify the packer, protector or obfuscator; unpack -- automatically where possible, otherwise by running to the original entry point under a debugger or emulator and dumping, then repairing the dumped image (import tables, relocations, section alignment).\n- Deobfuscate strings and control flow, including bytecode and script layers; disassemble, decompile and where useful emulate core routines.\n- Recover network protocol structure and cryptographic algorithms (cipher, mode, key and IV derivation and handling); extract configuration.\n- Document recovered algorithms as language-neutral pseudocode the Software Engineer can implement.\n\n**Decision points:** Is manual unpacking required? Is the recovered logic complete enough to support a tool (Stage Q)? Are additional samples needed for a robust family rule?\n\n**Iteration:** Interleave static and dynamic techniques; dump at successive unpacking layers.\n\n**Pitfalls:** Analysing the loader rather than the payload; incorrect image reconstruction; anti-debug, anti-emulation and integrity checks defeating naive runs; mistaking custom or modified crypto for a standard primitive.\n\n**Quality checks:** Unpacked code validated (symbols resolve, strings decode, behaviour matches Stage E); recovered algorithms reproduce observed runtime data.\n\n**Deliverables:** Unpacked artifact, recovered algorithm and protocol specifications, extracted configuration, code-level capability notes, detection-rule seed material. Feeds Stages J, K, Q.\n\nCall `reactor_phase_complete` once the recovered logic answers the questions that triggered this stage.\n",
+        "---\ntitle: Stage G — Memory / Runtime State Analysis\ntoolset: memory\n---\n**Goal:** Extract evidence from volatile memory that never reaches persistent storage -- injected code, memory-only payloads, hidden processes, in-memory configuration, credentials and keys.\n\n**Entry criteria:** A memory image or live runtime access exists.\n\n**Activities:**\n- Establish process and task context; hunt injected, hollowed or unbacked executable regions.\n- Enumerate network and handle/descriptor artifacts; inspect loaded modules and hooks; scan memory with detection rules.\n- Dump suspicious regions and processes for follow-on reverse engineering.\n- Recover in-memory configuration, credentials and encryption keys present while the process is or was running.\n\n**Decision points:** Symbol or profile mismatch must be resolved before trusting output. Suspicious region found -> dump and route to Stage F. Key material present -> route to Stage Q.\n\n**Pitfalls:** Incorrect symbols producing nonsense; mistaking legitimate security-agent injection for malicious activity; assuming volatile state survived a reboot or power loss.\n\n**Quality checks:** Cross-technique validation (multiple enumeration methods compared); dumped artifacts hashed; findings corroborated against persistent and network evidence.\n\n**Deliverables:** Memory findings, dumped processes and regions, in-memory IOCs and recovered secrets. Feeds Stages F, I, J, Q.\n\nCall `reactor_phase_complete` once volatile evidence is extracted and cross-checked.\n",
+        "---\ntitle: Stage H — Network Traffic Analysis\ntoolset: network\n---\n**Goal:** Characterise malicious network activity: C2, exfiltration, spread and payload delivery.\n\n**Entry criteria:** Packet captures or network telemetry exist.\n\n**Activities:**\n- Profile protocols, endpoints and volumes; identify suspicious or algorithmically generated name resolution.\n- Follow application-layer streams for C2 patterns (request structure, headers, encoding, beacon timing and jitter); extract transferred files and artifacts.\n- Fingerprint encrypted sessions to link infrastructure; identify exfiltration and lateral or device-to-device spread; extract network IOCs.\n- Include non-IP and short-range channels where relevant to the platform (Bluetooth, cellular, serial, industrial protocols).\n\n**Decision points:** Encrypted C2 -> pivot to metadata analysis and to memory or reverse engineering for key and protocol recovery. Evidence of exfiltration -> escalate scope and impact assessment.\n\n**Pitfalls:** Analysing live malicious traffic on a production network; ignoring encrypted flows entirely; missing low-and-slow beacons; overlooking non-TCP/IP transports.\n\n**Deliverables:** Network analysis report, C2 and exfiltration IOCs, extracted files, infrastructure fingerprints. Feeds Stages I, J, K.\n\nCall `reactor_phase_complete` once C2 and exfiltration behaviour is characterised.\n",
+        "---\ntitle: Stage I — Creating an Overview\n---\n**Goal:** Synthesise findings so far into a coherent situational picture.\n\n**Entry criteria:** Triage plus at least one deep stage completed.\n\n**Activities:**\n- Consolidate what is known (access vector, capability, scope, impact, affected platforms); identify gaps and contradictions.\n- Frame working hypotheses with explicit confidence; produce a high-level attack narrative and a system/artifact map.\n- Recommend the next analytical steps and which stages to re-enter.\n\n**Decision points:** Sufficient to proceed to timeline and reporting, or are gaps large enough to loop back?\n\n**Iteration:** Maintain as a living document updated throughout the investigation.\n\n**Pitfalls:** Presenting hypotheses as facts; anchoring on the first theory; omitting alternative explanations; silently dropping platforms that were in scope.\n\n**Deliverables:** Overview/situation report, hypothesis list with confidence, gap analysis. Feeds Stages J, K, N.\n\nCall `reactor_phase_complete` once the overview states what is known, what is not, and what to do next.\n",
+        "---\ntitle: Stage J — Creating a Timeline\ntoolset: forensics\n---\n**Goal:** Build an accurate, source-attributed chronology of events.\n\n**Entry criteria:** Timestamped artifacts are available.\n\n**Activities:**\n- Normalise all timestamps to a single reference (UTC), recording each source's original time zone, epoch format, resolution and any clock skew.\n- Generate a combined timeline from every available source -- filesystem metadata, OS state stores, system and application logs, execution evidence, network telemetry, memory findings, cloud and device logs; filter to relevant windows.\n- Correlate events across sources; map each significant event to its ATT&CK technique to produce a TTP-ordered progression.\n- Annotate every entry with its source artifact and a confidence level.\n\n**Decision points:** Fast triage timeline or full combined timeline? Which time windows warrant depth?\n\n**Pitfalls:** Mixing time zones or epoch formats across platforms; trusting easily forged timestamps without corroboration; timeline noise burying signal; failing to check for timestamp manipulation.\n\n**Quality checks:** Each entry cites its source; anti-forensic timestamp manipulation explicitly checked; key events corroborated by two or more independent sources.\n\n**Deliverables:** Documented timeline and ATT&CK-mapped event sequence. Feeds Stages K, L, M, N.\n\nCall `reactor_phase_complete` once the timeline is source-attributed and ATT&CK-mapped.\n",
+        "---\ntitle: Stage K — IOC & Detection Signature Development\ntoolset: malware\n---\n**Goal:** Convert findings into reusable, tested detection.\n\n**Entry criteria:** Confirmed malicious artifacts or behaviours exist.\n\n**Activities:**\n- Catalogue atomic indicators (hashes, domains, addresses, mutexes/locks, configuration keys, file paths, package identifiers, certificates).\n- Author file and memory detection rules built from several distinctive patterns and derived from multiple samples.\n- Build behavioural and network detections in the formats the defending estate actually consumes; tag rules with metadata and ATT&CK IDs.\n- Test against the full sample set (all must match) and against a representative benign corpus for each platform (none should match); tune for runtime performance.\n\n**Decision points:** Broad hunting rule vs. precise alerting rule? Atomic indicator vs. behavioural detection?\n\n**Iteration:** Refine against false positives and negatives; retrohunt historical corpora and feed matches back into analysis.\n\n**Pitfalls:** Overly generic patterns; rules derived from one sample; deploying untested rules; benign corpora that do not represent the target platform.\n\n**Deliverables:** Machine-readable IOC set and tested detection rules with metadata and test results. Feeds Stages L, N and defensive operations.\n\nCall `reactor_phase_complete` once every rule passes the sample set and the benign corpus.\n",
+        "---\ntitle: Stage L — Attribution / TTP Mapping\n---\n**Goal:** Characterise adversary behaviour in a common framework and, where evidence supports it, associate it with known activity -- defensively.\n\n**Entry criteria:** A body of observed behaviours and TTPs exists.\n\n**Activities:**\n- Map all observed behaviours to the appropriate ATT&CK matrix for each affected platform class; build a combined technique layer.\n- Compare TTPs, tooling, infrastructure and code characteristics against documented campaigns and groups; assess the strength of each overlap.\n- Express any association with explicit confidence and caveats.\n\n**Decision points:** Enough for a named-actor assessment, or only a behavioural profile? What alternative explanations exist?\n\n**Pitfalls:** Over-attribution from weak overlaps; false-flag susceptibility; conflating shared tooling or commodity builders with authorship.\n\n**Deliverables:** ATT&CK technique layer, TTP profile, attribution assessment with confidence. Feeds Stages M, N.\n\nCall `reactor_phase_complete` once the technique layer and the confidence-caveated assessment exist.\n",
+        "---\ntitle: Stage M — Root Cause Analysis\n---\n**Goal:** Determine the underlying cause and enabling conditions.\n\n**Entry criteria:** Timeline and overview sufficient to reason about causation.\n\n**Activities:**\n- Identify the initial access vector and the first compromised system or device.\n- Determine the vulnerability, misconfiguration, supply-chain weakness or human factor exploited.\n- Trace enabling conditions (missing controls, excessive privilege, unpatched or unsupported platforms, weak device provisioning).\n- Distinguish root cause from symptom; prove or disprove each candidate explanation methodically.\n\n**Decision points:** Multiple plausible causes -> evaluate each on evidence rather than selecting the most convenient.\n\n**Iteration:** Loop back to acquisition or analysis if the vector remains unproven.\n\n**Pitfalls:** Stopping at the proximate cause; assuming rather than proving the vector; single-explanation bias.\n\n**Deliverables:** Root-cause findings and an enabling-conditions list. Feeds Stages N, O.\n\nCall `reactor_phase_complete` once the vector is proven -- or the honest answer is that it cannot yet be proven.\n",
+        "---\ntitle: Stage N — Reporting / Publication\n---\n**Goal:** Produce clear, defensible deliverables for technical and executive audiences (NIST SP 800-86 \"Reporting\").\n\n**Entry criteria:** Analysis sufficient to answer the scoping questions.\n\n**Activities:**\n- Structure the report (executive summary -> scope and method -> findings -> timeline -> ATT&CK mapping -> IOC and detection appendices -> recommendations).\n- Write a plain-language executive summary covering impact and required action; present technical detail with enough method to be reproduced.\n- Apply ICD 203 estimative language, keeping likelihood and analyst confidence separate; give alternative explanations due consideration; include visualisations.\n- Compile appendices in machine-readable form.\n\n**Decision points:** Audience-specific versions; classification and handling markings; body vs. appendix placement.\n\n**Iteration:** Peer/QA review cycle.\n\n**Pitfalls:** Overstating certainty; platform jargon in the executive summary; unsourced claims; conflating likelihood with confidence.\n\n**Deliverables:** Final report, executive brief, IOC and detection appendix. Feeds Stage O and the customer.\n\nCall `reactor_phase_complete` once the report answers the scoping questions and every claim carries its evidence.\n",
+        "---\ntitle: Stage O — Remediation & Containment Recommendations\n---\n**Goal:** Provide actionable containment, eradication and recovery guidance (NIST SP 800-61).\n\n**Entry criteria:** Root cause and scope reasonably established.\n\n**Activities:**\n- Recommend containment (isolation or quarantine, blocking C2, disabling accounts and tokens, credential and key rotation, revoking certificates or device enrolments).\n- Recommend eradication (remove artifacts, rebuild or reflash from trusted known-good images, close the underlying vulnerability, address every persistence mechanism identified).\n- Recommend recovery (restore from verified clean backups, staged return to service with heightened monitoring).\n- Account for platform constraints -- some embedded and mobile devices cannot be reliably cleaned in place and must be reflashed or replaced.\n\n**Decision points:** Immediate containment vs. monitored observation for intelligence; rebuild vs. clean in place; replace vs. reflash for constrained devices.\n\n**Pitfalls:** Partial eradication leaving backdoors or firmware-level persistence; tipping off the adversary prematurely; restoring from compromised backups.\n\n**Deliverables:** Prioritised remediation and containment plan with decision thresholds. Feeds Stage P.\n\nCall `reactor_phase_complete` once the plan is prioritised and its decision thresholds are explicit.\n",
+        "---\ntitle: Stage P — Lessons Learned\n---\n**Goal:** Improve future response (NIST SP 800-61 Post-Incident Activity).\n\n**Entry criteria:** Incident substantially resolved.\n\n**Activities:**\n- Hold a review; assess what happened, what worked and what did not.\n- Update detections, playbooks and the IR plan; feed new indicators and rules into defences.\n- Identify control, visibility and tooling gaps, including platforms where the team lacked acquisition or analysis capability; capture training needs.\n\n**Pitfalls:** Blame culture suppressing candour; lessons captured but never actioned.\n\n**Deliverables:** Lessons-learned report, updated playbooks and detections, capability gap list. Feeds back into Stage A.\n\nCall `reactor_phase_complete` once the review is written and its actions are listed.\n",
+        "---\ntitle: Stage Q — Creating Analysis-Derived Tooling\n---\n**Goal:** Convert understanding gained in earlier stages into validated, reusable software: configuration and secret extractors, deobfuscators and unpackers, protocol and traffic decoders, artifact and format parsers, emulation or instrumentation harnesses, automated triage and classification tools, and data-recovery or decryption utilities.\n\n**Entry criteria:** Reverse engineering (Stage F), memory analysis (Stage G) or artifact analysis has produced a sufficiently complete specification of the logic to be reimplemented, plus samples to validate against.\n\n**Inputs:** Recovered algorithms and pseudocode, format and protocol specifications, extracted key or configuration material, a corpus of samples or artifacts, and ground truth (known plaintext, known-good parsed output, expected configurations, reference decoded data).\n\n**Activities:**\n1. **Specify.** The analyst role writes a precise, platform-neutral specification of what the tool must do: the input format and its variants, the transformation or extraction logic, edge cases, and the expected output. Define the success criterion and how it will be measured.\n2. **Assess feasibility and value.** Confirm the logic is complete enough to reimplement, that the effort is justified by reuse or scale, and that no existing tool already does it. For recovery and decryption tools specifically, confirm the recovery is actually possible rather than assumed.\n3. **Implement.** Build the tool defensively: hostile, malformed and truncated input must not crash or execute anything; never contact live malicious infrastructure outside Infrastructure-provided isolation; keep the implementation portable and isolate target-specific parts behind clear interfaces.\n4. **Validate against ground truth.** Run against every available sample and compare to independently derived expected output. For extractors, compare with manually extracted configuration. For deobfuscators and unpackers, verify the output executes or analyses consistently with dynamic observations. For parsers, verify against a reference implementation or manual parsing. For decryption and recovery tools, verify against known plaintext/ciphertext pairs and format signatures. Record the success rate and the exact variant scope covered.\n5. **Harden and scope.** Handle variants, versions and platform differences explicitly; fail loudly and safely when input falls outside the validated scope rather than producing silently wrong output.\n6. **Package and document.** Ship with usage documentation, the validated variant and version scope, known limitations, the measured success rate, test suite, and reproducible build instructions.\n\n**Decision points:** One-off script or maintained tool? Standalone utility or plugin to an existing framework? Is coverage sufficient, or are more samples needed to generalise? Does the tool need to be safe for non-expert operators?\n\n**Iteration:** Refine against new variants; re-measure the success rate; loop back to Stage F when the tool fails on inputs the specification did not anticipate -- tool failure is itself an analytical finding.\n\n**Pitfalls:** Building from an incomplete or misunderstood specification; validating only on the sample that inspired the tool; silently producing wrong output on out-of-scope input; hardcoding one platform's assumptions; releasing attacker-usable capability without considering the consequences.\n\n**Quality checks:** Validated against multiple independent ground-truth cases; deterministic and reproducible; non-destructive by default (never modify original evidence -- operate on copies and write to new output); scope and limitations stated honestly.\n\n**Deliverables:** Tested tool, validation results, variant and limitation notes, usage documentation, safe-operation guidance.\n\nCall `reactor_phase_complete` once the tool passes every ground-truth case and its documented scope matches its measured behaviour.\n"
+      ]
+    },
+    "ops": [
+      {
+        "op": "command",
+        "args": "list",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: scenarios -- investigation",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start investigation",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: started \"investigation\" -- step 1/17",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 0,
+              "summaries": []
+            }
+          ],
+          "messages": [
+            {
+              "content": "## Phase 1/17: Stage A — Scoping & Collection Planning\n\n**Goal:** Define the investigation's questions, scope, legal authority and a prioritised evidence-collection plan before touching evidence.\n\n**Entry criteria:** An incident or request exists with a point of contact and a rough description.\n\n**Activities:**\n- Identify the questions to answer and success criteria; determine the platforms, architectures and device types in scope.\n- Enumerate candidate evidence sources (endpoints, servers, mobile and embedded devices, volatile memory, network captures, cloud and SaaS logs, backups).\n- Classify sources by order of volatility and by accessibility constraints (locked devices, encrypted storage, soldered flash, vendor-controlled cloud data).\n- Determine legal authority, jurisdiction, privacy constraints and data-handling rules; select acquisition methods and validate tools per ISO/IEC 27041.\n- Define storage, naming and chain-of-custody procedures; assign roles.\n\n**Decision points:** Live vs. dead acquisition? Full image vs. targeted/logical collection? Which sources are technically reachable at all? In-scope vs. out-of-scope systems?\n\n**Iteration:** Revisit scope as new affected systems surface during analysis.\n\n**Pitfalls:** Over-collecting; under-scoping and missing patient zero; ignoring volatile data; assuming a desktop-style acquisition path applies to a mobile or embedded target; no legal sign-off.\n\n**Deliverables:** Collection plan, scope statement, volatility-ordered evidence source list, chain-of-custody template. Feeds Stage B.\n\nCall `reactor_phase_complete` once the collection plan and scope statement exist.",
+              "display": true
+            }
+          ],
+          "reactorCalls": [
+            "toolsets enable forensics --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 1 done",
+        "out": {
+          "text": "## Phase 2/17: Stage B — Evidence Acquisition & Preservation\n\n**Goal:** Acquire relevant data defensibly while preserving integrity (NIST SP 800-86 \"Collection\"; ISO/IEC 27037).\n\n**Entry criteria:** Approved collection plan.\n\n**Activities:**\n- Follow order of volatility -- capture volatile memory and running state before persistent storage, and persistent storage before archived or derived data.\n- Use read-only or write-blocked acquisition where the platform permits, and document the method and its side effects where it does not.\n- Select the acquisition depth the platform supports (physical image, full-filesystem or logical extraction, chip-off or flash dump, agent-based collection, cloud export).\n- Compute cryptographic hashes at acquisition and record them; capture volatile context (processes, connections, logged-on users, loaded modules).\n- Document tool, version, operator, timestamps, source identity and method contemporaneously.\n\n**Decision points:** If acquisition may be interrupted (battery, remote wipe, tamper response), prioritise the highest-value data first. If the device cannot be imaged without alteration, record the justification.\n\n**Pitfalls:** Powering off a live compromised system and losing memory-resident keys and fileless code; triggering device wipe or re-encryption; missing hashes; broken custody.\n\n**Quality checks:** Post-acquisition hash verification; auditable and repeatable process; complete custody entries.\n\n**Deliverables:** Verified images, extractions, memory dumps and captures with hashes and custody records. Feeds Stages C--H.\n\nCall `reactor_phase_complete` once acquisition is verified -- hashes match, custody entries complete.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 1,
+              "summaries": [
+                "phase 1 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable forensics --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 2 done",
+        "out": {
+          "text": "## Phase 3/17: Stage C — Triage\n\n**Goal:** Rapidly separate signal from noise, prioritise systems and artifacts, and decide where deep analysis is warranted.\n\n**Entry criteria:** Acquired or live-accessible evidence exists.\n\n**Activities:**\n- Run rapid collection and parse the platform's key execution, persistence and account artifacts.\n- Hash suspect files and check reputation and known-bad sets.\n- Extract static properties of suspect artifacts (format, strings, imports or symbols, packing indicators, entropy, signing state).\n- Take a first pass over volatile memory (process inventory, injected regions, network connections).\n- Form initial hypotheses; rank systems and devices by likelihood of compromise and evidentiary value.\n\n**Decision points:** Malware incident (Cyber-Forensics / Reverse Engineer territory) or general system investigation (Forensics territory)? Which systems get full acquisition? Is immediate escalation or containment needed?\n\n**Iteration:** Re-triage additional systems using indicators discovered in early passes.\n\n**Pitfalls:** Deep-diving before triage; trusting a single automated verdict; lacking a platform baseline so legitimate security agents and normal OS behaviour look malicious.\n\n**Deliverables:** Triage report, prioritised system/artifact list, initial IOCs and hypotheses. Feeds Stages D--I.\n\nCall `reactor_phase_complete` once systems are ranked and initial hypotheses are on record.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 2,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable triage --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 3 done",
+        "out": {
+          "text": "## Phase 4/17: Stage D — Static Analysis\n\n**Goal:** Extract everything possible from a specimen without executing it.\n\n**Entry criteria:** A suspect artifact is isolated in the lab.\n\n**Activities:**\n- Identify format, architecture, target platform and toolchain; compute hashes and format-appropriate fuzzy or import hashes.\n- Extract and decode strings; parse the container structure (headers, sections/segments, imports/exports and symbols, resources, manifests and permissions, signing and certificate data).\n- Assess entropy and detect packing or encryption; run existing detection rules; note anti-analysis indicators.\n- Hypothesise capability from imported APIs, requested permissions or referenced syscalls.\n\n**Decision points:** Packed or obfuscated -> route to Stage F. Already classifiable to a known family? Script, document or bytecode payload -> deobfuscation path.\n\n**Iteration:** Re-run static analysis on each unpacked or decoded layer.\n\n**Pitfalls:** Trusting strings and imports from a packed artifact; over-reading capability from imports alone; missing payloads embedded in resources, overlays or asset directories.\n\n**Deliverables:** Static analysis notes, extracted strings and structure data, candidate IOCs, packing status. Feeds Stages E and F.\n\nCall `reactor_phase_complete` once static properties are catalogued and capability hypotheses are on record.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 3,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable native --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 4 done",
+        "out": {
+          "text": "## Phase 5/17: Stage E — Dynamic / Behavioural Analysis\n\n**Goal:** Observe runtime behaviour safely to reveal what static analysis cannot.\n\n**Entry criteria:** Isolation confirmed by Infrastructure and a clean-state snapshot or baseline taken.\n\n**Activities:**\n- Baseline the clean environment; execute the specimen in a platform-appropriate instrumented environment (virtual machine, container, emulator, instrumented device or hardware bench).\n- Monitor process, file, configuration, permission and network activity with platform-native or injected instrumentation.\n- Redirect and capture network callbacks with simulated services; capture dropped artifacts and memory-resident state.\n- Iterate by supplying expected inputs, arguments, environment conditions or simulated server responses to unlock further behaviour; characterise C2 patterns and timing.\n\n**Decision points:** Does the specimen detect the analysis environment, require specific hardware, or refuse to run? (Anti-analysis handling is Stage F.) Is code-level insight needed to progress?\n\n**Iteration:** Revert to clean state and re-run under modified conditions until behaviour is characterised.\n\n**Pitfalls:** Allowing real network egress; concluding \"benign\" from a single evasive run; contaminating the host or the wider device lab; ignoring behaviour that only triggers on real hardware or with real peripherals.\n\n**Deliverables:** Behavioural report, captured traffic, dropped artifacts, runtime IOCs, C2 details. Feeds Stages F, I, J.\n\nCall `reactor_phase_complete` once behaviour is characterised -- or the refusal to run is itself documented.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 4,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable dynamic --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 5 done",
+        "out": {
+          "text": "## Phase 6/17: Stage F — Deep Reverse Engineering / Unpacking\n\n**Goal:** Recover the true code, algorithms, protocols and cryptography through unpacking, deobfuscation, disassembly, decompilation and emulation.\n\n**Entry criteria:** Static or dynamic analysis indicates packing, obfuscation or unanswered questions requiring code-level insight.\n\n**Activities:**\n- Identify the packer, protector or obfuscator; unpack -- automatically where possible, otherwise by running to the original entry point under a debugger or emulator and dumping, then repairing the dumped image (import tables, relocations, section alignment).\n- Deobfuscate strings and control flow, including bytecode and script layers; disassemble, decompile and where useful emulate core routines.\n- Recover network protocol structure and cryptographic algorithms (cipher, mode, key and IV derivation and handling); extract configuration.\n- Document recovered algorithms as language-neutral pseudocode the Software Engineer can implement.\n\n**Decision points:** Is manual unpacking required? Is the recovered logic complete enough to support a tool (Stage Q)? Are additional samples needed for a robust family rule?\n\n**Iteration:** Interleave static and dynamic techniques; dump at successive unpacking layers.\n\n**Pitfalls:** Analysing the loader rather than the payload; incorrect image reconstruction; anti-debug, anti-emulation and integrity checks defeating naive runs; mistaking custom or modified crypto for a standard primitive.\n\n**Quality checks:** Unpacked code validated (symbols resolve, strings decode, behaviour matches Stage E); recovered algorithms reproduce observed runtime data.\n\n**Deliverables:** Unpacked artifact, recovered algorithm and protocol specifications, extracted configuration, code-level capability notes, detection-rule seed material. Feeds Stages J, K, Q.\n\nCall `reactor_phase_complete` once the recovered logic answers the questions that triggered this stage.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 5,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable debugging --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 6 done",
+        "out": {
+          "text": "## Phase 7/17: Stage G — Memory / Runtime State Analysis\n\n**Goal:** Extract evidence from volatile memory that never reaches persistent storage -- injected code, memory-only payloads, hidden processes, in-memory configuration, credentials and keys.\n\n**Entry criteria:** A memory image or live runtime access exists.\n\n**Activities:**\n- Establish process and task context; hunt injected, hollowed or unbacked executable regions.\n- Enumerate network and handle/descriptor artifacts; inspect loaded modules and hooks; scan memory with detection rules.\n- Dump suspicious regions and processes for follow-on reverse engineering.\n- Recover in-memory configuration, credentials and encryption keys present while the process is or was running.\n\n**Decision points:** Symbol or profile mismatch must be resolved before trusting output. Suspicious region found -> dump and route to Stage F. Key material present -> route to Stage Q.\n\n**Pitfalls:** Incorrect symbols producing nonsense; mistaking legitimate security-agent injection for malicious activity; assuming volatile state survived a reboot or power loss.\n\n**Quality checks:** Cross-technique validation (multiple enumeration methods compared); dumped artifacts hashed; findings corroborated against persistent and network evidence.\n\n**Deliverables:** Memory findings, dumped processes and regions, in-memory IOCs and recovered secrets. Feeds Stages F, I, J, Q.\n\nCall `reactor_phase_complete` once volatile evidence is extracted and cross-checked.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 6,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable memory --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 7 done",
+        "out": {
+          "text": "## Phase 8/17: Stage H — Network Traffic Analysis\n\n**Goal:** Characterise malicious network activity: C2, exfiltration, spread and payload delivery.\n\n**Entry criteria:** Packet captures or network telemetry exist.\n\n**Activities:**\n- Profile protocols, endpoints and volumes; identify suspicious or algorithmically generated name resolution.\n- Follow application-layer streams for C2 patterns (request structure, headers, encoding, beacon timing and jitter); extract transferred files and artifacts.\n- Fingerprint encrypted sessions to link infrastructure; identify exfiltration and lateral or device-to-device spread; extract network IOCs.\n- Include non-IP and short-range channels where relevant to the platform (Bluetooth, cellular, serial, industrial protocols).\n\n**Decision points:** Encrypted C2 -> pivot to metadata analysis and to memory or reverse engineering for key and protocol recovery. Evidence of exfiltration -> escalate scope and impact assessment.\n\n**Pitfalls:** Analysing live malicious traffic on a production network; ignoring encrypted flows entirely; missing low-and-slow beacons; overlooking non-TCP/IP transports.\n\n**Deliverables:** Network analysis report, C2 and exfiltration IOCs, extracted files, infrastructure fingerprints. Feeds Stages I, J, K.\n\nCall `reactor_phase_complete` once C2 and exfiltration behaviour is characterised.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 7,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable network --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 8 done",
+        "out": {
+          "text": "## Phase 9/17: Stage I — Creating an Overview\n\n**Goal:** Synthesise findings so far into a coherent situational picture.\n\n**Entry criteria:** Triage plus at least one deep stage completed.\n\n**Activities:**\n- Consolidate what is known (access vector, capability, scope, impact, affected platforms); identify gaps and contradictions.\n- Frame working hypotheses with explicit confidence; produce a high-level attack narrative and a system/artifact map.\n- Recommend the next analytical steps and which stages to re-enter.\n\n**Decision points:** Sufficient to proceed to timeline and reporting, or are gaps large enough to loop back?\n\n**Iteration:** Maintain as a living document updated throughout the investigation.\n\n**Pitfalls:** Presenting hypotheses as facts; anchoring on the first theory; omitting alternative explanations; silently dropping platforms that were in scope.\n\n**Deliverables:** Overview/situation report, hypothesis list with confidence, gap analysis. Feeds Stages J, K, N.\n\nCall `reactor_phase_complete` once the overview states what is known, what is not, and what to do next.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 8,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 9 done",
+        "out": {
+          "text": "## Phase 10/17: Stage J — Creating a Timeline\n\n**Goal:** Build an accurate, source-attributed chronology of events.\n\n**Entry criteria:** Timestamped artifacts are available.\n\n**Activities:**\n- Normalise all timestamps to a single reference (UTC), recording each source's original time zone, epoch format, resolution and any clock skew.\n- Generate a combined timeline from every available source -- filesystem metadata, OS state stores, system and application logs, execution evidence, network telemetry, memory findings, cloud and device logs; filter to relevant windows.\n- Correlate events across sources; map each significant event to its ATT&CK technique to produce a TTP-ordered progression.\n- Annotate every entry with its source artifact and a confidence level.\n\n**Decision points:** Fast triage timeline or full combined timeline? Which time windows warrant depth?\n\n**Pitfalls:** Mixing time zones or epoch formats across platforms; trusting easily forged timestamps without corroboration; timeline noise burying signal; failing to check for timestamp manipulation.\n\n**Quality checks:** Each entry cites its source; anti-forensic timestamp manipulation explicitly checked; key events corroborated by two or more independent sources.\n\n**Deliverables:** Documented timeline and ATT&CK-mapped event sequence. Feeds Stages K, L, M, N.\n\nCall `reactor_phase_complete` once the timeline is source-attributed and ATT&CK-mapped.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 9,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable forensics --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 10 done",
+        "out": {
+          "text": "## Phase 11/17: Stage K — IOC & Detection Signature Development\n\n**Goal:** Convert findings into reusable, tested detection.\n\n**Entry criteria:** Confirmed malicious artifacts or behaviours exist.\n\n**Activities:**\n- Catalogue atomic indicators (hashes, domains, addresses, mutexes/locks, configuration keys, file paths, package identifiers, certificates).\n- Author file and memory detection rules built from several distinctive patterns and derived from multiple samples.\n- Build behavioural and network detections in the formats the defending estate actually consumes; tag rules with metadata and ATT&CK IDs.\n- Test against the full sample set (all must match) and against a representative benign corpus for each platform (none should match); tune for runtime performance.\n\n**Decision points:** Broad hunting rule vs. precise alerting rule? Atomic indicator vs. behavioural detection?\n\n**Iteration:** Refine against false positives and negatives; retrohunt historical corpora and feed matches back into analysis.\n\n**Pitfalls:** Overly generic patterns; rules derived from one sample; deploying untested rules; benign corpora that do not represent the target platform.\n\n**Deliverables:** Machine-readable IOC set and tested detection rules with metadata and test results. Feeds Stages L, N and defensive operations.\n\nCall `reactor_phase_complete` once every rule passes the sample set and the benign corpus.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 10,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [
+            "toolsets enable malware --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 11 done",
+        "out": {
+          "text": "## Phase 12/17: Stage L — Attribution / TTP Mapping\n\n**Goal:** Characterise adversary behaviour in a common framework and, where evidence supports it, associate it with known activity -- defensively.\n\n**Entry criteria:** A body of observed behaviours and TTPs exists.\n\n**Activities:**\n- Map all observed behaviours to the appropriate ATT&CK matrix for each affected platform class; build a combined technique layer.\n- Compare TTPs, tooling, infrastructure and code characteristics against documented campaigns and groups; assess the strength of each overlap.\n- Express any association with explicit confidence and caveats.\n\n**Decision points:** Enough for a named-actor assessment, or only a behavioural profile? What alternative explanations exist?\n\n**Pitfalls:** Over-attribution from weak overlaps; false-flag susceptibility; conflating shared tooling or commodity builders with authorship.\n\n**Deliverables:** ATT&CK technique layer, TTP profile, attribution assessment with confidence. Feeds Stages M, N.\n\nCall `reactor_phase_complete` once the technique layer and the confidence-caveated assessment exist.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 11,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done",
+                "phase 11 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 12 done",
+        "out": {
+          "text": "## Phase 13/17: Stage M — Root Cause Analysis\n\n**Goal:** Determine the underlying cause and enabling conditions.\n\n**Entry criteria:** Timeline and overview sufficient to reason about causation.\n\n**Activities:**\n- Identify the initial access vector and the first compromised system or device.\n- Determine the vulnerability, misconfiguration, supply-chain weakness or human factor exploited.\n- Trace enabling conditions (missing controls, excessive privilege, unpatched or unsupported platforms, weak device provisioning).\n- Distinguish root cause from symptom; prove or disprove each candidate explanation methodically.\n\n**Decision points:** Multiple plausible causes -> evaluate each on evidence rather than selecting the most convenient.\n\n**Iteration:** Loop back to acquisition or analysis if the vector remains unproven.\n\n**Pitfalls:** Stopping at the proximate cause; assuming rather than proving the vector; single-explanation bias.\n\n**Deliverables:** Root-cause findings and an enabling-conditions list. Feeds Stages N, O.\n\nCall `reactor_phase_complete` once the vector is proven -- or the honest answer is that it cannot yet be proven.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 12,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done",
+                "phase 11 done",
+                "phase 12 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 13 done",
+        "out": {
+          "text": "## Phase 14/17: Stage N — Reporting / Publication\n\n**Goal:** Produce clear, defensible deliverables for technical and executive audiences (NIST SP 800-86 \"Reporting\").\n\n**Entry criteria:** Analysis sufficient to answer the scoping questions.\n\n**Activities:**\n- Structure the report (executive summary -> scope and method -> findings -> timeline -> ATT&CK mapping -> IOC and detection appendices -> recommendations).\n- Write a plain-language executive summary covering impact and required action; present technical detail with enough method to be reproduced.\n- Apply ICD 203 estimative language, keeping likelihood and analyst confidence separate; give alternative explanations due consideration; include visualisations.\n- Compile appendices in machine-readable form.\n\n**Decision points:** Audience-specific versions; classification and handling markings; body vs. appendix placement.\n\n**Iteration:** Peer/QA review cycle.\n\n**Pitfalls:** Overstating certainty; platform jargon in the executive summary; unsourced claims; conflating likelihood with confidence.\n\n**Deliverables:** Final report, executive brief, IOC and detection appendix. Feeds Stage O and the customer.\n\nCall `reactor_phase_complete` once the report answers the scoping questions and every claim carries its evidence.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 13,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done",
+                "phase 11 done",
+                "phase 12 done",
+                "phase 13 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 14 done",
+        "out": {
+          "text": "## Phase 15/17: Stage O — Remediation & Containment Recommendations\n\n**Goal:** Provide actionable containment, eradication and recovery guidance (NIST SP 800-61).\n\n**Entry criteria:** Root cause and scope reasonably established.\n\n**Activities:**\n- Recommend containment (isolation or quarantine, blocking C2, disabling accounts and tokens, credential and key rotation, revoking certificates or device enrolments).\n- Recommend eradication (remove artifacts, rebuild or reflash from trusted known-good images, close the underlying vulnerability, address every persistence mechanism identified).\n- Recommend recovery (restore from verified clean backups, staged return to service with heightened monitoring).\n- Account for platform constraints -- some embedded and mobile devices cannot be reliably cleaned in place and must be reflashed or replaced.\n\n**Decision points:** Immediate containment vs. monitored observation for intelligence; rebuild vs. clean in place; replace vs. reflash for constrained devices.\n\n**Pitfalls:** Partial eradication leaving backdoors or firmware-level persistence; tipping off the adversary prematurely; restoring from compromised backups.\n\n**Deliverables:** Prioritised remediation and containment plan with decision thresholds. Feeds Stage P.\n\nCall `reactor_phase_complete` once the plan is prioritised and its decision thresholds are explicit.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 14,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done",
+                "phase 11 done",
+                "phase 12 done",
+                "phase 13 done",
+                "phase 14 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 15 done",
+        "out": {
+          "text": "## Phase 16/17: Stage P — Lessons Learned\n\n**Goal:** Improve future response (NIST SP 800-61 Post-Incident Activity).\n\n**Entry criteria:** Incident substantially resolved.\n\n**Activities:**\n- Hold a review; assess what happened, what worked and what did not.\n- Update detections, playbooks and the IR plan; feed new indicators and rules into defences.\n- Identify control, visibility and tooling gaps, including platforms where the team lacked acquisition or analysis capability; capture training needs.\n\n**Pitfalls:** Blame culture suppressing candour; lessons captured but never actioned.\n\n**Deliverables:** Lessons-learned report, updated playbooks and detections, capability gap list. Feeds back into Stage A.\n\nCall `reactor_phase_complete` once the review is written and its actions are listed.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 15,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done",
+                "phase 11 done",
+                "phase 12 done",
+                "phase 13 done",
+                "phase 14 done",
+                "phase 15 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "phase 16 done",
+        "out": {
+          "text": "## Phase 17/17: Stage Q — Creating Analysis-Derived Tooling\n\n**Goal:** Convert understanding gained in earlier stages into validated, reusable software: configuration and secret extractors, deobfuscators and unpackers, protocol and traffic decoders, artifact and format parsers, emulation or instrumentation harnesses, automated triage and classification tools, and data-recovery or decryption utilities.\n\n**Entry criteria:** Reverse engineering (Stage F), memory analysis (Stage G) or artifact analysis has produced a sufficiently complete specification of the logic to be reimplemented, plus samples to validate against.\n\n**Inputs:** Recovered algorithms and pseudocode, format and protocol specifications, extracted key or configuration material, a corpus of samples or artifacts, and ground truth (known plaintext, known-good parsed output, expected configurations, reference decoded data).\n\n**Activities:**\n1. **Specify.** The analyst role writes a precise, platform-neutral specification of what the tool must do: the input format and its variants, the transformation or extraction logic, edge cases, and the expected output. Define the success criterion and how it will be measured.\n2. **Assess feasibility and value.** Confirm the logic is complete enough to reimplement, that the effort is justified by reuse or scale, and that no existing tool already does it. For recovery and decryption tools specifically, confirm the recovery is actually possible rather than assumed.\n3. **Implement.** Build the tool defensively: hostile, malformed and truncated input must not crash or execute anything; never contact live malicious infrastructure outside Infrastructure-provided isolation; keep the implementation portable and isolate target-specific parts behind clear interfaces.\n4. **Validate against ground truth.** Run against every available sample and compare to independently derived expected output. For extractors, compare with manually extracted configuration. For deobfuscators and unpackers, verify the output executes or analyses consistently with dynamic observations. For parsers, verify against a reference implementation or manual parsing. For decryption and recovery tools, verify against known plaintext/ciphertext pairs and format signatures. Record the success rate and the exact variant scope covered.\n5. **Harden and scope.** Handle variants, versions and platform differences explicitly; fail loudly and safely when input falls outside the validated scope rather than producing silently wrong output.\n6. **Package and document.** Ship with usage documentation, the validated variant and version scope, known limitations, the measured success rate, test suite, and reproducible build instructions.\n\n**Decision points:** One-off script or maintained tool? Standalone utility or plugin to an existing framework? Is coverage sufficient, or are more samples needed to generalise? Does the tool need to be safe for non-expert operators?\n\n**Iteration:** Refine against new variants; re-measure the success rate; loop back to Stage F when the tool fails on inputs the specification did not anticipate -- tool failure is itself an analytical finding.\n\n**Pitfalls:** Building from an incomplete or misunderstood specification; validating only on the sample that inspired the tool; silently producing wrong output on out-of-scope input; hardcoding one platform's assumptions; releasing attacker-usable capability without considering the consequences.\n\n**Quality checks:** Validated against multiple independent ground-truth cases; deterministic and reproducible; non-destructive by default (never modify original evidence -- operate on copies and write to new output); scope and limitations stated honestly.\n\n**Deliverables:** Tested tool, validation results, variant and limitation notes, usage documentation, safe-operation guidance.\n\nCall `reactor_phase_complete` once the tool passes every ground-truth case and its documented scope matches its measured behaviour.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "investigation",
+              "stepIndex": 16,
+              "summaries": [
+                "phase 1 done",
+                "phase 2 done",
+                "phase 3 done",
+                "phase 4 done",
+                "phase 5 done",
+                "phase 6 done",
+                "phase 7 done",
+                "phase 8 done",
+                "phase 9 done",
+                "phase 10 done",
+                "phase 11 done",
+                "phase 12 done",
+                "phase 13 done",
+                "phase 14 done",
+                "phase 15 done",
+                "phase 16 done"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: \"investigation\" -- step 17/17: Stage Q — Creating Analysis-Derived Tooling",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "the last one",
+        "out": {
+          "text": "reactor: scenario \"investigation\" complete -- 17 phase(s) done.",
+          "notify": [],
+          "entries": [
+            null
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "walkthrough",
+    "scenarios": {
+      "alpha": [
+        "---\ntitle: Scoping\ntoolset: triage\n---\nDecide what is in scope.\n\nSecond paragraph.\n",
+        "No frontmatter here, so no title.\n",
+        "---\r\ntitle: Static analysis\r\ntoolset: native\r\n---\r\nCRLF body.\r\n"
+      ],
+      "beta": [
+        "---\ntitle: Only\n---\nsolo body",
+        "---\ntoolset:   \ntitle:\n---\nempty fields\n"
+      ],
+      "gamma": [
+        "---\ntitle: Extra: colon\nunknown: ignored\ntoolset: dynamic\n---\n\n  padded body  \n\n"
+      ]
+    },
+    "ops": [
+      {
+        "op": "command",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "list",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: scenarios -- alpha, beta, gamma",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "next",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active -- `start` one first",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "stop",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "nothing running",
+        "out": {
+          "text": "reactor: no scenario is active -- start one with `/reactor-scenario start <id>`.",
+          "notify": [],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-scenario: start needs a scenario id -- try `list`",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start ghost",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-scenario: unknown scenario \"ghost\" -- try `list`",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start alpha",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: started \"alpha\" -- step 1/3",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "scenarioId": "alpha",
+              "stepIndex": 0,
+              "summaries": []
+            }
+          ],
+          "messages": [
+            {
+              "content": "## Phase 1/3: Scoping\n\nDecide what is in scope.\n\nSecond paragraph.",
+              "display": true
+            }
+          ],
+          "reactorCalls": [
+            "toolsets enable triage --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "start beta",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: \"alpha\" is already running -- `stop` it first",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: \"alpha\" -- step 1/3: Scoping",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "scope agreed",
+        "out": {
+          "text": "## Phase 2/3: step 2\n\nNo frontmatter here, so no title.",
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "alpha",
+              "stepIndex": 1,
+              "summaries": [
+                "scope agreed"
+              ]
+            }
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: \"alpha\" -- step 2/3: step 2",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "next   handled   by   hand ",
+        "out": {
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "alpha",
+              "stepIndex": 2,
+              "summaries": [
+                "scope agreed",
+                "handled by hand"
+              ]
+            }
+          ],
+          "messages": [
+            {
+              "content": "## Phase 3/3: step 3\n\nCRLF body.",
+              "display": true
+            }
+          ],
+          "reactorCalls": [
+            "toolsets enable native --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: \"alpha\" -- step 3/3: step 3",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "static done",
+        "out": {
+          "text": "reactor: scenario \"alpha\" complete -- 3 phase(s) done.",
+          "notify": [],
+          "entries": [
+            null
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "tool",
+        "summary": "after complete",
+        "out": {
+          "text": "reactor: no scenario is active -- start one with `/reactor-scenario start <id>`.",
+          "notify": [],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start beta",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: started \"beta\" -- step 1/2",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "scenarioId": "beta",
+              "stepIndex": 0,
+              "summaries": []
+            }
+          ],
+          "messages": [
+            {
+              "content": "## Phase 1/2: Only\n\nsolo body",
+              "display": true
+            }
+          ],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "next",
+        "out": {
+          "notify": [],
+          "entries": [
+            {
+              "scenarioId": "beta",
+              "stepIndex": 1,
+              "summaries": [
+                "(advanced manually)"
+              ]
+            }
+          ],
+          "messages": [
+            {
+              "content": "## Phase 2/2: step 2\n\nempty fields",
+              "display": true
+            }
+          ],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "stop",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: stopped \"beta\"",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            null
+          ],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "stop",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenario active",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start gamma",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: started \"gamma\" -- step 1/1",
+              "level": "info"
+            }
+          ],
+          "entries": [
+            {
+              "scenarioId": "gamma",
+              "stepIndex": 0,
+              "summaries": []
+            }
+          ],
+          "messages": [
+            {
+              "content": "## Phase 1/1: Extra: colon\n\npadded body",
+              "display": true
+            }
+          ],
+          "reactorCalls": [
+            "toolsets enable dynamic --format json"
+          ],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "status",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: \"gamma\" -- step 1/1: Extra: colon",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": true
+        }
+      },
+      {
+        "op": "command",
+        "args": "next",
+        "out": {
+          "notify": [],
+          "entries": [
+            null
+          ],
+          "messages": [
+            {
+              "content": "reactor: scenario \"gamma\" complete -- 1 phase(s) done.",
+              "display": true
+            }
+          ],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "bogus",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-scenario: unknown subcommand \"bogus\" -- try list, start <id>, status, next, or stop",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "no-scenarios",
+    "scenarios": {},
+    "ops": [
+      {
+        "op": "command",
+        "args": "list",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor: no scenarios found in prompts/scenarios/",
+              "level": "info"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      },
+      {
+        "op": "command",
+        "args": "start alpha",
+        "out": {
+          "notify": [
+            {
+              "message": "reactor-scenario: unknown scenario \"alpha\" -- try `list`",
+              "level": "error"
+            }
+          ],
+          "entries": [],
+          "messages": [],
+          "reactorCalls": [],
+          "advertised": false
+        }
+      }
+    ]
+  }
+]

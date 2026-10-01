@@ -1,21 +1,21 @@
 # REactor
 
-A reverse-engineering agent harness built as a pi package: extensions, skills,
-prompt templates, themes and a `reactor` CLI that tell an agent what RE tooling
-exists on the machine it is running on.
+A reverse-engineering agent harness in Rust: a `reactor` CLI and an agent loop
+(over rig) with a native GUI, that tell an agent what RE tooling exists on the
+machine it is running on and keep long sessions workable.
 
 ## Language
 
 **REactor**:
-The whole thing — this repository, installed as one pi package plus one CLI on
-PATH. Capitalised "RE" is deliberate; it is not "Reactor".
+The whole thing — this repository: the `reactor` CLI, the agent, and the GUI.
+Capitalised "RE" is deliberate; it is not "Reactor".
 _Avoid_: the harness, the framework, reactor-pi.
 
 **Catalogue**:
 `tools.toml` — the single source of truth for what tools REactor knows about:
 identity, one-line description, detection probe, service probe, per-platform
 install recipes, and the upstream skill source if the tool ships one. Shipped in
-this repo, copied to `~/.pi/reactor/tools.toml` at install time; the installed
+this repo, copied to `~/.reactor/tools.toml` at install time; the installed
 copy is the one everything reads at runtime.
 _Avoid_: registry (that is the injected block), manifest, tool database, index.
 
@@ -31,7 +31,7 @@ _Avoid_: integration, plugin, backend.
 **Toolset**:
 A named group of tools the user can activate or deactivate as a unit — `triage`,
 `android`, `firmware`. Predefined ones ship in `toolsets.toml`; the user edits
-their own copy at `~/.pi/reactor/toolsets.toml`. Activation is purely about what
+their own copy at `~/.reactor/toolsets.toml`. Activation is purely about what
 gets advertised to the agent; it never blocks anything.
 _Avoid_: profile, preset, bundle, workspace.
 
@@ -71,21 +71,10 @@ _Avoid_: instruction, hint, fallback (for either).
 **Upstream skill**:
 An Agent Skill written by a tool's own author (`bn`'s skill in the plugins repo,
 `ipsw-skill`) that REactor fetches at install time into
-`~/.pi/reactor/skills/<tool>/` rather than writing its own. The tool's author
+`~/.reactor/skills/<tool>/` rather than writing its own. The tool's author
 knows the tool best. A configured-but-unfetchable upstream skill is a warning; a
 tool with no upstream skill at all is normal and simply relies on `--help`.
 _Avoid_: vendored skill, external skill, third-party doc.
-
-**Guide**:
-A popup for the person at the keyboard (`/guide`) — the concept, the footer's
-blocks, and the flows, with an index (`/guide tools`) and a page per tool
-(`/guide <name>`). **It is part of surfacing a tool, not an afterthought:**
-adding an extension or tool, or changing one whose commands, states or
-vocabulary are user-facing, means updating its guide page in
-`extensions/guide/` in the same change — the guide's pages are data
-(the guide's `PAGES` map in `extensions/guide/index.ts`), so a stale entry
-is a code change away, and the tests pin the names.
-_Avoid_: manual, tutorial, help text.
 
 **Scenario**:
 A multi-phase analysis workflow expressed as prompt templates — the shipped
@@ -106,8 +95,8 @@ _Avoid_: stage prompt, step prompt.
 
 **Spine**:
 The non-optional chain every other feature builds on: catalogue → `reactor` CLI
-→ tool-registry extension. Each needs the one before it. Used when talking about
-the core the rest of the package assumes.
+→ registry block in the agent's system prompt. Each needs the one before it.
+Used when talking about the core the rest assumes.
 _Avoid_: core, base, foundation layer.
 
 **Sibling repo**:
@@ -118,30 +107,23 @@ and REactor assumes nothing about where they sit.
 _Avoid_: submodule, vendored tool, subproject.
 
 **Manifest**:
-The session block `goal-setting/` keeps in the system prompt: the user's goal,
+The session block `reactor-context` keeps in the system prompt: the user's goal,
 the agent's self-maintained steps (each a conceptual summary with a 3-word
 status), and the session guidelines. Injected on content only, so an untouched
-session's prompt stays byte-identical. It is what survives both pi's
-compaction and the fade — keeping it current is how work outlives either.
+session's prompt stays byte-identical. It survives every reduction — keeping it
+current is how work outlives them.
 _Avoid_: goal list, todo list, step list (the steps are one part of it), memory (too broad).
 
-**Fade**:
-`rolling-context/`'s alternative to pi's summarization compaction: only the
-newest messages that fit a configurable budget go to the model; older ones are
-left out of the next request only — the session file is untouched, and the
-history tools recover what was faded. Measures and cuts the same way pi's own
-compaction does ([ADR-0020](docs/adr/0020-rolling-context-measures-and-cuts-like-pi-does.md)).
-_Avoid_: truncation (that is the hard-boundary archive path, a last resort), summary (the fade summarizes nothing), context pruning.
-
-**History tools**:
-`history_index` / `history_search` / `history_read` — line-addressed recovery
-over the serialized session history, on by default in any session, independent
-of the fade. A recovery path, not a browsing habit; the fade's guidance is
-where that economics lives.
-_Avoid_: search tools, replay, rollback.
+**Reduction**:
+How the agent keeps a session inside the context window
+([ADR-0037](docs/adr/0037-context-reduction-is-one-budget-manager.md)): one stand-in
+message replaces a range of old entries, in mode `fade` (stubs only), `compact`
+(a summary) or `auto`. The session log is never rewritten — a reduction is an
+entry, and a `restore` entry undoes it.
+_Avoid_: truncation, pruning, compaction (that is one mode).
 
 **Identity**:
-The working persona `identity/` injects into the system prompt: a built-in
+The working persona `reactor-context` injects into the system prompt: a built-in
 (`reverse-engineer`, `cyber-forensics`, `forensics`, `software-engineer`,
 `infrastructure`, `publisher`), a saved user identity, or an adhoc custom text. The
 human selects it; the model never does ([ADR-0026](docs/adr/0026-identity-is-a-persona-block-in-the-system-prompt.md)).

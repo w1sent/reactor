@@ -1,0 +1,44 @@
+[package]
+name = "reactor-gui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "reactor-gui — the native REactor frontend (gui/SPEC.md)"
+
+[lib]
+name = "reactor_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reactor-gui"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "=0.6.0"
+reactor-client = { path = "../reactor-client" }
+reactor-agent = { path = "../reactor-agent" }
+reactor-context = { path = "../reactor-context" }
+reactor-core = { path = "../reactor-core" }
+# The agent is async (rig is); it runs on its own runtime on background threads,
+# never on gpui's executor (docs/adr/0042).
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+serde.workspace = true
+serde_json.workspace = true
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+portable-pty = "0.9.0"
+# Decodes the window icon (assets/icon.ico), which gpui takes as RGBA pixels.
+image = { version = "0.25", default-features = false, features = ["ico"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+# What `cargo bundle` reads to make the macOS .app.
+[package.metadata.bundle]
+name = "REactor"
+identifier = "io.github.w1sent.reactor"
+icon = ["../../assets/icon.icns"]
+
+[dev-dependencies]
+tempfile = "3"

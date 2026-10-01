@@ -1,0 +1,46 @@
+version = 1
+
+[platform]
+prefer = ["pacman", "uv", "pip"]
+
+[platform.manager]
+pacman = { binary = "pacman", os = "linux", sudo = true }
+brew   = { binary = "brew", os = "darwin" }
+uv     = { binary = "uv" }
+pip    = { binary = "pip3" }
+
+[probe]
+timeout = 2.0
+python  = "python3"
+
+[tool.alpha]
+name   = "Alpha"
+desc   = "does alpha things"
+source = "https://example.invalid/alpha"
+invoke = "alpha"
+detect = { binary = "alpha" }
+tags   = ["static", "python"]
+version = ["alpha", "--version"]
+
+[tool.alpha.install]
+pacman = "pacman -S alpha"
+uv     = "uv tool install alpha"
+manual = "https://example.invalid/alpha"
+
+[tool.beta]
+name   = "Beta"
+desc   = "détecte les échantillons ✓ 😀 (non-ASCII on purpose)"
+source = "https://example.invalid/beta"
+invoke = "python3 -c 'import beta'"
+detect = { python_module = "beta" }
+tags   = ["dynamic", "python"]
+
+[tool.gamma]
+name    = "Gamma"
+desc    = "does gamma things"
+source  = "https://example.invalid/gamma"
+invoke  = "gamma"
+detect  = { binary = "gamma" }
+tags    = ["odd"]
+service = { probe = ["gamma", "status"], label = "gamma", count = { pattern = 'ready$', noun = "worker" } }
+skill   = { source = "git+https://example.invalid/gamma-skill", path = "skill", ref = "main" }

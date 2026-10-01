@@ -1,0 +1,14 @@
+## Available RE tools (this machine)
+
+bn               reverse engineering framework  [BN session: up]
+frida            dynamic instrumentation        17.2
+jadx             decompile Android DEX/APK to Java
+lief             parse ELF/PE/Mach-O            (python module)
+adb              Android debug bridge           [adb: 2 devices]
+ghidra-headless  détecte ✓ 😀 non-ASCII width    11.4.1-rc2
+radare2          disassembler                   [r2: down]
+scapy            packet crafting                [scapy: unknown]
+
+`<tool> --help` or `man <tool>` is the documentation -- read it rather than guessing flags.
+`reactor tools show <id>` for detail, `reactor doctor` for what else exists and how to install it.
+Anything not listed here is either absent or deactivated; prefer these over writing a parser by hand.

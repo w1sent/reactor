@@ -155,70 +155,163 @@ is in 4, and nothing forces it until 1–3 have proven the boundaries.
 Port the Python CLI to Rust as a library with a binary over it. Nothing else
 changes: pi runs, the extensions shell out, the GUI still spawns the CLI.
 
-- [ ] `reactor-core` crate: catalogue, probes, cache, activation, install,
-      skills fetch, registry rendering
-- [ ] `reactor-cli` binary, same subcommands, same flags
-- [ ] Shell completion generator carried over (ADR-0015)
-- [ ] State root `~/.pi/reactor/` → `~/.reactor/`, with a one-time move
-- [ ] `scripts/install.py` builds and installs the binary
+Python may stay in the repo as development tooling and inside skills; it may not
+be part of the executables or of installing them
+([ADR-0039](docs/adr/0039-the-executables-contain-no-python.md)) — which is why
+the installer goes too, not just the CLI.
 
-**Gate:** the 90 Python tests, ported, pass against the Rust binary; the
-registry byte-stability test passes; `npm test`'s extension suite is green
-against it unchanged.
+- [x] `reactor-core` crate: catalogue, probes, cache, activation, install,
+      skills fetch, registry rendering
+- [x] `reactor-cli` binary, same subcommands, same flags
+- [x] Shell completion generator carried over (ADR-0015)
+- [x] State root `~/.pi/reactor/` → `~/.reactor/`, with a one-time move
+- [x] `reactor setup` replaces `scripts/install.py`; the shipped catalogue is
+      compiled in; `cargo install` places the binary (ADR-0039)
+- [x] The extension harness execs the Rust binary
+- [x] `scripts/check-in-pi.mjs` puts the Rust build on `PATH` (it used to put `bin/`)
+- [x] Building `reactor-gui` was a step of `install.py`; it is now
+      `cargo install --git … reactor-gui` (phase 2 put the GUI in the root workspace)
+- [x] Deleted `bin/reactor`, `tests/test_reactor.py`, `scripts/install.py` and
+      `scripts/parity.py` once the gate below was green (`parity.py` needed the
+      original to diff against, so it went last)
+
+**Gate:**
+
+- [x] The 90 Python tests, ported, pass against the Rust binary (151 tests:
+      `cargo test`)
+- [x] The registry byte-stability test passes, against golden bytes captured
+      from the Python renderer
+- [x] `scripts/parity.py`: 150 commands and both cache directions byte-identical
+      to the Python CLI (the one deliberate difference, `doctor`'s
+      `platform.python` → `platform.reactor`, is normalised and recorded in
+      ADR-0039)
+- [x] The extension suite (`node --test`, pi flavor) is green against the Rust
+      binary: 301 pass, 0 skipped, on pi 0.99.1 and Node 24
 
 ### 2 · The GUI links the library  *(reversible)*
 
 Replace the GUI's per-panel subprocess with a direct call into
 `reactor-core`. Still pi-backed, still RPC for the session itself.
 
-- [ ] GUI depends on `reactor-core`
-- [ ] Panels read the library; the subprocess path stays as a debug fallback
-- [ ] A check that both paths agree
+- [x] The GUI crates join the root workspace (one `Cargo.lock`, one place to
+      build); `default-members` leave `reactor-gui` out so a bare `cargo test`
+      does not need the native windowing stack
+- [x] `reactor-client` depends on `reactor-core`; `LibClient` answers every
+      `ReactorClient` method in-process
+- [x] The subprocess path stays as a debug fallback: `REACTOR_GUI_CLIENT=cli`
+- [x] A check that both paths agree: `crates/reactor-cli/tests/agree.rs`
+- [x] `CliClient` surfaces the CLI's JSON `error` instead of a blank failure
+- [x] `app.rs` holds a `Client` instead of a `CliClient` (builds; the window
+      launches on GNOME/Wayland)
+- [x] Window chrome: client-side title bar with controls, and the Layout menu
+      drawn in-window (`chrome.rs`) — neither was ever rendered on Linux
 
 **Gate:** the GUI behaves identically with the fallback on and off.
+- [x] Data path: `agree.rs` — every method, both probe orders, writes, errors
+- [x] Launched both ways under `strace -f -e execve`: the default spawns **no**
+      `reactor` process and still populates `cache.json`; `REACTOR_GUI_CLIENT=cli`
+      spawns `reactor services|tools list|toolsets list`; the two `cache.json`
+      files are identical up to timestamps (the first run was not: the GUI's
+      dependency graph enables `serde_json/preserve_order`, cargo unified it into
+      `reactor-core`, and file JSON lost its sorted keys — now sorted explicitly,
+      with the core tests built under that feature)
+- [x] Eyes on the panels with the fallback on and off — checked by hand:
+      identical, and window chrome and the Layout menu work
 
 ### 3 · `reactor-context`  *(reversible)*
 
-Lift the state machines and rendering out of the four stateful extensions into
-a crate, and have the pi extensions call into it rather than reimplement it —
-so the portable core runs in production *through pi* before any new loop
-exists.
+Port the state machines and rendering of the four stateful extensions into a
+crate, and prove the port faithful against the extensions themselves.
 
-- [ ] Manifest, identity, scenario, reporting state + deterministic rendering
-- [ ] Settings cascade (ADR-0038), global half only for now
-- [ ] The pi extensions become shims over it
+The plan first said the pi extensions would "become shims over it". They do not:
+[ADR-0040](docs/adr/0040-reactor-context-is-a-port-verified-against-the-extensions.md)
+records why — shims need the session-scoped CLI surface ADR-0035 rejects, or a
+WASM toolchain in the frozen half — and what replaces them: the extensions are
+driven through pi's own loader, what they say and do is captured, and the Rust
+must reproduce it byte for byte.
 
-**Gate:** the 281 extension tests pass with the shims in place; rendered blocks
-are byte-identical to today's.
+- [x] Manifest, identity, scenario, reporting state + deterministic rendering
+      (`crates/reactor-context`)
+- [x] Settings cascade (ADR-0038), global half only: `settings.json` and
+      `settings::resolve`
+- [x] The capture: `tests/extensions/golden/capture.mjs` → `tests/golden/*.json`
+      (4 components, 15 cases, 195 scripted operations, including every phase of
+      the shipped `investigation` scenario)
+- [x] ~~The pi extensions become shims over it~~ — replaced by the capture, above
+
+**Gate:**
+- [x] Rendered blocks are byte-identical to the extensions': the golden replays
+      pass for all four (`cargo test -p reactor-context`)
+- [x] The extension suite still passes — trivially, as they are untouched
+- [x] `capture.mjs --check` is clean, so the goldens are the extensions' present
+      behaviour
+- [ ] Open: **embedding the shipped scenarios.** `scenario::Scenario` reads a
+      directory; a bare binary has none. Phase 4 decides between compiling
+      `prompts/scenarios/` in (as `tools.toml` is) and a configured path.
 
 ### 4 · `reactor-agent`  *(the commitment)*
 
-The new part. By here, most of what the extensions did already lives below.
+The new part. What was built and the choices it settled are in
+[ADR-0041](docs/adr/0041-the-agent-loop-owns-the-message-list.md).
 
-- [ ] Session store: append-only JSONL + derived index, branches as parent
-      pointers, reductions as entries over a range (ADR-0036)
-- [ ] Loop over rig: tool dispatch, streaming, thinking
-- [ ] Budget manager: fade, summarizer, three modes, checked at every
-      tool-result boundary (ADR-0037)
-- [ ] Loop invariants: consecutive-reduction budget; never continue after a
-      failed reduction
-- [ ] Skill loading + activation gating
-- [ ] Long-running and high-volume tool I/O: persistent sessions, streaming,
-      truncation policy, and the fade's stub format where they meet
+- [x] Session store: append-only JSONL + derived index, branches as parent
+      pointers, reductions as entries over a range, blobs for whole tool output
+      (ADR-0036)
+- [x] Loop over rig: tool dispatch, streaming, thinking — through rig's
+      `CompletionModel::stream` (five providers wired), with the message list ours
+- [x] Budget manager: fade, summarizer, three modes, checked before every request
+      and after every tool result (ADR-0037); previewable, undoable
+- [x] Loop invariants: consecutive-reduction budget; never continue after a failed
+      reduction; every call in a recorded reply gets a recorded result
+- [x] Skill loading + activation gating (`requires:` for authored skills, the
+      registry for upstream ones)
+- [x] Long-running and high-volume tool I/O: persistent shells, streaming,
+      truncation policy with a shared address format, spill-to-disk
+- [x] `examples/repl.rs`, a development-only terminal REPL over the same `Agent`, so it can
+      be run before the GUI is on this backend (not a frontend; removed in phase 5)
+- [ ] Open: budget knobs (`mode`, `pct`, `keep`, `reserve`, summarizer model) are
+      constructed in code, not resolved through settings — phase 5, with the UI
+- [ ] Open: scenarios and authored skills are read from directories; compile them in?
 
-**Gate:** a real RE session — acquire, triage, analyse, report — runs end to
-end without the operator working around the harness.
+**Gate:** a real RE session — acquire, triage, analyse, report — runs end to end
+without the operator working around the harness.
+
+- [x] Everything up to the wire, against a scripted model (73 tests)
+- [x] A real session against a real model: run by hand through `examples/repl.rs`
+      (Ollama) and it works. That was one operator's smoke test, not the full
+      acquire → triage → analyse → report session; longer runs will still turn up work.
 
 ### 5 · The GUI switches backends
 
-- [ ] Session, transcript, composer and tree read the Rust harness
-- [ ] Reduction preview and undo
-- [ ] Settings scope visible in the UI (session vs default)
-- [ ] `reactor-rpc` retired; `gui/SPEC.md` §2 rewritten
-- [ ] pi shims published and pinned for the maintained four
+- [x] Session, transcript, composer and tree read the Rust harness
+- [x] Reduction preview and undo (Context panel; dimmed rows; *undo* per reduction)
+- [x] Settings scope visible in the UI (session vs default), for tools and context
+- [x] `reactor-rpc` retired; `gui/SPEC.md` §§1–4 rewritten ([ADR-0042](docs/adr/0042-the-gui-hosts-the-agent-in-process.md))
+- [x] ~~pi shims published and pinned for the maintained four~~ — superseded by phase 6:
+      the pi flavor is removed instead of published
+- [x] Visual check by the operator (the gate's "no `pi --mode rpc` process" is verified
+      here by process list; panels are compile- and unit-tested only)
+
+Regressions accepted in this phase: no thinking-level picker; extension views and
+`/guide` retired from the GUI; models come from `settings.models` or `/model`.
 
 **Gate:** no `pi --mode rpc` process in a GUI session, and the pi flavor still
-passes its own suite.
+passes its own suite. *(Met at commit `014a9b8`, the last commit that has the pi flavor.)*
+
+### 6 · The pi flavor leaves the tree
+
+[ADR-0043](docs/adr/0043-the-pi-flavor-is-removed-from-the-tree.md). Nothing in the
+Rust project needs pi any more, so the pi half goes: whoever wants it checks out
+`014a9b8`.
+
+- [x] `extensions/`, `tests/extensions/` (incl. the golden capture script),
+      `package.json`, `scripts/check-in-pi.mjs`, `scripts/install-check.mjs`,
+      `docs/pi-api-notes.md`, `docs/package-resources.md`, `themes/`
+- [x] The `pi-subagent` catalogue entry, its toolset and its skill
+- [x] The GUI crates move to `crates/` beside the rest; `gui/` is gone
+- [x] README, CONTEXT, concept, the SPEC and crate READMEs describe the Rust project
+- [x] Kept on purpose: ADRs 0001–0032 (history), the `~/.pi/reactor` → `~/.reactor`
+      one-time move, the goldens (now plain fixtures)
 
 ## Open
 

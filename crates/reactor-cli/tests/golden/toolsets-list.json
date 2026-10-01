@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "toolsets": [
+    {
+      "id": "all",
+      "desc": "everything",
+      "active": false,
+      "tools": [
+        "alpha",
+        "beta",
+        "gamma"
+      ]
+    },
+    {
+      "id": "static",
+      "desc": "static only",
+      "active": false,
+      "tools": [
+        "alpha"
+      ]
+    },
+    {
+      "id": "pair",
+      "desc": "explicit",
+      "active": false,
+      "tools": [
+        "alpha",
+        "gamma"
+      ]
+    },
+    {
+      "id": "narrow",
+      "desc": "two tags, one tool",
+      "active": false,
+      "tools": [
+        "alpha"
+      ]
+    },
+    {
+      "id": "miss",
+      "desc": "nothing carries both",
+      "active": false,
+      "tools": []
+    },
+    {
+      "id": "plus",
+      "desc": "a tag, and one more by name",
+      "active": false,
+      "tools": [
+        "beta",
+        "gamma"
+      ]
+    }
+  ]
+}

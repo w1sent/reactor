@@ -1,0 +1,20 @@
+[package]
+name = "reactor-core"
+description = "The REactor catalogue: tool detection, activation, install recipes, skills. Files and subprocesses only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+regex.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+# The worst case for key order, on purpose: the GUI's dependency graph turns this
+# on, and file bytes must not care (json.rs `sorted`).
+serde_json = { workspace = true, features = ["preserve_order"] }
+regex.workspace = true
+tempfile.workspace = true

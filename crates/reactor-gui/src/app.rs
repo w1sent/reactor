@@ -937,6 +937,9 @@ impl ReactorApp {
             Viewer::Table => panel_handle(
                 cx.new(|cx| crate::files::table::TablePanel::new(weak_app, file, window, cx)),
             ),
+            Viewer::Data => {
+                panel_handle(cx.new(|cx| crate::files::data::DataPanel::new(weak_app, file, cx)))
+            }
             Viewer::Hex => panel_handle(
                 cx.new(|cx| crate::files::hex::HexPanel::new(weak_app, file, window, cx)),
             ),
@@ -1712,6 +1715,14 @@ impl ReactorApp {
                 } else {
                     let file = self.resolve_file(path);
                     self.open_file(viewer, file, None, window, cx);
+                }
+            }
+            "look" => {
+                if args.trim().is_empty() {
+                    self.push_note("warning", "look: which file?");
+                } else {
+                    let file = self.resolve_file(args);
+                    crate::files::data::open_popup(file, window, cx);
                 }
             }
             "console" => {

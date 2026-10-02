@@ -31,7 +31,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 portable-pty = "0.9.0"
 # Decodes the window icon (assets/icon.ico), which gpui takes as RGBA pixels.
 csv = "1"
-image = { version = "0.25", default-features = false, features = ["ico"] }
+image = { version = "0.25", default-features = false, features = ["ico", "png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 
 [build-dependencies]
 winresource = "0.1"

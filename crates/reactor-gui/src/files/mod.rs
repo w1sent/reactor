@@ -5,6 +5,8 @@
 //! Viewers are created on demand, any number of them, as tabs in the centre; the explorer is
 //! the one fixed panel ([`crate::layout::PanelKind::Files`]).
 
+pub mod data;
+pub mod data_model;
 pub mod editor;
 pub mod explorer;
 pub mod hex;
@@ -22,16 +24,18 @@ use reactor_fs::FileRef;
 pub enum Viewer {
     Editor,
     Table,
+    Data,
     Hex,
 }
 
 impl Viewer {
-    pub const ALL: [Viewer; 3] = [Viewer::Editor, Viewer::Table, Viewer::Hex];
+    pub const ALL: [Viewer; 4] = [Viewer::Editor, Viewer::Table, Viewer::Data, Viewer::Hex];
 
     pub fn label(self) -> &'static str {
         match self {
             Viewer::Editor => "Text editor",
             Viewer::Table => "Table viewer",
+            Viewer::Data => "Data viewer",
             Viewer::Hex => "Hex viewer",
         }
     }
@@ -40,6 +44,7 @@ impl Viewer {
         match self {
             Viewer::Editor => "edit",
             Viewer::Table => "table",
+            Viewer::Data => "data",
             Viewer::Hex => "hex",
         }
     }
@@ -54,6 +59,7 @@ impl Viewer {
         match self {
             Viewer::Editor => IconName::FileCode,
             Viewer::Table => IconName::Table,
+            Viewer::Data => IconName::Image,
             Viewer::Hex => IconName::Binary,
         }
     }

@@ -352,6 +352,10 @@ impl FilesPanel {
         }
     }
 
+    fn preview(&mut self, path: &VPath, window: &mut Window, cx: &mut Context<Self>) {
+        super::data::open_popup(self.file(path), window, cx);
+    }
+
     fn open_externally(&mut self, path: &VPath, cx: &mut Context<Self>) {
         match self.fs.local_path(path) {
             Some(native) => {
@@ -570,6 +574,14 @@ impl FilesPanel {
                         .on_click(act(Rc::new(move |t, w, c| t.open(&p, Some(viewer), w, c)))),
                 );
             }
+        }
+        if is_file {
+            let p = path.clone();
+            menu = menu.item(
+                PopupMenuItem::new("Preview in popup")
+                    .icon(IconName::Eye)
+                    .on_click(act(Rc::new(move |t, w, c| t.preview(&p, w, c)))),
+            );
         }
         {
             let p = path.clone();

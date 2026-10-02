@@ -128,6 +128,9 @@ pub fn open_with_picker(path: &std::path::Path) -> std::io::Result<()> {
                             .ask(true)
                             .send_file(&file)
                             .await
+                            // The request holds a D-Bus subscription whose drop needs this runtime, so
+                            // it is dropped here, inside it, and not by whoever receives the result.
+                            .map(drop)
                             .map_err(|e| e.to_string())
                     })
                 });

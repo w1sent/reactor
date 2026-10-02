@@ -907,10 +907,11 @@ impl Render for FilesPanel {
                     let size = info.as_ref().and_then(|m| m.size).map(human_size);
                     let is_file = info.as_ref().is_some_and(|m| m.kind == Kind::File);
                     let open_this = open_this.clone();
-                    // The selected row is painted here, on the whole row (indent included), not by
-                    // the library's faint selected style.
+                    // The tree marks the selected row with the library's faint style after this
+                    // returns, over anything set on the item itself. So the item has no padding
+                    // and the content below fills it edge to edge and paints the selection.
                     ListItem::new(ix)
-                        .when(selected, |item| item.bg(highlight).text_color(strong))
+                        .p_0()
                         .on_click(move |event, window, cx| {
                             if is_file && event.click_count() == 2 {
                                 let path = VPath::new(&id);
@@ -923,8 +924,12 @@ impl Render for FilesPanel {
                                 .w_full()
                                 .min_w_0()
                                 .gap_2()
+                                .h_full()
                                 .items_center()
+                                .py_1()
                                 .pl(px(6. + 14. * entry.depth() as f32))
+                                .pr_2()
+                                .when(selected, |row| row.bg(highlight).text_color(strong))
                                 .child(Icon::new(icon).small().flex_none())
                                 .child(
                                     // One line, cut with an ellipsis: rows have a fixed height,

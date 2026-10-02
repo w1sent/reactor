@@ -192,10 +192,15 @@ impl EditorPanel {
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The dock updates the panel it removes, so this must run after the update that is
+        // handling the click (or the dialog's confirm) has finished: removing the panel from
+        // inside it panics with "already being updated".
         let close = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
             if let Some(app) = this.app.upgrade() {
                 let panel = cx.entity();
-                app.update(cx, |app, cx| app.close_panel(panel, window, cx));
+                window.defer(cx, move |window, cx| {
+                    app.update(cx, |app, cx| app.close_panel(panel, window, cx));
+                });
             }
         };
         if self.dirty {

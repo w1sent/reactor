@@ -105,6 +105,70 @@ pub fn open_external(path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Asks the operating system's own program picker which program to open the file with.
+///
+/// Linux: the desktop portal's OpenURI with `ask`, which shows the desktop's "Open With"
+/// chooser (and falls back to the default program when there is no portal). macOS: the
+/// system's application chooser, then `open -a`. Windows: the shell's Open With dialog.
+pub fn open_with_picker(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let quiet = |command: &mut Command| {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = Command::new("rundll32.exe");
+        c.arg("shell32.dll,OpenAs_RunDLL").arg(path);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(
+                "app=$(osascript -e 'set a to choose application' -e 'POSIX path of (path to a)') \\
+                 && open -a \"$app\" \"$1\"",
+            )
+            .arg("sh")
+            .arg(path);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut uri = String::from("file://");
+        for byte in path.to_string_lossy().bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'_' | b'-' | b'~' => {
+                    uri.push(byte as char)
+                }
+                b => uri.push_str(&format!("%{b:02X}")),
+            }
+        }
+        let mut c = Command::new("sh");
+        // The portal when there is one; the default program when there is not.
+        c.arg("-c")
+            .arg(
+                "gdbus call --session --dest org.freedesktop.portal.Desktop \
+                 --object-path /org/freedesktop/portal/desktop \
+                 --method org.freedesktop.portal.OpenURI.OpenURI '' \"$1\" \"{'ask': <true>}\" \
+                 || xdg-open \"$2\"",
+            )
+            .arg("sh")
+            .arg(uri)
+            .arg(path);
+        c
+    };
+    quiet(&mut command);
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// `1.5 MiB (1572864 bytes)`.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];

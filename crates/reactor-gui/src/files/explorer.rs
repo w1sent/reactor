@@ -375,6 +375,21 @@ impl FilesPanel {
         }
     }
 
+    fn open_with(&mut self, path: &VPath, cx: &mut Context<Self>) {
+        match self.fs.local_path(path) {
+            Some(native) => {
+                if let Err(e) = super::open_with_picker(&native) {
+                    self.note("error", format!("could not ask for a program: {e}"), cx);
+                }
+            }
+            None => self.note(
+                "warning",
+                "that file is not on this machine's disk".into(),
+                cx,
+            ),
+        }
+    }
+
     fn reveal(&mut self, path: &VPath, cx: &mut Context<Self>) {
         self.open_externally(&path.parent().unwrap_or_else(VPath::root), cx);
     }
@@ -586,6 +601,7 @@ impl FilesPanel {
         {
             let p = path.clone();
             let q = path.clone();
+            let w = path.clone();
             menu = menu
                 .item(
                     PopupMenuItem::new(if is_file {
@@ -596,6 +612,12 @@ impl FilesPanel {
                     .icon(IconName::ExternalLink)
                     .disabled(!local)
                     .on_click(act(Rc::new(move |t, _, c| t.open_externally(&p, c)))),
+                )
+                .item(
+                    PopupMenuItem::new("Open with…")
+                        .icon(IconName::ExternalLink)
+                        .disabled(!local || !is_file)
+                        .on_click(act(Rc::new(move |t, _, c| t.open_with(&w, c)))),
                 )
                 .item(
                     PopupMenuItem::new("Show in file manager")

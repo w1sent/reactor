@@ -5942,6 +5942,7 @@ dependencies = [
  "reactor-context",
  "reactor-core",
  "reactor-fs",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

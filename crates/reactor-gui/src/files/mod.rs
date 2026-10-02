@@ -12,6 +12,7 @@ pub mod explorer;
 pub mod hex;
 pub mod language;
 pub mod props;
+pub mod refs;
 pub mod table;
 pub mod table_model;
 

@@ -272,6 +272,15 @@ fn entry_background(item: &ChatItem, theme: &gpui_kit::component::Theme) -> Opti
     }
 }
 
+/// What the transcript needs to make file references in the assistant's text clickable.
+#[derive(Clone)]
+struct FileLinks {
+    cwd: std::path::PathBuf,
+    /// Path as written, its line, the modifier keys held for the click.
+    open:
+        std::sync::Arc<dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync>,
+}
+
 fn render_item(
     index: usize,
     item: &ChatItem,
@@ -280,17 +289,30 @@ fn render_item(
     thinking_expanded: bool,
     toggle_thinking: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
     restore: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
+    links: &FileLinks,
 ) -> gpui_kit::Div {
     match item {
         // Who said it is the entry's background (`entry_background`), not a label.
         ChatItem::User { text } => div().px_2().child(text.clone()),
         ChatItem::AssistantText { text, streaming } => {
             let streaming = *streaming;
+            let linked = crate::files::refs::linkify(text, &|path| {
+                crate::files::refs::exists(&links.cwd, path)
+            });
+            let open = links.open.clone();
             div()
                 .px_2()
                 .child(
-                    TextView::markdown(format!("assistant-{index}"), text.clone())
-                        .style(crate::theme::text_view_style(theme)),
+                    TextView::markdown(format!("assistant-{index}"), linked)
+                        .style(crate::theme::text_view_style(theme))
+                        .on_link_click(move |url, event, window, cx| {
+                            match crate::files::refs::parse_url(url) {
+                                Some((path, line)) => {
+                                    open(path, line, event.modifiers(), window, cx)
+                                }
+                                None => cx.open_url(url),
+                            }
+                        }),
                 )
                 .when(streaming, |el| el.opacity(0.85))
         }
@@ -622,6 +644,23 @@ impl Render for TranscriptPanel {
                     });
                 }
             };
+            let links = FileLinks {
+                cwd: self
+                    .app
+                    .upgrade()
+                    .map(|a| a.read(cx).cwd.clone())
+                    .unwrap_or_default(),
+                open: {
+                    let app = self.app.clone();
+                    std::sync::Arc::new(move |path, line, modifiers, window, cx| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |app, cx| {
+                                app.open_reference(&path, line, modifiers, window, cx)
+                            });
+                        }
+                    })
+                },
+            };
             let restore = move |entry: u64, _window: &mut Window, cx: &mut App| {
                 if let Some(app) = weak_app.upgrade() {
                     app.update(cx, |app, cx| app.restore_reduction(entry, cx));
@@ -640,6 +679,7 @@ impl Render for TranscriptPanel {
                         expanded_thinking.contains(&index) != open_thinking,
                         toggle_thinking.clone(),
                         restore.clone(),
+                        &links,
                     );
                     let row = match entry_background(&items[index], &render_theme) {
                         Some(background) => row.bg(background).px_2().py_2(),

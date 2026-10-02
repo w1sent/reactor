@@ -917,6 +917,33 @@ impl ReactorApp {
         }
     }
 
+    /// A click on a file reference in the transcript. Plain click: the viewer that suits the
+    /// file. With Shift the hex viewer, with Ctrl/Cmd the text editor, with Alt a popup.
+    pub fn open_reference(
+        &mut self,
+        path: &str,
+        line: Option<u32>,
+        modifiers: gpui_kit::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::files::Viewer;
+        let file =
+            self.resolve_file(&crate::files::refs::native_path(&self.cwd, path).to_string_lossy());
+        if modifiers.alt {
+            crate::files::data::open_popup(file, window, cx);
+            return;
+        }
+        let viewer = if modifiers.shift {
+            Some(Viewer::Hex)
+        } else if modifiers.secondary() {
+            Some(Viewer::Editor)
+        } else {
+            None
+        };
+        self.open_file(viewer, file, line, window, cx);
+    }
+
     /// Open a file in a viewer — a new tab in the centre, however many there already are.
     /// `viewer` None picks by what the file is.
     pub fn open_file(

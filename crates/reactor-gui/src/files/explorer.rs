@@ -845,6 +845,8 @@ impl Render for FilesPanel {
                                     .gap_2()
                                     .px_2()
                                     .items_baseline()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(muted.opacity(0.15)))
                                     .on_click(move |_, window, cx| {
@@ -852,7 +854,14 @@ impl Render for FilesPanel {
                                             p.open_at(&open, None, line, window, cx)
                                         });
                                     })
-                                    .child(div().flex_none().child(path.relative().to_owned()))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(path.relative().to_owned()),
+                                    )
                                     .when_some(detail, |row, (line, text)| {
                                         row.child(
                                             div()
@@ -885,6 +894,8 @@ impl Render for FilesPanel {
             None => {
                 let meta = self.meta.clone();
                 let fs = self.fs.clone();
+                let (highlight, accent, strong) =
+                    (theme.info.opacity(0.45), theme.info, theme.foreground);
                 let open_this = this.clone();
                 let menu_this = this.clone();
                 tree(&self.tree, move |ix, entry, selected, _window, _cx| {
@@ -909,12 +920,38 @@ impl Render for FilesPanel {
                         })
                         .child(
                             h_flex()
+                                .w_full()
+                                .min_w_0()
                                 .gap_2()
                                 .items_center()
-                                .child(Icon::new(icon).small())
-                                .child(div().flex_1().min_w_0().child(entry.item().label.clone()))
+                                .rounded_sm()
+                                // The library's selected row is faint; this one is not.
+                                .when(selected, |row| {
+                                    row.bg(highlight)
+                                        .border_l_2()
+                                        .border_color(accent)
+                                        .text_color(strong)
+                                })
+                                .child(Icon::new(icon).small().flex_none())
+                                .child(
+                                    // One line, cut with an ellipsis: rows have a fixed height,
+                                    // so a wrapped name would run into the next row.
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(entry.item().label.clone()),
+                                )
                                 .when_some(size, |row, size| {
-                                    row.child(div().text_xs().text_color(muted).child(size))
+                                    row.child(
+                                        div()
+                                            .flex_none()
+                                            .text_xs()
+                                            .text_color(if selected { strong } else { muted })
+                                            .child(size),
+                                    )
                                 }),
                         )
                 })

@@ -768,8 +768,125 @@ tags   = ["forensics", "memory", "python"]
 
 [tool.volatility3.install]
 pacman = "pacman -S volatility3"
-uv     = "uv pip install volatility3"
-pip    = "pip install volatility3"
+# yara-python (yarascan) and pycryptodome (hashdump, lsadump, cachedump) are
+# optional upstream extras that the plugins need; install them alongside.
+uv     = "uv pip install volatility3 yara-python pycryptodome"
+pip    = "pip install volatility3 yara-python pycryptodome"
+
+[tool.uac]
+name   = "UAC"
+desc   = "collect live-response forensic artifacts from Unix-like systems"
+source = "https://github.com/tclahr/uac"
+invoke = "uac"
+detect = { binary = "uac" }
+tags   = ["forensics", "triage", "collection"]
+
+[tool.uac.install]
+manual = "https://github.com/tclahr/uac — a shell script, not packaged; take a release asset and run ./uac from the unpacked directory. Unix-like systems only"
+# UAC locates its profiles and artifacts relative to its own script, so it is
+# cloned somewhere stable and fronted by a wrapper instead of being symlinked.
+manual-install-oneliner = 'rm -rf "$HOME/.local/share/uac" && mkdir -p "$HOME/.local/bin" "$HOME/.local/share" && git clone --depth 1 https://github.com/tclahr/uac "$HOME/.local/share/uac" && chmod +x "$HOME/.local/share/uac/uac" && printf "#!/bin/sh\nexec \"\$HOME/.local/share/uac/uac\" \"\$@\"\n" > "$HOME/.local/bin/uac" && chmod +x "$HOME/.local/bin/uac"'
+
+# --- Filesystem, image-format and volume tooling -----------------------------
+
+[tool.e2fsprogs]
+name   = "e2fsprogs"
+desc   = "inspect ext2/3/4 filesystems and images: debugfs, e2fsck, dumpe2fs"
+source = "https://e2fsprogs.sourceforge.net/"
+invoke = "debugfs"
+detect = { binary = "debugfs" }
+tags   = ["forensics", "disk", "filesystem"]
+
+[tool.e2fsprogs.install]
+pacman = "pacman -S e2fsprogs"
+apt    = "apt install e2fsprogs"
+dnf    = "dnf install e2fsprogs"
+manual = "https://e2fsprogs.sourceforge.net/ — build from source (git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git); Linux/BSD only"
+manual-install-oneliner = 'git clone --depth 1 https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git && cd e2fsprogs && ./configure --prefix="$HOME/.local" --sbindir="$HOME/.local/bin" --disable-nls --disable-fuse2fs && make -j"$(nproc)" && make install'
+
+[tool.xfsprogs]
+name   = "xfsprogs"
+desc   = "inspect XFS filesystems and images: xfs_db, xfs_repair, xfs_metadump"
+source = "https://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git/about/"
+invoke = "xfs_db"
+detect = { binary = "xfs_db" }
+tags   = ["forensics", "disk", "filesystem"]
+
+[tool.xfsprogs.install]
+pacman = "pacman -S xfsprogs"
+apt    = "apt install xfsprogs"
+dnf    = "dnf install xfsprogs"
+manual = "https://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git/ — build the latest tagged release from source (needs libuuid, libblkid, inih, liburcu headers); Linux only"
+# Build in place and let the PATH-promotion step link xfs_db; xfsprogs' own
+# `make install` insists on root-owned files.
+manual-install-oneliner = 'git clone https://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git && cd xfsprogs-dev && git checkout "$(git tag -l "v*" | grep -v -- -rc | sort -V | tail -1)" && make -j"$(nproc)"'
+
+[tool.libewf]
+name    = "libewf"
+desc    = "read and mount Expert Witness (E01/EWF) images: ewfinfo, ewfmount"
+source  = "https://github.com/libyal/libewf/"
+invoke  = "ewfinfo"
+detect  = { binary = "ewfinfo" }
+version = ["ewfinfo", "-V"]
+tags    = ["forensics", "disk", "image"]
+
+[tool.libewf.install]
+pacman = "pacman -S libewf"
+apt    = "apt install ewf-tools"
+dnf    = "dnf install libewf"
+brew   = "brew install libewf"
+manual = "https://github.com/libyal/libewf/ — build from source (needs autoconf, automake, libtool, gettext, pkg-config, flex, bison)"
+manual-install-oneliner = 'git clone --depth 1 https://github.com/libyal/libewf && cd libewf && ./synclibs.sh && ./autogen.sh && ./configure --prefix="$HOME/.local" && make -j"$(nproc)" && make install'
+
+[tool.qemu-nbd]
+name   = "qemu-img / qemu-nbd"
+desc   = "convert disk images (qcow2, vmdk, vhd) and expose them as block devices"
+source = "https://www.qemu.org/"
+invoke = "qemu-nbd"
+detect = { binary = "qemu-nbd" }
+version = ["qemu-nbd", "--version"]
+tags   = ["forensics", "disk", "image"]
+
+[tool.qemu-nbd.install]
+# Split into its own package everywhere except brew, which ships all of QEMU.
+pacman = "pacman -S qemu-img"
+apt    = "apt install qemu-utils"
+dnf    = "dnf install qemu-img"
+brew   = "brew install qemu"
+manual = "https://www.qemu.org/download/ — build only the tools from source (needs glib, ninja, python); the NBD server is Linux/BSD only in practice"
+manual-install-oneliner = 'git clone --depth 1 https://gitlab.com/qemu-project/qemu.git && cd qemu && mkdir build && cd build && ../configure --disable-system --disable-user --disable-docs --enable-tools && make -j"$(nproc)" qemu-img qemu-nbd'
+
+[tool.lvm2]
+name   = "LVM2"
+desc   = "inspect and activate LVM volumes: pvs, vgs, lvs, vgchange"
+source = "https://gitlab.com/lvmteam/lvm2"
+invoke = "lvs"
+detect = { binary = "lvs" }
+tags   = ["forensics", "disk", "volume"]
+
+[tool.lvm2.install]
+pacman = "pacman -S lvm2"
+apt    = "apt install lvm2"
+dnf    = "dnf install lvm2"
+manual = "https://gitlab.com/lvmteam/lvm2 — build from source; Linux only (needs the device-mapper kernel support)"
+manual-install-oneliner = 'git clone --depth 1 https://gitlab.com/lvmteam/lvm2.git && cd lvm2 && ./configure --prefix="$HOME/.local" --sbindir="$HOME/.local/bin" --with-user= --with-group= --disable-udev_rules --disable-udev_sync && make -j"$(nproc)" && make install'
+
+[tool.mdadm]
+name   = "mdadm"
+desc   = "assemble and inspect Linux software RAID (md) arrays"
+source = "https://git.kernel.org/pub/scm/utils/mdadm/mdadm.git/"
+invoke = "mdadm"
+detect = { binary = "mdadm" }
+tags   = ["forensics", "disk", "volume"]
+
+[tool.mdadm.install]
+pacman = "pacman -S mdadm"
+apt    = "apt install mdadm"
+dnf    = "dnf install mdadm"
+manual = "https://git.kernel.org/pub/scm/utils/mdadm/mdadm.git/ — build from source; Linux only (kernel md driver)"
+# Build only: `make install` writes udev rules and systemd units into system
+# directories. The PATH-promotion step links the built binary.
+manual-install-oneliner = 'git clone --depth 1 https://git.kernel.org/pub/scm/utils/mdadm/mdadm.git && cd mdadm && make -j"$(nproc)" mdadm'
 
 
 # ---------------------------------------------------------------------------

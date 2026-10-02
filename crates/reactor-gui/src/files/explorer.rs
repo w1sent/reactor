@@ -600,31 +600,37 @@ impl FilesPanel {
         }
         {
             let p = path.clone();
-            let q = path.clone();
-            let w = path.clone();
-            menu = menu
-                .item(
-                    PopupMenuItem::new(if is_file {
-                        "Open in default program"
-                    } else {
-                        "Open in file manager"
-                    })
-                    .icon(IconName::ExternalLink)
-                    .disabled(!local)
-                    .on_click(act(Rc::new(move |t, _, c| t.open_externally(&p, c)))),
-                )
-                .item(
-                    PopupMenuItem::new("Open with…")
-                        .icon(IconName::ExternalLink)
-                        .disabled(!local || !is_file)
-                        .on_click(act(Rc::new(move |t, _, c| t.open_with(&w, c)))),
-                )
-                .item(
-                    PopupMenuItem::new("Show in file manager")
+            if is_file {
+                let q = path.clone();
+                let w = path.clone();
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("Open in default program")
+                            .icon(IconName::ExternalLink)
+                            .disabled(!local)
+                            .on_click(act(Rc::new(move |t, _, c| t.open_externally(&p, c)))),
+                    )
+                    .item(
+                        PopupMenuItem::new("Open with…")
+                            .icon(IconName::ExternalLink)
+                            .disabled(!local)
+                            .on_click(act(Rc::new(move |t, _, c| t.open_with(&w, c)))),
+                    )
+                    .item(
+                        PopupMenuItem::new("Show in file manager")
+                            .icon(IconName::FolderOpen)
+                            .disabled(!local)
+                            .on_click(act(Rc::new(move |t, _, c| t.reveal(&q, c)))),
+                    );
+            } else {
+                // For a folder, opening it and showing it are the same thing: one item.
+                menu = menu.item(
+                    PopupMenuItem::new("Open in file manager")
                         .icon(IconName::FolderOpen)
-                        .disabled(!local || is_root)
-                        .on_click(act(Rc::new(move |t, _, c| t.reveal(&q, c)))),
+                        .disabled(!local)
+                        .on_click(act(Rc::new(move |t, _, c| t.open_externally(&p, c)))),
                 );
+            }
         }
         menu = menu.separator();
         {

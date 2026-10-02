@@ -495,7 +495,12 @@ ADR-0044. `crates/reactor-fs` is the seam (no gpui); `reactor-gui/src/files/` th
   SVG) with fit and zoom. One view, hosted as a panel or in a popup (`/look <path>`, or
   *Preview in popup*).
 - **Hex viewer** (`hex.rs`): offset, bytes and text, scrolled lazily with a page cache, so
-  size does not matter. Search for text or hex bytes, forward and back, wrapping.
+  size does not matter. Select by dragging in either column (Shift-click extends, Ctrl/Cmd+A
+  selects all); the other column highlights the same bytes. Ctrl/Cmd+C, or the *Copy hex* /
+  *Copy text* buttons, copies the selection (by default as the column it was made in).
+  Search for text or hex bytes: every match is marked, the current one in a stronger
+  colour, and the status line says *match N of M*; Enter and the arrows step through them,
+  wrapping.
 - **Opening.** `/open [edit|table|data|hex] <path>`; the viewer is otherwise chosen by
   `files::suggest`. Viewers are tabs in the centre; any number can be open.
 - **References in the transcript** (`refs.rs`): file names in the assistant's text that exist

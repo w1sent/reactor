@@ -112,6 +112,44 @@ fn scan_backward(
     }
 }
 
+/// Every offset where `pattern` starts (overlapping matches included), in order, and whether
+/// the search stopped at `limit` matches with more left.
+pub fn find_all(
+    file: &dyn ReadAt,
+    pattern: &[u8],
+    limit: usize,
+    cancel: &AtomicBool,
+) -> io::Result<(Vec<u64>, bool)> {
+    let mut found = Vec::new();
+    if pattern.is_empty() || file.len() < pattern.len() as u64 {
+        return Ok((found, false));
+    }
+    let finder = memmem::Finder::new(pattern);
+    let overlap = pattern.len() as u64 - 1;
+    let mut at = 0u64;
+    while at < file.len() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        let block = file.read_range(at, CHUNK + overlap as usize)?;
+        // A match belongs to the chunk it starts in; the overlap only lets it finish.
+        let mut from = 0;
+        while let Some(i) = finder.find(&block[from..]) {
+            let start = from + i;
+            if start >= CHUNK {
+                break;
+            }
+            if found.len() >= limit {
+                return Ok((found, true));
+            }
+            found.push(at + start as u64);
+            from = start + 1;
+        }
+        at += CHUNK as u64;
+    }
+    Ok((found, false))
+}
+
 /// Searches for `pattern` forward from `from` (a match *at* `from` counts) or backward from
 /// just before it (a match starting at `from` does not), wrapping once. The caller passes one
 /// past the current match to find the next, and the current match's offset to find the
@@ -221,6 +259,23 @@ mod tests {
             find(&data, b"ABCD", data.len() as u64, false),
             Some((at as u64, false))
         );
+    }
+
+    #[test]
+    fn find_all_lists_every_start_once_across_chunks() {
+        let mut data = vec![0u8; CHUNK * 2 + 10];
+        for at in [5, CHUNK - 2, CHUNK + 10, CHUNK * 2 + 6] {
+            data[at..at + 4].copy_from_slice(b"ABCD");
+        }
+        let (all, more) = find_all(&Bytes(data), b"ABCD", 100, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            all,
+            [5, CHUNK as u64 - 2, CHUNK as u64 + 10, CHUNK as u64 * 2 + 6]
+        );
+        assert!(!more);
+        let (all, more) =
+            find_all(&Bytes(b"aaaa".to_vec()), b"aa", 2, &AtomicBool::new(false)).unwrap();
+        assert_eq!((all, more), (vec![0, 1], true));
     }
 
     #[test]

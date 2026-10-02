@@ -204,6 +204,7 @@ impl SlashUi {
 /// bindings must come *after* the input's own, which they override while the popup is open.
 pub fn bind_keys(cx: &mut App) {
     crate::files::editor::bind_keys(cx);
+    crate::files::hex::bind_keys(cx);
     cx.bind_keys(vec![
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-p", OpenPalette, None),

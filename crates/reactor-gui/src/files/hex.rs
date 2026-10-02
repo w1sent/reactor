@@ -1,37 +1,110 @@
 //! The hex viewer: a file as offset, bytes and text, scrolled lazily so a multi-gigabyte
-//! image opens as fast as a small file. Searches for text or hex bytes, forward and back.
+//! image opens as fast as a small file. Select in either column (the other follows), copy
+//! the selection, and search for text or hex bytes with every match marked.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gpui_kit::actions;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui_kit::{Entity, EventEmitter, FocusHandle, Focusable, Render, Window, div, px};
+use gpui_kit::{
+    ClipboardItem, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, MouseButton, Render,
+    Window, div, px,
+};
 
-use reactor_fs::{FileRef, ReadAt, find_bytes, parse_hex};
+use reactor_fs::{FileRef, ReadAt, find_all, parse_hex};
 
 use crate::app::ReactorApp;
 use crate::panels::{close_button, panel_title_row};
 use crate::settings::Slot;
 
+actions!(
+    reactor_hex,
+    [
+        /// Ctrl/Cmd+C in a hex viewer: copy the selection as the column it was made in.
+        CopySelection,
+        /// Ctrl/Cmd+A: select the whole file.
+        SelectAllBytes
+    ]
+);
+
+const CONTEXT: &str = "ReactorHex";
+
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("secondary-c", CopySelection, Some(CONTEXT)),
+        KeyBinding::new("secondary-a", SelectAllBytes, Some(CONTEXT)),
+    ]);
+}
+
 const PER_ROW: u64 = 16;
 const PAGE: u64 = 4096;
 /// Pages kept in memory; the rest are read again when scrolled back to.
 const CACHED_PAGES: usize = 128;
+/// Matches kept for highlighting; past this the count reads "N+".
+const MATCH_LIMIT: usize = 100_000;
+/// The most a copy will take.
+const COPY_LIMIT: u64 = 16 << 20;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Text,
     Hex,
+}
+
+/// Which column a selection was made in — what a copy produces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Column {
+    Hex,
+    Text,
+}
+
+/// The selected bytes, inclusive: where the drag began and where it is.
+#[derive(Clone, Copy)]
+struct Selection {
+    anchor: u64,
+    cursor: u64,
+    column: Column,
+}
+
+impl Selection {
+    fn range(&self) -> (u64, u64) {
+        (self.anchor.min(self.cursor), self.anchor.max(self.cursor))
+    }
+}
+
+/// The result of a search: every start offset, and how long the pattern is.
+struct Matches {
+    pattern: Vec<u8>,
+    starts: Vec<u64>,
+    truncated: bool,
+    /// Index into `starts` of the match shown as current.
+    current: Option<usize>,
+}
+
+impl Matches {
+    /// Whether byte `at` is inside a match, and whether it is the current one.
+    fn covers(&self, at: u64) -> (bool, bool) {
+        let ix = self.starts.partition_point(|start| *start <= at);
+        // Matches can overlap, so the covering one may be a few back.
+        for back in 1..=self.pattern.len().min(ix) {
+            let m = ix - back;
+            if self.starts[m] + self.pattern.len() as u64 > at {
+                return (true, self.current == Some(m));
+            }
+        }
+        (false, false)
+    }
 }
 
 pub struct HexPanel {
@@ -43,8 +116,9 @@ pub struct HexPanel {
     scroll: UniformListScrollHandle,
     query: Entity<InputState>,
     mode: Mode,
-    /// The match on screen: where it starts and how long it is.
-    found: Option<(u64, usize)>,
+    selection: Option<Selection>,
+    dragging: bool,
+    matches: Option<Matches>,
     status: String,
     searching: Option<Arc<AtomicBool>>,
     focus: FocusHandle,
@@ -63,7 +137,7 @@ impl HexPanel {
             window,
             |this, _, event: &InputEvent, _window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
-                    this.search(true, cx);
+                    this.step(true, cx);
                 }
             },
         )
@@ -82,7 +156,9 @@ impl HexPanel {
             scroll: UniformListScrollHandle::default(),
             query,
             mode: Mode::Text,
-            found: None,
+            selection: None,
+            dragging: false,
+            matches: None,
             status: String::new(),
             searching: None,
             focus: cx.focus_handle(),
@@ -122,6 +198,106 @@ impl HexPanel {
             .unwrap_or_default()
     }
 
+    // -- selection and copy -----------------------------------------------------------
+
+    fn press(
+        &mut self,
+        at: u64,
+        column: Column,
+        extend: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.focus, cx);
+        self.dragging = true;
+        self.selection = match self.selection {
+            Some(sel) if extend => Some(Selection {
+                cursor: at,
+                column,
+                ..sel
+            }),
+            _ => Some(Selection {
+                anchor: at,
+                cursor: at,
+                column,
+            }),
+        };
+        cx.notify();
+    }
+
+    fn drag_to(&mut self, at: u64, cx: &mut Context<Self>) {
+        if let Some(sel) = &mut self.selection
+            && self.dragging
+            && sel.cursor != at
+        {
+            sel.cursor = at;
+            cx.notify();
+        }
+    }
+
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.len > 0 {
+            let column = self.selection.map_or(Column::Hex, |s| s.column);
+            self.selection = Some(Selection {
+                anchor: 0,
+                cursor: self.len - 1,
+                column,
+            });
+            cx.notify();
+        }
+    }
+
+    /// The selection as text: `de ad be ef`, or the printable characters with `.` for the rest.
+    fn selected_text(&self, as_column: Column) -> Result<String, String> {
+        let sel = self.selection.ok_or("nothing is selected")?;
+        let (from, to) = sel.range();
+        let count = to - from + 1;
+        if count > COPY_LIMIT {
+            return Err(format!(
+                "the selection is over the {} MiB copy limit",
+                COPY_LIMIT >> 20
+            ));
+        }
+        let reader = self.reader.as_ref().map_err(String::clone)?;
+        let bytes = reader
+            .read_range(from, count as usize)
+            .map_err(|e| e.to_string())?;
+        Ok(match as_column {
+            Column::Hex => bytes
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Column::Text => bytes
+                .iter()
+                .map(|b| {
+                    if (0x20..0x7f).contains(b) {
+                        *b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    fn copy(&mut self, as_column: Option<Column>, cx: &mut Context<Self>) {
+        let column = as_column
+            .or(self.selection.map(|s| s.column))
+            .unwrap_or(Column::Hex);
+        match self.selected_text(column) {
+            Ok(text) => {
+                let bytes = self.selection.map_or(0, |s| s.range().1 - s.range().0 + 1);
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.status = format!("copied {bytes} bytes");
+            }
+            Err(message) => self.status = message,
+        }
+        cx.notify();
+    }
+
+    // -- search -----------------------------------------------------------------------
+
     fn pattern(&self, cx: &App) -> Result<Vec<u8>, String> {
         let text = self.query.read(cx).value().to_string();
         match self.mode {
@@ -133,6 +309,7 @@ impl HexPanel {
 
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = mode;
+        self.matches = None;
         let placeholder = match mode {
             Mode::Text => "Find text…",
             Mode::Hex => "Find hex bytes, e.g. 7f 45 4c 46",
@@ -143,8 +320,17 @@ impl HexPanel {
         cx.notify();
     }
 
-    /// Finds the next or previous match from the current one, in the background.
-    fn search(&mut self, forward: bool, cx: &mut Context<Self>) {
+    /// Where a search starts from: the current match, else the selection, else the top.
+    fn origin(&self) -> u64 {
+        self.matches
+            .as_ref()
+            .and_then(|m| m.current.map(|i| m.starts[i]))
+            .or(self.selection.map(|s| s.range().0))
+            .unwrap_or(0)
+    }
+
+    /// Go to the next or previous match. The first call for a pattern finds them all.
+    fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
         let pattern = match self.pattern(cx) {
             Ok(pattern) => pattern,
             Err(message) => {
@@ -153,6 +339,10 @@ impl HexPanel {
                 return;
             }
         };
+        if self.matches.as_ref().is_some_and(|m| m.pattern == pattern) {
+            self.move_current(forward, cx);
+            return;
+        }
         let Ok(reader) = self.reader.clone() else {
             return;
         };
@@ -161,43 +351,81 @@ impl HexPanel {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         self.searching = Some(cancel.clone());
-        let from = match (self.found, forward) {
-            (Some((at, _)), true) => at + 1,
-            (Some((at, _)), false) => at,
-            (None, true) => 0,
-            (None, false) => self.len,
-        };
         self.status = "searching…".into();
-        let length = pattern.len();
+        // The first match to show is the nearest one from where the user is.
+        let origin = self.origin();
         cx.notify();
         cx.spawn(async move |this, cx| {
+            let searched = pattern.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { find_bytes(reader.as_ref(), &pattern, from, forward, &cancel) })
+                .spawn(async move { find_all(reader.as_ref(), &searched, MATCH_LIMIT, &cancel) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.searching = None;
                 match result {
-                    Ok(Some(found)) => {
-                        this.found = Some((found.offset, length));
-                        this.status = format!(
-                            "0x{:x}{}",
-                            found.offset,
-                            if found.wrapped { " (wrapped)" } else { "" }
-                        );
-                        this.scroll.scroll_to_item(
-                            (found.offset / PER_ROW) as usize,
-                            gpui_kit::ScrollStrategy::Center,
-                        );
+                    Ok((starts, truncated)) => {
+                        let first = if forward {
+                            starts.iter().position(|s| *s >= origin)
+                        } else {
+                            starts.iter().rposition(|s| *s < origin)
+                        };
+                        let current = first.or(if starts.is_empty() {
+                            None
+                        } else if forward {
+                            Some(0)
+                        } else {
+                            Some(starts.len() - 1)
+                        });
+                        this.matches = Some(Matches {
+                            pattern,
+                            starts,
+                            truncated,
+                            current,
+                        });
+                        this.show_current(cx);
                     }
-                    Ok(None) => this.status = "not found".into(),
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => this.status = format!("search failed: {e}"),
+                    Err(e) => {
+                        this.status = format!("search failed: {e}");
+                        cx.notify();
+                    }
                 }
-                cx.notify();
             });
         })
         .detach();
+    }
+
+    fn move_current(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(m) = &mut self.matches
+            && !m.starts.is_empty()
+        {
+            let count = m.starts.len();
+            m.current = Some(match (m.current, forward) {
+                (Some(i), true) => (i + 1) % count,
+                (Some(i), false) => (i + count - 1) % count,
+                (None, true) => 0,
+                (None, false) => count - 1,
+            });
+        }
+        self.show_current(cx);
+    }
+
+    /// Scroll the current match into view and say which one it is.
+    fn show_current(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = &self.matches else { return };
+        match m.current {
+            Some(i) => {
+                let plus = if m.truncated { "+" } else { "" };
+                self.status = format!("match {} of {}{plus}", i + 1, m.starts.len());
+                self.scroll.scroll_to_item(
+                    (m.starts[i] / PER_ROW) as usize,
+                    gpui_kit::ScrollStrategy::Center,
+                );
+            }
+            None => self.status = "not found".into(),
+        }
+        cx.notify();
     }
 }
 
@@ -248,6 +476,7 @@ impl Render for HexPanel {
         }
 
         let mode = self.mode;
+        let has_selection = self.selection.is_some();
         let toolbar = h_flex()
             .gap_1()
             .p_1()
@@ -279,7 +508,7 @@ impl Render for HexPanel {
                     .ghost()
                     .small()
                     .tooltip("Previous match")
-                    .on_click(cx.listener(|this, _, _, cx| this.search(false, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.step(false, cx))),
             )
             .child(
                 Button::new("hex-next")
@@ -287,35 +516,92 @@ impl Render for HexPanel {
                     .ghost()
                     .small()
                     .tooltip("Next match (Enter)")
-                    .on_click(cx.listener(|this, _, _, cx| this.search(true, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.step(true, cx))),
+            )
+            .child(
+                Button::new("hex-copy-hex")
+                    .label("Copy hex")
+                    .ghost()
+                    .small()
+                    .disabled(!has_selection)
+                    .tooltip("Copy the selection as hex bytes")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy(Some(Column::Hex), cx))),
+            )
+            .child(
+                Button::new("hex-copy-text")
+                    .label("Copy text")
+                    .ghost()
+                    .small()
+                    .disabled(!has_selection)
+                    .tooltip("Copy the selection as text")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy(Some(Column::Text), cx))),
             );
 
-        let found = self.found;
         let muted = theme.muted_foreground;
-        let highlight = theme.info.opacity(0.35);
+        let selected_bg = theme.info.opacity(0.4);
+        let match_bg = theme.warning.opacity(0.3);
+        let current_bg = theme.warning.opacity(0.8);
         let list = uniform_list(
             "hex-rows",
             self.rows(),
-            cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                let selection = this.selection.map(|s| s.range());
                 range
                     .map(|row| {
                         let base = row as u64 * PER_ROW;
                         let bytes = this.row_bytes(row as u64);
-                        let marked = |i: usize| {
-                            found.is_some_and(|(at, len)| {
-                                let pos = base + i as u64;
-                                pos >= at && pos < at + len as u64
-                            })
+                        // Selection beats the current match, which beats the other matches.
+                        let background = |i: usize| {
+                            let at = base + i as u64;
+                            if selection.is_some_and(|(from, to)| at >= from && at <= to) {
+                                return Some(selected_bg);
+                            }
+                            match this.matches.as_ref().map(|m| m.covers(at)) {
+                                Some((true, true)) => Some(current_bg),
+                                Some((true, false)) => Some(match_bg),
+                                _ => None,
+                            }
                         };
-                        let cell = |i: usize| {
-                            let text = bytes.get(i).map(|b| format!("{b:02x}")).unwrap_or_default();
+                        // One cell per byte, in either column; both press and drag select.
+                        let cell = |i: usize, column: Column, width: f32, text: String| {
+                            let at = base + i as u64;
                             div()
-                                .w(px(size.as_f32() * 1.25))
+                                .id((
+                                    if column == Column::Hex { "hx" } else { "tx" },
+                                    row * 16 + i,
+                                ))
+                                .w(px(width))
                                 .rounded_sm()
-                                .when(marked(i), |d| d.bg(highlight))
+                                .cursor_text()
+                                .when_some(background(i), |d, bg| d.bg(bg))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                        this.press(at, column, event.modifiers.shift, window, cx)
+                                    }),
+                                )
+                                .on_mouse_move(cx.listener(
+                                    move |this, event: &MouseMoveEvent, _, cx| {
+                                        if event.pressed_button == Some(MouseButton::Left) {
+                                            this.drag_to(at, cx)
+                                        }
+                                    },
+                                ))
                                 .child(text)
                         };
-                        let ascii: Vec<_> = bytes
+                        let hex_cells: Vec<_> = (0..16)
+                            .map(|i| {
+                                let text =
+                                    bytes.get(i).map(|b| format!("{b:02x}")).unwrap_or_default();
+                                if i < bytes.len() {
+                                    cell(i, Column::Hex, size.as_f32() * 1.25, text)
+                                        .into_any_element()
+                                } else {
+                                    div().w(px(size.as_f32() * 1.25)).into_any_element()
+                                }
+                            })
+                            .collect();
+                        let text_cells: Vec<_> = bytes
                             .iter()
                             .enumerate()
                             .map(|(i, b)| {
@@ -324,11 +610,7 @@ impl Render for HexPanel {
                                 } else {
                                     '.'
                                 };
-                                div()
-                                    .w(px(size.as_f32() * 0.62))
-                                    .rounded_sm()
-                                    .when(marked(i), |d| d.bg(highlight))
-                                    .child(c.to_string())
+                                cell(i, Column::Text, size.as_f32() * 0.62, c.to_string())
                             })
                             .collect();
                         h_flex()
@@ -336,12 +618,8 @@ impl Render for HexPanel {
                             .gap_3()
                             .px_2()
                             .child(div().text_color(muted).child(format!("{base:08x}")))
-                            .child(
-                                h_flex()
-                                    .gap(px(size.as_f32() * 0.35))
-                                    .children((0..16).map(cell)),
-                            )
-                            .child(h_flex().children(ascii))
+                            .child(h_flex().gap(px(size.as_f32() * 0.35)).children(hex_cells))
+                            .child(h_flex().children(text_cells))
                     })
                     .collect::<Vec<_>>()
             }),
@@ -349,8 +627,25 @@ impl Render for HexPanel {
         .track_scroll(&self.scroll)
         .size_full();
 
+        let selection_text = self.selection.map(|s| {
+            let (from, to) = s.range();
+            format!("selected 0x{from:x}–0x{to:x} ({} bytes)", to - from + 1)
+        });
+
         v_flex()
             .size_full()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy(None, cx)))
+            .on_action(cx.listener(|this, _: &SelectAllBytes, _, cx| this.select_all(cx)))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.dragging = false),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.dragging = false),
+            )
             .font_family(family)
             .text_size(size)
             .child(toolbar)
@@ -369,8 +664,53 @@ impl Render for HexPanel {
                     .gap_3()
                     .text_color(muted)
                     .child(format!("{} bytes", self.len))
+                    .when_some(selection_text, |row, text| row.child(text))
+                    .child(div().flex_1())
                     .child(self.status.clone()),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matches(starts: &[u64], len: usize, current: Option<usize>) -> Matches {
+        Matches {
+            pattern: vec![0; len],
+            starts: starts.to_vec(),
+            truncated: false,
+            current,
+        }
+    }
+
+    #[test]
+    fn covers_marks_every_byte_of_every_match_and_the_current_one() {
+        let m = matches(&[10, 20], 3, Some(1));
+        assert_eq!(m.covers(9), (false, false));
+        assert_eq!(m.covers(10), (true, false));
+        assert_eq!(m.covers(12), (true, false));
+        assert_eq!(m.covers(13), (false, false));
+        assert_eq!(m.covers(21), (true, true));
+        assert_eq!(m.covers(23), (false, false));
+    }
+
+    #[test]
+    fn covers_handles_overlapping_matches() {
+        let m = matches(&[0, 1, 2], 2, Some(2));
+        assert_eq!(m.covers(1), (true, false));
+        assert_eq!(m.covers(3), (true, true));
+        assert_eq!(m.covers(4), (false, false));
+    }
+
+    #[test]
+    fn selection_range_is_ordered_whichever_way_it_was_dragged() {
+        let s = Selection {
+            anchor: 9,
+            cursor: 4,
+            column: Column::Text,
+        };
+        assert_eq!(s.range(), (4, 9));
     }
 }

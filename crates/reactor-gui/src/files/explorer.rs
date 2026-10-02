@@ -894,8 +894,7 @@ impl Render for FilesPanel {
             None => {
                 let meta = self.meta.clone();
                 let fs = self.fs.clone();
-                let (highlight, accent, strong) =
-                    (theme.info.opacity(0.45), theme.info, theme.foreground);
+                let (highlight, strong) = (theme.warning, gpui_kit::black());
                 let open_this = this.clone();
                 let menu_this = this.clone();
                 tree(&self.tree, move |ix, entry, selected, _window, _cx| {
@@ -908,9 +907,10 @@ impl Render for FilesPanel {
                     let size = info.as_ref().and_then(|m| m.size).map(human_size);
                     let is_file = info.as_ref().is_some_and(|m| m.kind == Kind::File);
                     let open_this = open_this.clone();
+                    // The selected row is painted here, on the whole row (indent included), not by
+                    // the library's faint selected style.
                     ListItem::new(ix)
-                        .selected(selected)
-                        .pl(px(6. + 14. * entry.depth() as f32))
+                        .when(selected, |item| item.bg(highlight).text_color(strong))
                         .on_click(move |event, window, cx| {
                             if is_file && event.click_count() == 2 {
                                 let path = VPath::new(&id);
@@ -924,14 +924,7 @@ impl Render for FilesPanel {
                                 .min_w_0()
                                 .gap_2()
                                 .items_center()
-                                .rounded_sm()
-                                // The library's selected row is faint; this one is not.
-                                .when(selected, |row| {
-                                    row.bg(highlight)
-                                        .border_l_2()
-                                        .border_color(accent)
-                                        .text_color(strong)
-                                })
+                                .pl(px(6. + 14. * entry.depth() as f32))
                                 .child(Icon::new(icon).small().flex_none())
                                 .child(
                                     // One line, cut with an ellipsis: rows have a fixed height,

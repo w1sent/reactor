@@ -475,7 +475,7 @@ ADR-0044. `crates/reactor-fs` is the seam (no gpui); `reactor-gui/src/files/` th
   *Contents* (a regular expression, ripgrep-style: binary files skipped). Both walk
   through the `Vfs` on the background executor; a result opens its file, and a content hit
   opens it at the line. The context menu: Open, Open in each viewer, Preview in popup,
-  Open externally / Show in file manager, Copy path / Copy full path, Properties, Hash
+  Open in default program, Open with… (the OS program picker), Show in file manager, Copy path / Copy full path, Properties, Hash
   (MD5, SHA-1, SHA-256, CRC-32, or all), New file/folder, Rename, Delete (confirmed),
   Refresh. Operations the filesystem cannot do are greyed out.
 - **Properties** (`props.rs`, a popup): name, path, size, times, mode, owner, link target and

@@ -347,8 +347,7 @@ impl Render for HexPanel {
             }),
         )
         .track_scroll(&self.scroll)
-        .flex_1()
-        .min_h_0();
+        .size_full();
 
         v_flex()
             .size_full()

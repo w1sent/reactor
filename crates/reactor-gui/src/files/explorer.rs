@@ -894,7 +894,7 @@ impl Render for FilesPanel {
             None => {
                 let meta = self.meta.clone();
                 let fs = self.fs.clone();
-                let (highlight, strong) = (theme.warning, gpui_kit::black());
+                let (highlight, strong) = (theme.info, gpui_kit::black());
                 let open_this = this.clone();
                 let menu_this = this.clone();
                 tree(&self.tree, move |ix, entry, selected, _window, _cx| {

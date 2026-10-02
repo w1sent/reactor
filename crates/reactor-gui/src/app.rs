@@ -934,6 +934,9 @@ impl ReactorApp {
             Viewer::Editor => panel_handle(cx.new(|cx| {
                 crate::files::editor::EditorPanel::new(weak_app, file, line, window, cx)
             })),
+            Viewer::Table => panel_handle(
+                cx.new(|cx| crate::files::table::TablePanel::new(weak_app, file, window, cx)),
+            ),
             Viewer::Hex => panel_handle(
                 cx.new(|cx| crate::files::hex::HexPanel::new(weak_app, file, window, cx)),
             ),

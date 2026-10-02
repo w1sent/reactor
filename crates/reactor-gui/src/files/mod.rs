@@ -10,6 +10,8 @@ pub mod explorer;
 pub mod hex;
 pub mod language;
 pub mod props;
+pub mod table;
+pub mod table_model;
 
 use gpui_kit::assets::IconName;
 use reactor_fs::FileRef;
@@ -19,15 +21,17 @@ use reactor_fs::FileRef;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Viewer {
     Editor,
+    Table,
     Hex,
 }
 
 impl Viewer {
-    pub const ALL: [Viewer; 2] = [Viewer::Editor, Viewer::Hex];
+    pub const ALL: [Viewer; 3] = [Viewer::Editor, Viewer::Table, Viewer::Hex];
 
     pub fn label(self) -> &'static str {
         match self {
             Viewer::Editor => "Text editor",
+            Viewer::Table => "Table viewer",
             Viewer::Hex => "Hex viewer",
         }
     }
@@ -35,6 +39,7 @@ impl Viewer {
     pub fn slug(self) -> &'static str {
         match self {
             Viewer::Editor => "edit",
+            Viewer::Table => "table",
             Viewer::Hex => "hex",
         }
     }
@@ -48,6 +53,7 @@ impl Viewer {
     pub fn icon(self) -> IconName {
         match self {
             Viewer::Editor => IconName::FileCode,
+            Viewer::Table => IconName::Table,
             Viewer::Hex => IconName::Binary,
         }
     }

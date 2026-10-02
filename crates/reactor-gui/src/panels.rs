@@ -277,9 +277,10 @@ fn entry_background(item: &ChatItem, theme: &gpui_kit::component::Theme) -> Opti
 struct FileLinks {
     cwd: std::path::PathBuf,
     /// Path as written, its line, the modifier keys held for the click.
-    open:
-        std::sync::Arc<dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync>,
+    open: std::sync::Arc<OpenReference>,
 }
+
+type OpenReference = dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync;
 
 // One entry's look is one function of everything it draws; a context struct would only rename
 // these arguments.

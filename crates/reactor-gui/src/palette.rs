@@ -255,7 +255,7 @@ pub fn commands() -> Vec<Entry> {
             "Window",
             Required,
             "Open a file in a viewer",
-            "/open [hex] <path>",
+            "/open [edit|hex] <path>",
         ),
         Entry::fixed(
             "console",

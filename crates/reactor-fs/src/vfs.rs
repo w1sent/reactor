@@ -102,6 +102,10 @@ pub trait Vfs: Send + Sync {
     fn remove(&self, _path: &VPath) -> io::Result<()> {
         unsupported("deleting")
     }
+    /// Replaces the file's contents.
+    fn write(&self, _path: &VPath, _bytes: &[u8]) -> io::Result<()> {
+        unsupported("saving")
+    }
 }
 
 /// A file somewhere: the filesystem and the path in it. What every viewer is opened on.

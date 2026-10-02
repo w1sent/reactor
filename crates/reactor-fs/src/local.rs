@@ -175,6 +175,10 @@ impl Vfs for LocalFs {
         fs::rename(self.native(from), to)
     }
 
+    fn write(&self, path: &VPath, bytes: &[u8]) -> io::Result<()> {
+        fs::write(self.native(path), bytes)
+    }
+
     fn remove(&self, path: &VPath) -> io::Result<()> {
         let native = self.native(path);
         if fs::symlink_metadata(&native)?.is_dir() {
@@ -231,6 +235,17 @@ mod tests {
         );
         fs.remove(&VPath::new("/sub")).unwrap();
         assert!(!dir.path().join("sub").exists());
+    }
+
+    #[test]
+    fn write_replaces_contents() {
+        let (_dir, fs) = fixture();
+        let path = VPath::new("/b.txt");
+        fs.write(&path, b"changed").unwrap();
+        assert_eq!(
+            fs.open(&path).unwrap().read_range(0, 100).unwrap(),
+            b"changed"
+        );
     }
 
     #[test]

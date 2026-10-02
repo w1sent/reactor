@@ -203,6 +203,7 @@ impl SlashUi {
 /// The keys this module's actions answer to. Call once, after `gpui_kit::init`: the popup's
 /// bindings must come *after* the input's own, which they override while the popup is open.
 pub fn bind_keys(cx: &mut App) {
+    crate::files::editor::bind_keys(cx);
     cx.bind_keys(vec![
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-p", OpenPalette, None),
@@ -922,6 +923,7 @@ impl ReactorApp {
         &mut self,
         viewer: Option<crate::files::Viewer>,
         file: reactor_fs::FileRef,
+        line: Option<u32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -929,6 +931,9 @@ impl ReactorApp {
         let viewer = viewer.unwrap_or_else(|| crate::files::suggest(&file));
         let weak_app = cx.weak_entity();
         let handle = match viewer {
+            Viewer::Editor => panel_handle(cx.new(|cx| {
+                crate::files::editor::EditorPanel::new(weak_app, file, line, window, cx)
+            })),
             Viewer::Hex => panel_handle(
                 cx.new(|cx| crate::files::hex::HexPanel::new(weak_app, file, window, cx)),
             ),
@@ -1703,7 +1708,7 @@ impl ReactorApp {
                     self.push_note("warning", "open: which file?");
                 } else {
                     let file = self.resolve_file(path);
-                    self.open_file(viewer, file, window, cx);
+                    self.open_file(viewer, file, None, window, cx);
                 }
             }
             "console" => {

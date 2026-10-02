@@ -14,7 +14,7 @@ name = "reactor-gui"
 path = "src/main.rs"
 
 [dependencies]
-gpui-kit = "=0.7.0"
+gpui-kit = { version = "=0.7.0", features = ["tree-sitter-languages"] }
 reactor-client = { path = "../reactor-client" }
 reactor-agent = { path = "../reactor-agent" }
 reactor-context = { path = "../reactor-context" }

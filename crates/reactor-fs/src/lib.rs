@@ -17,7 +17,7 @@ mod vfs;
 
 pub use find::{Found, find_bytes, parse_hex};
 pub use hash::{Algorithm, hash_file};
-pub use identify::{Identity, identify, identify_file};
+pub use identify::{HEAD_BYTES, Identity, identify, identify_file};
 pub use local::LocalFs;
 pub use path::VPath;
 pub use search::{ContentHit, SearchOptions, search_content, search_names};

@@ -5,8 +5,10 @@
 //! Viewers are created on demand, any number of them, as tabs in the centre; the explorer is
 //! the one fixed panel ([`crate::layout::PanelKind::Files`]).
 
+pub mod editor;
 pub mod explorer;
 pub mod hex;
+pub mod language;
 pub mod props;
 
 use gpui_kit::assets::IconName;
@@ -16,20 +18,23 @@ use reactor_fs::FileRef;
 /// the slug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Viewer {
+    Editor,
     Hex,
 }
 
 impl Viewer {
-    pub const ALL: [Viewer; 1] = [Viewer::Hex];
+    pub const ALL: [Viewer; 2] = [Viewer::Editor, Viewer::Hex];
 
     pub fn label(self) -> &'static str {
         match self {
+            Viewer::Editor => "Text editor",
             Viewer::Hex => "Hex viewer",
         }
     }
 
     pub fn slug(self) -> &'static str {
         match self {
+            Viewer::Editor => "edit",
             Viewer::Hex => "hex",
         }
     }
@@ -42,14 +47,23 @@ impl Viewer {
 
     pub fn icon(self) -> IconName {
         match self {
+            Viewer::Editor => IconName::FileCode,
             Viewer::Hex => IconName::Binary,
         }
     }
 }
 
 /// The viewer a file opens in when the user did not choose one.
-pub fn suggest(_file: &FileRef) -> Viewer {
-    Viewer::Hex
+pub fn suggest(file: &FileRef) -> Viewer {
+    let head = file
+        .open()
+        .and_then(|reader| reader.read_range(0, reactor_fs::HEAD_BYTES))
+        .unwrap_or_default();
+    if reactor_fs::identify(&head).is_text {
+        Viewer::Editor
+    } else {
+        Viewer::Hex
+    }
 }
 
 /// Hands a file or folder to the desktop's default program for it.

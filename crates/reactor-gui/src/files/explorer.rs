@@ -334,9 +334,21 @@ impl FilesPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_at(path, viewer, None, window, cx);
+    }
+
+    /// Open, scrolled to a 1-based line when the viewer has lines.
+    fn open_at(
+        &mut self,
+        path: &VPath,
+        viewer: Option<Viewer>,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let file = self.file(path);
         if let Some(app) = self.app.upgrade() {
-            app.update(cx, |app, cx| app.open_file(viewer, file, window, cx));
+            app.update(cx, |app, cx| app.open_file(viewer, file, line, window, cx));
         }
     }
 
@@ -792,6 +804,7 @@ impl Render for FilesPanel {
                                     None => return div().into_any_element(),
                                 };
                                 let open = path.clone();
+                                let line = detail.as_ref().map(|(line, _)| *line as u32);
                                 let this = this.clone();
                                 h_flex()
                                     .id(("files-hit", ix))
@@ -801,8 +814,9 @@ impl Render for FilesPanel {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(muted.opacity(0.15)))
                                     .on_click(move |_, window, cx| {
-                                        let _ = this
-                                            .update(cx, |p, cx| p.open(&open, None, window, cx));
+                                        let _ = this.update(cx, |p, cx| {
+                                            p.open_at(&open, None, line, window, cx)
+                                        });
                                     })
                                     .child(div().flex_none().child(path.relative().to_owned()))
                                     .when_some(detail, |row, (line, text)| {

@@ -281,6 +281,9 @@ struct FileLinks {
         std::sync::Arc<dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync>,
 }
 
+// One entry's look is one function of everything it draws; a context struct would only rename
+// these arguments.
+#[allow(clippy::too_many_arguments)]
 fn render_item(
     index: usize,
     item: &ChatItem,

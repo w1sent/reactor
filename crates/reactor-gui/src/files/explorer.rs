@@ -605,7 +605,7 @@ impl FilesPanel {
             menu = menu
                 .item(
                     PopupMenuItem::new(if is_file {
-                        "Open externally"
+                        "Open in default program"
                     } else {
                         "Open in file manager"
                     })

@@ -779,7 +779,7 @@ desc   = "collect live-response forensic artifacts from Unix-like systems"
 source = "https://github.com/tclahr/uac"
 invoke = "uac"
 detect = { binary = "uac" }
-tags   = ["forensics", "triage", "collection"]
+tags   = ["forensics", "collection"]
 
 [tool.uac.install]
 manual = "https://github.com/tclahr/uac — a shell script, not packaged; take a release asset and run ./uac from the unpacked directory. Unix-like systems only"

@@ -674,7 +674,7 @@ impl Render for HexPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Column, Matches, Selection};
 
     fn matches(starts: &[u64], len: usize, current: Option<usize>) -> Matches {
         Matches {

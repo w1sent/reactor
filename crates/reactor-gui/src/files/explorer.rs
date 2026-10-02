@@ -34,7 +34,7 @@ use reactor_fs::{
 use super::props::PropertiesView;
 use super::{Viewer, human_size, open_external};
 use crate::app::ReactorApp;
-use crate::panels::{close_button, panel_title_row};
+use crate::panels::{close_button, closer, panel_title_closing};
 
 /// What a menu item does to the panel.
 type PanelAction = dyn Fn(&mut FilesPanel, &mut Window, &mut Context<FilesPanel>);
@@ -752,8 +752,12 @@ impl gpui_kit::base::dock::Panel for FilesPanel {
 }
 
 impl Panel for FilesPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::FolderTree, "Files")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(
+            IconName::FolderTree,
+            "Files",
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(

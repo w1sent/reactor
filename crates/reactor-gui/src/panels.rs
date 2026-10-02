@@ -174,12 +174,38 @@ fn ansi_color(index: Option<u8>, theme: &Theme) -> Option<gpui_kit::Hsla> {
 /// name. The one place a panel gets its name, so a new panel can never ship
 /// gpui-kit's default `t!("Dock.Unnamed")` tab by accident (the bug this
 /// fixes — see the redesign notes at the top of this module).
-pub(crate) fn panel_title_row(icon: IconName, label: &str) -> impl IntoElement + use<> {
+pub(crate) fn panel_title_row(icon: IconName, label: &str) -> gpui_kit::Div {
     h_flex()
         .gap_2()
         .items_center()
         .child(Icon::new(icon).small())
         .child(Label::new(label.to_owned()))
+}
+
+/// A panel's title, which also closes the panel when the tab is middle-clicked. The dock draws
+/// the tab and offers no hook for that, but it draws this element inside it.
+pub(crate) fn panel_title_closing<F: Fn(&mut Window, &mut App) + 'static>(
+    icon: IconName,
+    label: &str,
+    on_close: F,
+) -> impl IntoElement + use<F> {
+    panel_title_row(icon, label).on_mouse_up(MouseButton::Middle, move |_, window, cx| {
+        on_close(window, cx)
+    })
+}
+
+/// What closing `panel` does: take it out of the dock through the app.
+pub(crate) fn closer<P: gpui_kit::base::dock::Panel>(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    panel: gpui_kit::Entity<P>,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    let app = app.clone();
+    move |window, cx| {
+        if let Some(app) = app.upgrade() {
+            let panel = panel.clone();
+            app.update(cx, |app, cx| app.close_panel(panel, window, cx));
+        }
+    }
 }
 
 /// A panel body's loading placeholder — shown while a `reactor` CLI round
@@ -553,8 +579,12 @@ impl gpui_kit::base::dock::Panel for TranscriptPanel {
 }
 
 impl Panel for TranscriptPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::MessageSquare, "Transcript")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(
+            IconName::MessageSquare,
+            "Transcript",
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(
@@ -1029,8 +1059,12 @@ impl gpui_kit::base::dock::Panel for TreePanel {
 }
 
 impl Panel for TreePanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::GitBranch, "Session Tree")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(
+            IconName::GitBranch,
+            "Session Tree",
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(
@@ -1132,8 +1166,8 @@ impl gpui_kit::base::dock::Panel for ToolsPanel {
 }
 
 impl Panel for ToolsPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Wrench, "Tools")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(IconName::Wrench, "Tools", closer(&self.app, cx.entity()))
     }
 
     fn toolbar_buttons(
@@ -1355,8 +1389,8 @@ impl gpui_kit::base::dock::Panel for ToolsetsPanel {
 }
 
 impl Panel for ToolsetsPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Layers, "Toolsets")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(IconName::Layers, "Toolsets", closer(&self.app, cx.entity()))
     }
 
     fn toolbar_buttons(
@@ -1491,8 +1525,8 @@ impl gpui_kit::base::dock::Panel for ServicesPanel {
 }
 
 impl Panel for ServicesPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Server, "Services")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(IconName::Server, "Services", closer(&self.app, cx.entity()))
     }
 
     fn toolbar_buttons(
@@ -1668,8 +1702,8 @@ impl gpui_kit::base::dock::Panel for ContextPanel {
 }
 
 impl Panel for ContextPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Layers, "Context")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(IconName::Layers, "Context", closer(&self.app, cx.entity()))
     }
 
     fn toolbar_buttons(
@@ -2175,10 +2209,11 @@ impl gpui_kit::base::dock::Panel for ConsolePanel {
 impl Panel for ConsolePanel {
     /// Shows the running command rather than a fixed "Console" — the tab
     /// label that tells several terminals apart from one another.
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(
             IconName::SquareTerminal,
             self.command.as_deref().unwrap_or("Console"),
+            closer(&self.app, cx.entity()),
         )
     }
 

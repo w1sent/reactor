@@ -25,7 +25,7 @@ use gpui_kit::{
 use reactor_fs::{FileRef, ReadAt, find_all, parse_hex};
 
 use crate::app::ReactorApp;
-use crate::panels::{close_button, panel_title_row};
+use crate::panels::{close_button, closer, panel_title_closing};
 use crate::settings::Slot;
 
 actions!(
@@ -444,8 +444,12 @@ impl gpui_kit::base::dock::Panel for HexPanel {
 }
 
 impl Panel for HexPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Binary, &format!("{} (hex)", self.file.name()))
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(
+            IconName::Binary,
+            &format!("{} (hex)", self.file.name()),
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(

@@ -501,6 +501,7 @@ ADR-0044. `crates/reactor-fs` is the seam (no gpui); `reactor-gui/src/files/` th
   Search for text or hex bytes: every match is marked, the current one in a stronger
   colour, and the status line says *match N of M*; Enter and the arrows step through them,
   wrapping.
+- **Closing.** Every panel closes with the X in its header or a middle-click on its tab label; an editor with unsaved edits asks first.
 - **Opening.** `/open [edit|table|data|hex] <path>`; the viewer is otherwise chosen by
   `files::suggest`. Viewers are tabs in the centre; any number can be open.
 - **References in the transcript** (`refs.rs`): file names in the assistant's text that exist

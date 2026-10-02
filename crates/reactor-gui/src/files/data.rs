@@ -18,7 +18,7 @@ use reactor_fs::FileRef;
 use super::data_model::{Decoded, decode};
 use super::human_size;
 use crate::app::ReactorApp;
-use crate::panels::{close_button, panel_title_row};
+use crate::panels::{close_button, closer, panel_title_closing};
 
 /// Larger files are not decoded into memory.
 const MAX_BYTES: u64 = 64 << 20;
@@ -254,7 +254,11 @@ impl gpui_kit::base::dock::Panel for DataPanel {
 
 impl Panel for DataPanel {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Image, &self.view.read(cx).title())
+        panel_title_closing(
+            IconName::Image,
+            &self.view.read(cx).title(),
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(

@@ -271,9 +271,13 @@ impl gpui_kit::base::dock::Panel for EditorPanel {
 }
 
 impl Panel for EditorPanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let marker = if self.dirty { "● " } else { "" };
-        panel_title_row(IconName::FileCode, &format!("{marker}{}", self.file.name()))
+        // Middle-click closes like the X does, asking first when there are unsaved edits.
+        panel_title_row(IconName::FileCode, &format!("{marker}{}", self.file.name())).on_mouse_up(
+            MouseButton::Middle,
+            cx.listener(|this, _, window, cx| this.close(window, cx)),
+        )
     }
 
     fn toolbar_buttons(

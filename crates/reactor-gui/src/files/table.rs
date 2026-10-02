@@ -25,7 +25,7 @@ use reactor_fs::FileRef;
 
 use super::table_model::{self as model, Delimiter, Sheet};
 use crate::app::ReactorApp;
-use crate::panels::{close_button, panel_title_row};
+use crate::panels::{close_button, closer, panel_title_closing};
 use crate::settings::Slot;
 
 /// Larger files are not parsed into a grid.
@@ -275,8 +275,12 @@ impl gpui_kit::base::dock::Panel for TablePanel {
 }
 
 impl Panel for TablePanel {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_row(IconName::Table, &self.file.name())
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel_title_closing(
+            IconName::Table,
+            &self.file.name(),
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(

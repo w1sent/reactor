@@ -68,6 +68,8 @@ crates/
                    subprocesses only
   reactor-cli      the `reactor` binary over it (ADR-0034)
   reactor-client   the seam the GUI panels use: in-process, or the CLI
+  reactor-fs       a virtual filesystem seam: browse, read, hash, identify, search
+                   (ADR-0044)
   reactor-context  manifest / identity / reporting / scenario state machines
                    (ADR-0040)
   reactor-agent    session store, the loop over rig, the context budget

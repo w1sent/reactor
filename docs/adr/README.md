@@ -58,3 +58,4 @@ they describe was removed from the tree in
 | [0041](0041-the-agent-loop-owns-the-message-list.md) | The agent loop owns the message list, and reduction replaces whole ranges |
 | [0042](0042-the-gui-hosts-the-agent-in-process.md) | The GUI hosts the agent in process, and activation is session-scoped |
 | [0043](0043-the-pi-flavor-is-removed-from-the-tree.md) | The pi flavor is removed from the tree |
+| [0044](0044-filesystem-panels-read-through-a-vfs.md) | The filesystem panels read through a `Vfs` |

@@ -430,9 +430,9 @@ The GUI's own contribution on top of that freedom is the way back:
   panel in the centre, the plainest statement that the centre is not owned by
   the transcript:
   - **Default** — transcript in the centre; tools, toolsets, context,
-    services and the session tree as tabs on the right; the console below.
+    services, files and the session tree as tabs on the right; the console below.
   - **Focus** — the transcript with only the console below.
-  - **Analysis** — transcript in the centre, the tree on the left, tools,
+  - **Analysis** — transcript in the centre, files and the tree on the left, tools,
     toolsets, context and services on the right, the console below.
   - **Catalogue** — tools in the centre, services on the left, toolsets on
     the right, the console below.
@@ -463,6 +463,44 @@ The GUI's own contribution on top of that freedom is the way back:
   the transcript's expanded thinking blocks and every scroll position —
   state that lives inside those entities and would be silently thrown away
   by constructing them afresh.
+
+### 6.2 The filesystem panels
+
+ADR-0044. `crates/reactor-fs` is the seam (no gpui); `reactor-gui/src/files/` the panels.
+
+- **Files** (`explorer.rs`, `PanelKind::Files`, in the Default and Analysis presets): a lazy
+  tree of the working directory (the root row is the directory's name; folders are read
+  when first expanded; *Refresh* reads the open ones again). Search is a box with two
+  modes: *Names* (substring of the relative path, or a glob when it has `*`/`?`) and
+  *Contents* (a regular expression, ripgrep-style: binary files skipped). Both walk
+  through the `Vfs` on the background executor; a result opens its file, and a content hit
+  opens it at the line. The context menu: Open, Open in each viewer, Preview in popup,
+  Open externally / Show in file manager, Copy path / Copy full path, Properties, Hash
+  (MD5, SHA-1, SHA-256, CRC-32, or all), New file/folder, Rename, Delete (confirmed),
+  Refresh. Operations the filesystem cannot do are greyed out.
+- **Properties** (`props.rs`, a popup): name, path, size, times, mode, owner, link target and
+  the filesystem's own extras; what the file *is* (`file(1)`'s description, MIME type);
+  hashes computed in one pass in the background, each with a copy button.
+- **Text editor** (`editor.rs`): gpui-kit's code editor, every tree-sitter grammar bundled.
+  The language comes from the file name, then a `#!` line (`language.rs`), and the status
+  bar's picker overrides it. Line numbers, folding, search (the editor's own), Ctrl/Cmd+S,
+  a dirty marker in the tab and a confirmation before closing or reloading over edits.
+  Read-only when the `Vfs` is. A file that is not UTF-8 offers the hex viewer instead.
+- **Table viewer** (`table.rs`, model in `table_model.rs`): delimited text in gpui-kit's data
+  table. The delimiter comes from the extension, else the most consistent of comma, tab,
+  semicolon and pipe, and can be chosen. Sorting by header click (numbers as numbers), a
+  filter box over every cell, and a user-chosen number of header rows (their cells, joined,
+  name the columns).
+- **Data viewer** (`data.rs`, `data_model.rs`): images (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO,
+  SVG) with fit and zoom. One view, hosted as a panel or in a popup (`/look <path>`, or
+  *Preview in popup*).
+- **Hex viewer** (`hex.rs`): offset, bytes and text, scrolled lazily with a page cache, so
+  size does not matter. Search for text or hex bytes, forward and back, wrapping.
+- **Opening.** `/open [edit|table|data|hex] <path>`; the viewer is otherwise chosen by
+  `files::suggest`. Viewers are tabs in the centre; any number can be open.
+- **References in the transcript** (`refs.rs`): file names in the assistant's text that exist
+  are links. Click: the suited viewer (at the line, for `path:line`); Shift: hex; Ctrl/Cmd:
+  editor; Alt: popup. Tool commands and output are not linked.
 
 ## 7. Theme
 

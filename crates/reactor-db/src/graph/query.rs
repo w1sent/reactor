@@ -185,6 +185,35 @@ pub fn edges_to(db: &Db, id: &str) -> Result<Vec<Edge>> {
     edges(db, "to_id", id)
 }
 
+/// Where a claim came from: an external it links to as `source`, and where in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceRef {
+    /// A relative path or a URL, or `session:<id>#entry=<n>` for what was said in a session.
+    pub uri: String,
+    /// Where in the source: `row=…`, a line, an offset.
+    pub locator: Option<String>,
+}
+
+/// The sources of an element, in the order they were recorded: what to open to see where it
+/// came from. An entity has none of its own.
+pub fn sources_of(db: &Db, id: &str) -> Result<Vec<SourceRef>> {
+    let mut out = Vec::new();
+    for edge in edges_from(db, id)?
+        .into_iter()
+        .filter(|e| e.role == "source")
+    {
+        if let Some(external) = get(db, &edge.to_id)?
+            && let Some(uri) = external.content.value
+        {
+            out.push(SourceRef {
+                uri,
+                locator: edge.locator,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Which elements to list.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {

@@ -29,10 +29,12 @@ use gpui_kit::{
     PathBuilder, Pixels, Point, ScrollDelta, SharedString, Window, canvas, div, point, px,
 };
 use reactor_db::graph::edit::{self, At, TypeChoice};
+use reactor_db::graph::layout;
 use reactor_db::graph::{self, query};
 use serde::Deserialize;
 
-use super::model::{self, Line, LineKind, Model, NodeKind};
+use super::arrange::{self, LayoutKind};
+use super::model::{self, Line, LineKind, Model, NodeKind, SourceTarget};
 use crate::app::ReactorApp;
 use crate::backend::Backend;
 use crate::hints;
@@ -43,6 +45,13 @@ use crate::panels::{close_button, closer, panel_title_closing};
 #[action(namespace = reactor_gui, no_json)]
 pub struct GraphSetConfidence {
     pub value: String,
+}
+
+/// A way of arranging the graph, picked from the toolbar's layout menu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct GraphSetLayout {
+    pub kind: String,
 }
 
 /// A hypothesis status picked from the detail box's menu.
@@ -126,6 +135,12 @@ pub struct GraphPanel {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     note: Entity<InputState>,
     tag: Entity<InputState>,
+    /// Which nodes to show, as typed (`crate::graph::model::parse_filter`).
+    filter: Entity<InputState>,
+    /// Draw a box around the nodes that share a tag.
+    show_groups: bool,
+    /// How the graph is arranged: what *auto-layout* does, and how lines are drawn.
+    layout_kind: LayoutKind,
     /// The form that is open, and its fields.
     form: Option<Form>,
     entity_type: Entity<InputState>,
@@ -277,6 +292,13 @@ impl GraphPanel {
             },
         )
         .detach();
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter nodes"));
+        cx.subscribe_in(&filter, window, |_, _, event: &InputEvent, _, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             app,
             focus: cx.focus_handle(),
@@ -293,6 +315,9 @@ impl GraphPanel {
             bounds: Rc::new(Cell::new(Bounds::default())),
             note: cx.new(|cx| InputState::new(window, cx).placeholder("a note about this…")),
             tag: cx.new(|cx| InputState::new(window, cx).placeholder("tag, e.g. phase.recon")),
+            filter,
+            show_groups: false,
+            layout_kind: LayoutKind::default(),
             form: None,
             entity_type,
             entity_value,
@@ -314,7 +339,32 @@ impl GraphPanel {
     /// looked up, because the app is mid-update whenever it would be asked.
     pub fn set_backend(&mut self, backend: Option<Arc<Backend>>, cx: &mut Context<Self>) {
         self.backend = backend;
+        // Where the nodes were left, as stored with the case.
+        if let Some(b) = &self.backend {
+            self.positions = layout::load(b.case.db()).unwrap_or_default();
+        }
         self.refresh(cx);
+    }
+
+    /// Store where these nodes are, so that they are there next time. A failure to store is
+    /// not worth interrupting for: the picture is only drawn again afresh.
+    fn persist(&self, ids: &[String]) {
+        let (Some(b), false) = (&self.backend, ids.is_empty()) else {
+            return;
+        };
+        let rows: Vec<(String, (f32, f32))> = ids
+            .iter()
+            .filter_map(|id| self.positions.get(id).map(|p| (id.clone(), *p)))
+            .collect();
+        let _ = layout::save(b.case.db(), &rows);
+    }
+
+    /// The pointer is up: if nodes were being dragged, keep where they were left.
+    fn end_drag(&mut self) {
+        if let Some(Drag::Nodes { starts, .. }) = self.drag.take() {
+            let moved: Vec<String> = starts.into_iter().map(|(id, _)| id).collect();
+            self.persist(&moved);
+        }
     }
 
     /// Read the graph again and place whatever is new.
@@ -342,11 +392,20 @@ impl GraphPanel {
                     })
                     .unwrap_or_else(|_| model::FROM_ROLES.iter().map(|r| r.to_string()).collect());
                 self.model = model::build(&elements, &edges, &from_roles);
+                // What has no place yet is placed now, and keeps it.
+                let unplaced: Vec<String> = self
+                    .model
+                    .nodes
+                    .iter()
+                    .filter(|n| !self.positions.contains_key(&n.id))
+                    .map(|n| n.id.clone())
+                    .collect();
                 let placed = model::layout(&self.model, &self.positions);
                 // Positions of what is hidden are kept: it comes back where it was.
                 for (n, p) in self.model.nodes.iter().zip(placed) {
                     self.positions.insert(n.id.clone(), p);
                 }
+                self.persist(&unplaced);
                 self.error = None;
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -764,6 +823,7 @@ impl GraphPanel {
             self.positions.insert(id.clone(), at);
             taken.push(at);
         }
+        self.persist(&fresh);
         self.reveal(&fresh);
     }
 
@@ -788,6 +848,42 @@ impl GraphPanel {
             self.zoom = self.zoom.max(0.5);
             self.pan = (-c.0 * self.zoom, -c.1 * self.zoom);
         }
+    }
+
+    // -- finding where something came from ---------------------------------------------------
+
+    /// Open the source of the selected element: a page in the browser, a file of the case in
+    /// its viewer (at the line, if the locator names one), or the session it was said in.
+    fn open_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(id), Some(b)) = (self.single(), self.backend.clone()) else {
+            return;
+        };
+        let sources = query::sources_of(b.case.db(), &id).unwrap_or_default();
+        let Some(first) = sources.first() else {
+            self.error = Some(
+                "It has no source of its own: an entity is not a statement. Its claims have one."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        };
+        self.error = None;
+        match model::source_target(&first.uri, first.locator.as_deref()) {
+            SourceTarget::Url(url) => cx.open_url(&url),
+            SourceTarget::Session { id, .. } => {
+                if let Some(app) = self.app.upgrade() {
+                    app.update(cx, |app, cx| app.open_session(Some(id), window, cx));
+                }
+            }
+            SourceTarget::File { path, line } => {
+                if let Some(app) = self.app.upgrade() {
+                    app.update(cx, |app, cx| {
+                        app.open_reference(&path, line, Default::default(), window, cx)
+                    });
+                }
+            }
+        }
+        cx.notify();
     }
 
     // -- geometry ---------------------------------------------------------------------------
@@ -831,7 +927,7 @@ impl GraphPanel {
     /// Lay the whole graph out afresh, forgetting where things were -- including where
     /// they were dragged to -- and bring it into view.
     fn relayout(&mut self, cx: &mut Context<Self>) {
-        let placed = model::layout(&self.model, &HashMap::new());
+        let placed = arrange::layout_as(&self.model, self.layout_kind);
         self.positions = self
             .model
             .nodes
@@ -839,7 +935,19 @@ impl GraphPanel {
             .zip(placed)
             .map(|(n, p)| (n.id.clone(), p))
             .collect();
+        // The old arrangement is given up for good: stored positions too.
+        if let Some(b) = &self.backend {
+            let _ = layout::clear(b.case.db());
+        }
+        let all: Vec<String> = self.model.nodes.iter().map(|n| n.id.clone()).collect();
+        self.persist(&all);
         self.fit(cx);
+    }
+
+    /// Arrange the whole graph the chosen way, and keep that way for the next auto-layout.
+    fn set_layout(&mut self, kind: LayoutKind, cx: &mut Context<Self>) {
+        self.layout_kind = kind;
+        self.relayout(cx);
     }
 
     /// Bring everything into view at a readable size.
@@ -916,7 +1024,10 @@ impl Panel for GraphPanel {
                 .icon(IconName::LayoutDashboard)
                 .ghost()
                 .small()
-                .tooltip("Auto-layout: arrange the whole graph afresh (positions you dragged are given up)")
+                .tooltip(format!(
+                    "Auto-layout: arrange the whole graph afresh, {} (pick another way in the box at the top; positions you dragged are given up)",
+                    self.layout_kind.label().to_lowercase()
+                ))
                 .on_click(cx.listener(|this, _, _, cx| this.relayout(cx))),
             Button::new("graph-fit")
                 .icon(IconName::Layers)
@@ -924,6 +1035,19 @@ impl Panel for GraphPanel {
                 .small()
                 .tooltip("Fit everything into view")
                 .on_click(cx.listener(|this, _, _, cx| this.fit(cx))),
+            Button::new("graph-groups")
+                .icon(IconName::Tags)
+                .ghost()
+                .small()
+                .tooltip(if self.show_groups {
+                    "Boxes around the nodes that share a tag are shown — click to hide them"
+                } else {
+                    "Draw a box around the nodes that share a tag"
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.show_groups = !this.show_groups;
+                    cx.notify();
+                })),
             Button::new("graph-deleted")
                 .icon(if shown {
                     IconName::Eye
@@ -949,6 +1073,8 @@ impl Panel for GraphPanel {
 /// One line, ready to paint: both ends in the drawing area's own coordinates.
 struct Stroke {
     from: (f32, f32),
+    /// Corners between `from` and `to`, for a right-angled connector; none for a straight line.
+    bends: Vec<(f32, f32)>,
     to: (f32, f32),
     colour: Hsla,
     width: f32,
@@ -974,6 +1100,8 @@ impl Render for GraphPanel {
         };
         // Everything drawn scales with the zoom, so zooming out brings things closer
         // together *and* makes them smaller: that is what makes a bigger picture.
+        let filter = model::parse_filter(self.filter.read(cx).value().as_ref());
+        let shown = model::visible(&self.model, &filter);
         let z = self.zoom;
         let font = |factor: f32| theme.font_size * 0.85 * factor * z;
         let readable = f32::from(font(1.)) >= 6.;
@@ -985,15 +1113,27 @@ impl Render for GraphPanel {
         let mut strokes = Vec::with_capacity(self.model.lines.len());
         let mut labels = Vec::new();
         for (i, line) in self.model.lines.iter().enumerate() {
+            // A line is drawn between two nodes that are shown.
+            if !(shown[line.from] && shown[line.to]) {
+                continue;
+            }
             let (a, b) = (self.node_at(line.from), self.node_at(line.to));
             let half = |index: usize| {
                 let (w, h) = node_size(self.model.nodes[index].kind);
                 ((w / 2. + 3.) * z, (h / 2. + 3.) * z)
             };
-            let (from, to) = (
-                edge_of_box(a, half(line.from), b),
-                edge_of_box(b, half(line.to), a),
-            );
+            // Straight, from edge to edge of the boxes; or, in the orthogonal layout, out of
+            // the side that faces, round two right-angled corners, into the side that faces.
+            let (from, bends, to) = if self.layout_kind.right_angled() {
+                let r = arrange::orthogonal_route(a, half(line.from), b, half(line.to));
+                (r[0], vec![r[1], r[2]], r[3])
+            } else {
+                (
+                    edge_of_box(a, half(line.from), b),
+                    Vec::new(),
+                    edge_of_box(b, half(line.to), a),
+                )
+            };
             let selected = line_selected(line);
             let base = match line.kind {
                 LineKind::Relation { .. } => theme.foreground.opacity(0.7),
@@ -1007,6 +1147,7 @@ impl Render for GraphPanel {
             };
             strokes.push(Stroke {
                 from,
+                bends: bends.clone(),
                 to,
                 colour,
                 width: (if selected { 2.5 } else { 1.5 } * z).max(if selected { 1.5 } else { 0.8 }),
@@ -1014,7 +1155,12 @@ impl Render for GraphPanel {
                 dashed: line.kind == LineKind::Annotation,
                 arrow: !matches!(line.kind, LineKind::Relation { directed: false }),
             });
-            let mid = ((from.0 + to.0) / 2., (from.1 + to.1) / 2.);
+            // The label sits in the middle of the line: of its middle stretch, if it has corners.
+            let (m0, m1) = match bends.as_slice() {
+                [b1, b2] => (*b1, *b2),
+                _ => (from, to),
+            };
+            let mid = ((m0.0 + m1.0) / 2., (m0.1 + m1.1) / 2.);
             let claims = line.claims.clone();
             let is_relation = matches!(line.kind, LineKind::Relation { .. });
             let text = SharedString::from(line.label.clone());
@@ -1080,12 +1226,17 @@ impl Render for GraphPanel {
                         path = path.dash_array(&[px(5.), px(4.)]);
                     }
                     path.move_to(at(s.from));
+                    for corner in &s.bends {
+                        path.line_to(at(*corner));
+                    }
                     path.line_to(at(s.to));
                     if let Ok(path) = path.build() {
                         window.paint_path(path, s.colour);
                     }
                     if s.arrow {
-                        let (dx, dy) = (s.to.0 - s.from.0, s.to.1 - s.from.1);
+                        // The head points the way the last stretch goes.
+                        let last = s.bends.last().copied().unwrap_or(s.from);
+                        let (dx, dy) = (s.to.0 - last.0, s.to.1 - last.1);
                         let len = (dx * dx + dy * dy).sqrt();
                         let size = (9. * s.head).max(4.);
                         if len > size + 3. {
@@ -1117,6 +1268,7 @@ impl Render for GraphPanel {
             .nodes
             .iter()
             .enumerate()
+            .filter(|(i, _)| shown[*i])
             .map(|(i, node)| {
                 let (x, y) = self.node_at(i);
                 let (w, h) = node_size(node.kind);
@@ -1430,12 +1582,77 @@ impl Render for GraphPanel {
                 x.min(f32::from(area.width) - 440.).max(8.),
                 y.min(f32::from(area.height) - 260.).max(8.),
             ),
-            None => (8., 32.),
+            // Below the header card.
+            None => (8., 60.),
+        };
+
+        // A box for each tag that shown nodes share, behind everything.
+        let group_boxes: Vec<_> = if self.show_groups {
+            model::tag_groups(&self.model, &self.positions, &shown, 12)
+                .into_iter()
+                .map(|g| {
+                    // The same tag is the same colour, whichever other tags are on.
+                    let hue = (g
+                        .tag
+                        .bytes()
+                        .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+                        % 360) as f32
+                        / 360.;
+                    let colour = Hsla {
+                        h: hue,
+                        s: 0.55,
+                        l: 0.55,
+                        a: 1.,
+                    };
+                    // Around the nodes, not just their centres: a node's own size, and room
+                    // all round. The top has the tag's name on a band of its own, above
+                    // the highest node.
+                    let (side, top, bottom) = (150., 80., 55.);
+                    let lo = self.to_view((g.min.0 - side, g.min.1 - top));
+                    let (w, h) = (
+                        (g.max.0 - g.min.0 + 2. * side) * z,
+                        (g.max.1 - g.min.1 + top + bottom) * z,
+                    );
+                    let box_ = div()
+                        .id(SharedString::from(format!("graph-group-{}", g.tag)))
+                        .absolute()
+                        .left(px(lo.0))
+                        .top(px(lo.1))
+                        .w(px(w))
+                        .h(px(h))
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(colour.opacity(0.5))
+                        .bg(colour.opacity(0.07))
+                        .child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .text_size(font(0.9))
+                                .text_color(colour)
+                                .when(!readable, |d| d.invisible())
+                                .child(SharedString::from(format!("{} · {}", g.tag, g.members))),
+                        );
+                    // Zoomed out, the label is too small to read: the tooltip has it.
+                    hints::tip(
+                        box_,
+                        SharedString::from(format!("tag {} — {} nodes", g.tag, g.members)),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
 
         let empty = self.model.nodes.is_empty();
+        let nodes_shown = shown.iter().filter(|s| **s).count();
         let counts = format!(
-            "{} node{} · {} line{}{}",
+            "{}{} node{} · {} line{}{}",
+            if filter.is_empty() {
+                String::new()
+            } else {
+                format!("{nodes_shown} of ")
+            },
             self.model.nodes.len(),
             if self.model.nodes.len() == 1 { "" } else { "s" },
             self.model.lines.len(),
@@ -1638,6 +1855,14 @@ impl Render for GraphPanel {
                                     .tooltip("Take back its latest version. Previews what would go, and is refused if something builds on it")
                                     .on_click(cx.listener(|this, _, _, cx| this.preview_undo(cx))),
                             )
+                            .child(
+                                Button::new("graph-source")
+                                    .small()
+                                    .icon(IconName::ExternalLink)
+                                    .label("Source")
+                                    .tooltip("Open where this came from: the file, the page, or the session it was said in")
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_source(window, cx))),
+                            )
                         }),
                 )
                 .child(
@@ -1746,7 +1971,7 @@ impl Render for GraphPanel {
             )
             .on_mouse_move(cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                 if event.pressed_button != Some(MouseButton::Left) {
-                    this.drag = None;
+                    this.end_drag();
                     return;
                 }
                 let at = this.local(event.position);
@@ -1789,7 +2014,7 @@ impl Render for GraphPanel {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.drag = None),
+                cx.listener(|this, _, _, _| this.end_drag()),
             )
             .on_scroll_wheel(cx.listener(|this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
                 let steps = match event.delta {
@@ -1813,6 +2038,12 @@ impl Render for GraphPanel {
             .on_action(cx.listener(|this, a: &GraphSetHypothesis, _, cx| {
                 this.set_hypothesis(&a.status, cx)
             }))
+            .on_action(cx.listener(|this, a: &GraphSetLayout, _, cx| {
+                if let Some(kind) = LayoutKind::parse(&a.kind) {
+                    this.set_layout(kind, cx);
+                }
+            }))
+            .children(group_boxes)
             .child(lines)
             .children(labels)
             .children(nodes)
@@ -1826,18 +2057,66 @@ impl Render for GraphPanel {
             }))
             .child(
                 h_flex()
+                    .id("graph-header")
                     .absolute()
-                    .top_0()
-                    .left_1()
-                    .gap_1()
+                    // Off the edges, and a card of its own: what is drawn behind it (a tag
+                    // box's label, a node) does not show through, and a click on it is not
+                    // a click on the plane.
+                    .top_3()
+                    .left_3()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
                     .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.popover)
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .text_size(small)
                     .text_color(theme.muted_foreground)
                     .child(hints::info_button(
                         "graph-help",
                         "Click selects; Ctrl/Cmd+click adds a node to the selection or takes it out; Shift+drag sweeps an area; dragging a selected node moves them all. Right-click the plane adds a node there. Scroll zooms (everything shrinks with it); drag the plane to pan. Relations show as lines: click the word on one to select it. Dashed lines are notes.",
                     ))
-                    .child(counts),
+                    .child(counts)
+                    .child({
+                        // How the graph is arranged: a menu of the ways, the current one marked.
+                        let (focus, current) = (self.focus.clone(), self.layout_kind);
+                        hints::tip(
+                            div().id("graph-layout-holder").child(
+                                Button::new("graph-layout")
+                                    .small()
+                                    .icon(IconName::LayoutDashboard)
+                                    .label(current.label())
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        menu = menu.action_context(focus.clone());
+                                        for kind in LayoutKind::ALL {
+                                            let mark = if kind == current { "● " } else { "   " };
+                                            menu = menu.menu(
+                                                format!("{mark}{}", kind.label()),
+                                                Box::new(GraphSetLayout {
+                                                    kind: kind.slug().to_string(),
+                                                }),
+                                            );
+                                        }
+                                        menu
+                                    }),
+                            ),
+                            SharedString::from(format!(
+                                "How the graph is arranged. {}. Picking one arranges the whole graph afresh",
+                                current.tip()
+                            )),
+                        )
+                    })
+                    .child(div().w(px(220.)).child(Input::new(&self.filter).small()))
+                    .child(hints::info_button(
+                        "graph-filter-help",
+                        "Show only some of the nodes. Words must all be in a node's label or type. type:net. (a type that starts so, or has a dotted part that does: type:ipv4), tag:phase. (a tag that starts so), by:agent or by:person, kind:entity, kind:claim or kind:note, status:conflicting. A leading - means not: -tag:c2. Lines are drawn between nodes that are shown.",
+                    )),
             )
             .when(empty, |d| {
                 d.child(

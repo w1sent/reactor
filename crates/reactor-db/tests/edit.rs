@@ -327,3 +327,18 @@ fn types_are_offered_as_they_are_typed_most_used_first_and_found_by_alias() {
     assert!(claims.iter().any(|c| c.name == "analysis.pull"));
     assert!(claims.iter().all(|c| !c.name.starts_with("net.")));
 }
+
+#[test]
+fn what_a_person_stated_has_the_session_entry_as_its_source() {
+    let (_d, case) = case();
+    let db = case.db();
+    let at = At::new("3", 7);
+    let a = edit::add_entity(db, &at, "net.ipv4", "10.0.0.5").unwrap();
+    let b = edit::add_entity(db, &at, "net.domain", "evil.example").unwrap();
+    let claim = edit::relate(db, &at, &a, &b, "net.resolution", "query", "answer").unwrap();
+    let sources = query::sources_of(db, &claim).unwrap();
+    assert_eq!(sources.len(), 1, "{sources:?}");
+    assert_eq!(sources[0].uri, "session:3#entry=7");
+    // An entity states nothing and so has no source of its own.
+    assert!(query::sources_of(db, &a).unwrap().is_empty());
+}

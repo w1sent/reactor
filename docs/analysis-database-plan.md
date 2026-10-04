@@ -592,7 +592,8 @@ Built in three increments: storage and rules, then pulling and the agent's tools
 **Still to do in Stage 2**
 
 - The owner looks at the panel; what is wrong with it is fixed.
-- In the view: group outlines for tags and clusters, progressive disclosure, filters, stored positions.
+- Layouts to choose from (force-directed as the default, hierarchical, circular/radial, orthogonal with right-angled connectors; `graph/arrange.rs`, tested: every layout gives each node a place without overlap and the same every time) and layout of connected groups packed close together; the choice is not stored.
+- Done since (built blind, the pure parts tested): positions stored with the case (`graph::layout`, schema 4), a filter box (`parse_filter`: words, `type:`, `tag:`, `by:`, `kind:`, `status:`, `-` to negate), boxes around nodes sharing a tag (`tag_groups`), and *Source* on a claim (`query::sources_of`, `source_target`). Still to do in the view: hulls for clusters rather than boxes, progressive disclosure.
 - A real session against a model: nothing here has been exercised by an actual agent yet.
 
 ### 10.4 Stage 3 status (4 October 2026)

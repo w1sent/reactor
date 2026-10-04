@@ -572,7 +572,10 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   role — a node in the middle means "this relation is being discussed". Annotations are
   boxes with dashed lines to what they are about. Sources are not drawn; they are in the
   detail. Disputed is the warning colour; soft-deleted is hidden unless the eye is on.
-- **Layout.** Force-directed, reproducible. What already has a place keeps it: only new
+- **Layout.** Each connected group is laid out on its own (force-directed) and the groups are then
+  packed close together in rows, wider than tall, so that a node connected to nothing, or a
+  small cluster, sits beside the big one and not far off. A new node with no line goes in rows
+  below what is there. Force-directed, reproducible. What already has a place keeps it: only new
   nodes are placed, near what they connect to. A dragged node stays where it is put.
   *Auto-layout* in the toolbar arranges everything afresh and fits it into view, giving
   up the positions that were dragged.
@@ -616,9 +619,41 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   relation a person states is as traceable as one pulled from a table. Explanations are
   tooltips and (i) buttons (the one at the panel's top left lists the gestures), per the
   design rule in `hints.rs`.
+- **Ways to arrange it.** A menu in the panel's header (the current way is its label, marked in
+  the list) picks how the whole graph is arranged, and applies it at once; *auto-layout* in the
+  toolbar then repeats the chosen way. **Force-directed** is the default (above).
+  **Hierarchical** (Sugiyama-style): lines made to run one way (a cycle is broken once), nodes in
+  layers from the sources down, each layer ordered by sweeps to the average place of its
+  neighbours, and placed along the layer pulled towards them. **Circular / radial**: the
+  best-connected node in the middle, a ring for each step away from it, each node in a slice of
+  the circle as wide as the nodes under it need, a ring as far out as its crowding makes it.
+  **Orthogonal**: the hierarchical arrangement snapped onto a grid, and lines drawn as
+  right-angled connectors (out of the facing side, two corners, into the facing side; over the
+  top between two in a row). All of them lay each connected group out alone and pack the groups
+  close together, and are reproducible. They arrange everything afresh; what is added later is
+  placed beside what it connects to, as in the default. These three leave room for the widest
+  node (a note, 220 px) with 90 px between neighbours and between layers, 100 px between groups;
+  the default's tighter spacing is unchanged. The chosen way is kept while the window
+  is open, not stored. Hierarchical has no dummy nodes on lines that skip a layer, so such a
+  line is straight across the layers between.
+- **Positions are kept.** Where the nodes are is stored with the case (`graph_layout`: no versions,
+  no change log, carried by a case export): a node dragged, added or placed keeps its place
+  across restarts and across sessions; *auto-layout* gives them all up and stores the new ones.
+- **Filtering.** A box in the panel's top left filters the nodes as typed: words that must all be
+  in the label or type; `type:net.` (a type that starts so, or has a dotted part that does),
+  `tag:phase.`, `by:agent` / `by:person`, `kind:entity|claim|note`, `status:conflicting`;
+  a leading `-` negates. Lines are drawn between nodes that are shown, and the count reads
+  "N of M nodes". The syntax is behind an (i).
+- **Tag boxes.** The *tags* toolbar button draws a box, in the tag's own colour, around the shown
+  nodes that share a tag (two or more; the twelve most shared), behind the nodes. They are
+  bounding boxes, and overlap where a node has several tags; zoomed out the label is the tooltip.
+- **Finding the source.** *Source* in the detail box opens where the selected claim came from:
+  a page in the browser, a file of the case in its viewer (at the line, if the locator is
+  `line=42`, `L42` or `:42`), or the session it was said in (`session:<id>#entry=<n>`, which opens
+  that session's transcript). An entity has none of its own, and says so.
 - **Refreshing.** After every tool call and every turn, and with the toolbar button.
-- *Not built yet:* group outlines for tags and clusters, progressive disclosure, the type
-  and tag filters, storing positions, adding an annotation other than a note by hand.
+- *Not built yet:* hulls for clusters (the tag boxes are bounding boxes), progressive disclosure,
+  adding an annotation other than a note by hand.
 
 ### 6.4 The documents panel
 

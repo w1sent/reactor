@@ -576,3 +576,32 @@ fn the_vocabulary_is_seeded_as_rows() {
         query::entity_id(db, "cloud.bucket", "logs-eu", None).unwrap()
     );
 }
+
+#[test]
+fn node_positions_are_kept_with_the_case_and_replaced_by_the_next() {
+    use reactor_db::graph::layout;
+    let dir = tempfile::tempdir().unwrap();
+    let case = reactor_db::Case::create(dir.path(), None).unwrap();
+    let db = case.db();
+    assert!(layout::load(db).unwrap().is_empty());
+
+    layout::save(db, &[("a".into(), (1.5, -2.0)), ("b".into(), (10.0, 20.0))]).unwrap();
+    // A later position replaces the earlier; one that cannot be drawn is not stored.
+    layout::save(
+        db,
+        &[("a".into(), (3.0, 4.0)), ("c".into(), (f32::NAN, 0.0))],
+    )
+    .unwrap();
+    let got = layout::load(db).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got["a"], (3.0, 4.0));
+    assert_eq!(got["b"], (10.0, 20.0));
+
+    // They are there when the case is opened again, and are not part of the graph's history.
+    let root = case.root().to_path_buf();
+    drop(case);
+    let again = reactor_db::Case::open(&root).unwrap();
+    assert_eq!(layout::load(again.db()).unwrap().len(), 2);
+    layout::clear(again.db()).unwrap();
+    assert!(layout::load(again.db()).unwrap().is_empty());
+}

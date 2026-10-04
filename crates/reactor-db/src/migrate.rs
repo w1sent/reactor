@@ -360,6 +360,16 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX embedding_status_model ON embedding_status(model_id);
     "#,
+    // 4: where the graph's nodes were left in the drawn view. Presentation, not analysis: no
+    // versions, no change log, and a node that is gone leaves its row behind harmlessly.
+    r#"
+    CREATE TABLE graph_layout (
+      element_id TEXT PRIMARY KEY,
+      x REAL NOT NULL,
+      y REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this binary writes.

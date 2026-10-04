@@ -17,6 +17,7 @@
 
 pub mod edit;
 pub mod identity;
+pub mod layout;
 pub mod pull;
 pub mod query;
 pub mod revert;

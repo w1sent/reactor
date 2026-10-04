@@ -54,6 +54,13 @@ pub struct GraphSetLayout {
     pub kind: String,
 }
 
+/// How much of the graph to draw: `auto`, `basic`, `analysis` or `full`.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct GraphSetDetail {
+    pub level: String,
+}
+
 /// A hypothesis status picked from the detail box's menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
@@ -137,10 +144,12 @@ pub struct GraphPanel {
     tag: Entity<InputState>,
     /// Which nodes to show, as typed (`crate::graph::model::parse_filter`).
     filter: Entity<InputState>,
-    /// Draw a box around the nodes that share a tag.
+    /// Draw an outline round the nodes that share a tag.
     show_groups: bool,
     /// How the graph is arranged: what *auto-layout* does, and how lines are drawn.
     layout_kind: LayoutKind,
+    /// How much is drawn, if picked; else it follows the zoom.
+    detail_pick: Option<model::Detail>,
     /// The form that is open, and its fields.
     form: Option<Form>,
     entity_type: Entity<InputState>,
@@ -318,6 +327,7 @@ impl GraphPanel {
             filter,
             show_groups: false,
             layout_kind: LayoutKind::default(),
+            detail_pick: None,
             form: None,
             entity_type,
             entity_value,
@@ -1040,9 +1050,9 @@ impl Panel for GraphPanel {
                 .ghost()
                 .small()
                 .tooltip(if self.show_groups {
-                    "Boxes around the nodes that share a tag are shown — click to hide them"
+                    "Outlines round the nodes that share a tag are shown — click to hide them"
                 } else {
-                    "Draw a box around the nodes that share a tag"
+                    "Draw an outline round the nodes that share a tag"
                 })
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.show_groups = !this.show_groups;
@@ -1071,6 +1081,13 @@ impl Panel for GraphPanel {
 }
 
 /// One line, ready to paint: both ends in the drawing area's own coordinates.
+/// A group's outline, ready to paint: its corners in the drawing area's coordinates.
+struct Hull {
+    points: Vec<(f32, f32)>,
+    colour: Hsla,
+    width: f32,
+}
+
 struct Stroke {
     from: (f32, f32),
     /// Corners between `from` and `to`, for a right-angled connector; none for a straight line.
@@ -1089,7 +1106,17 @@ impl Render for GraphPanel {
         let theme = cx.theme().clone();
         let small = theme.font_size * 0.85;
 
+        // How much is drawn: the level the person picked, or the one the zoom gives. What a
+        // level leaves out is not hidden from the filter, the detail box or the tools: it is
+        // only not drawn.
+        let level = self
+            .detail_pick
+            .unwrap_or_else(|| model::Detail::for_zoom(self.zoom));
+        let disclosure = model::disclose(&self.model, level);
+        let plain = disclosure.plain;
         let status_colour = |status: &str, normal: Hsla| match status {
+            // The plain picture has no status: it is how things are related, nothing more.
+            "conflicting" if plain => normal,
             "conflicting" => theme.warning,
             "soft-deleted" => theme.muted_foreground.opacity(0.5),
             _ => normal,
@@ -1101,7 +1128,12 @@ impl Render for GraphPanel {
         // Everything drawn scales with the zoom, so zooming out brings things closer
         // together *and* makes them smaller: that is what makes a bigger picture.
         let filter = model::parse_filter(self.filter.read(cx).value().as_ref());
-        let shown = model::visible(&self.model, &filter);
+        // Shown: what the filter lets through and the level draws.
+        let shown: Vec<bool> = model::visible(&self.model, &filter)
+            .into_iter()
+            .zip(&disclosure.shown)
+            .map(|(a, b)| a && *b)
+            .collect();
         let z = self.zoom;
         let font = |factor: f32| theme.font_size * 0.85 * factor * z;
         let readable = f32::from(font(1.)) >= 6.;
@@ -1112,7 +1144,8 @@ impl Render for GraphPanel {
         // points to so an arrowhead is not hidden under the box.
         let mut strokes = Vec::with_capacity(self.model.lines.len());
         let mut labels = Vec::new();
-        for (i, line) in self.model.lines.iter().enumerate() {
+        // The model's lines, and those that stand in for what the level does not draw.
+        for (i, line) in self.model.lines.iter().chain(&disclosure.extra).enumerate() {
             // A line is drawn between two nodes that are shown.
             if !(shown[line.from] && shown[line.to]) {
                 continue;
@@ -1214,12 +1247,96 @@ impl Render for GraphPanel {
             });
         }
 
+        // Hulls: an outline round the shown nodes that share a tag (two or more; the twelve
+        // most shared), painted under everything, in the tag's own colour. The tag's name
+        // sits above the highest point of it.
+        let mut hulls: Vec<Hull> = Vec::new();
+        let mut hull_labels = Vec::new();
+        if self.show_groups {
+            for g in model::tag_groups(&self.model, &self.positions, &shown, 12) {
+                // The same tag is the same colour, whichever other tags are on.
+                let hue = (g
+                    .tag
+                    .bytes()
+                    .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+                    % 360) as f32
+                    / 360.;
+                let colour = Hsla {
+                    h: hue,
+                    s: 0.55,
+                    l: 0.55,
+                    a: 1.,
+                };
+                // Round the boxes of the nodes (the widest a node is drawn, so none pokes
+                // out), standing well off them.
+                let outline: Vec<(f32, f32)> = model::padded_hull(&g.points, (110., 26.), 46.)
+                    .into_iter()
+                    .map(|p| self.to_view(p))
+                    .collect();
+                let Some(top) = outline.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1)) else {
+                    continue;
+                };
+                let label_h = 24. * z.max(0.7);
+                let label = div()
+                    .id(SharedString::from(format!("graph-group-{}", g.tag)))
+                    .absolute()
+                    .left(px(top.0 - 90.))
+                    .top(px(top.1 - label_h))
+                    .w(px(180.))
+                    .h(px(label_h))
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        div()
+                            .px_2()
+                            .rounded_sm()
+                            .bg(theme.background.opacity(0.85))
+                            .text_size(font(0.9))
+                            .text_color(colour)
+                            .whitespace_nowrap()
+                            .when(!readable, |d| d.invisible())
+                            .child(SharedString::from(format!("{} · {}", g.tag, g.members))),
+                    );
+                // Zoomed out the name is too small to read: the tooltip has it.
+                hull_labels.push(hints::tip(
+                    label,
+                    SharedString::from(format!("tag {} — {} nodes", g.tag, g.members)),
+                ));
+                hulls.push(Hull {
+                    points: outline,
+                    colour,
+                    width: (1.5 * z).max(1.),
+                });
+            }
+        }
+
         let cell = self.bounds.clone();
         let lines = canvas(
             move |bounds, _, _| cell.set(bounds),
             move |bounds, _, window, _| {
                 let at =
                     |p: (f32, f32)| point(bounds.origin.x + px(p.0), bounds.origin.y + px(p.1));
+                for h in &hulls {
+                    if h.points.len() < 3 {
+                        continue;
+                    }
+                    let corners: Vec<_> = h.points.iter().map(|p| at(*p)).collect();
+                    let mut fill = PathBuilder::fill();
+                    fill.add_polygon(&corners, true);
+                    if let Ok(fill) = fill.build() {
+                        window.paint_path(fill, h.colour.opacity(0.08));
+                    }
+                    let mut edge = PathBuilder::stroke(px(h.width));
+                    edge.move_to(corners[0]);
+                    for c in &corners[1..] {
+                        edge.line_to(*c);
+                    }
+                    edge.line_to(corners[0]);
+                    if let Ok(edge) = edge.build() {
+                        window.paint_path(edge, h.colour.opacity(0.55));
+                    }
+                }
                 for s in &strokes {
                     let mut path = PathBuilder::stroke(px(s.width));
                     if s.dashed {
@@ -1332,14 +1449,19 @@ impl Render for GraphPanel {
                                     .text_size(font(0.85))
                                     .text_color(theme.info)
                                     .whitespace_nowrap()
-                                    .child(format!(
-                                        "{sub}{}{}",
-                                        node.confidence
-                                            .as_deref()
-                                            .map(|c| format!(" · {c}"))
-                                            .unwrap_or_default(),
-                                        if node.by_agent { " · agent" } else { "" }
-                                    )),
+                                    .child(if plain {
+                                        // No confidence, no author: the plain picture.
+                                        sub.clone()
+                                    } else {
+                                        format!(
+                                            "{sub}{}{}",
+                                            node.confidence
+                                                .as_deref()
+                                                .map(|c| format!(" · {c}"))
+                                                .unwrap_or_default(),
+                                            if node.by_agent { " · agent" } else { "" }
+                                        )
+                                    }),
                             )
                         })
                         .child(
@@ -1586,69 +1708,12 @@ impl Render for GraphPanel {
             None => (8., 60.),
         };
 
-        // A box for each tag that shown nodes share, behind everything.
-        let group_boxes: Vec<_> = if self.show_groups {
-            model::tag_groups(&self.model, &self.positions, &shown, 12)
-                .into_iter()
-                .map(|g| {
-                    // The same tag is the same colour, whichever other tags are on.
-                    let hue = (g
-                        .tag
-                        .bytes()
-                        .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
-                        % 360) as f32
-                        / 360.;
-                    let colour = Hsla {
-                        h: hue,
-                        s: 0.55,
-                        l: 0.55,
-                        a: 1.,
-                    };
-                    // Around the nodes, not just their centres: a node's own size, and room
-                    // all round. The top has the tag's name on a band of its own, above
-                    // the highest node.
-                    let (side, top, bottom) = (150., 80., 55.);
-                    let lo = self.to_view((g.min.0 - side, g.min.1 - top));
-                    let (w, h) = (
-                        (g.max.0 - g.min.0 + 2. * side) * z,
-                        (g.max.1 - g.min.1 + top + bottom) * z,
-                    );
-                    let box_ = div()
-                        .id(SharedString::from(format!("graph-group-{}", g.tag)))
-                        .absolute()
-                        .left(px(lo.0))
-                        .top(px(lo.1))
-                        .w(px(w))
-                        .h(px(h))
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(colour.opacity(0.5))
-                        .bg(colour.opacity(0.07))
-                        .child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .text_size(font(0.9))
-                                .text_color(colour)
-                                .when(!readable, |d| d.invisible())
-                                .child(SharedString::from(format!("{} · {}", g.tag, g.members))),
-                        );
-                    // Zoomed out, the label is too small to read: the tooltip has it.
-                    hints::tip(
-                        box_,
-                        SharedString::from(format!("tag {} — {} nodes", g.tag, g.members)),
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         let empty = self.model.nodes.is_empty();
         let nodes_shown = shown.iter().filter(|s| **s).count();
         let counts = format!(
             "{}{} node{} · {} line{}{}",
-            if filter.is_empty() {
+            // "N of M" whenever something is left out: by the filter or by the level.
+            if nodes_shown == self.model.nodes.len() {
                 String::new()
             } else {
                 format!("{nodes_shown} of ")
@@ -2038,12 +2103,21 @@ impl Render for GraphPanel {
             .on_action(cx.listener(|this, a: &GraphSetHypothesis, _, cx| {
                 this.set_hypothesis(&a.status, cx)
             }))
+            .on_action(cx.listener(|this, a: &GraphSetDetail, _, cx| {
+                this.detail_pick = match a.level.as_str() {
+                    "basic" => Some(model::Detail::Basic),
+                    "analysis" => Some(model::Detail::Analysis),
+                    "full" => Some(model::Detail::Full),
+                    _ => None,
+                };
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, a: &GraphSetLayout, _, cx| {
                 if let Some(kind) = LayoutKind::parse(&a.kind) {
                     this.set_layout(kind, cx);
                 }
             }))
-            .children(group_boxes)
+            .children(hull_labels)
             .child(lines)
             .children(labels)
             .children(nodes)
@@ -2109,6 +2183,49 @@ impl Render for GraphPanel {
                             SharedString::from(format!(
                                 "How the graph is arranged. {}. Picking one arranges the whole graph afresh",
                                 current.tip()
+                            )),
+                        )
+                    })
+                    .child({
+                        // How much is drawn: a level, or "auto", which follows the zoom.
+                        let (focus, pick, now) = (self.focus.clone(), self.detail_pick, level);
+                        let label = match pick {
+                            Some(level) => format!("Detail: {}", level.label()),
+                            None => format!("Detail: auto · {}", now.label().to_lowercase()),
+                        };
+                        hints::tip(
+                            div().id("graph-detail-holder").child(
+                                Button::new("graph-detail")
+                                    .small()
+                                    .icon(IconName::Layers)
+                                    .label(label)
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        menu = menu.action_context(focus.clone());
+                                        let mark = |on: bool| if on { "● " } else { "   " };
+                                        menu = menu.menu(
+                                            format!("{}Auto (by zoom)", mark(pick.is_none())),
+                                            Box::new(GraphSetDetail { level: "auto".into() }),
+                                        );
+                                        for level in [
+                                            model::Detail::Basic,
+                                            model::Detail::Analysis,
+                                            model::Detail::Full,
+                                        ] {
+                                            menu = menu.menu(
+                                                format!("{}{}", mark(pick == Some(level)), level.label()),
+                                                Box::new(GraphSetDetail {
+                                                    level: level.label().to_lowercase(),
+                                                }),
+                                            );
+                                        }
+                                        menu
+                                    }),
+                            ),
+                            SharedString::from(format!(
+                                "How much is drawn. Basic: {}. Analysis: {}. Full: {}. Auto follows the zoom: zoomed out the overview, zoomed in the detail",
+                                model::Detail::Basic.tip().to_lowercase(),
+                                model::Detail::Analysis.tip().to_lowercase(),
+                                model::Detail::Full.tip().to_lowercase(),
                             )),
                         )
                     })

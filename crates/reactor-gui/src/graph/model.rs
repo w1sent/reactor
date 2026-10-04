@@ -625,6 +625,141 @@ pub fn visible(model: &Model, filter: &Filter) -> Vec<bool> {
     model.nodes.iter().map(|n| filter.matches(n)).collect()
 }
 
+// -- progressive disclosure --------------------------------------------------------------------
+
+/// How much of the graph is drawn: the concept's three levels. Each has everything of the one
+/// before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Detail {
+    /// Entities, labeled lines and notes.
+    Basic,
+    /// And what an assessment adds: status and confidence, hypotheses and what supports or
+    /// refutes them.
+    Analysis,
+    /// And the structure itself: claims as nodes with a line for each role.
+    Full,
+}
+
+impl Detail {
+    pub fn label(self) -> &'static str {
+        match self {
+            Detail::Basic => "Basic",
+            Detail::Analysis => "Analysis",
+            Detail::Full => "Full",
+        }
+    }
+
+    /// What it shows, in a sentence (a tooltip).
+    pub fn tip(self) -> &'static str {
+        match self {
+            Detail::Basic => "Entities, labeled lines and notes",
+            Detail::Analysis => {
+                "And status, confidence, hypotheses and what supports or refutes them"
+            }
+            Detail::Full => "And claims as nodes, with a line for each role",
+        }
+    }
+
+    /// The level that follows from how far the view is zoomed: out, the overview; in, the
+    /// detail. (Used when the person has not picked one.)
+    pub fn for_zoom(zoom: f32) -> Detail {
+        if zoom < 0.45 {
+            Detail::Basic
+        } else if zoom < 0.9 {
+            Detail::Analysis
+        } else {
+            Detail::Full
+        }
+    }
+}
+
+/// The lowest level at which a node is drawn.
+fn level_of(node: &Node) -> Detail {
+    match node.kind {
+        NodeKind::Entity => Detail::Basic,
+        NodeKind::Annotation if node.type_ == "analysis.note" => Detail::Basic,
+        NodeKind::Annotation => Detail::Analysis,
+        NodeKind::Claim => Detail::Full,
+    }
+}
+
+/// What a level draws of a model.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Disclosure {
+    /// Which nodes are drawn.
+    pub shown: Vec<bool>,
+    /// Lines to draw that the model does not have, standing in for what is not drawn: a claim
+    /// that is a node only because something is said about it becomes the plain line between
+    /// the two things it relates, and a note about it attaches to one of them.
+    pub extra: Vec<Line>,
+    /// Status and confidence are not drawn: the level is the plain picture.
+    pub plain: bool,
+}
+
+/// What `detail` draws of `model`. A claim that is not drawn as a node still shows as a line if
+/// it relates exactly two shown things, so that hiding detail never hides *that two things are
+/// related*; one with more participants is detail, and goes with the nodes.
+pub fn disclose(model: &Model, detail: Detail) -> Disclosure {
+    let shown: Vec<bool> = model.nodes.iter().map(|n| level_of(n) <= detail).collect();
+    let mut extra = Vec::new();
+    // The participants of each claim that is not drawn.
+    let mut standing_in: HashMap<usize, (usize, usize)> = HashMap::new();
+    for (i, node) in model.nodes.iter().enumerate() {
+        if shown[i] || node.kind != NodeKind::Claim {
+            continue;
+        }
+        let roles: Vec<&Line> = model
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Role && l.from == i)
+            .collect();
+        let mut ends: Vec<(usize, &str)> = roles.iter().map(|l| (l.to, l.label.as_str())).collect();
+        ends.sort_unstable();
+        ends.dedup_by_key(|e| e.0);
+        let [(a, role_a), (b, role_b)] = ends.as_slice() else {
+            continue;
+        };
+        if !(shown[*a] && shown[*b]) {
+            continue;
+        }
+        // Drawn from the one whose role says so (`src`, `actor`, …), as a collapsed claim is.
+        let from_a = FROM_ROLES.contains(role_a);
+        let from_b = FROM_ROLES.contains(role_b);
+        let (from, to, directed) = match (from_a, from_b) {
+            (true, false) => (*a, *b, true),
+            (false, true) => (*b, *a, true),
+            _ => (*a, *b, false),
+        };
+        standing_in.insert(i, (from, to));
+        extra.push(Line {
+            from,
+            to,
+            label: node.type_.clone(),
+            kind: LineKind::Relation { directed },
+            claims: vec![node.id.clone()],
+            status: node.status.clone(),
+        });
+    }
+    // A note about such a claim attaches to the thing the line starts from.
+    for l in &model.lines {
+        if l.kind == LineKind::Annotation
+            && shown[l.from]
+            && !shown[l.to]
+            && let Some(&(from, _)) = standing_in.get(&l.to)
+        {
+            extra.push(Line {
+                to: from,
+                ..l.clone()
+            });
+        }
+    }
+    Disclosure {
+        shown,
+        extra,
+        plain: detail == Detail::Basic,
+    }
+}
+
 // -- groups ------------------------------------------------------------------------------------
 
 /// The nodes that share a tag, as the box they sit in.
@@ -635,9 +770,11 @@ pub struct Group {
     /// The corners of the box around the members' centres, in world units.
     pub min: (f32, f32),
     pub max: (f32, f32),
+    /// The members' centres, for the outline that wraps them ([`padded_hull`]).
+    pub points: Vec<(f32, f32)>,
 }
 
-/// A box for each tag that two or more of the shown nodes have, the most shared first, at
+/// A group for each tag that two or more of the shown nodes have, the most shared first, at
 /// most `limit` of them. Boxes may overlap: a node with several tags is in several.
 pub fn tag_groups(
     model: &Model,
@@ -671,12 +808,74 @@ pub fn tag_groups(
                 members: points.len(),
                 min,
                 max,
+                points,
             }
         })
         .collect();
     groups.sort_by(|a, b| b.members.cmp(&a.members).then(a.tag.cmp(&b.tag)));
     groups.truncate(limit);
     groups
+}
+
+/// The convex hull of some points: the corners of the smallest convex shape that holds them,
+/// in order round it (Andrew's monotone chain). Fewer than three distinct points are
+/// returned as they are.
+pub fn convex_hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut pts: Vec<(f32, f32)> = points
+        .iter()
+        .copied()
+        .filter(|p| p.0.is_finite() && p.1.is_finite())
+        .collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    pts.dedup();
+    if pts.len() < 3 {
+        return pts;
+    }
+    let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut lower: Vec<(f32, f32)> = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<(f32, f32)> = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// The outline of a group: the convex hull of the boxes of its nodes (each `half` the size
+/// either way from its centre), standing `pad` off them all round, with rounded corners.
+/// Every corner of every box gets a quarter circle of radius `pad`; the hull of those is the
+/// outline, and it is smooth where a plain hull of the centres would have points.
+pub fn padded_hull(centres: &[(f32, f32)], half: (f32, f32), pad: f32) -> Vec<(f32, f32)> {
+    const STEPS: usize = 6;
+    let mut points = Vec::with_capacity(centres.len() * 4 * (STEPS + 1));
+    for &(cx, cy) in centres {
+        for (sx, sy, from_angle) in [
+            (1.0f32, 1.0f32, 0.0f32),
+            (-1.0, 1.0, 90.0),
+            (-1.0, -1.0, 180.0),
+            (1.0, -1.0, 270.0),
+        ] {
+            let corner = (cx + sx * half.0, cy + sy * half.1);
+            for k in 0..=STEPS {
+                let a = (from_angle + 90.0 * k as f32 / STEPS as f32).to_radians();
+                points.push((corner.0 + pad * a.cos(), corner.1 + pad * a.sin()));
+            }
+        }
+    }
+    convex_hull(&points)
 }
 
 // -- sources -----------------------------------------------------------------------------------
@@ -1322,5 +1521,242 @@ mod tests {
             new.0 >= lo.0 - NODE_W && new.0 <= hi.0 + NODE_W,
             "under it, not off to a side"
         );
+    }
+
+    fn role(from: usize, to: usize, label: &str) -> Line {
+        Line {
+            from,
+            to,
+            label: label.into(),
+            kind: LineKind::Role,
+            claims: Vec::new(),
+            status: "active".into(),
+        }
+    }
+
+    /// Entities 0 (ip), 1 (domain), 2 (host); a claim 3 relating 0 and 1 that a hypothesis (5)
+    /// and a note (6) are about; a claim 4 with three participants; a note 7 on entity 2.
+    fn discussed() -> Model {
+        let mut m = bare(3, &[]);
+        let mut push = |kind, type_: &str, label: &str, id: &str| {
+            m.nodes.push(Node {
+                id: id.into(),
+                kind,
+                type_: type_.into(),
+                label: label.into(),
+                status: "active".into(),
+                confidence: None,
+                by_agent: false,
+                tags: Vec::new(),
+            });
+        };
+        push(NodeKind::Claim, "net.resolution", "net.resolution", "c3");
+        push(NodeKind::Claim, "net.connection", "net.connection", "c4");
+        push(
+            NodeKind::Annotation,
+            "analysis.hypothesis",
+            "it is c2",
+            "h5",
+        );
+        push(NodeKind::Annotation, "analysis.note", "ask the admin", "n6");
+        push(
+            NodeKind::Annotation,
+            "analysis.note",
+            "a note on the host",
+            "n7",
+        );
+        m.lines = vec![
+            role(3, 0, "query"),
+            role(3, 1, "answer"),
+            role(4, 0, "member"),
+            role(4, 1, "member"),
+            role(4, 2, "member"),
+            Line {
+                from: 5,
+                to: 3,
+                kind: LineKind::Annotation,
+                label: "about".into(),
+                ..role(5, 3, "")
+            },
+            Line {
+                from: 6,
+                to: 3,
+                kind: LineKind::Annotation,
+                label: "about".into(),
+                ..role(6, 3, "")
+            },
+            Line {
+                from: 7,
+                to: 2,
+                kind: LineKind::Annotation,
+                label: "about".into(),
+                ..role(7, 2, "")
+            },
+        ];
+        m
+    }
+
+    #[test]
+    fn each_level_draws_what_the_one_before_it_does_and_more() {
+        let m = discussed();
+        let names = |d: &Disclosure| -> Vec<&str> {
+            m.nodes
+                .iter()
+                .zip(&d.shown)
+                .filter(|(_, s)| **s)
+                .map(|(n, _)| n.id.as_str())
+                .collect()
+        };
+        let basic = disclose(&m, Detail::Basic);
+        assert_eq!(
+            names(&basic),
+            ["n0", "n1", "n2", "n6", "n7"],
+            "entities and notes"
+        );
+        assert!(basic.plain);
+        let analysis = disclose(&m, Detail::Analysis);
+        assert_eq!(
+            names(&analysis),
+            ["n0", "n1", "n2", "h5", "n6", "n7"],
+            "and the hypothesis"
+        );
+        assert!(!analysis.plain);
+        let full = disclose(&m, Detail::Full);
+        assert_eq!(full.shown, vec![true; 8]);
+        assert!(full.extra.is_empty(), "everything is drawn as it is");
+        assert!(Detail::Basic < Detail::Analysis && Detail::Analysis < Detail::Full);
+    }
+
+    #[test]
+    fn a_claim_that_is_not_drawn_still_shows_that_its_two_things_are_related() {
+        let m = discussed();
+        for level in [Detail::Basic, Detail::Analysis] {
+            let d = disclose(&m, level);
+            // The relation is a line between the two entities, from the one whose role says so,
+            // standing for the claim, so that clicking it selects the claim.
+            let rel = d
+                .extra
+                .iter()
+                .find(|l| matches!(l.kind, LineKind::Relation { .. }))
+                .unwrap_or_else(|| panic!("{level:?}: no line for the relation"));
+            assert_eq!((rel.from, rel.to), (0, 1), "query to answer");
+            assert_eq!(rel.kind, LineKind::Relation { directed: true });
+            assert_eq!(rel.label, "net.resolution");
+            assert_eq!(rel.claims, ["c3"]);
+            // Only the binary one: the claim with three participants is detail.
+            assert_eq!(
+                d.extra
+                    .iter()
+                    .filter(|l| matches!(l.kind, LineKind::Relation { .. }))
+                    .count(),
+                1,
+                "{level:?}"
+            );
+        }
+        // A note about that claim is attached to where the line starts, and so is a hypothesis
+        // once it is drawn.
+        let basic = disclose(&m, Detail::Basic);
+        let notes: Vec<(usize, usize)> = basic
+            .extra
+            .iter()
+            .filter(|l| l.kind == LineKind::Annotation)
+            .map(|l| (l.from, l.to))
+            .collect();
+        assert_eq!(notes, [(6, 0)]);
+        let analysis = disclose(&m, Detail::Analysis);
+        let mut got: Vec<(usize, usize)> = analysis
+            .extra
+            .iter()
+            .filter(|l| l.kind == LineKind::Annotation)
+            .map(|l| (l.from, l.to))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, [(5, 0), (6, 0)]);
+        // Nothing stands in once the claim is drawn.
+        assert!(disclose(&m, Detail::Full).extra.is_empty());
+    }
+
+    #[test]
+    fn the_level_follows_the_zoom_when_none_is_picked() {
+        assert_eq!(Detail::for_zoom(0.1), Detail::Basic);
+        assert_eq!(Detail::for_zoom(0.6), Detail::Analysis);
+        assert_eq!(Detail::for_zoom(1.0), Detail::Full);
+        assert_eq!(Detail::for_zoom(3.0), Detail::Full);
+    }
+
+    #[test]
+    fn a_hull_is_the_corners_of_the_smallest_convex_shape_round_the_points() {
+        let square = [
+            (0., 0.),
+            (10., 0.),
+            (10., 10.),
+            (0., 10.),
+            (5., 5.),
+            (5., 0.),
+        ];
+        let hull = convex_hull(&square);
+        assert_eq!(hull.len(), 4, "{hull:?}");
+        for corner in [(0., 0.), (10., 0.), (10., 10.), (0., 10.)] {
+            assert!(hull.contains(&corner), "{corner:?} in {hull:?}");
+        }
+        // Fewer than three, or all in a line, make no area.
+        assert_eq!(convex_hull(&[(1., 1.)]).len(), 1);
+        assert_eq!(convex_hull(&[(0., 0.), (5., 0.)]).len(), 2);
+        assert_eq!(convex_hull(&[(0., 0.), (5., 0.), (10., 0.)]).len(), 2);
+        assert!(convex_hull(&[]).is_empty());
+        assert_eq!(
+            convex_hull(&[(0., 0.), (f32::NAN, 1.)]).len(),
+            1,
+            "what cannot be drawn is left out"
+        );
+    }
+
+    #[test]
+    fn a_padded_hull_is_convex_and_stands_off_every_node_by_the_padding() {
+        let centres = [(0., 0.), (300., 40.), (120., 200.), (150., 90.)];
+        let half = (110., 24.);
+        let pad = 40.;
+        let hull = padded_hull(&centres, half, pad);
+        assert!(hull.len() > 8, "smooth, not a box: {} corners", hull.len());
+        // Convex: the turns are all the same way.
+        let n = hull.len();
+        let turns: Vec<f32> = (0..n)
+            .map(|i| {
+                let (a, b, c) = (hull[i], hull[(i + 1) % n], hull[(i + 2) % n]);
+                (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0)
+            })
+            .collect();
+        assert!(
+            turns.iter().all(|t| *t > -1e-3) || turns.iter().all(|t| *t < 1e-3),
+            "not convex"
+        );
+        // Every corner of every node's box is inside, with the padding to spare: the distance
+        // from it to the nearest edge of the hull is at least `pad` (less a little for the
+        // straight edges that stand in for the arc between samples).
+        let inside_by = |p: (f32, f32)| {
+            (0..n)
+                .map(|i| {
+                    let (a, b) = (hull[i], hull[(i + 1) % n]);
+                    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                    let len = dx.hypot(dy).max(1e-6);
+                    // Signed distance to the edge's line, positive on the inside (the hull
+                    // runs one way round).
+                    ((p.0 - a.0) * dy - (p.1 - a.1) * dx) / len
+                })
+                .fold(f32::MAX, |m, d| m.min(d.abs()))
+        };
+        for &(cx, cy) in &centres {
+            for (sx, sy) in [(1., 1.), (-1., 1.), (-1., -1.), (1., -1.)] {
+                let corner = (cx + sx * half.0, cy + sy * half.1);
+                assert!(
+                    inside_by(corner) >= pad * 0.97 - 1.0,
+                    "{corner:?}: {}",
+                    inside_by(corner)
+                );
+            }
+        }
+        // One node still has an outline round it.
+        assert!(padded_hull(&[(0., 0.)], half, pad).len() > 8);
+        assert!(padded_hull(&[], half, pad).is_empty());
     }
 }

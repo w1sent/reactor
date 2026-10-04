@@ -639,20 +639,38 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
 - **Positions are kept.** Where the nodes are is stored with the case (`graph_layout`: no versions,
   no change log, carried by a case export): a node dragged, added or placed keeps its place
   across restarts and across sessions; *auto-layout* gives them all up and stores the new ones.
+- **How much is drawn (progressive disclosure).** A *Detail* menu in the panel's header picks one
+  of the concept's three levels, each with all of the one before it. **Basic**: entities, labeled
+  lines and notes, with no status or confidence (the plain picture). **Analysis**: and status
+  (disputed in the warning colour), confidence and who wrote it, hypotheses and what supports or
+  refutes them. **Full**: and claims as nodes with a line for each role. **Auto** (the default)
+  follows the zoom: below 45 % Basic, below 90 % Analysis, else Full, so a large graph fitted
+  into the view is its overview and zooming in brings the detail. What a level leaves out is
+  only not drawn — the filter, the detail box and the agent still have it — and the count reads
+  "N of M nodes". A claim that is a node only because something is said about it still shows
+  as the plain line between the two things it relates, standing for the claim (clicking it
+  selects the claim), so that less detail never hides *that two things are related*; a note
+  or hypothesis about it attaches to the end the line starts from; a claim with more than two
+  participants is detail and goes with its node. Sources are not drawn at any level.
 - **Filtering.** A box in the panel's top left filters the nodes as typed: words that must all be
   in the label or type; `type:net.` (a type that starts so, or has a dotted part that does),
   `tag:phase.`, `by:agent` / `by:person`, `kind:entity|claim|note`, `status:conflicting`;
   a leading `-` negates. Lines are drawn between nodes that are shown, and the count reads
   "N of M nodes". The syntax is behind an (i).
-- **Tag boxes.** The *tags* toolbar button draws a box, in the tag's own colour, around the shown
-  nodes that share a tag (two or more; the twelve most shared), behind the nodes. They are
-  bounding boxes, and overlap where a node has several tags; zoomed out the label is the tooltip.
+- **Tag hulls.** The *tags* toolbar button draws an outline, in the tag's own colour, round the shown
+  nodes that share a tag (two or more; the twelve most shared), under the nodes, with the tag's
+  name and count above its highest point. The outline is the convex hull of the nodes' boxes
+  standing 46 px off them, with rounded corners (`model::padded_hull`): it follows the shape of
+  the group, a capsule for two, and does not take in the empty corners a box would. Outlines of
+  different tags overlap where a node has several tags. Zoomed out the name is the tooltip. The
+  hull of a group is convex, so it can still cover a node that is not in the group; bubble sets,
+  which bend round such nodes, are not built.
 - **Finding the source.** *Source* in the detail box opens where the selected claim came from:
   a page in the browser, a file of the case in its viewer (at the line, if the locator is
   `line=42`, `L42` or `:42`), or the session it was said in (`session:<id>#entry=<n>`, which opens
   that session's transcript). An entity has none of its own, and says so.
 - **Refreshing.** After every tool call and every turn, and with the toolbar button.
-- *Not built yet:* hulls for clusters (the tag boxes are bounding boxes), progressive disclosure,
+- *Not built yet:* bubble sets (hulls that bend round other nodes), sources as icons,
   adding an annotation other than a note by hand.
 
 ### 6.4 The documents panel

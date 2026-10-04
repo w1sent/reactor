@@ -123,6 +123,7 @@ All decided on 3 October 2026.
 | `reactor-gui ingest <dir> <files, folders or URLs…>` | bulk-ingests context documents: convert, chunk, embed |
 | `reactor-gui case list` / `case export` / `case import` | case management |
 | `reactor-gui db selfcheck` | the build self-check of Stage 0 |
+| `reactor-gui docs eval <dir> <questions.json> [--k N] [--json]` | run the owner's questions (`{query, expect: [source, or {source, section, text}]}`) against the case's documents by keyword, by meaning and both; first, top-k and mean reciprocal rank for each, and a suggested meaning threshold read off the similarities of right and wrong results (`reactor_agent::eval`) |
 
 - The GUI offers the same bulk import interactively, with progress.
 - Subcommands are dispatched before the window stack starts, so they work over SSH and in scripts with no display.
@@ -593,7 +594,7 @@ Built in three increments: storage and rules, then pulling and the agent's tools
 
 - The owner looks at the panel; what is wrong with it is fixed.
 - Layouts to choose from (force-directed as the default, hierarchical, circular/radial, orthogonal with right-angled connectors; `graph/arrange.rs`, tested: every layout gives each node a place without overlap and the same every time) and layout of connected groups packed close together; the choice is not stored.
-- Done since (built blind, the pure parts tested): positions stored with the case (`graph::layout`, schema 4), a filter box (`parse_filter`: words, `type:`, `tag:`, `by:`, `kind:`, `status:`, `-` to negate), boxes around nodes sharing a tag (`tag_groups`), and *Source* on a claim (`query::sources_of`, `source_target`). Still to do in the view: hulls for clusters rather than boxes, progressive disclosure.
+- Done since (built blind, the pure parts tested): positions stored with the case (`graph::layout`, schema 4), a filter box (`parse_filter`: words, `type:`, `tag:`, `by:`, `kind:`, `status:`, `-` to negate), boxes around nodes sharing a tag (`tag_groups`), and *Source* on a claim (`query::sources_of`, `source_target`). Progressive disclosure is built: Basic, Analysis and Full, picked or following the zoom (`model::disclose`, tested), with a discussed binary claim standing in as a line at the lower two. Tag outlines are convex hulls round the nodes' boxes, rounded (`model::padded_hull`, tested). Still to do in the view: bubble sets, sources as icons.
 - A real session against a model: nothing here has been exercised by an actual agent yet.
 
 ### 10.4 Stage 3 status (4 October 2026)
@@ -633,7 +634,7 @@ At the owner's stated scale (at most about 100 documents of 100 to 1,000 pages, 
 
 **Not verified, or not built**
 
-- **No real embedding provider has been used.** The OpenAI and Gemini paths are the same generic code as Ollama's and were not run. Whether a real model's vectors give good results is untested: nothing here measures search *quality*; the plan's "labelled query set" is not built, and cannot be without the owner's real documents and questions.
+- **No real embedding provider has been used.** The OpenAI and Gemini paths are the same generic code as Ollama's and were not run. Whether a real model's vectors give good results is untested: nothing here measures search *quality*; the plan's "labelled query set" cannot be written without the owner's real documents and questions, but the harness that scores one is built (`reactor-gui docs eval`, tested; run on this repository's own documents it scores keyword search at 3 of 6 questions first). Give it questions to measure a real model.
 - **The window controls** (`/import`, `/embedding`, the menu item, the status line) compile and are covered by backend tests, and nobody has seen them.
 - **Real documents.** Every converter was tested on a fixture built from its format's structure, not on the messy files people have. PDF is the likeliest to disappoint: `pdf-extract` handles text PDFs and loses layout (columns, tables); there is no OCR.
 - **A local model in process, a code-specific model and a reranker** are not built, as decided.

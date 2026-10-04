@@ -813,3 +813,57 @@ async fn the_documents_switch_withdraws_the_search_from_the_agent_and_refuses_it
         out.text
     );
 }
+
+fn questions() -> Vec<reactor_agent::eval::Question> {
+    serde_json::from_value(json!([
+        { "query": "beacons every 47 seconds", "expect": [{ "source": "emotet", "section": "Network" }] },
+        { "query": "decrypt_config", "expect": ["vendor.example/advisory"] },
+        { "query": "zzzqqq nothing like it", "expect": ["emotet"] }
+    ]))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn the_questions_are_run_in_each_way_and_scored_and_meaning_is_skipped_without_vectors() {
+    let e: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new("ollama/test", 128));
+    let r = rig(Some(e.clone()));
+    corpus_of(&r.case());
+
+    // No vectors yet: keyword only, and it says why meaning was not tried.
+    let report = reactor_agent::eval::run(&r.case(), Some(e.as_ref()), &questions(), 5)
+        .await
+        .unwrap();
+    assert_eq!(report.modes.len(), 1);
+    assert_eq!(report.modes[0].mode, "keyword");
+    assert!(report.meaning_skipped.is_some());
+    // Two answers found, the nonsense one missed.
+    assert_eq!(report.modes[0].ranks[0], Some(1));
+    assert_eq!(report.modes[0].ranks[1], Some(1));
+    assert_eq!(report.modes[0].ranks[2], None);
+
+    embed_all(&r.case(), e.as_ref()).await;
+    let report = reactor_agent::eval::run(&r.case(), Some(e.as_ref()), &questions(), 5)
+        .await
+        .unwrap();
+    let modes: Vec<&str> = report.modes.iter().map(|m| m.mode.as_str()).collect();
+    assert_eq!(modes, ["keyword", "meaning", "both"]);
+    assert!(report.meaning_skipped.is_none());
+    let meaning = &report.modes[1];
+    assert_eq!(meaning.questions, 3);
+    assert!(meaning.within_k >= 2, "{:?}", meaning.ranks);
+    // Similarities were read: right ones and wrong ones, so there is a threshold to suggest.
+    let c = report
+        .calibration
+        .clone()
+        .expect("both kinds of result were seen");
+    assert!(c.lowest_right > c.highest_wrong - 1.0 && c.best >= 0.0 && c.best <= 1.0);
+    let text = reactor_agent::eval::render(&report, &questions());
+    assert!(
+        text.contains("keyword") && text.contains("mean reciprocal rank"),
+        "{text}"
+    );
+    assert!(
+        text.contains("not found") && text.contains("zzzqqq"),
+        "{text}"
+    );
+}

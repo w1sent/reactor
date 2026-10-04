@@ -11,6 +11,7 @@ pub mod context;
 pub mod embed;
 pub mod entry;
 pub mod error;
+pub mod eval;
 pub mod history;
 pub mod inspect;
 pub mod llm;

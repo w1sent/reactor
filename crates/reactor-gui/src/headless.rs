@@ -39,6 +39,9 @@ const USAGE: &str = "usage:
                                                  two CSV tables, or the entity-to-entity projection
   reactor-gui graph import <dir> <bundle.json>   a STIX 2.1 bundle into the case's graph
   reactor-gui graph check <bundle.json>          structural problems in a STIX bundle
+  reactor-gui docs eval <dir> <questions.json> [--k N] [--json]
+                                                 how well the documents are searched: your questions, and
+                                                 where each answer is, run by keyword, by meaning and both
   reactor-gui db selfcheck                       does this build's SQLite have what it needs";
 
 /// Run `args` if they name a headless command; the exit code if they did.
@@ -59,6 +62,7 @@ pub fn dispatch_in(
         Some("ingest") => ingest(config_dir, &args[1..], out),
         Some("graph") => graph_command(&args[1..], out),
         Some("embed") => embed(config_dir, &args[1..], out),
+        Some("docs") => docs_command(config_dir, &args[1..], out),
         _ => return None,
     };
     Some(match run {
@@ -254,6 +258,77 @@ fn embed(config_dir: &Path, args: &[String], out: &mut dyn Write) -> Result<(), 
         [dir] => embed_case(config_dir, &Case::open(Path::new(dir))?, out),
         _ => Err(Failure::Usage),
     }
+}
+
+/// `docs eval <dir> <questions.json> [--k N] [--json]`: run a person's questions against the
+/// case's documents and say how the search did (`reactor_agent::eval`). Meaning is tried when
+/// a model is chosen and has made every vector; otherwise only keywords, and it says so.
+fn docs_command(config_dir: &Path, args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
+    let [verb, dir, file, rest @ ..] = args else {
+        return Err(Failure::Usage);
+    };
+    if verb != "eval" {
+        return Err(Failure::Usage);
+    }
+    let (mut k, mut json) = (10usize, false);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--k" => {
+                k = it
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .filter(|n| *n > 0)
+                    .ok_or(Failure::Usage)?
+            }
+            "--json" => json = true,
+            _ => return Err(Failure::Usage),
+        }
+    }
+    let case = Case::open(Path::new(dir))?;
+    let questions: Vec<reactor_agent::eval::Question> =
+        serde_json::from_str(&std::fs::read_to_string(file)?).map_err(|e| {
+            Failure::Error(format!(
+                "{file}: a list of {{\"query\": …, \"expect\": […]}} was expected: {e}"
+            ))
+        })?;
+    if questions.is_empty() {
+        return Err(Failure::Error(format!("{file}: no questions")));
+    }
+    if !corpus::has_documents(case.db())? {
+        return Err(Failure::Error("the case has no documents to search".into()));
+    }
+    let settings =
+        reactor_context::settings::Settings::load_from(&reactor_context::settings::Settings::path(
+            &reactor_core::Paths::new(config_dir, reactor_core::paths::Shipped::Embedded),
+        ));
+    let embedder = match &settings.embedding.model {
+        Some(spec) => {
+            Some(reactor_agent::embed::from_spec(spec).map_err(|e| Failure::Error(e.to_string()))?)
+        }
+        None => None,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime
+        .block_on(reactor_agent::eval::run(
+            &case,
+            embedder.as_deref(),
+            &questions,
+            k,
+        ))
+        .map_err(|e| Failure::Error(e.to_string()))?;
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| Failure::Error(e.to_string()))?
+        )?;
+    } else {
+        writeln!(out, "{}", reactor_agent::eval::render(&report, &questions))?;
+    }
+    Ok(())
 }
 
 /// `ingest <dir> <sources…>`: into the case in `dir`, which must already be one.
@@ -1070,5 +1145,61 @@ mod tests {
         );
         assert_eq!(code, Some(1));
         assert!(text.contains("bundle"), "{text}");
+    }
+
+    #[test]
+    fn questions_about_the_documents_are_scored_headless() {
+        let (config, work, docs) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let dir = work.path().to_str().unwrap();
+        std::fs::write(
+            docs.path().join("emotet.md"),
+            "# Emotet\n\nThe loader survives reboots by writing a run key under HKCU.",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.path().join("other.md"),
+            "# Other\n\nNothing about that here.",
+        )
+        .unwrap();
+        run_in(config.path(), &["case", "create", dir]);
+        let src = docs.path().to_str().unwrap();
+        run_in(config.path(), &["ingest", dir, src]);
+        let file = docs.path().join("questions.json");
+        std::fs::write(
+            &file,
+            r#"[
+              {"query": "run key HKCU", "expect": ["emotet"]},
+              {"query": "unobtainium", "expect": ["emotet"]}
+            ]"#,
+        )
+        .unwrap();
+        let f = file.to_str().unwrap();
+
+        // No model is chosen: keyword only, said so, one found and one missed.
+        let (code, out, err) = run_in(config.path(), &["docs", "eval", dir, f]);
+        assert_eq!(code, Some(0), "{err}");
+        assert!(out.contains("keyword  first 1/2"), "{out}");
+        assert!(out.contains("meaning was not tried"), "{out}");
+        assert!(out.contains("not found (keyword): unobtainium"), "{out}");
+
+        let (code, out, _) = run_in(
+            config.path(),
+            &["docs", "eval", dir, f, "--json", "--k", "3"],
+        );
+        assert_eq!(code, Some(0));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["k"], 3);
+        assert_eq!(v["modes"][0]["first"], 1);
+
+        // What is wrong with the call is said, not guessed at.
+        assert_eq!(run_in(config.path(), &["docs", "eval", dir]).0, Some(2));
+        std::fs::write(&file, "{}").unwrap();
+        let (code, _, err) = run_in(config.path(), &["docs", "eval", dir, f]);
+        assert_eq!(code, Some(1));
+        assert!(err.contains("a list of"), "{err}");
     }
 }

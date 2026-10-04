@@ -354,6 +354,15 @@ place that executes them — and two views list them (`src/palette.rs`):
 - **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
   input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
   more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
+  **Once a command's name and a space are typed, the popup offers that command's parameters**
+  (`/identity ` the identities and the words it takes; `/model ` the models; `/layout `, `/dock `,
+  `/panel `, `/preview `, `/reduce `, `/undo `, `/report `, `/manifest `, `/reactor-scenario `,
+  `/context `, `/activation `, `/embedding `, `/tool `, `/toolset `, `/install `): typing narrows them
+  (typos forgiven, the ones used most first among equals); a parameter that ends the command
+  runs it, one that is followed by another argument (`/tool <id>` takes `on` or `off`) completes
+  the text and offers the next. The palette does the same when its query is a command's name
+  and a space. Taking a completion puts **the cursor at the beginning of what was completed**:
+  the start of the command, or of the parameter.
 
 **Ranking** is the same for both. An entry's score is the number of characters of the query it
 matches — the longest common subsequence of what was typed and the entry's text, inside a
@@ -377,6 +386,20 @@ the main window's state, follows it when it changes, and shows the same notifica
 - **Behaviour** — open thinking blocks by default; dim what a reduction took out of the model's view;
   how much tool output the transcript shows (the session keeps it all); how long notification popups
   stay; the layout a window opens with.
+- **Identities** — the working personas: the built-in ones and the user's saved ones, each a row
+  with its name, whether it is built in or saved, the start of its text (all of it in the
+  tooltip), and whether it is the default for new sessions or in use now. *Use* selects it for
+  this session (`/identity <name>`); *Edit* opens the **editor window** (a name and the text; a
+  rename keeps its place; a name cannot be empty, have a space, be built in or be a word
+  `/identity` uses); *View* on a built-in opens the editor on a copy to save under a name of
+  your own; *Remove* asks twice. *New identity…* opens the editor blank, and a dropdown picks
+  the default. The page opens from `/identity manage` and *Identities: manage…* in the palette;
+  `/identity new [name]` and `/identity edit <name>` (and *Identity: new…* / *Identity: edit
+  <name>* in the palette) open the editor directly. `/identity show [name]` (the one in use, with no
+  name) opens its text in a **popup** that scrolls and whose text can be selected, with *Open in
+  the editor*; a notification is for a line, not a page. The editor's text box has a height of its
+  own (what the window leaves) and scrolls inside it, so a long identity never pushes the buttons
+  out of reach. Saved identities are in `settings.json`.
 - **Model** — the model new sessions start on (`defaultModel` in `settings.json`), chosen from the
   picker's list; a provider (anthropic, openai, gemini, openrouter, ollama; the page says whether its
   key variable is set), a model name, and *Set as default* / *Use in this session* / *Add to picker
@@ -434,6 +457,15 @@ place that executes them — and two views list them (`src/palette.rs`):
 - **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
   input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
   more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
+  **Once a command's name and a space are typed, the popup offers that command's parameters**
+  (`/identity ` the identities and the words it takes; `/model ` the models; `/layout `, `/dock `,
+  `/panel `, `/preview `, `/reduce `, `/undo `, `/report `, `/manifest `, `/reactor-scenario `,
+  `/context `, `/activation `, `/embedding `, `/tool `, `/toolset `, `/install `): typing narrows them
+  (typos forgiven, the ones used most first among equals); a parameter that ends the command
+  runs it, one that is followed by another argument (`/tool <id>` takes `on` or `off`) completes
+  the text and offers the next. The palette does the same when its query is a command's name
+  and a space. Taking a completion puts **the cursor at the beginning of what was completed**:
+  the start of the command, or of the parameter.
 
 **Ranking** is the same for both. An entry's score is the number of characters of the query it
 matches — the longest common subsequence of what was typed and the entry's text, inside a

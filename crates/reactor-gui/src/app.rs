@@ -228,6 +228,8 @@ pub struct ReactorApp {
     pub embedding_draft: crate::settings_window::ModelDraft,
     /// "Re-embed everything" was pressed once and waits for its confirmation.
     pub reembed_armed: bool,
+    /// An identity's Remove was pressed once and waits for its confirmation.
+    pub identity_remove_armed: Option<String>,
     /// Which layer of the context budget the settings window edits.
     pub context_scope: crate::settings_window::ContextScope,
     /// The settings window, while it is open.
@@ -240,9 +242,24 @@ pub struct ReactorApp {
     interrupted: bool,
 }
 
+/// One identity, as the settings page lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdentityRow {
+    pub name: String,
+    /// Built in: read, and copied; not changed or removed.
+    pub builtin: bool,
+    pub text: String,
+    /// New sessions start with it.
+    pub default: bool,
+    /// This session uses it now.
+    pub active: bool,
+}
+
 /// The open command palette.
 struct PaletteUi {
     list: Entity<CommandState>,
+    /// What the commands' parameters are chosen from, as of when it opened.
+    snapshot: palette::Snapshot,
     /// Every entry, built when the palette opened.
     entries: Vec<Entry>,
     /// What is shown now: `entries` ranked for the query.
@@ -1045,6 +1062,7 @@ impl ReactorApp {
             family_drafts: Default::default(),
             model_draft: Default::default(),
             reembed_armed: false,
+            identity_remove_armed: None,
             embedding_draft: crate::settings_window::ModelDraft {
                 // The one that needs no key and keeps the text on this machine.
                 provider: "ollama".into(),
@@ -2110,6 +2128,13 @@ impl ReactorApp {
     /// Every entry the palette can offer right now: the commands, and what the session's
     /// state makes possible (each model, each tool, each scenario …).
     fn palette_entries(&self) -> Vec<Entry> {
+        palette::build(&self.palette_snapshot())
+    }
+
+    /// What the app has that commands take as parameters: its models, tools, scenarios,
+    /// identities and reductions. The palette's generated entries and the completion of a
+    /// command's arguments are both made from it.
+    fn palette_snapshot(&self) -> palette::Snapshot {
         let mut snapshot = palette::Snapshot {
             models: self.models.clone(),
             working: false,
@@ -2143,9 +2168,10 @@ impl ReactorApp {
                 &b.session_state().identity,
                 &settings.identity,
             );
+            snapshot.user_identities = settings.identity.user.names().map(str::to_string).collect();
             snapshot.reductions = b.agent.reductions().iter().map(|r| r.entry).collect();
         }
-        palette::build(&snapshot)
+        snapshot
     }
 
     // -- the context window ------------------------------------------------------------------
@@ -2516,6 +2542,7 @@ impl ReactorApp {
         let list = cx.new(|cx| CommandState::new(window, cx));
         self.palette = Some(PaletteUi {
             list: list.clone(),
+            snapshot: self.palette_snapshot(),
             entries,
             shown,
         });
@@ -2552,10 +2579,14 @@ impl ReactorApp {
     /// The palette's query changed: rank again.
     fn palette_query(&mut self, query: &str, cx: &mut Context<Self>) {
         if let Some(p) = &mut self.palette {
-            p.shown = palette::rank(query, &p.entries, &self.usage, false)
-                .into_iter()
-                .cloned()
-                .collect();
+            // A command's name and a space: what it takes, to choose from. Else the commands.
+            p.shown = match palette::params(query, &p.snapshot, &self.usage) {
+                Some(params) => params.entries(),
+                None => palette::rank(query, &p.entries, &self.usage, false)
+                    .into_iter()
+                    .cloned()
+                    .collect(),
+            };
             cx.notify();
         }
     }
@@ -2577,12 +2608,7 @@ impl ReactorApp {
     /// Run an entry, or — when it needs arguments — start it in the composer.
     fn run_entry(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
         if entry.args == Args::Required {
-            let text = format!("/{} ", entry.run);
-            self.composer.update(cx, |state, cx| {
-                state.set_value(&text, window, cx);
-                state.focus(window, cx);
-            });
-            self.refresh_slash(false, cx);
+            self.complete_composer(entry, window, cx);
             cx.notify();
         } else {
             self.run_command(&entry.run, window, cx);
@@ -2601,6 +2627,12 @@ impl ReactorApp {
                     .take(SLASH_ROWS)
                     .cloned()
                     .collect()
+            }
+            // A command's name and a space: what it takes, to choose from.
+            None if text.starts_with('/') => {
+                palette::params(&text, &self.palette_snapshot(), &self.usage)
+                    .map(|p| p.entries().into_iter().take(SLASH_ROWS).collect())
+                    .unwrap_or_default()
             }
             None => Vec::new(),
         };
@@ -2641,13 +2673,32 @@ impl ReactorApp {
             self.refresh_slash(true, cx);
             self.run_command(&entry.run, window, cx);
         } else {
-            let text = format!("/{} ", entry.run);
-            self.composer.update(cx, |state, cx| {
-                state.set_value(&text, window, cx);
-                state.focus(window, cx);
-            });
-            self.refresh_slash(true, cx);
+            self.complete_composer(&entry, window, cx);
         }
+    }
+
+    /// Put a chosen completion in the composer — `/name ` for a command that takes arguments,
+    /// the command with its parameter for one that is being completed — with the cursor at the
+    /// *beginning of what was completed*: the start of the command, or of the parameter.
+    fn complete_composer(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let text = format!("/{} ", entry.run);
+        // Where the completed text begins: after the slash and what was typed before the
+        // parameter, in the units the textarea counts in.
+        let start = if entry.group == "Parameter" {
+            1 + entry.run.rfind(' ').map_or(0, |i| i + 1)
+        } else {
+            0
+        };
+        let column: usize = text.chars().take(start).map(char::len_utf16).sum();
+        self.composer.update(cx, |state, cx| {
+            state.set_value(&text, window, cx);
+            state.set_cursor_position(
+                gpui_kit::component::input::Position::new(0, column as u32),
+                window,
+                cx,
+            );
+        });
+        self.refresh_slash(true, cx);
     }
 
     /// Put a chosen completion into the composer, from a click on the popup.
@@ -2769,6 +2820,15 @@ impl ReactorApp {
                 ),
             },
             _ if self.backend.is_none() => self.push_note("error", "the agent is not running"),
+            // The identity commands that open a window: the others are the agent's side's.
+            "identity"
+                if matches!(
+                    args.split_whitespace().next(),
+                    Some("new" | "edit" | "manage" | "show")
+                ) =>
+            {
+                self.identity_window_command(args, window, cx)
+            }
             "model" => self.set_model(args, cx),
             "preview" => self.preview_reduction(mode(), cx),
             "reduce" => self.reduce_now(mode(), cx),
@@ -2785,35 +2845,273 @@ impl ReactorApp {
                     None => self.push_note("info", "no reduction in force"),
                 }
             }
-            other => {
-                let Some(backend) = self.backend.clone() else {
-                    return;
-                };
-                match backend.command(other, args) {
-                    Ok(result) => {
-                        for n in result.notices {
-                            self.push_note(
-                                match n.level {
-                                    reactor_context::Level::Info => "info",
-                                    reactor_context::Level::Warning => "warning",
-                                    reactor_context::Level::Error => "error",
-                                },
-                                n.message,
-                            );
-                        }
-                        self.refresh_statuses(cx);
-                        self.refresh_catalogue(cx);
-                        backend.refresh_context();
-                        // A scenario opens with its briefing as the first turn.
-                        if let Some(text) = result.trigger_turn {
-                            self.start_turn(text, cx);
-                        }
-                    }
-                    Err(e) => self.push_note("error", e),
-                }
-            }
+            other => self.backend_command(other, args, cx),
         }
         cx.notify();
+    }
+
+    /// A command the agent's side handles (`/identity`, `/report`, `/manifest` …): run it, show
+    /// what it says, and bring what it changed up to date.
+    fn backend_command(&mut self, name: &str, args: &str, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        match backend.command(name, args) {
+            Ok(result) => {
+                for n in result.notices {
+                    self.push_note(
+                        match n.level {
+                            reactor_context::Level::Info => "info",
+                            reactor_context::Level::Warning => "warning",
+                            reactor_context::Level::Error => "error",
+                        },
+                        n.message,
+                    );
+                }
+                self.refresh_statuses(cx);
+                self.refresh_catalogue(cx);
+                backend.refresh_context();
+                // A scenario opens with its briefing as the first turn.
+                if let Some(text) = result.trigger_turn {
+                    self.start_turn(text, cx);
+                }
+            }
+            Err(e) => self.push_note("error", e),
+        }
+    }
+
+    // -- identities (the settings page and the editor window) ---------------------------------
+
+    /// Every identity — the built-ins, then the saved ones in the order they are kept — for the
+    /// settings page and the editor.
+    pub fn identity_rows(&self) -> Vec<IdentityRow> {
+        let Some(b) = &self.backend else {
+            return Vec::new();
+        };
+        let cfg = b.identity_settings();
+        let state = b.session_state().identity;
+        let active = state.active_name(&cfg).map(str::to_string);
+        let row = |name: &str, text: &str, builtin: bool| IdentityRow {
+            name: name.to_string(),
+            builtin,
+            text: text.to_string(),
+            default: cfg.default == name,
+            active: active.as_deref() == Some(name),
+        };
+        let mut rows: Vec<IdentityRow> = reactor_context::identity::BUILTINS
+            .iter()
+            .map(|(n, t)| row(n, t, true))
+            .collect();
+        rows.extend(
+            cfg.user
+                .names()
+                .map(|n| row(n, cfg.user.get(n).unwrap_or(""), false)),
+        );
+        rows
+    }
+
+    /// `/identity new [name]`, `/identity edit <name>` and `/identity manage`: the ones that
+    /// open a window — the editor, or Settings at the identities page.
+    fn identity_window_command(&mut self, args: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::identity_editor::Start;
+        let mut words = args.split_whitespace();
+        let (verb, name) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+        match verb {
+            "show" => self.show_identity(name, window, cx),
+            "manage" => self.open_settings_at(crate::settings_window::Page::Identities, cx),
+            "new" => self.open_identity_editor(Start::New(name.to_string()), cx),
+            _ if name.is_empty() => {
+                self.push_note("warning", "usage: /identity edit <name>");
+            }
+            _ => match self.identity_rows().into_iter().find(|r| r.name == name) {
+                Some(r) if r.builtin => {
+                    self.push_note(
+                        "info",
+                        format!("identity: \"{name}\" is built in: the editor opens a copy of it"),
+                    );
+                    self.open_identity_editor(Start::Copy(r.name), cx);
+                }
+                Some(r) => self.open_identity_editor(Start::Edit(r.name), cx),
+                None => {
+                    let names: Vec<String> =
+                        self.identity_rows().into_iter().map(|r| r.name).collect();
+                    self.push_note(
+                        "warning",
+                        format!(
+                            "identity: no identity \"{name}\" — available: {}",
+                            names.join(", ")
+                        ),
+                    );
+                }
+            },
+        }
+    }
+
+    /// `/identity show [name]`: the identity's text in a popup (the one in use, with no name),
+    /// to read and scroll — not a notification, which is for a line.
+    fn show_identity(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let cfg = backend.identity_settings();
+        let state = backend.session_state().identity;
+        let name = match name {
+            "" => state.active_name(&cfg).map(str::to_string),
+            n => Some(n.to_string()),
+        };
+        let Some(name) = name else {
+            self.push_note("info", "identity: none is in use");
+            return;
+        };
+        let Some(text) = state
+            .resolve_text(&cfg, Some(&name))
+            .filter(|t| !t.trim().is_empty())
+            .map(str::to_string)
+        else {
+            self.push_note("warning", format!("identity: no identity \"{name}\""));
+            return;
+        };
+        // What the editor can do with it: change a saved one, copy anything else.
+        let start = if cfg.user.get(&name).is_some() {
+            crate::identity_editor::Start::Edit(name.clone())
+        } else if name == "custom" {
+            crate::identity_editor::Start::New(String::new())
+        } else {
+            crate::identity_editor::Start::Copy(name.clone())
+        };
+        let weak = cx.weak_entity();
+        let title = format!("Identity: {name}");
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            let (text, start, weak) = (text.clone(), start.clone(), weak.clone());
+            let height = window.viewport_size().height * 0.6;
+            dialog
+                .w(px(760.))
+                .title(title.clone())
+                .content(move |content, _window, cx| {
+                    content.child(
+                        div()
+                            .id("identity-show")
+                            .h(height)
+                            .w_full()
+                            .overflow_y_scroll()
+                            .child(
+                                gpui_kit::base::SelectableText::new(
+                                    SharedString::from("identity-show-text"),
+                                    text.clone(),
+                                )
+                                .text_style(
+                                    gpui_kit::TextStyleRefinement {
+                                        color: Some(cx.theme().foreground),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                    )
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_end()
+                        .child(
+                            Button::new("identity-show-edit")
+                                .label("Open in the editor")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let start = start.clone();
+                                    let _ = weak
+                                        .update(cx, |app, cx| app.open_identity_editor(start, cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("identity-show-close")
+                                .label("Close")
+                                .primary()
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        ),
+                )
+        });
+        cx.notify();
+    }
+
+    /// Select an identity for this session (what `/identity <name>` does).
+    pub fn identity_use(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.backend_command("identity", name, cx);
+        cx.notify();
+    }
+
+    /// Save an identity from the editor; the reason it was refused is the `Err`.
+    pub fn identity_save(
+        &mut self,
+        old: Option<&str>,
+        name: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let backend = self.backend.clone().ok_or("the agent is not running")?;
+        backend.save_identity(old, name, text)?;
+        self.push_note("info", format!("identity: saved \"{}\"", name.trim()));
+        self.refresh_statuses(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Remove a saved identity — after a second press, since there is no undo.
+    pub fn identity_remove(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.identity_remove_armed.as_deref() != Some(name) {
+            self.identity_remove_armed = Some(name.to_string());
+            cx.notify();
+            return;
+        }
+        self.identity_remove_armed = None;
+        match self.backend.as_ref().map(|b| b.delete_identity(name)) {
+            Some(Ok(())) => self.push_note("info", format!("identity: deleted \"{name}\"")),
+            Some(Err(e)) => self.push_note("warning", e),
+            None => {}
+        }
+        self.refresh_statuses(cx);
+        cx.notify();
+    }
+
+    pub fn identity_remove_cancel(&mut self, cx: &mut Context<Self>) {
+        self.identity_remove_armed = None;
+        cx.notify();
+    }
+
+    /// The identity new sessions start with (`""` for none).
+    pub fn set_default_identity(&mut self, name: &str, cx: &mut Context<Self>) {
+        match self.backend.as_ref().map(|b| b.set_default_identity(name)) {
+            Some(Ok(())) => {}
+            Some(Err(e)) => self.push_note("warning", e),
+            None => {}
+        }
+        cx.notify();
+    }
+
+    /// Open the editor window on an identity: a new one, a saved one to change, or a built-in
+    /// to read (and save a copy of). The window is made after this update: its views read the
+    /// app, which is being updated now.
+    pub fn open_identity_editor(
+        &mut self,
+        start: crate::identity_editor::Start,
+        cx: &mut Context<Self>,
+    ) {
+        let app = cx.entity();
+        cx.defer(move |cx| crate::identity_editor::open(cx, app, start));
+    }
+
+    /// Open the settings window at a page (closing and reopening one that is open, since a
+    /// window opens on the page it is told to).
+    pub fn open_settings_at(&mut self, page: crate::settings_window::Page, cx: &mut Context<Self>) {
+        let app = cx.entity();
+        let open = self.settings_window.take();
+        cx.defer(move |cx| {
+            if let Some(handle) = open {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+            crate::settings_window::open_at(cx, app, page);
+        });
     }
 
     /// `/tool <id> [on|off]` and `/toolset …`; without on/off it flips what the catalogue says.

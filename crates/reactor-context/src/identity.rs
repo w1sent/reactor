@@ -81,6 +81,12 @@ impl UserIdentities {
             None => self.0.push((name, text)),
         }
     }
+    /// Rename in place, keeping the position. Nothing happens if `from` is not there.
+    pub fn rename(&mut self, from: &str, to: String) {
+        if let Some(slot) = self.0.iter_mut().find(|(k, _)| k == from) {
+            slot.0 = to;
+        }
+    }
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.0.len();
         self.0.retain(|(k, _)| k != name);
@@ -377,4 +383,188 @@ pub fn editor_needs_terminal() -> Effects {
     Effects::note(Notice::warning(
         "identity: the editor needs a terminal; use /identity write <text> here",
     ))
+}
+
+// -- managing the user's saved identities (the settings window's editor) -----------------------
+
+/// Words `/identity` itself takes first, which a saved identity cannot be called (it could
+/// never be selected by name), besides `custom` and the built-ins.
+pub const RESERVED: [&str; 9] = [
+    "custom", "off", "show", "write", "save", "delete", "new", "edit", "manage",
+];
+
+/// Why `name` cannot be the name of a saved identity, if it cannot: empty, with a space in it
+/// (`/identity <name>` could not select it), a word `/identity` uses, or a built-in's.
+pub fn name_problem(name: &str) -> Option<String> {
+    let name = js_trim(name);
+    if name.is_empty() {
+        return Some("an identity needs a name".into());
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Some("the name cannot have a space in it: `/identity <name>` selects by it".into());
+    }
+    if builtin(name).is_some() {
+        return Some(format!(
+            "\"{name}\" is a built-in identity: pick another name"
+        ));
+    }
+    if RESERVED.contains(&name) {
+        return Some(format!(
+            "\"{name}\" is a word `/identity` uses: pick another name"
+        ));
+    }
+    None
+}
+
+/// Save a user identity: `name` with `text`, replacing `old` when it is a rename (so that it
+/// keeps its place) and refusing to overwrite another identity. A default that pointed at the
+/// old name follows it.
+pub fn save_user(
+    cfg: &mut IdentitySettings,
+    old: Option<&str>,
+    name: &str,
+    text: &str,
+) -> Result<(), String> {
+    let name = js_trim(name);
+    if let Some(problem) = name_problem(name) {
+        return Err(problem);
+    }
+    if js_trim(text).is_empty() {
+        return Err("an identity needs text: what the model is told it is".into());
+    }
+    let renaming = old.filter(|o| *o != name);
+    if renaming.is_none() && old.is_none() && cfg.user.get(name).is_some() {
+        return Err(format!(
+            "there is already an identity called \"{name}\": edit it, or pick another name"
+        ));
+    }
+    if renaming.is_some() && cfg.user.get(name).is_some() {
+        return Err(format!("there is already an identity called \"{name}\""));
+    }
+    match renaming {
+        // A rename keeps its place in the list.
+        Some(o) if cfg.user.get(o).is_some() => {
+            cfg.user.rename(o, name.to_string());
+            cfg.user.set(name.to_string(), text.to_string());
+            if cfg.default == o {
+                cfg.default = name.to_string();
+            }
+        }
+        _ => cfg.user.set(name.to_string(), text.to_string()),
+    }
+    Ok(())
+}
+
+/// Delete a user identity. A default that was it is cleared.
+pub fn delete_user(cfg: &mut IdentitySettings, name: &str) -> Result<(), String> {
+    if builtin(name).is_some() {
+        return Err(format!("\"{name}\" is built in: it cannot be deleted"));
+    }
+    if !cfg.user.remove(name) {
+        return Err(format!("there is no saved identity \"{name}\""));
+    }
+    if cfg.default == name {
+        cfg.default.clear();
+    }
+    Ok(())
+}
+
+/// Make `name` the identity a session without its own choice starts with (`""` for none).
+pub fn set_default(cfg: &mut IdentitySettings, name: &str) -> Result<(), String> {
+    let name = js_trim(name);
+    if !name.is_empty() && builtin(name).is_none() && cfg.user.get(name).is_none() {
+        return Err(format!("there is no identity \"{name}\""));
+    }
+    cfg.default = name.to_string();
+    Ok(())
+}
+
+#[cfg(test)]
+mod managing_tests {
+    use super::*;
+
+    fn cfg() -> IdentitySettings {
+        let mut c = IdentitySettings::default();
+        c.user.set("triage".into(), "You triage alerts.".into());
+        c.user.set("writer".into(), "You write reports.".into());
+        c
+    }
+
+    #[test]
+    fn a_name_cannot_be_empty_have_a_space_or_be_a_word_the_command_uses() {
+        assert!(name_problem("triage").is_none());
+        assert!(name_problem("  ").unwrap().contains("needs a name"));
+        assert!(name_problem("two words").unwrap().contains("space"));
+        assert!(name_problem("forensics").unwrap().contains("built-in"));
+        for word in RESERVED {
+            assert!(name_problem(word).is_some(), "{word}");
+        }
+    }
+
+    #[test]
+    fn saving_adds_replaces_in_place_and_refuses_to_overwrite_another() {
+        let mut c = cfg();
+        save_user(&mut c, None, "analyst", "You analyse.").unwrap();
+        assert_eq!(
+            c.user.names().collect::<Vec<_>>(),
+            ["triage", "writer", "analyst"]
+        );
+        // A new one cannot take a name that is in use.
+        assert!(
+            save_user(&mut c, None, "triage", "x")
+                .unwrap_err()
+                .contains("already")
+        );
+        // Editing keeps the name and the place.
+        save_user(&mut c, Some("triage"), "triage", "You triage well.").unwrap();
+        assert_eq!(c.user.get("triage"), Some("You triage well."));
+        assert_eq!(c.user.names().next(), Some("triage"));
+        // A rename keeps the place, and a default that pointed at it follows.
+        c.default = "writer".into();
+        save_user(&mut c, Some("writer"), "author", "You write.").unwrap();
+        assert_eq!(
+            c.user.names().collect::<Vec<_>>(),
+            ["triage", "author", "analyst"]
+        );
+        assert_eq!(c.default, "author");
+        assert!(c.user.get("writer").is_none());
+        // Not onto another's name, and not without text.
+        assert!(save_user(&mut c, Some("author"), "triage", "x").is_err());
+        assert!(
+            save_user(&mut c, None, "empty", "   ")
+                .unwrap_err()
+                .contains("needs text")
+        );
+        assert!(save_user(&mut c, None, "off", "x").is_err());
+    }
+
+    #[test]
+    fn deleting_removes_a_saved_identity_and_clears_a_default_that_was_it() {
+        let mut c = cfg();
+        c.default = "triage".into();
+        delete_user(&mut c, "triage").unwrap();
+        assert!(c.user.get("triage").is_none());
+        assert_eq!(c.default, "");
+        assert!(
+            delete_user(&mut c, "triage")
+                .unwrap_err()
+                .contains("no saved")
+        );
+        assert!(
+            delete_user(&mut c, "forensics")
+                .unwrap_err()
+                .contains("built in")
+        );
+    }
+
+    #[test]
+    fn the_default_is_a_known_identity_or_none() {
+        let mut c = cfg();
+        set_default(&mut c, "writer").unwrap();
+        assert_eq!(c.default, "writer");
+        set_default(&mut c, "forensics").unwrap();
+        assert!(set_default(&mut c, "nobody").is_err());
+        set_default(&mut c, "").unwrap();
+        assert_eq!(c.default, "");
+    }
 }

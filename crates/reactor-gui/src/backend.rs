@@ -792,6 +792,36 @@ impl Backend {
     pub fn session_state(&self) -> SessionState {
         self.agent.session_state()
     }
+
+    // -- identities ------------------------------------------------------------------------------
+
+    /// The identities as the settings hold them: the default, and the saved ones.
+    pub fn identity_settings(&self) -> reactor_context::settings::IdentitySettings {
+        Settings::load(&self.paths).identity
+    }
+
+    /// Change the identity settings and write them: all or nothing.
+    fn change_identities(
+        &self,
+        change: impl FnOnce(&mut reactor_context::settings::IdentitySettings) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut settings = Settings::load(&self.paths);
+        change(&mut settings.identity)?;
+        settings.save(&self.paths).map_err(|e| e.to_string())
+    }
+
+    /// Save a user identity (`old` is the name it had, when renaming or editing).
+    pub fn save_identity(&self, old: Option<&str>, name: &str, text: &str) -> Result<(), String> {
+        self.change_identities(|c| reactor_context::identity::save_user(c, old, name, text))
+    }
+
+    pub fn delete_identity(&self, name: &str) -> Result<(), String> {
+        self.change_identities(|c| reactor_context::identity::delete_user(c, name))
+    }
+
+    pub fn set_default_identity(&self, name: &str) -> Result<(), String> {
+        self.change_identities(|c| reactor_context::identity::set_default(c, name))
+    }
 }
 
 // -- view data -------------------------------------------------------------------------------

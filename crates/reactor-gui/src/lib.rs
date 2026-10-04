@@ -12,6 +12,7 @@ pub mod files;
 pub mod graph;
 pub mod headless;
 pub mod hints;
+pub mod identity_editor;
 pub mod import;
 pub mod inspect_ui;
 pub mod layout;

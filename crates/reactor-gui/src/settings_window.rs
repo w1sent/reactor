@@ -11,7 +11,7 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::setting::{
-    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+    NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _};
@@ -57,6 +57,33 @@ pub enum ContextScope {
     Session,
 }
 
+/// The pages of the settings window, in the order it lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Page {
+    #[default]
+    Fonts,
+    Behaviour,
+    Model,
+    Identities,
+    Documents,
+    Context,
+    Tools,
+}
+
+impl Page {
+    pub fn index(self) -> usize {
+        match self {
+            Page::Fonts => 0,
+            Page::Behaviour => 1,
+            Page::Model => 2,
+            Page::Identities => 3,
+            Page::Documents => 4,
+            Page::Context => 5,
+            Page::Tools => 6,
+        }
+    }
+}
+
 /// Open the settings window, or bring the open one forward.
 pub fn open(cx: &mut App, app: Entity<ReactorApp>) {
     if let Some(handle) = app.read(cx).settings_window
@@ -66,6 +93,11 @@ pub fn open(cx: &mut App, app: Entity<ReactorApp>) {
     {
         return;
     }
+    open_at(cx, app, Page::default());
+}
+
+/// Open the settings window on a page. The caller has closed any that is open.
+pub fn open_at(cx: &mut App, app: Entity<ReactorApp>, page: Page) {
     let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(
         None,
         size(px(980.), px(720.)),
@@ -74,7 +106,7 @@ pub fn open(cx: &mut App, app: Entity<ReactorApp>) {
     let for_window = app.clone();
     let opened = cx.open_window(crate::chrome::window_options(bounds), move |window, cx| {
         crate::theme::install_ayu_dark(cx);
-        let view = cx.new(|cx| SettingsWindow::new(for_window, cx));
+        let view = cx.new(|cx| SettingsWindow::new(for_window, page, cx));
         let root: gpui_kit::AnyView = view.into();
         cx.new(|cx| Root::new(root, window, cx))
     });
@@ -86,15 +118,17 @@ pub fn open(cx: &mut App, app: Entity<ReactorApp>) {
 
 struct SettingsWindow {
     app: Entity<ReactorApp>,
+    /// The page it opened on.
+    page: Page,
     _watch: gpui_kit::Subscription,
 }
 
 impl SettingsWindow {
-    fn new(app: Entity<ReactorApp>, cx: &mut Context<Self>) -> Self {
+    fn new(app: Entity<ReactorApp>, page: Page, cx: &mut Context<Self>) -> Self {
         // The fields show the app's state, so they follow it when it changes (a notification, a
         // model switch made in the main window).
         let _watch = cx.observe(&app, |_, _, cx| cx.notify());
-        Self { app, _watch }
+        Self { app, page, _watch }
     }
 }
 
@@ -114,10 +148,15 @@ impl Render for SettingsWindow {
                 div().flex_1().min_h_0().child(
                     Settings::new("reactor-settings")
                         .sidebar_width(px(220.))
+                        .default_selected_index(SelectIndex {
+                            page_ix: self.page.index(),
+                            group_ix: None,
+                        })
                         .pages(vec![
                             fonts_page(&app, cx),
                             behaviour_page(&app),
                             model_page(&app, cx),
+                            identities_page(&app, cx),
                             documents_page(&app, cx),
                             context_page(&app),
                             tools_page(&app),
@@ -577,6 +616,200 @@ fn model_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
 // ---------------------------------------------------------------------------------------------
 // Documents: the embedding model (ADR-0046)
 // ---------------------------------------------------------------------------------------------
+
+/// Identities: the working personas, built in and saved. Each row can be used for this
+/// session, set as the default for new ones, viewed or edited in the editor window, and a
+/// saved one removed (after a second press).
+fn identities_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
+    let rows = app.read(cx).identity_rows();
+    let armed = app.read(cx).identity_remove_armed.clone();
+    let (d_get, d_set) = (app.clone(), app.clone());
+    let mut options: Vec<(SharedString, SharedString)> = vec![(shared(""), shared("none"))];
+    options.extend(
+        rows.iter()
+            .map(|r| (shared(r.name.clone()), shared(r.name.clone()))),
+    );
+
+    let default = SettingGroup::new().title("Default").item(SettingItem::new(
+        "Identity for new sessions",
+        SettingField::<SharedString>::dropdown(
+            options,
+            move |cx| {
+                shared(
+                    d_get
+                        .read(cx)
+                        .identity_rows()
+                        .iter()
+                        .find(|r| r.default)
+                        .map(|r| r.name.clone())
+                        .unwrap_or_default(),
+                )
+            },
+            move |v, cx| {
+                d_set.update(cx, |app, cx| app.set_default_identity(v.as_ref(), cx));
+            },
+        )
+        .default_value(shared("")),
+    ));
+
+    let list_app = app.clone();
+    let list = SettingGroup::new()
+        .title("Identities")
+        .item(actions(
+            "Add",
+            vec![(
+                "New identity…",
+                "Write one in the editor window",
+                |app, cx| {
+                    app.open_identity_editor(crate::identity_editor::Start::New(String::new()), cx)
+                },
+            )],
+            app,
+        ))
+        .item(SettingItem::render(move |_, _w, cx| {
+            let theme = cx.theme().clone();
+            let mut column = v_flex().gap_1().w_full();
+            for row in &rows {
+                let (name, builtin) = (row.name.clone(), row.builtin);
+                let first_line: String = row
+                    .text
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect();
+                let pending = armed.as_deref() == Some(row.name.as_str());
+                let button = |id: String, label: &'static str, tip: &'static str| {
+                    Button::new(SharedString::from(id))
+                        .label(label)
+                        .small()
+                        .tooltip(tip)
+                };
+                let mut line = h_flex()
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .when(row.active, |r| r.bg(theme.info.opacity(0.15)))
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_none()
+                            .text_color(theme.foreground)
+                            .child(SharedString::from(row.name.clone())),
+                    )
+                    .child(
+                        div()
+                            .w(px(60.))
+                            .flex_none()
+                            .text_size(theme.font_size * 0.8)
+                            .text_color(theme.muted_foreground)
+                            .child(if builtin { "built-in" } else { "saved" }),
+                    )
+                    .child(crate::hints::tip(
+                        div()
+                            .id(SharedString::from(format!("identity-text-{name}")))
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(first_line)),
+                        SharedString::from(row.text.chars().take(1200).collect::<String>()),
+                    ))
+                    .when(row.default, |r| {
+                        r.child(
+                            div()
+                                .text_size(theme.font_size * 0.8)
+                                .text_color(theme.accent)
+                                .child("default"),
+                        )
+                    })
+                    .when(row.active, |r| {
+                        r.child(
+                            div()
+                                .text_size(theme.font_size * 0.8)
+                                .text_color(theme.info)
+                                .child("in use"),
+                        )
+                    });
+                let a = list_app.clone();
+                let n = name.clone();
+                line = line.child(
+                    button(format!("use-{name}"), "Use", "Select it for this session").on_click(
+                        move |_, _w, cx| {
+                            a.update(cx, |app, cx| app.identity_use(&n, cx));
+                        },
+                    ),
+                );
+                let a = list_app.clone();
+                let n = name.clone();
+                line = line.child(
+                    button(
+                        format!("edit-{name}"),
+                        if builtin { "View" } else { "Edit" },
+                        if builtin {
+                            "Read it; saving makes a copy under a name of your own"
+                        } else {
+                            "Change it in the editor window"
+                        },
+                    )
+                    .on_click(move |_, _w, cx| {
+                        a.update(cx, |app, cx| {
+                            app.open_identity_editor(
+                                if builtin {
+                                    crate::identity_editor::Start::Copy(n.clone())
+                                } else {
+                                    crate::identity_editor::Start::Edit(n.clone())
+                                },
+                                cx,
+                            )
+                        });
+                    }),
+                );
+                if !builtin {
+                    let a = list_app.clone();
+                    let n = name.clone();
+                    let remove = button(
+                        format!("remove-{name}"),
+                        if pending { "Yes, remove" } else { "Remove" },
+                        "Delete this saved identity. It asks once more: there is no undo",
+                    );
+                    let remove = if pending {
+                        remove.danger()
+                    } else {
+                        remove.ghost()
+                    };
+                    line = line.child(remove.on_click(move |_, _w, cx| {
+                        a.update(cx, |app, cx| app.identity_remove(&n, cx));
+                    }));
+                    if pending {
+                        let a = list_app.clone();
+                        line = line.child(
+                            button(format!("keep-{name}"), "Keep", "Do not remove it")
+                                .ghost()
+                                .on_click(move |_, _w, cx| {
+                                    a.update(cx, |app, cx| app.identity_remove_cancel(cx));
+                                }),
+                        );
+                    }
+                }
+                column = column.child(line);
+            }
+            column.into_any_element()
+        }));
+
+    info(
+        SettingPage::new("Identities")
+            .icon(IconName::User)
+            .groups([default, list]),
+        "identities-info",
+        "An identity is a working persona: its text is added to the system prompt. Built-in ones ship with REactor; saved ones are yours, kept in ~/.reactor/settings.json. Use selects one for this session (the same as /identity <name>); the default is what a new session starts with. A built-in cannot be changed: View opens it as a copy to save under your own name. /identity new opens the editor, and /identity manage opens this page.",
+    )
+}
 
 fn documents_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
     let chosen = app.read(cx).embedding_model();

@@ -122,7 +122,7 @@ pub fn commands() -> Vec<Entry> {
             "Session",
             Optional,
             "Select or write the working persona",
-            "/identity <name> | custom <text>",
+            "/identity <name> | new [name] | edit <name> | manage | off | show [name] | write <text> | save <name> | delete <name>",
         ),
         Entry::fixed(
             "report",
@@ -328,6 +328,8 @@ pub struct Snapshot {
     pub toolsets: Vec<(String, bool)>,
     pub scenarios: Vec<String>,
     pub identities: Vec<String>,
+    /// The saved ones among them: what can be edited or deleted.
+    pub user_identities: Vec<String>,
     /// Entry ids of the reductions in force.
     pub reductions: Vec<u64>,
     pub working: bool,
@@ -353,6 +355,16 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
             "Manifest: clear",
             "forget goal, steps and guidelines",
             "manifest clear",
+        ),
+        (
+            "Identities: manage…",
+            "add, edit and remove identities in Settings",
+            "identity manage",
+        ),
+        (
+            "Identity: new…",
+            "write one in the editor window",
+            "identity new",
         ),
         ("Goal: clear", "remove the session goal", "goal clear"),
         (
@@ -507,6 +519,14 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
             format!("identity {name}"),
         ));
     }
+    for name in &snapshot.user_identities {
+        add(Entry::generated(
+            "Session",
+            format!("Identity: edit {name}"),
+            "in the editor window",
+            format!("identity edit {name}"),
+        ));
+    }
     for id in &snapshot.reductions {
         add(Entry::generated(
             "Model",
@@ -516,6 +536,243 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
         ));
     }
     entries
+}
+
+// -- parameters ---------------------------------------------------------------------------------
+
+/// A value a command accepts, offered while its arguments are typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    pub value: String,
+    pub detail: String,
+    /// The command takes something after this (`/tool <id>` takes `on` or `off`; `/open
+    /// edit` takes a path): choosing it completes the text and waits, where a last
+    /// argument runs the command.
+    pub more: bool,
+}
+
+impl Param {
+    fn last(value: impl Into<String>, detail: impl Into<String>) -> Param {
+        Param {
+            value: value.into(),
+            detail: detail.into(),
+            more: false,
+        }
+    }
+    fn more(value: impl Into<String>, detail: impl Into<String>) -> Param {
+        Param {
+            more: true,
+            ..Param::last(value, detail)
+        }
+    }
+}
+
+/// The parameters on offer for the argument being typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Params {
+    pub command: String,
+    /// The text before the argument being typed, with the command and what is before it:
+    /// `identity ` — and what completes it is this followed by a value.
+    pub typed: String,
+    /// What has been typed of the argument so far.
+    pub partial: String,
+    /// What matches it, best first.
+    pub items: Vec<Param>,
+}
+
+impl Params {
+    /// The same choices as entries, for the popup and the palette: the entry runs (or, when
+    /// more can follow, completes) the whole command with the value in place.
+    pub fn entries(&self) -> Vec<Entry> {
+        self.items
+            .iter()
+            .map(|p| {
+                let run = format!("{}{}", self.typed, p.value);
+                Entry {
+                    key: run.clone(),
+                    title: format!("/{run}"),
+                    name: None,
+                    detail: p.detail.clone(),
+                    group: "Parameter",
+                    args: if p.more { Args::Required } else { Args::None },
+                    run,
+                }
+            })
+            .collect()
+    }
+}
+
+fn choices(values: &[&str], more: bool, detail: &str) -> Vec<Param> {
+    values
+        .iter()
+        .map(|v| {
+            if more {
+                Param::more(*v, detail)
+            } else {
+                Param::last(*v, detail)
+            }
+        })
+        .collect()
+}
+
+/// What the argument after `done` can be, for a command: the values it accepts, from what is
+/// fixed (its modes) and what the app has (models, tools, identities …).
+fn candidates(command: &str, done: &[&str], snapshot: &Snapshot) -> Vec<Param> {
+    let first = done.first().copied();
+    let modes = ["auto", "fade", "compact"];
+    match (command, done.len()) {
+        ("identity", 0) => {
+            let mut v: Vec<Param> = snapshot
+                .identities
+                .iter()
+                .map(|n| Param::last(n, "select it for this session"))
+                .collect();
+            v.extend([
+                Param::last("off", "no identity"),
+                Param::more("show", "print an identity's text"),
+                Param::more("new", "write a new one in the editor"),
+                Param::more("edit", "change a saved one in the editor"),
+                Param::more("delete", "remove a saved one"),
+                Param::more("save", "keep the custom identity under a name"),
+                Param::last("manage", "open the identities page in Settings"),
+            ]);
+            v
+        }
+        ("identity", 1) => match first {
+            Some("show") => snapshot
+                .identities
+                .iter()
+                .map(|n| Param::last(n, ""))
+                .collect(),
+            Some("edit" | "delete") => snapshot
+                .user_identities
+                .iter()
+                .map(|n| Param::last(n, "saved"))
+                .collect(),
+            _ => Vec::new(),
+        },
+        ("model", 0) => snapshot.models.iter().map(|m| Param::last(m, "")).collect(),
+        ("layout", 0) => choices(&["default", "focus", "analysis", "catalogue"], false, ""),
+        ("dock", 0) => choices(&["left", "right", "bottom"], false, ""),
+        ("panel", 0) => crate::layout::PanelKind::ALL
+            .iter()
+            .map(|k| Param::last(k.slug(), k.label()))
+            .collect(),
+        ("open", 0) => choices(&["edit", "table", "data", "hex"], true, "then the path"),
+        ("preview" | "reduce", 0) => choices(&modes, false, ""),
+        ("undo", 0) => snapshot
+            .reductions
+            .iter()
+            .map(|r| Param::last(r.to_string(), "a reduction in force"))
+            .collect(),
+        ("report", 0) => vec![
+            Param::last("on", ""),
+            Param::last("off", ""),
+            Param::last("status", ""),
+            Param::more("level", "0, 1 or 2"),
+        ],
+        ("report", 1) if first == Some("level") => choices(&["0", "1", "2"], false, ""),
+        ("manifest", 0) => choices(&["on", "off", "clear"], false, ""),
+        ("goal" | "guidelines", 0) => vec![Param::last("clear", "remove it")],
+        ("reactor-scenario", 0) => vec![
+            Param::last("list", ""),
+            Param::last("status", ""),
+            Param::last("next", ""),
+            Param::last("stop", ""),
+            Param::more("start", "then a scenario"),
+        ],
+        ("reactor-scenario", 1) if first == Some("start") => snapshot
+            .scenarios
+            .iter()
+            .map(|s| Param::last(s, ""))
+            .collect(),
+        ("activation", 0) => choices(&["default", "inherit"], false, ""),
+        ("embedding", 0) => choices(&["off", "now"], false, ""),
+        ("context", 0) => {
+            let mut v = choices(
+                &["mode", "window", "reserve", "pct", "keep", "summarizer"],
+                true,
+                "then a value",
+            );
+            v.extend(choices(&["default", "inherit"], false, ""));
+            v
+        }
+        ("context", 1) if first == Some("mode") => choices(&modes, false, ""),
+        ("tool", 0) => snapshot
+            .tools
+            .iter()
+            .filter(|t| t.1)
+            .map(|(id, _, _)| Param::more(id, "then on or off"))
+            .collect(),
+        ("tool" | "toolset", 1) => choices(&["on", "off"], false, ""),
+        ("toolset", 0) => snapshot
+            .toolsets
+            .iter()
+            .map(|(id, _)| Param::more(id, "then on or off"))
+            .collect(),
+        ("install", 0) => snapshot
+            .tools
+            .iter()
+            .filter(|t| !t.1)
+            .map(|(id, _, _)| Param::last(id, "not installed here"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// What can complete the argument being typed in `text` (the composer's, or the palette's
+/// query), without its leading slash: `None` while it is still a command name, or when the
+/// command takes nothing here. A word that is not a command's name has no parameters.
+pub fn params(text: &str, snapshot: &Snapshot, usage: &Usage) -> Option<Params> {
+    let text = text.strip_prefix('/').unwrap_or(text);
+    let (command, rest) = text.split_once(' ')?;
+    let mut words: Vec<&str> = rest.split(' ').collect();
+    let partial = words.pop().unwrap_or("");
+    let done: Vec<&str> = words.into_iter().filter(|w| !w.is_empty()).collect();
+    let all = candidates(command, &done, snapshot);
+    if all.is_empty() {
+        return None;
+    }
+    let typed = format!(
+        "{command} {}",
+        done.iter().map(|w| format!("{w} ")).collect::<String>()
+    );
+    let items: Vec<Param> = if partial.is_empty() {
+        all
+    } else {
+        let q = normalize(partial);
+        let mut scored: Vec<(usize, usize, Param)> = all
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, p)| {
+                let matched = matching_normalized(&q, &normalize(&p.value));
+                (matched >= q.len() - q.len() / 4).then_some((matched, i, p))
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then(
+                    usage
+                        .get(&format!("{typed}{}", b.2.value))
+                        .copied()
+                        .unwrap_or(0)
+                        .cmp(
+                            &usage
+                                .get(&format!("{typed}{}", a.2.value))
+                                .copied()
+                                .unwrap_or(0),
+                        ),
+                )
+                .then(a.1.cmp(&b.1))
+        });
+        scored.into_iter().map(|(_, _, p)| p).collect()
+    };
+    (!items.is_empty()).then(|| Params {
+        command: command.to_string(),
+        typed,
+        partial: partial.to_string(),
+        items,
+    })
 }
 
 /// How often each command has been run, as `key → count`.
@@ -779,5 +1036,143 @@ mod tests {
             assert!(seen.insert(e.run.clone()), "{} twice", e.run);
             assert!(!e.detail.is_empty() && !e.title.is_empty());
         }
+    }
+
+    fn snap() -> Snapshot {
+        Snapshot {
+            models: vec!["anthropic/claude-x".into(), "ollama/llama".into()],
+            tools: vec![
+                ("ghidra".into(), true, true),
+                ("radare2".into(), true, false),
+                ("ida".into(), false, false),
+            ],
+            toolsets: vec![("re".into(), true)],
+            scenarios: vec!["malware-triage".into()],
+            identities: vec![
+                "reverse-engineer".into(),
+                "forensics".into(),
+                "triage".into(),
+            ],
+            user_identities: vec!["triage".into()],
+            reductions: vec![7, 9],
+            ..Default::default()
+        }
+    }
+
+    fn values(p: &Params) -> Vec<&str> {
+        p.items.iter().map(|i| i.value.as_str()).collect()
+    }
+
+    #[test]
+    fn a_commands_arguments_are_offered_once_its_name_and_a_space_are_typed() {
+        let s = snap();
+        let u = Usage::new();
+        // Still a name: no parameters, the command popup's business.
+        assert!(params("identity", &s, &u).is_none());
+        assert!(params("/mod", &s, &u).is_none());
+        // The identities, then the words /identity takes.
+        let p = params("/identity ", &s, &u).unwrap();
+        assert_eq!(
+            &values(&p)[..3],
+            ["reverse-engineer", "forensics", "triage"]
+        );
+        assert!(values(&p).contains(&"new") && values(&p).contains(&"manage"));
+        assert_eq!(p.typed, "identity ");
+        // What is typed narrows it, typos forgiven.
+        let p = params("/identity forn", &s, &u).unwrap();
+        assert_eq!(values(&p)[0], "forensics", "{:?}", values(&p));
+        // A model, a layout, a panel, a reduction.
+        assert_eq!(
+            values(&params("model ", &s, &u).unwrap()),
+            ["anthropic/claude-x", "ollama/llama"]
+        );
+        assert_eq!(values(&params("layout fo", &s, &u).unwrap())[0], "focus");
+        assert!(values(&params("panel ", &s, &u).unwrap()).contains(&"graph"));
+        assert_eq!(values(&params("undo ", &s, &u).unwrap()), ["7", "9"]);
+        // A command with nothing to offer, or one that is not a command.
+        assert!(
+            params("goal ", &s, &u)
+                .map(|p| values(&p) == ["clear"])
+                .unwrap()
+        );
+        assert!(params("look ", &s, &u).is_none());
+        assert!(params("nonsense x", &s, &u).is_none());
+    }
+
+    #[test]
+    fn a_second_argument_depends_on_the_first() {
+        let s = snap();
+        let u = Usage::new();
+        assert_eq!(
+            values(&params("identity edit ", &s, &u).unwrap()),
+            ["triage"],
+            "only saved ones are edited"
+        );
+        assert_eq!(
+            values(&params("identity delete ", &s, &u).unwrap()),
+            ["triage"]
+        );
+        assert_eq!(values(&params("identity show ", &s, &u).unwrap()).len(), 3);
+        assert!(
+            params("identity new ", &s, &u).is_none(),
+            "a new name is typed, not chosen"
+        );
+        assert_eq!(
+            values(&params("context mode ", &s, &u).unwrap()),
+            ["auto", "fade", "compact"]
+        );
+        assert_eq!(
+            values(&params("report level ", &s, &u).unwrap()),
+            ["0", "1", "2"]
+        );
+        assert_eq!(
+            values(&params("reactor-scenario start ", &s, &u).unwrap()),
+            ["malware-triage"]
+        );
+        // Tools: installed ones to switch, not-installed ones to install; on/off after the id.
+        assert_eq!(
+            values(&params("tool ", &s, &u).unwrap()),
+            ["ghidra", "radare2"]
+        );
+        assert_eq!(values(&params("install ", &s, &u).unwrap()), ["ida"]);
+        let p = params("tool ghidra ", &s, &u).unwrap();
+        assert_eq!(values(&p), ["on", "off"]);
+        assert_eq!(p.typed, "tool ghidra ");
+        // Past the last argument there is nothing more to offer.
+        assert!(params("tool ghidra on ", &s, &u).is_none());
+    }
+
+    #[test]
+    fn choosing_a_parameter_runs_the_command_or_completes_it_to_go_on() {
+        let s = snap();
+        let u = Usage::new();
+        let entries = params("tool gh", &s, &u).unwrap().entries();
+        assert_eq!(entries[0].run, "tool ghidra");
+        assert_eq!(
+            entries[0].args,
+            Args::Required,
+            "on or off can follow: complete and wait"
+        );
+        let entries = params("model ", &s, &u).unwrap().entries();
+        assert_eq!(entries[1].run, "model ollama/llama");
+        assert_eq!(
+            entries[1].args,
+            Args::None,
+            "a last argument runs the command"
+        );
+        assert_eq!(entries[1].title, "/model ollama/llama");
+        // The most used comes first among equals.
+        let mut used = Usage::new();
+        used.insert("layout focus".into(), 5);
+        assert_eq!(
+            values(&params("layout ", &s, &used).unwrap())[0],
+            "default",
+            "no query: the order given"
+        );
+        // Equal matches: the one run more often first. A better match beats frequency.
+        let p = params("layout c", &s, &used).unwrap();
+        assert_eq!(values(&p)[0], "focus");
+        let p = params("layout cat", &s, &used).unwrap();
+        assert_eq!(values(&p)[0], "catalogue");
     }
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use gpui_kit::base::dock::PanelView;
 use gpui_kit::base::h_flex;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command as PaletteList, CommandItem, CommandState};
@@ -113,6 +114,34 @@ pub struct TogglePanelAction {
 // ReactorApp — the root view
 // ---------------------------------------------------------------------------
 
+/// What belongs to one open session and nothing else: kept here for the sessions that are
+/// not the active one, while the active one's lives in `ReactorApp`'s own fields (which is
+/// what every panel reads: the tree, the context, the status bar follow the active session).
+#[derive(Clone)]
+struct Bundle {
+    backend: Option<Arc<Backend>>,
+    session: Entity<Session>,
+    composer: Entity<TextareaState>,
+    tree: Vec<TreeRow>,
+    leaf_id: Option<EntryId>,
+    context: Option<ContextView>,
+    preview: Option<PlanView>,
+    context_busy: bool,
+}
+
+/// A session open in this window, with the transcript tab that shows it. Sessions are not
+/// tied to the window: any number are open at once, each in its own tab.
+struct OpenSession {
+    id: String,
+    /// The session's own state as of when it was last the active one.
+    bundle: Bundle,
+    transcript: Entity<crate::panels::TranscriptPanel>,
+    /// How the dock holds the tab; the tab may be closed while the session stays open.
+    handle: Arc<dyn PanelView>,
+    /// The first session's tab is the one the layouts place; it is not closed.
+    primary: bool,
+}
+
 /// The one window's state.
 pub struct ReactorApp {
     pub cwd: PathBuf,
@@ -129,6 +158,8 @@ pub struct ReactorApp {
     graph_panel: Entity<crate::graph::panel::GraphPanel>,
     /// The documents, searched by hand.
     docs_panel: Entity<crate::docs_panel::DocsPanel>,
+    /// The Session Tree, told to draw again when a session starts or stops working.
+    tree_panel: Entity<TreePanel>,
     reactor: Client,
     pub session: Entity<Session>,
     pub composer: Entity<TextareaState>,
@@ -152,6 +183,15 @@ pub struct ReactorApp {
     /// The session tree, and where its tip is.
     pub tree: Vec<TreeRow>,
     pub leaf_id: Option<EntryId>,
+    /// The case's sessions, for continuing an old one (read at start, after every turn and
+    /// when the panel asks).
+    pub sessions: Vec<crate::session_list::SessionRow>,
+    /// Every session open in this window, and which one is the active one: the session
+    /// whose transcript was last in focus (or opened). What a panel shows that belongs to
+    /// a session — tree, context, status, the switches — is the active one's.
+    open: Vec<OpenSession>,
+    active: String,
+
     /// The context panel's feed, and the preview last asked for.
     pub context: Option<ContextView>,
     pub preview: Option<PlanView>,
@@ -191,6 +231,9 @@ pub struct ReactorApp {
     /// The window may close without asking: the question about an unsaved state has been
     /// answered, or there was nothing to ask.
     closing: bool,
+    /// Sessions that were working have been told to stop so that the window can close:
+    /// the question about them is answered.
+    interrupted: bool,
 }
 
 /// The open command palette.
@@ -312,10 +355,17 @@ impl ReactorApp {
             );
             return;
         }
-        if b.is_running() {
+        // The window is replaced, and every session open in it with it.
+        if self
+            .open
+            .iter()
+            .filter_map(|o| o.bundle.backend.as_ref())
+            .chain(self.backend.as_ref())
+            .any(|b| b.is_running())
+        {
             self.push_note(
                 "warning",
-                "The agent is working. Interrupt it or let it finish, then save.",
+                "An agent is working. Interrupt it or let it finish, then save.",
             );
             return;
         }
@@ -401,6 +451,20 @@ impl ReactorApp {
         self.embedding_command(&spec, cx);
     }
 
+    /// The threshold for a match by meaning (0: none).
+    pub fn min_similarity(&self) -> f32 {
+        self.backend.as_ref().map_or(0.0, |b| b.min_similarity())
+    }
+
+    pub fn set_min_similarity(&mut self, value: f32, cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend
+            && let Err(e) = b.set_min_similarity(value)
+        {
+            self.push_note("error", format!("embedding: {e}"));
+        }
+        cx.notify();
+    }
+
     /// How far the vectors being made have got, while a run is going.
     pub fn embedding_progress(&self) -> Option<reactor_db::corpus::Progress> {
         self.embedding
@@ -465,6 +529,11 @@ impl ReactorApp {
         if self.closing {
             return true;
         }
+        // Sessions that are working would be cut off: ask first.
+        if !self.interrupted && !self.working_ids().is_empty() {
+            self.ask_before_interrupting(window, cx);
+            return false;
+        }
         let Some(b) = self.backend.clone() else {
             return true;
         };
@@ -477,6 +546,111 @@ impl ReactorApp {
         }
         self.ask_before_close(window, cx);
         false
+    }
+
+    /// The sessions open in this window that have a turn running now.
+    pub fn working_ids(&self) -> Vec<String> {
+        self.open
+            .iter()
+            .filter(|o| {
+                // The active session's backend is the live one; the same Arc as its bundle's.
+                o.bundle.backend.as_ref().is_some_and(|b| b.is_running())
+            })
+            .map(|o| o.id.clone())
+            .collect()
+    }
+
+    /// Closing the window while a session works: say so, and let the person interrupt it or
+    /// keep the window.
+    fn ask_before_interrupting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let working = self.working_ids();
+        let names = working
+            .iter()
+            .map(|id| crate::session_list::short_id(id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let names = names.clone();
+            let n = working.len();
+            let (keep, stop) = (weak.clone(), weak.clone());
+            dialog
+                .w(px(560.))
+                .close_button(false)
+                .overlay_closable(false)
+                .title(if n == 1 {
+                    "A session is still working"
+                } else {
+                    "Sessions are still working"
+                })
+                .content(move |content, _window, cx| {
+                    content.child(div().text_color(cx.theme().muted_foreground).child(format!(
+                        "Working: {names}. Closing now interrupts {}. What it has done so far stays in the session log, and the session can be opened again.",
+                        if n == 1 { "it" } else { "them" }
+                    )))
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_end()
+                        .child(Button::new("interrupt-keep").label("Keep working").on_click(
+                            move |_, window, cx| {
+                                use gpui_kit::component::WindowExt as _;
+                                window.close_dialog(cx);
+                                let _ = keep.update(cx, |_, cx| cx.notify());
+                            },
+                        ))
+                        .child(
+                            Button::new("interrupt-stop")
+                                .label("Interrupt and close")
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    let _ = stop.update(cx, |app, cx| {
+                                        app.interrupt_and_close(window, cx)
+                                    });
+                                }),
+                        ),
+                )
+        });
+        cx.notify();
+    }
+
+    /// Stop every session that is working, wait for them to settle (a few seconds at most),
+    /// and then close the window as it would have: the question about an unsaved state
+    /// follows, if there is one.
+    pub fn interrupt_and_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        if window.has_active_dialog(cx) {
+            window.close_dialog(cx);
+        }
+        for o in &self.open {
+            if let Some(b) = &o.bundle.backend
+                && b.is_running()
+            {
+                b.cancel();
+            }
+        }
+        self.push_note("info", "interrupting before closing…");
+        cx.spawn_in(window, async move |this, cx| {
+            for _ in 0..50 {
+                let still = this
+                    .update(cx, |app, _| !app.working_ids().is_empty())
+                    .unwrap_or(false);
+                if !still {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            }
+            let _ = this.update_in(cx, |app, window, cx| {
+                app.interrupted = true;
+                app.request_quit(window, cx);
+            });
+        })
+        .detach();
     }
 
     /// Hand the unsaved state to a helper that acts once this window has let go of it.
@@ -563,13 +737,14 @@ impl ReactorApp {
 
     // -- the memory switches (ADR-0047) -------------------------------------------------------
 
-    /// The switches in effect for this session: (other sessions' history, the case graph).
-    pub fn memory(&self) -> (bool, bool) {
+    /// The switches in effect for this session: (other sessions' history, the case graph,
+    /// the documents).
+    pub fn memory(&self) -> (bool, bool, bool) {
         self.backend
             .as_ref()
             .map(|b| b.memory())
-            .map(|m| (m.session_history(), m.case_graph()))
-            .unwrap_or((true, true))
+            .map(|m| (m.session_history(), m.case_graph(), m.documents()))
+            .unwrap_or((true, true, true))
     }
 
     /// Set one of them for this session.
@@ -632,6 +807,7 @@ impl ReactorApp {
             app.refresh_catalogue(cx);
             app.refresh_services(false, cx);
             app.refresh_tree(cx);
+            app.refresh_sessions(cx);
             app.refresh_statuses(cx);
             if let Some(b) = &app.backend {
                 b.refresh_context();
@@ -646,12 +822,7 @@ impl ReactorApp {
         args: &crate::start::ResolvedLaunch,
     ) -> Self {
         let session = cx.new(|_| Session::new());
-        let composer = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(1, 8)
-                .submit_on_enter(true)
-                .placeholder("Prompt…")
-        });
+        let composer = Self::make_composer(window, cx);
         let cwd = args.cwd.clone();
         let workdir_fs = Arc::new(reactor_fs::LocalFs::new(
             &cwd,
@@ -661,25 +832,41 @@ impl ReactorApp {
             ),
         ));
 
-        // Composer: Enter submits (queued while a turn runs).
-        cx.subscribe_in(
-            &composer,
-            window,
-            |this, _composer, event: &InputEvent, window, cx| match event {
-                InputEvent::PressEnter { shift, .. } if !*shift => this.send_composer(window, cx),
-                InputEvent::Change => this.refresh_slash(true, cx),
-                _ => {}
-            },
-        )
-        .detach();
+        // The agent. A failure to start is shown, not fatal: the window stays open. Started
+        // before the panels because the transcript tab is the session's.
+        let opts = StartOptions {
+            cwd: cwd.clone(),
+            resume: args.resume_session(&reactor_core::Paths::from_env()),
+            model: args.launch_args.model.clone(),
+            shared: None,
+        };
+        let (backend, startup_error) = match Backend::start(opts) {
+            Ok(b) => (Some(Arc::new(b)), None),
+            Err(e) => (None, Some(format!("could not start the agent: {e}"))),
+        };
+        let first_id = backend
+            .as_ref()
+            .map(|b| b.session_id.clone())
+            .unwrap_or_default();
 
         let weak_app = cx.weak_entity();
         let (dock_area, _skin) = DockSkin::dock_area("reactor-main", Some(1), window, cx);
         // Built once and kept as handles: a layout preset rearranges these rather than
         // building new panels, so switching never costs the console its scrollback or the
         // transcript its scroll position (crate::layout).
-        let transcript = cx.new(|cx| TranscriptPanel::new(weak_app.clone(), composer.clone(), cx));
+        let transcript = cx.new(|cx| {
+            TranscriptPanel::new(
+                weak_app.clone(),
+                first_id.clone(),
+                session.clone(),
+                composer.clone(),
+                window,
+                cx,
+            )
+        });
+        let primary_transcript = transcript.clone();
         let tree = cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx));
+        let tree_panel = tree.clone();
         let tools = cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx));
         let toolsets = cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx));
         let context = cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx));
@@ -730,16 +917,6 @@ impl ReactorApp {
         let layout = ui.start_layout();
         layout.apply(&panels, &dock_area, window, cx);
 
-        // The agent. A failure to start is shown, not fatal: the window stays open.
-        let opts = StartOptions {
-            cwd: cwd.clone(),
-            resume: args.resume_session(&reactor_core::Paths::from_env()),
-            model: args.launch_args.model.clone(),
-        };
-        let (backend, startup_error) = match Backend::start(opts) {
-            Ok(b) => (Some(Arc::new(b)), None),
-            Err(e) => (None, Some(format!("could not start the agent: {e}"))),
-        };
         // The graph panel reads the case through the backend, which exists only now.
         graph_panel.update(cx, |g, cx| g.set_backend(backend.clone(), cx));
         docs_panel.update(cx, |d, cx| d.set_backend(backend.clone(), cx));
@@ -788,6 +965,28 @@ impl ReactorApp {
             .map(crate::prompt_history::PromptHistory::from_messages)
             .unwrap_or_default();
 
+        // The session this window opened with is the first of those open, and the active one.
+        let open = backend
+            .as_ref()
+            .map(|b| OpenSession {
+                id: first_id.clone(),
+                bundle: Bundle {
+                    backend: Some(b.clone()),
+                    session: session.clone(),
+                    composer: composer.clone(),
+                    tree: tree.clone(),
+                    leaf_id,
+                    context: None,
+                    preview: None,
+                    context_busy: false,
+                },
+                handle: panel_handle(primary_transcript.clone()),
+                transcript: primary_transcript.clone(),
+                primary: true,
+            })
+            .into_iter()
+            .collect();
+
         Self {
             menu_bar: crate::chrome::menu_bar(cx),
             workdir_fs,
@@ -797,6 +996,7 @@ impl ReactorApp {
             embedding: None,
             graph_panel,
             docs_panel,
+            tree_panel,
             reactor,
             session,
             composer,
@@ -816,6 +1016,9 @@ impl ReactorApp {
             services_loading: true,
             tree,
             leaf_id,
+            sessions: Vec::new(),
+            open,
+            active: first_id,
             context: None,
             preview: None,
             context_busy: false,
@@ -840,6 +1043,7 @@ impl ReactorApp {
             context_scope: crate::settings_window::ContextScope::Default,
             settings_window: None,
             closing: false,
+            interrupted: false,
         }
     }
 
@@ -850,6 +1054,18 @@ impl ReactorApp {
         let Some(receiver) = self.backend.as_ref().and_then(|b| b.take_events()) else {
             return;
         };
+        let id = self.active.clone();
+        self.start_pump_for(id, receiver, cx);
+    }
+
+    /// One pump per open session: its events are ingested for it, whether or not it is the
+    /// active one.
+    fn start_pump_for(
+        &mut self,
+        id: String,
+        receiver: mpsc::Receiver<UiEvent>,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(PUMP_TICK).await;
@@ -868,7 +1084,7 @@ impl ReactorApp {
                 let ok = this
                     .update(cx, |app, cx| {
                         for e in drained {
-                            app.ingest(e, cx);
+                            app.ingest_for(&id, e, cx);
                         }
                     })
                     .is_ok();
@@ -911,6 +1127,8 @@ impl ReactorApp {
             }
             UiEvent::TurnEnded(result) => {
                 backend.turn_finished();
+                self.refresh_sessions(cx);
+                self.tree_panel.update(cx, |_, cx| cx.notify());
                 self.graph_panel.update(cx, |g, cx| g.refresh(cx));
                 let store = backend.store();
                 let ok = result.is_ok();
@@ -1136,6 +1354,308 @@ impl ReactorApp {
     }
 
     // -- derived data ------------------------------------------------------------------------
+
+    /// Read the case's sessions again.
+    pub fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
+        if let Some(b) = &self.backend {
+            let here: Vec<String> = self.open.iter().map(|o| o.id.clone()).collect();
+            self.sessions = crate::session_list::session_rows(&b.case, &self.active, &here);
+        }
+        cx.notify();
+    }
+
+    // -- sessions open in the window ---------------------------------------------------------
+
+    /// The session the window follows: its tree, its context, its status, its switches.
+    pub fn active_session_id(&self) -> String {
+        self.active.clone()
+    }
+
+    /// The case's id, which with a session's number names the session anywhere:
+    /// `<case id>#<number>`.
+    pub fn case_id(&self) -> String {
+        self.backend
+            .as_ref()
+            .map(|b| b.case.meta().id.clone())
+            .unwrap_or_default()
+    }
+
+    /// A prompt box. Enter sends (queued while a turn runs); typing offers the `/` commands.
+    fn make_composer(window: &mut Window, cx: &mut Context<Self>) -> Entity<TextareaState> {
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, 8)
+                .submit_on_enter(true)
+                .placeholder("Prompt…")
+        });
+        cx.subscribe_in(
+            &composer,
+            window,
+            |this, composer, event: &InputEvent, window, cx| {
+                // The prompt that is typed in belongs to the active session, whatever was
+                // active a moment ago.
+                if *composer != this.composer
+                    && let Some(id) = this
+                        .open
+                        .iter()
+                        .find(|o| o.bundle.composer == *composer)
+                        .map(|o| o.id.clone())
+                {
+                    this.activate_session(&id, window, cx);
+                }
+                match event {
+                    InputEvent::PressEnter { shift, .. } if !*shift => {
+                        this.send_composer(window, cx)
+                    }
+                    InputEvent::Change => this.refresh_slash(true, cx),
+                    _ => {}
+                }
+            },
+        )
+        .detach();
+        composer
+    }
+
+    /// The active session's own state, as it is now.
+    fn live_bundle(&self) -> Bundle {
+        Bundle {
+            backend: self.backend.clone(),
+            session: self.session.clone(),
+            composer: self.composer.clone(),
+            tree: self.tree.clone(),
+            leaf_id: self.leaf_id,
+            context: self.context.clone(),
+            preview: self.preview.clone(),
+            context_busy: self.context_busy,
+        }
+    }
+
+    /// Put the active session's state away in its place in the list.
+    fn store_live(&mut self) {
+        let live = self.live_bundle();
+        if let Some(o) = self.open.iter_mut().find(|o| o.id == self.active) {
+            o.bundle = live;
+        }
+    }
+
+    /// Make a session's state the one the window's fields hold.
+    fn load_bundle(&mut self, id: &str) -> bool {
+        let Some(b) = self
+            .open
+            .iter()
+            .find(|o| o.id == id)
+            .map(|o| o.bundle.clone())
+        else {
+            return false;
+        };
+        self.backend = b.backend;
+        self.session = b.session;
+        self.composer = b.composer;
+        self.tree = b.tree;
+        self.leaf_id = b.leaf_id;
+        self.context = b.context;
+        self.preview = b.preview;
+        self.context_busy = b.context_busy;
+        self.active = id.to_string();
+        true
+    }
+
+    /// Make a session the active one: the tree, the context, the status bar and the graph
+    /// panel's edits follow it from now on.
+    pub fn activate_session(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active == id || !self.open.iter().any(|o| o.id == id) {
+            return;
+        }
+        self.store_live();
+        self.load_bundle(id);
+        // What belonged to the other one's prompt and context view.
+        self.slash = SlashUi::default();
+        self.inspect = None;
+        self.refresh_tree(cx);
+        self.refresh_sessions(cx);
+        if let Some(b) = &self.backend {
+            b.refresh_context();
+        }
+        let backend = self.backend.clone();
+        self.graph_panel
+            .update(cx, |g, cx| g.set_backend(backend.clone(), cx));
+        self.docs_panel
+            .update(cx, |d, cx| d.set_backend(backend, cx));
+        // Its tab's title says which one is active.
+        let _ = window;
+        cx.notify();
+    }
+
+    /// Run `f` as if `id` were the active session, and put things back: how an event for a
+    /// session that is not in front is handled with the code that handles the active one's.
+    fn with_session<R>(&mut self, id: &str, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        if id == self.active {
+            return Some(f(self));
+        }
+        if !self.open.iter().any(|o| o.id == id) {
+            return None;
+        }
+        let before = self.active.clone();
+        self.store_live();
+        self.load_bundle(id);
+        let result = f(self);
+        self.store_live();
+        self.load_bundle(&before);
+        Some(result)
+    }
+
+    /// An event from session `id`'s backend.
+    fn ingest_for(&mut self, id: &str, event: UiEvent, cx: &mut Context<Self>) {
+        self.with_session(id, |app| app.ingest(event, cx));
+    }
+
+    /// Show a transcript tab: add it to the dock if it is not there, else bring it forward.
+    fn show_transcript(
+        &mut self,
+        handle: Arc<dyn PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = handle.panel_id(cx);
+        self.dock_area.update(cx, |area, cx| {
+            if area.panel(panel).is_some() {
+                area.select_panel(panel, window, cx);
+            } else {
+                area.add_panel_view(handle, DockPlacement::Center, None, window, cx);
+            }
+        });
+    }
+
+    /// Open a session of this case in a transcript tab of its own (a new session when `id`
+    /// is `None`): the window keeps the ones it has. A session already open is brought
+    /// forward, its tab put back if it was closed.
+    pub fn open_session(
+        &mut self,
+        id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = &id
+            && let Some(o) = self.open.iter().find(|o| o.id == *id)
+        {
+            let handle = o.handle.clone();
+            self.show_transcript(handle, window, cx);
+            self.activate_session(id, window, cx);
+            return;
+        }
+        let Some(base) = self.backend.clone() else {
+            self.push_note(
+                "warning",
+                "The agent did not start, so there is no case to open a session in.",
+            );
+            return;
+        };
+        let model = base.model();
+        let started = Backend::start(StartOptions {
+            cwd: self.cwd.clone(),
+            resume: id,
+            model: Some(model).filter(|m| !m.is_empty()),
+            shared: Some(base.shared()),
+        });
+        let backend = match started {
+            Ok(b) => Arc::new(b),
+            Err(e) => {
+                self.push_note("error", format!("could not open that session: {e}"));
+                self.refresh_sessions(cx);
+                return;
+            }
+        };
+        let new_id = backend.session_id.clone();
+        let session = cx.new(|_| Session::new());
+        let store = backend.store();
+        session.update(cx, |s, _| {
+            s.rebuild(&store.lock().unwrap());
+            s.model = Some(backend.model()).filter(|m| !m.is_empty());
+        });
+        let composer = Self::make_composer(window, cx);
+        let weak = cx.weak_entity();
+        let transcript = cx.new(|cx| {
+            TranscriptPanel::new(
+                weak,
+                new_id.clone(),
+                session.clone(),
+                composer.clone(),
+                window,
+                cx,
+            )
+        });
+        let handle = panel_handle(transcript.clone());
+        let head = store.lock().unwrap().head();
+        self.open.push(OpenSession {
+            id: new_id.clone(),
+            bundle: Bundle {
+                backend: Some(backend.clone()),
+                session,
+                composer,
+                tree: backend.tree(),
+                leaf_id: Some(head),
+                context: None,
+                preview: None,
+                context_busy: false,
+            },
+            transcript,
+            handle: handle.clone(),
+            primary: false,
+        });
+        if let Some(receiver) = backend.take_events() {
+            self.start_pump_for(new_id.clone(), receiver, cx);
+        }
+        self.show_transcript(handle, window, cx);
+        self.activate_session(&new_id, window, cx);
+        self.refresh_sessions(cx);
+    }
+
+    /// Let go of a session this window has open: its tab goes and its lock is released. The
+    /// session is kept in the case and can be opened again. The first session of the window
+    /// stays (its tab is the one the layouts place), and one that is working is left alone.
+    pub fn close_session(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.open.iter().position(|o| o.id == id) else {
+            return;
+        };
+        if self.open[at].primary {
+            self.push_note(
+                "info",
+                "The window's first session stays open; close the window to let go of it.",
+            );
+            return;
+        }
+        let working = self.open[at]
+            .bundle
+            .backend
+            .as_ref()
+            .is_some_and(|b| b.is_running());
+        if working {
+            self.push_note(
+                "warning",
+                "That session is working. Interrupt it or let it finish first.",
+            );
+            return;
+        }
+        // Another one becomes the active one first, if this was.
+        if self.active == id {
+            let next = self
+                .open
+                .iter()
+                .rev()
+                .find(|o| o.id != id)
+                .map(|o| o.id.clone());
+            if let Some(next) = next {
+                self.activate_session(&next, window, cx);
+            }
+        }
+        if let Some(at) = self.open.iter().position(|o| o.id == id) {
+            let closed = self.open.remove(at);
+            self.dock_area.update(cx, |area, cx| {
+                area.remove_panel(closed.transcript.clone(), window, cx)
+            });
+        }
+        self.refresh_sessions(cx);
+    }
 
     pub fn refresh_tree(&mut self, _cx: &mut Context<Self>) {
         if let Some(b) = &self.backend {
@@ -1546,6 +2066,8 @@ impl ReactorApp {
             s.run = Some(crate::session::Run::new(std::time::Instant::now()));
         });
         backend.prompt(text);
+        // The session list shows it working.
+        self.tree_panel.update(cx, |_, cx| cx.notify());
         cx.notify();
     }
 
@@ -2608,6 +3130,21 @@ impl ReactorApp {
         let percent = session.context_percent;
 
         let mut left = h_flex().gap_3().items_center();
+        // Which session everything on screen that belongs to one is about.
+        let active = self.active.clone();
+        if !active.is_empty() {
+            left = left.child(crate::hints::tip(
+                div()
+                    .id("active-session")
+                    .text_color(cx.theme().accent)
+                    .text_size(cx.theme().font_size * 0.85)
+                    .child(format!("session {}", crate::session_list::short_id(&active))),
+                format!(
+                    "Active session {}. The tree, the context and the status follow it: it is the session whose transcript was last in focus.",
+                    crate::session_list::reference(&self.case_id(), &active)
+                ),
+            ));
+        }
         for (_, text) in &statuses {
             left = left.child(
                 div()

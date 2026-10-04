@@ -21,6 +21,7 @@ pub mod palette;
 pub mod panels;
 pub mod prompt_history;
 pub mod session;
+pub mod session_list;
 pub mod settings;
 pub mod settings_window;
 pub mod start;

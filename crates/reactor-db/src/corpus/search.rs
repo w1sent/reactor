@@ -33,6 +33,29 @@ pub struct Hit {
     /// Where each ranking put it (1 is first), if it was in it at all.
     pub keyword_rank: Option<usize>,
     pub meaning_rank: Option<usize>,
+    /// How close its meaning is to the query's: the cosine similarity, 1 being identical,
+    /// if the meaning ranking had it. Larger is closer. (The score above is made of ranks,
+    /// not of this.)
+    pub similarity: Option<f32>,
+}
+
+/// How a search is run, beyond what it is for.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Look the words up. False: by meaning alone.
+    pub keywords: bool,
+    /// A passage whose meaning is less similar than this (cosine, 0 to 1) is not a match by
+    /// meaning. 0 asks for no threshold.
+    pub min_similarity: f32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            keywords: true,
+            min_similarity: 0.0,
+        }
+    }
 }
 
 /// What to look for.
@@ -104,7 +127,9 @@ fn with_words(db: &Db, ids: Vec<i64>) -> Result<Vec<i64>> {
     Ok(ids.into_iter().filter(|id| !hollow.contains(id)).collect())
 }
 
-fn meaning_ids(db: &Db, model: &Model, v: &[f32], k: usize) -> Result<Vec<i64>> {
+/// The nearest passages to a vector, nearest first, with their similarity (cosine distance
+/// from the index, turned round so that larger is closer).
+fn meaning_ids(db: &Db, model: &Model, v: &[f32], k: usize) -> Result<Vec<(i64, f32)>> {
     if v.len() != model.dim {
         return Err(crate::error::Error::Invalid(format!(
             "a query vector of {} for a model of {} dimensions",
@@ -115,11 +140,13 @@ fn meaning_ids(db: &Db, model: &Model, v: &[f32], k: usize) -> Result<Vec<i64>> 
     let blob = vectors::blob(v);
     db.read(|conn| {
         let mut stmt = conn.prepare(&format!(
-            "SELECT chunk_id FROM {} WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance",
+            "SELECT chunk_id, distance FROM {} WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance",
             vectors::table(model.id)
         ))?;
         let rows = stmt
-            .query_map(params![blob, k as i64], |r| r.get(0))?
+            .query_map(params![blob, k as i64], |r| {
+                Ok((r.get::<_, i64>(0)?, 1.0 - r.get::<_, f64>(1)? as f32))
+            })?
             .collect::<std::result::Result<_, _>>()?;
         Ok(rows)
     })
@@ -127,12 +154,26 @@ fn meaning_ids(db: &Db, model: &Model, v: &[f32], k: usize) -> Result<Vec<i64>> 
 
 /// Search the corpus: by keyword, and by meaning when the query has a vector, fused.
 pub fn search(db: &Db, q: &Query) -> Result<Vec<Hit>> {
-    search_ranked(db, q, true)
+    search_with(db, q, &Options::default())
 }
 
 /// As [`search`], but with `keywords` false the words are not looked up: the ranking is by
 /// meaning alone (it is empty without a vector).
 pub fn search_ranked(db: &Db, q: &Query, keywords: bool) -> Result<Vec<Hit>> {
+    search_with(
+        db,
+        q,
+        &Options {
+            keywords,
+            ..Options::default()
+        },
+    )
+}
+
+/// [`search`] with its options: whether to use the words, and how close in meaning a passage
+/// has to be.
+pub fn search_with(db: &Db, q: &Query, options: &Options) -> Result<Vec<Hit>> {
+    let keywords = options.keywords;
     let limit = q.limit.max(1);
     // Each ranking is cut deeper than the answer, so that something both put fairly high
     // can beat something only one put first.
@@ -142,10 +183,17 @@ pub fn search_ranked(db: &Db, q: &Query, keywords: bool) -> Result<Vec<Hit>> {
     } else {
         Vec::new()
     };
-    let meaning = match q.vector {
+    let nearest = match q.vector {
         Some((model, v)) => meaning_ids(db, model, v, depth)?,
         None => Vec::new(),
     };
+    // Too far in meaning is not a match, however it ranks among the rest.
+    let nearest: Vec<(i64, f32)> = nearest
+        .into_iter()
+        .filter(|(_, sim)| options.min_similarity <= 0.0 || *sim >= options.min_similarity)
+        .collect();
+    let similarity: HashMap<i64, f32> = nearest.iter().copied().collect();
+    let meaning: Vec<i64> = nearest.into_iter().map(|(id, _)| id).collect();
     // A passage with nothing in it is never an answer, whichever ranking liked it.
     let (keyword, meaning) = (with_words(db, keyword)?, with_words(db, meaning)?);
     let mut score: HashMap<i64, Scored> = HashMap::new();
@@ -186,6 +234,7 @@ pub fn search_ranked(db: &Db, q: &Query, keywords: bool) -> Result<Vec<Hit>> {
                     score,
                     keyword_rank,
                     meaning_rank,
+                    similarity: similarity.get(&id).copied(),
                 })
             });
             // A passage removed between the ranking and now is not a hit.
@@ -223,6 +272,7 @@ pub fn hits_at(db: &Db, source_uri: &str, heading_path: &str) -> Result<Vec<Hit>
                     score: 0.0,
                     keyword_rank: None,
                     meaning_rank: None,
+                    similarity: None,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;

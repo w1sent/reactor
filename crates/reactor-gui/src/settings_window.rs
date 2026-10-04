@@ -699,6 +699,18 @@ fn documents_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
                 },
                 app,
             ));
+    let (t_get, t_set) = (app.clone(), app.clone());
+    let matching = SettingGroup::new().title("Matching").item(SettingItem::new(
+        "Meaning threshold",
+        SettingField::<f64>::number_input(
+            sized(0.0, 1.0, 0.05),
+            move |cx| f64::from(t_get.read(cx).min_similarity()),
+            move |v, cx| {
+                t_set.update(cx, |app, cx| app.set_min_similarity(v as f32, cx));
+            },
+        )
+        .default_value(0.0),
+    ));
     let choose = SettingGroup::new()
         .title("Choose the model")
         .item(provider_tabs(
@@ -749,9 +761,9 @@ fn documents_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
     info(
         SettingPage::new("Documents")
             .icon(IconName::BookOpen)
-            .groups([state, choose]),
+            .groups([state, matching, choose]),
         "documents-info",
-        "The model that lets the agent search imported documents by meaning. There is no default. With OpenAI or Gemini the text of your documents is sent to that provider; with Ollama it stays on this machine. Changing the model re-embeds in the background. Saved in ~/.reactor/settings.json. Import documents with /import or Case > Import Documents.",
+        "The model that lets the agent search imported documents by meaning. There is no default. With OpenAI or Gemini the text of your documents is sent to that provider; with Ollama it stays on this machine. Changing the model re-embeds in the background. The meaning threshold is how close in meaning (cosine similarity, 0 to 1, larger is closer) a passage must be to a question to count as a match; 0 means none, and a good value depends on the model: look at the similarity shown for a result in the Documents panel and set it just under what the results you wanted had. Saved in ~/.reactor/settings.json. Import documents with /import or Case > Import Documents.",
     )
 }
 

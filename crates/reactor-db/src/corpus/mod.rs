@@ -16,7 +16,7 @@
 mod search;
 mod vectors;
 
-pub use search::{Hit, Query, hits_at, search, search_ranked};
+pub use search::{Hit, Options, Query, hits_at, search, search_ranked, search_with};
 pub use vectors::{
     Model, Progress, clear_vectors, forget_model, models, pending, progress, rebuild_indexes,
     register_model, store_vectors, usable_model,

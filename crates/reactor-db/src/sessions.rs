@@ -74,6 +74,22 @@ fn insert(tx: &rusqlite::Transaction, session: &str, row: &Row) -> Result<()> {
     Ok(())
 }
 
+/// The next session index of the case: one more than the highest that is a plain number
+/// (`1`, `2`, `3` …; ids that are anything else — those made before indices — are not
+/// counted). Asked, not reserved: whoever creates the session with it must be ready to ask
+/// again if another process took it first.
+pub fn next_index(db: &Db) -> Result<String> {
+    db.read(|conn| {
+        let n: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) + 1 FROM session
+              WHERE id <> '' AND id NOT GLOB '*[^0-9]*'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n.to_string())
+    })
+}
+
 /// Append one entry. Its id must be the next one: ids are dense per session.
 pub fn append(db: &Db, session: &str, row: Row) -> Result<()> {
     let session = session.to_string();

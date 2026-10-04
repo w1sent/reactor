@@ -742,3 +742,74 @@ async fn a_result_can_be_taken_apart_again_exactly() {
     );
     assert!(reactor_agent::tools::docs::parse_result("docs_search needs a `query`").is_none());
 }
+
+#[tokio::test]
+async fn the_threshold_in_the_settings_limits_what_counts_as_close_in_meaning() {
+    let e: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new("ollama/test", 64));
+    let r = rig(Some(e.clone()));
+    corpus_of(&r.case());
+    embed_all(&r.case(), e.as_ref()).await;
+
+    let ask = || r.search(json!({ "query": "beacons every 47 seconds", "mode": "semantic" }));
+    let open = ask().await;
+    assert!(
+        open.text.contains("Emotet > Network") && !open.text.contains("close enough"),
+        "{}",
+        open.text
+    );
+
+    // The user sets a threshold nothing can reach: it is read as it stands, said in the
+    // result, and nothing is returned.
+    let mut patch = serde_json::Map::new();
+    patch.insert("embedding".into(), json!({ "minSimilarity": 0.999 }));
+    reactor_context::settings::Settings::patch(&r.ctx.paths, patch).unwrap();
+    let shut = ask().await;
+    assert!(
+        shut.text.starts_with("no passage matches")
+            && shut.text.contains("similarity of at least 0.999"),
+        "{}",
+        shut.text
+    );
+    // Keyword search is not affected by it.
+    let kw = r
+        .search(json!({ "query": "decrypt_config", "mode": "keyword" }))
+        .await;
+    assert!(kw.text.contains("section=\"Advisory\""), "{}", kw.text);
+}
+
+#[tokio::test]
+async fn the_documents_switch_withdraws_the_search_from_the_agent_and_refuses_it() {
+    let r = rig(None);
+    corpus_of(&r.case());
+    assert!(r.offered());
+
+    // Off in this session's layer: not offered.
+    let mut state = r.ctx.state();
+    state.memory.documents = Some(false);
+    assert!(
+        !r.tools
+            .specs(&state)
+            .iter()
+            .any(|t| t.name == "docs_search")
+    );
+    // Back on: offered again, and a layer that says nothing leaves it on.
+    state.memory.documents = None;
+    assert!(
+        r.tools
+            .specs(&state)
+            .iter()
+            .any(|t| t.name == "docs_search")
+    );
+
+    // Off in the settings (the level below): a call that still comes is refused with the
+    // reason, and the other tools are not touched.
+    let mut patch = serde_json::Map::new();
+    patch.insert("memory".into(), json!({ "documents": false }));
+    reactor_context::settings::Settings::patch(&r.ctx.paths, patch).unwrap();
+    let out = r.search(json!({ "query": "decrypt_config" })).await;
+    assert!(
+        out.is_error && out.text.contains("documents switch is off"),
+        "{}",
+        out.text
+    );
+}

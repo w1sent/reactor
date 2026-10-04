@@ -62,7 +62,8 @@ pub fn parse_args(args: &[String]) -> LaunchArgs {
             "--save-case" => launch.save_case = true,
             "--session" => {
                 i += 1;
-                launch.session = args.get(i).cloned();
+                // `3`, `#3` and `<case id>#3` all name the case's third session.
+                launch.session = args.get(i).map(|s| crate::session_list::parse_reference(s));
             }
             "--model" | "-m" => {
                 i += 1;

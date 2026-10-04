@@ -236,7 +236,7 @@ impl ContextSettings {
 /// What a session may draw on from the rest of its case
 /// ([ADR-0047](../../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)), as one
 /// *layer* like [`ContextSettings`]: an absent field means "the layer below decides", and
-/// with no layer deciding, both are on.
+/// with no layer deciding, all are on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySettings {
@@ -247,6 +247,10 @@ pub struct MemorySettings {
     /// no writing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub case_graph: Option<bool>,
+    /// Whether the session may search the case's reference documents. Off withdraws
+    /// `docs_search`; the person can still search them in the window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documents: Option<bool>,
 }
 
 impl MemorySettings {
@@ -258,6 +262,7 @@ impl MemorySettings {
         MemorySettings {
             session_history: r.get("sessionHistory").and_then(Value::as_bool),
             case_graph: r.get("caseGraph").and_then(Value::as_bool),
+            documents: r.get("documents").and_then(Value::as_bool),
         }
     }
 
@@ -270,6 +275,7 @@ impl MemorySettings {
         MemorySettings {
             session_history: self.session_history.or(below.session_history),
             case_graph: self.case_graph.or(below.case_graph),
+            documents: self.documents.or(below.documents),
         }
     }
 
@@ -280,22 +286,37 @@ impl MemorySettings {
     pub fn case_graph(&self) -> bool {
         self.case_graph.unwrap_or(true)
     }
+
+    pub fn documents(&self) -> bool {
+        self.documents.unwrap_or(true)
+    }
 }
 
 /// The model that makes the vectors the context documents are searched by
 /// ([ADR-0046](../../../docs/adr/0046-the-analysis-database-is-sqlite-inside-the-case.md)).
 /// Global only: a case records which model made its vectors, and a new session simply uses
 /// what is chosen. There is no default — until one is chosen, search is by keyword.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmbeddingSettings {
     /// `provider/name`, in the same form as the chat model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// How close in meaning a passage must be to a question to count as a match, as a cosine
+    /// similarity from 0 (no threshold) to 1 (identical). What is a good value depends on
+    /// the model; unset means none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_similarity: Option<f32>,
 }
 
 impl EmbeddingSettings {
     pub fn is_empty(&self) -> bool {
-        self.model.is_none()
+        self.model.is_none() && self.min_similarity.is_none()
+    }
+
+    /// The threshold in effect: 0 when none is set.
+    pub fn threshold(&self) -> f32 {
+        self.min_similarity.unwrap_or(0.0)
     }
 }
 
@@ -411,6 +432,13 @@ impl Settings {
             .and_then(Value::as_str)
             .filter(|m| m.contains('/'))
             .map(str::to_string);
+        s.embedding.min_similarity = root
+            .get("embedding")
+            .and_then(|e| e.get("minSimilarity"))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 1.0) as f32)
+            .filter(|v| *v > 0.0);
 
         if let Some(r) = root.get("reporting").and_then(Value::as_object) {
             if let Some(level) = number(r.get("level"))
@@ -477,5 +505,38 @@ impl Settings {
         let next = Settings::from_json(&doc);
         next.save(paths)?;
         Ok(next)
+    }
+}
+
+#[cfg(test)]
+mod threshold_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_meaning_threshold_is_kept_clamped_and_absent_means_none() {
+        let s = Settings::from_json(
+            &json!({ "embedding": { "model": "ollama/x", "minSimilarity": 0.45 } }),
+        );
+        assert_eq!(s.embedding.threshold(), 0.45);
+        assert_eq!(s.embedding.model.as_deref(), Some("ollama/x"));
+        assert_eq!(
+            Settings::from_json(&json!({ "embedding": { "minSimilarity": 7 } }))
+                .embedding
+                .threshold(),
+            1.0
+        );
+        assert_eq!(
+            Settings::from_json(&json!({ "embedding": { "minSimilarity": -1 } }))
+                .embedding
+                .threshold(),
+            0.0
+        );
+        assert_eq!(Settings::from_json(&json!({})).embedding.threshold(), 0.0);
+        // It survives being written out and read back, and is left out when it is not set.
+        let back = Settings::from_json(&serde_json::to_value(&s).unwrap());
+        assert_eq!(back.embedding, s.embedding);
+        let none = serde_json::to_value(Settings::default()).unwrap();
+        assert!(none.get("embedding").is_none());
     }
 }

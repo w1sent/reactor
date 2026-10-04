@@ -108,6 +108,27 @@ pub fn snippet(text: &str, words: &[String], max_chars: usize) -> String {
     )
 }
 
+/// `hits` as listed: as given, or closest in meaning first with those that have no
+/// similarity last. Stable, so equal ones keep the search's order.
+fn ordered(hits: &[Hit], by_similarity: bool) -> Vec<Hit> {
+    let mut out = hits.to_vec();
+    if by_similarity {
+        let key = |h: &Hit| h.similarity.unwrap_or(f32::NEG_INFINITY);
+        out.sort_by(|a, b| key(b).total_cmp(&key(a)));
+    }
+    out
+}
+
+/// The order the results are listed in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sort {
+    /// As the search ranked them: keyword and meaning ranks fused. A passage ranked high by
+    /// its words can come before one that is closer in meaning.
+    Relevance,
+    /// Closest in meaning first; those with no similarity (found by words only) last.
+    Similarity,
+}
+
 /// What a person can ask of the search.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Choice {
@@ -136,7 +157,10 @@ pub struct DocsPanel {
     meaning: std::result::Result<String, String>,
     /// Documents and passages in the case.
     counts: (usize, usize),
+    /// The results as the search ranked them, and as they are listed now.
+    found: Vec<Hit>,
     hits: Vec<Hit>,
+    sort: Sort,
     /// The words the results are for, to mark in them.
     words: Vec<String>,
     /// How the last search ran, in a line.
@@ -179,7 +203,9 @@ impl DocsPanel {
             choice: Choice::Both,
             meaning: Err(String::new()),
             counts: (0, 0),
+            found: Vec::new(),
             hits: Vec::new(),
+            sort: Sort::Relevance,
             words: Vec::new(),
             status: String::new(),
             error: None,
@@ -244,16 +270,28 @@ impl DocsPanel {
                             "{} passage{} {}",
                             found.hits.len(),
                             if found.hits.len() == 1 { "" } else { "s" },
-                            match (this.choice, &found.meaning) {
-                                (Choice::Keyword, _) => "by keyword".to_string(),
-                                (Choice::Meaning, Ok(m)) => format!("by meaning ({})", m.name),
-                                (_, Ok(m)) => format!("by keyword and meaning ({})", m.name),
-                                (_, Err(_)) => "by keyword".to_string(),
+                            {
+                                let close = if found.min_similarity > 0.0 {
+                                    format!(", similarity of at least {}", found.min_similarity)
+                                } else {
+                                    String::new()
+                                };
+                                match (this.choice, &found.meaning) {
+                                    (Choice::Keyword, _) => "by keyword".to_string(),
+                                    (Choice::Meaning, Ok(m)) => {
+                                        format!("by meaning ({}{close})", m.name)
+                                    }
+                                    (_, Ok(m)) => {
+                                        format!("by keyword and meaning ({}{close})", m.name)
+                                    }
+                                    (_, Err(_)) => "by keyword".to_string(),
+                                }
                             }
                         );
                         this.words = query_words(&text);
                         this.query = text.clone();
-                        this.hits = found.hits;
+                        this.found = found.hits;
+                        this.arrange();
                         this.select(if this.hits.is_empty() { None } else { Some(0) }, cx);
                     }
                     Ok(Err(e)) => {
@@ -275,6 +313,24 @@ impl DocsPanel {
         self.selected = index;
         self.load_context();
         self.explain(cx);
+        cx.notify();
+    }
+
+    /// List the results in the order chosen. The sort is stable: ties keep the search's order.
+    fn arrange(&mut self) {
+        self.hits = ordered(&self.found, self.sort == Sort::Similarity);
+    }
+
+    /// Change the order, keeping the same passage selected.
+    fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        let chunk = self
+            .selected
+            .and_then(|i| self.hits.get(i))
+            .map(|h| h.chunk_id);
+        self.sort = sort;
+        self.arrange();
+        self.selected = chunk.and_then(|c| self.hits.iter().position(|h| h.chunk_id == c));
+        self.load_context();
         cx.notify();
     }
 
@@ -302,7 +358,8 @@ impl DocsPanel {
             if hits.len() == 1 { "" } else { "s" }
         );
         self.query = query;
-        self.hits = hits;
+        self.found = hits;
+        self.arrange();
         let selected = Some(selected).filter(|i| *i < self.hits.len());
         self.select(
             selected.or(if self.hits.is_empty() { None } else { Some(0) }),
@@ -597,7 +654,41 @@ impl Render for DocsPanel {
                 .text_color(theme.muted_foreground)
                 .child(SharedString::from(self.status.clone()))
         };
-        let status = h_flex().px_2().py_1().text_size(small).child(status);
+        // The order: only worth a choice where some result has a similarity to order by.
+        let order = self
+            .hits
+            .iter()
+            .any(|h| h.similarity.is_some())
+            .then(|| {
+                let pick = |id: &'static str, label: &'static str, tip: &'static str, sort| {
+                    let b = Button::new(id).small().label(label);
+                    let b = if self.sort == sort { b.primary() } else { b.ghost() };
+                    b.tooltip(tip)
+                        .on_click(cx.listener(move |this, _, _, cx| this.set_sort(sort, cx)))
+                };
+                h_flex()
+                    .gap_1()
+                    .child(pick(
+                        "docs-sort-relevance",
+                        "Relevance",
+                        "As the search ranked them: the keyword and meaning ranks fused, so a passage ranked high by its words can come before one that is closer in meaning",
+                        Sort::Relevance,
+                    ))
+                    .child(pick(
+                        "docs-sort-similarity",
+                        "Similarity",
+                        "Closest in meaning first; passages found only by their words come last",
+                        Sort::Similarity,
+                    ))
+            });
+        let status = h_flex()
+            .px_2()
+            .py_1()
+            .justify_between()
+            .items_center()
+            .text_size(small)
+            .child(status)
+            .children(order);
 
         // The results.
         let list = v_flex()
@@ -617,8 +708,14 @@ impl Render for DocsPanel {
                     hit.meaning_rank
                         .map_or(String::new(), |r| format!("{}M{r}", if hit.keyword_rank.is_some() { " · " } else { "" })),
                 );
+                // The number after them is how close in meaning, which is what the threshold in
+                // the settings is about.
+                let ranks = match hit.similarity {
+                    Some(sim) => format!("{ranks} · {sim:.2}"),
+                    None => ranks,
+                };
                 let ranks_tip = format!(
-                    "Rank in the keyword search (K) and the meaning search (M); fused score {:.4}",
+                    "Rank in the keyword search (K) and the meaning search (M); the number is the similarity in meaning, cosine, 1 is identical, larger is closer (the Meaning threshold in the settings is a limit on it). The order is by a score made of the ranks: {:.4}",
                     hit.score
                 );
                 v_flex()
@@ -825,6 +922,9 @@ impl Render for DocsPanel {
                                 .filter(|t| !t.is_empty())
                                 .unwrap_or_else(|| "(untitled)".into()),
                         ))
+                        .when_some(hit.similarity, |d, sim| {
+                            d.child(row("Meaning", format!("similarity {sim:.3}")))
+                        })
                         .child(row("Source", hit.source_uri.clone()))
                         .when(!hit.heading_path.is_empty(), |d| {
                             d.child(row("Section", hit.heading_path.clone()))
@@ -903,7 +1003,7 @@ impl Render for DocsPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{Layer, find_words, layers, query_words, snippet};
+    use super::{Layer, find_words, layers, ordered, query_words, snippet};
 
     fn words(s: &str) -> Vec<String> {
         query_words(s)
@@ -959,5 +1059,40 @@ mod tests {
         // Touching stretches of one kind are one; nothing marked is nothing.
         assert_eq!(layers(&[0..3, 3..6], &[]), [(0..6, Layer::Word)]);
         assert!(layers(&[], &[]).is_empty());
+    }
+
+    fn hit(id: i64, similarity: Option<f32>) -> reactor_db::corpus::Hit {
+        reactor_db::corpus::Hit {
+            chunk_id: id,
+            document_id: String::new(),
+            source_uri: String::new(),
+            title: None,
+            heading_path: String::new(),
+            text: String::new(),
+            origin: "external".into(),
+            source_kind: "file".into(),
+            mime: None,
+            meta: serde_json::Value::Null,
+            score: 0.0,
+            keyword_rank: None,
+            meaning_rank: None,
+            similarity,
+        }
+    }
+
+    #[test]
+    fn listing_by_similarity_puts_the_closest_first_and_words_only_last() {
+        // As the search ranked them: a keyword favourite first, the closest one last.
+        let found = [
+            hit(1, Some(0.4)),
+            hit(2, None),
+            hit(3, Some(0.7)),
+            hit(4, Some(0.4)),
+        ];
+        let ids =
+            |v: Vec<reactor_db::corpus::Hit>| v.iter().map(|h| h.chunk_id).collect::<Vec<_>>();
+        assert_eq!(ids(ordered(&found, false)), [1, 2, 3, 4]);
+        // Equal similarities keep the search's order (1 before 4).
+        assert_eq!(ids(ordered(&found, true)), [3, 1, 4, 2]);
     }
 }

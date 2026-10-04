@@ -164,6 +164,7 @@ Each is a setting in the usual cascade: global default, then session override.
 |---|---|
 | Session history | the session cannot search or read other sessions' chat history |
 | Case graph | the session is detached from the graph: it can neither read nor write it. The graph tools and `artifact_register` are not advertised |
+| Documents (added later, same cascade, key `documents`) | `docs_search` is not advertised, and a call that still comes is refused with the reason. The user's own Documents panel is unaffected |
 
 - With both off, a session is a discussion on the case's data that leaves the case's results untouched.
 - This is not a sandbox. `bash` stays unrestricted, so the switch withdraws tools and states a rule; it does not make writing impossible.
@@ -514,7 +515,9 @@ Exit criteria met: the agent's tests pass on the new store; a writer killed with
 
 - **Case › Save as Case…** in the menu and the palette (`save-case`). It relaunches: the window closes, and a new one opens on the same session with `--save-case`, which saves before anything opens the case. Refused while a turn runs.
 - **The prompt on closing an unsaved state:** *Save as Case*, *Delete*, *Cancel*. A helper process (`reactor-gui case save|discard <dir> --wait`) acts once the window has let go. An unsaved state in which nothing was said is deleted without asking.
-- **The two memory switches** above the prompt in the transcript panel. A click sets this session's layer.
+- **Working sessions** shimmer in the session list; closing the window while any works asks *Keep working* / *Interrupt and close* before the unsaved-state question.
+- **Opening old sessions:** sessions are not tied to the window. The Session Tree panel lists the case's sessions (what was said first, when, how many entries, id; empty ones left out; another window's greyed); a double click or *Open* adds a transcript tab for one without closing anything, *+* starts a new one, *Close* lets go of one. Many are open at once, each with its own pump and state; the *active* session — the one whose transcript was last in focus, or last opened — is what the tree, context, status bar, switches and graph edits follow, and its id is shown (status bar, panel titles, tab dot). The list and the lock check are tested (`gui/src/session_list.rs`); the multi-session window needs the owner's eyes.
+- **The memory switches** (three since the documents switch was added) above the prompt in the transcript panel. A click sets this session's layer.
 - The helper commands and the save-on-relaunch are covered by tests; the menu, the dialog and the switches need the owner's eyes.
 
 **Not done**
@@ -614,6 +617,7 @@ Built in three increments: storage and rules, then pulling and the agent's tools
 | Documents panel: the same search by hand, with the same mode rule, marked results, the passage in full, its neighbours and its source (`PanelKind::Docs`, `corpus::surrounding`); built blind, the window has not been seen | `gui/src/docs_panel.rs` |
 | A finished `docs_search` call is shown in the transcript as a summary and one line per top match (five), each opening the result in the Documents panel at that passage; the parser lives beside the formatter and is tested to round-trip (`tools::docs::parse_result`, `corpus::hits_at`); built blind | `agent/src/tools/docs.rs`, `gui/src/panels.rs`, `gui/src/app.rs` |
 | The corpus as a rig `VectorStoreIndex`, with the request's filter read against source kind, origin, mime and metadata | `agent/embed.rs` (`ContextIndex`) |
+| Setting `embedding.minSimilarity` (global; 0 or unset is none): a passage less similar in meaning than this (cosine) is not a match by meaning, for the agent and the Documents panel; a hit carries its similarity (`Hit.similarity`), which is not its score (that is made of the ranks) | `context/src/settings.rs`, `db/src/corpus/search.rs` |
 | Setting `embedding.model` (global only; none by default) | `reactor-context/src/settings.rs` |
 | Import for the user: `/import`, *Case › Import Documents…*, `/embedding`, status-bar progress; headless `ingest`, `embed`, `case rebuild-indexes` | `reactor-gui/src/import.rs`, `headless.rs`, `backend.rs`, `app.rs` |
 

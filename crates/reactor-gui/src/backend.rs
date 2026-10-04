@@ -49,14 +49,24 @@ pub enum UiEvent {
     Embedding(Option<reactor_db::corpus::Progress>),
 }
 
+/// What every session open in one window shares: the case (one handle to its database, not
+/// one per session) and the embedding model (so that choosing it applies to all).
+#[derive(Clone)]
+pub struct Shared {
+    pub case: Case,
+    pub embedder: reactor_agent::embed::EmbedderSlot,
+}
+
 /// How to start a session.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct StartOptions {
     pub cwd: PathBuf,
     /// Open this existing session of the cwd's case instead of creating one.
     pub resume: Option<String>,
     /// `provider/name`; else settings' `defaultModel`; else `REACTOR_MODEL`.
     pub model: Option<String>,
+    /// What the window's other sessions already have open. `None` for the first.
+    pub shared: Option<Shared>,
 }
 
 pub struct Backend {
@@ -99,14 +109,6 @@ pub fn find_bundled(sub: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_dir())
 }
 
-fn new_session_id() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{secs}-{}", std::process::id())
-}
-
 fn llm_for(spec: Option<&str>) -> (AnyLlm, String, u64) {
     match spec {
         Some(spec) => match AnyLlm::from_spec(spec) {
@@ -129,7 +131,10 @@ impl Backend {
 
         // The folder's case, else its unsaved state: nothing is written into a folder
         // that has not been saved as a case (ADR-0045).
-        let case = Case::open_any(&opts.cwd, &paths.config_dir).map_err(|e| e.to_string())?;
+        let case = match &opts.shared {
+            Some(shared) => shared.case.clone(),
+            None => Case::open_any(&opts.cwd, &paths.config_dir).map_err(|e| e.to_string())?,
+        };
         if case.is_saved() {
             let _ = reactor_db::case::remember(&paths.config_dir, case.root());
         }
@@ -139,8 +144,10 @@ impl Backend {
                 id.clone(),
             ),
             None => {
-                let id = new_session_id();
-                (Store::create(&case, &id).map_err(|e| e.to_string())?, id)
+                // The case's next number: session 1, 2, 3 …
+                let store = Store::create_next(&case).map_err(|e| e.to_string())?;
+                let id = store.session().to_string();
+                (store, id)
             }
         };
         let session_dir = store.dir().to_path_buf();
@@ -159,9 +166,14 @@ impl Backend {
 
         // The embedding model the user chose, if any. A model that cannot be set up is said
         // so in the window, which still opens: search is then by keyword.
-        let embedder = reactor_agent::embed::EmbedderSlot::default();
+        let embedder = match &opts.shared {
+            Some(shared) => shared.embedder.clone(),
+            None => reactor_agent::embed::EmbedderSlot::default(),
+        };
         let mut embed_problem = None;
-        if let Some(spec) = &settings.embedding.model {
+        if opts.shared.is_none()
+            && let Some(spec) = &settings.embedding.model
+        {
             match reactor_agent::embed::from_spec(spec) {
                 Ok(e) => embedder.set(Some(e)),
                 Err(e) => embed_problem = Some(format!("embedding model: {e}")),
@@ -394,18 +406,45 @@ impl Backend {
             Some(spec) => Some(reactor_agent::embed::from_spec(spec).map_err(|e| e.to_string())?),
             None => None,
         };
-        let model = match spec {
-            Some(s) => serde_json::json!({ "model": s }),
-            None => serde_json::json!({}),
-        };
-        let mut patch = serde_json::Map::new();
-        patch.insert("embedding".into(), model);
-        Settings::patch(&self.paths, patch).map_err(|e| e.to_string())?;
+        self.save_embedding(spec, self.min_similarity())?;
         self.embedder.set(embedder);
         if spec.is_some() {
             self.embed();
         }
         Ok(())
+    }
+
+    /// Write the embedding settings: the model (or none) and the threshold, which are one
+    /// object in `settings.json` and so are saved together.
+    fn save_embedding(
+        &self,
+        model: Option<&str>,
+        min_similarity: f32,
+    ) -> std::result::Result<(), String> {
+        let mut embedding = serde_json::Map::new();
+        if let Some(m) = model {
+            embedding.insert("model".into(), m.into());
+        }
+        if min_similarity > 0.0 {
+            embedding.insert("minSimilarity".into(), f64::from(min_similarity).into());
+        }
+        let mut patch = serde_json::Map::new();
+        patch.insert("embedding".into(), embedding.into());
+        Settings::patch(&self.paths, patch)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// How close in meaning a passage must be to count as a match (0: no threshold).
+    pub fn min_similarity(&self) -> f32 {
+        Settings::load(&self.paths).embedding.threshold()
+    }
+
+    /// Set the threshold, keeping the chosen model. It applies to the next search, the
+    /// agent's and the window's.
+    pub fn set_min_similarity(&self, value: f32) -> std::result::Result<(), String> {
+        let model = Settings::load(&self.paths).embedding.model;
+        self.save_embedding(model.as_deref(), value.clamp(0.0, 1.0))
     }
 
     /// One paragraph on the corpus and its vectors, for `/embedding`.
@@ -450,10 +489,18 @@ impl Backend {
         mode: reactor_agent::embed::Mode,
     ) -> tokio::task::JoinHandle<std::result::Result<reactor_agent::embed::Found, String>> {
         let (case, embedder) = (self.case.clone(), self.embedder.get());
+        let min_similarity = self.min_similarity();
         self.runtime.spawn(async move {
-            reactor_agent::embed::search_by(&case, embedder.as_deref(), &text, limit, mode)
-                .await
-                .map_err(|e| e.to_string())
+            reactor_agent::embed::search_by(
+                &case,
+                embedder.as_deref(),
+                &text,
+                limit,
+                mode,
+                min_similarity,
+            )
+            .await
+            .map_err(|e| e.to_string())
         })
     }
 
@@ -492,6 +539,14 @@ impl Backend {
     }
 
     /// Whether this folder is still an unsaved state rather than a case (ADR-0045).
+    /// What a session opened next in this window shares with this one.
+    pub fn shared(&self) -> Shared {
+        Shared {
+            case: self.case.clone(),
+            embedder: self.embedder.clone(),
+        }
+    }
+
     pub fn is_unsaved(&self) -> bool {
         !self.case.is_saved()
     }
@@ -818,7 +873,7 @@ pub fn tree_rows(store: &Store) -> Vec<TreeRow> {
     rows
 }
 
-fn first_words(text: &str, n: usize) -> String {
+pub(crate) fn first_words(text: &str, n: usize) -> String {
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty())

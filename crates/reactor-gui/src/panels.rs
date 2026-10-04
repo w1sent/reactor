@@ -31,7 +31,7 @@ use reactor_context::settings::MemorySettings;
 
 use crate::app::ReactorApp;
 use crate::backend::TreeRow;
-use crate::session::{AgentPhase, ChatItem};
+use crate::session::{AgentPhase, ChatItem, Session};
 use crate::settings::Slot;
 
 /// One activation row — a leading dot for on/off, a name, an optional muted
@@ -232,6 +232,10 @@ fn loading_row(label: &str, theme: &Theme) -> impl IntoElement {
 /// its bottom (SPEC.md §6).
 pub struct TranscriptPanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
+    /// The session this transcript shows, and the model of its rows. A window can have
+    /// several of these: each tab is one session's.
+    pub session_id: String,
+    session: Entity<Session>,
     pub composer: Entity<TextareaState>,
     focus: FocusHandle,
     /// The virtualized list's scroll/follow-tail state (fixes the "cannot
@@ -264,19 +268,43 @@ impl TranscriptPanel {
     /// panel needs is read at render time, after construction (§4.4).
     pub fn new(
         app: gpui_kit::WeakEntity<ReactorApp>,
+        session_id: String,
+        session: Entity<Session>,
         composer: Entity<TextareaState>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus = cx.focus_handle();
+        // Focus anywhere in the tab (its prompt among it) makes its session the active one.
+        cx.on_focus_in(&focus, window, |this, window, cx| {
+            this.make_active(window, cx)
+        })
+        .detach();
         Self {
             app,
+            session_id,
+            session,
             composer,
-            focus: cx.focus_handle(),
+            focus,
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
             last_item_count: 0,
             expanded_thinking: std::collections::HashSet::new(),
             copied: None,
             weak_self: cx.weak_entity(),
         }
+    }
+}
+
+impl TranscriptPanel {
+    /// Make this tab's session the window's active one. Deferred: this runs from focus and
+    /// pointer handling, while the app may be in the middle of an update.
+    fn make_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (app, id) = (self.app.clone(), self.session_id.clone());
+        window.defer(cx, move |window, cx| {
+            if let Some(app) = app.upgrade() {
+                app.update(cx, |app, cx| app.activate_session(&id, window, cx));
+            }
+        });
     }
 }
 
@@ -743,9 +771,16 @@ impl gpui_kit::base::dock::Panel for TranscriptPanel {
 
 impl Panel for TranscriptPanel {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Which session this tab is, and whether it is the one the rest of the window
+        // (tree, context, status) follows.
+        let active = self
+            .app
+            .upgrade()
+            .is_some_and(|a| a.read(cx).active_session_id() == self.session_id);
+        let short = crate::session_list::short_id(&self.session_id);
         panel_title_closing(
             IconName::MessageSquare,
-            "Transcript",
+            &format!("Transcript · {short}{}", if active { " ●" } else { "" }),
             closer(&self.app, cx.entity()),
         )
     }
@@ -775,22 +810,19 @@ impl Render for TranscriptPanel {
             size: tool_size,
             max_chars: ui.tool_output_chars,
         };
-        let (items, hidden, phase, scheduled, last_error, run) = match self.app.upgrade() {
-            Some(app) => {
-                let session = app.read(cx).session.read(cx);
-                (
-                    session.items.clone(),
-                    session.hidden.clone(),
-                    session.phase,
-                    session.follow_up.clone(),
-                    session.last_error.clone(),
-                    session
-                        .run
-                        .as_ref()
-                        .map(|r| (r.elapsed(std::time::Instant::now()), r.tokens())),
-                )
-            }
-            None => Default::default(),
+        let (items, hidden, phase, scheduled, last_error, run) = {
+            let session = self.session.read(cx);
+            (
+                session.items.clone(),
+                session.hidden.clone(),
+                session.phase,
+                session.follow_up.clone(),
+                session.last_error.clone(),
+                session
+                    .run
+                    .as_ref()
+                    .map(|r| (r.elapsed(std::time::Instant::now()), r.tokens())),
+            )
         };
 
         // Tell the scroller about new content before rendering it: an append
@@ -1040,11 +1072,11 @@ impl Render for TranscriptPanel {
         });
 
         // What this session may draw on from the rest of its case (ADR-0047).
-        let (history_on, graph_on) = self
+        let (history_on, graph_on, docs_on) = self
             .app
             .upgrade()
             .map(|a| a.read(cx).memory())
-            .unwrap_or((true, true));
+            .unwrap_or((true, true, true));
         let switch = |id: &'static str,
                       label: &'static str,
                       on: bool,
@@ -1073,7 +1105,7 @@ impl Render for TranscriptPanel {
                 "On: the agent may search and read this case's other sessions. Off: it sees only this session.",
                 |on| MemorySettings {
                     session_history: Some(on),
-                    case_graph: None,
+                    ..Default::default()
                 },
             ))
             .child(switch(
@@ -1082,8 +1114,18 @@ impl Render for TranscriptPanel {
                 graph_on,
                 "On: the agent reads and writes the case's graph. Off: this session is detached from it and leaves the case's results untouched.",
                 |on| MemorySettings {
-                    session_history: None,
                     case_graph: Some(on),
+                    ..Default::default()
+                },
+            ))
+            .child(switch(
+                "memory-documents",
+                "Documents",
+                docs_on,
+                "On: the agent may search the case's imported documents (docs_search). Off: the tool is withdrawn from this session; you can still search them yourself in the Documents panel.",
+                |on| MemorySettings {
+                    documents: Some(on),
+                    ..Default::default()
                 },
             ));
 
@@ -1133,7 +1175,17 @@ impl Render for TranscriptPanel {
             );
 
         let mut panel = v_flex()
+            .id(SharedString::from(format!(
+                "transcript-{}",
+                self.session_id
+            )))
+            .track_focus(&self.focus)
             .size_full()
+            // A click anywhere in the tab makes its session the active one.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.make_active(window, cx)),
+            )
             .child(
                 v_flex()
                     .flex_1()
@@ -1172,6 +1224,10 @@ pub struct TreePanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
     /// The row the user clicked — the switch affordance acts on it.
     selection: Option<u64>,
+    /// The session picked in the list of the case's sessions.
+    session_selection: Option<String>,
+    /// The session `selection` is an entry of: entry numbers are each session's own.
+    for_session: String,
     focus: FocusHandle,
 }
 
@@ -1185,6 +1241,8 @@ impl TreePanel {
             app,
             focus: cx.focus_handle(),
             selection: None,
+            session_selection: None,
+            for_session: String::new(),
         }
     }
 }
@@ -1192,15 +1250,35 @@ impl TreePanel {
 impl Render for TreePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let (rows, streaming): (Vec<TreeRow>, bool) = match self.app.upgrade() {
+        // The tree is the active session's: a row picked in another one's means nothing.
+        let active = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).active_session_id())
+            .unwrap_or_default();
+        if self.for_session != active {
+            self.for_session = active;
+            self.selection = None;
+        }
+        let working: Vec<String> = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).working_ids())
+            .unwrap_or_default();
+        let (rows, streaming, sessions): (
+            Vec<TreeRow>,
+            bool,
+            Vec<crate::session_list::SessionRow>,
+        ) = match self.app.upgrade() {
             Some(app) => {
                 let read = app.read(cx);
                 (
                     read.tree.clone(),
                     read.session.read(cx).phase != AgentPhase::Idle,
+                    read.sessions.clone(),
                 )
             }
-            None => (Vec::new(), true),
+            None => (Vec::new(), true, Vec::new()),
         };
         let selectable = |id: u64| rows.iter().any(|r| r.id == id && r.can_switch);
 
@@ -1262,9 +1340,251 @@ impl Render for TreePanel {
         }
 
         let can_switch = self.selection.is_some_and(selectable) && !streaming;
+
+        // The case's sessions. A click picks one; a double click, or Open, shows its
+        // transcript in a tab of its own, next to the ones already open.
+        let picked = self
+            .session_selection
+            .as_ref()
+            .and_then(|id| sessions.iter().find(|s| s.id == *id))
+            .cloned();
+        let can_open = picked.as_ref().is_some_and(|s| !s.open_elsewhere);
+        let can_close = picked.as_ref().is_some_and(|s| s.open_here);
+        let active_id = sessions
+            .iter()
+            .find(|s| s.current)
+            .map(|s| crate::session_list::short_id(&s.id))
+            .unwrap_or_default();
+        let mut session_list = v_flex().p_2().gap_1();
+        let case_id = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).case_id())
+            .unwrap_or_default();
+        for (sidx, s) in sessions.iter().enumerate() {
+            let id = s.id.clone();
+            let is_working = working.contains(&s.id);
+            let selected = self.session_selection.as_deref() == Some(s.id.as_str());
+            let tip = if s.current {
+                "The active session: the tree, the context and the status follow it"
+            } else if s.open_elsewhere {
+                "Open in another window: it can be opened here once that one is closed"
+            } else if s.open_here {
+                "Open in a tab. Double-click to bring it forward and make it the active one"
+            } else {
+                "Click to pick it; double-click to open its transcript"
+            };
+            session_list = session_list.child(crate::hints::tip(
+                v_flex()
+                    .id(SharedString::from(format!("session-{}", s.id)))
+                    .relative()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .when(s.current, |el| el.bg(theme.tokens.list_active))
+                    .when(selected, |el| {
+                        el.bg(theme.info.opacity(0.28))
+                            .border_l_2()
+                            .border_color(theme.info)
+                    })
+                    // The whole row breathes while the session works: a wash of the accent
+                    // colour, behind the text, that swells and fades.
+                    .when(is_working, |el| {
+                        let accent = theme.accent;
+                        el.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .rounded_md()
+                                .with_animation(
+                                    ("session-pulse", sidx),
+                                    Animation::new(std::time::Duration::from_millis(1600)).repeat(),
+                                    move |wash, delta| {
+                                        let swell =
+                                            0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
+                                        wash.bg(accent.opacity(0.05 + 0.2 * swell))
+                                    },
+                                ),
+                        )
+                    })
+                    .when(!(s.current || selected), |el| {
+                        el.hover(|style| style.bg(theme.list_hover))
+                    })
+                    .when(!s.open_elsewhere, |el| {
+                        let open = s.clone();
+                        el.cursor_pointer().on_click(cx.listener(
+                            move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                this.session_selection = Some(id.clone());
+                                if event.click_count() >= 2
+                                    && let Some(app) = this.app.upgrade()
+                                {
+                                    let id = open.id.clone();
+                                    app.update(cx, |app, cx| {
+                                        app.open_session(Some(id), window, cx)
+                                    });
+                                }
+                                cx.notify();
+                            },
+                        ))
+                    })
+                    .child({
+                        let text = if s.prompt.is_empty() {
+                            "(nothing said yet)".to_string()
+                        } else {
+                            s.prompt.clone()
+                        };
+                        // One line, cut by the row: a plain clipping box around the text, as
+                        // the shimmer is drawn like the transcript's own "thinking" one — a
+                        // text element in an ordinary div, not under a truncating style.
+                        let colour = if s.open_elsewhere {
+                            theme.muted_foreground
+                        } else {
+                            theme.foreground
+                        };
+                        if is_working {
+                            div()
+                                .w_full()
+                                .overflow_hidden()
+                                .text_size(theme.font_size * 0.9)
+                                .text_color(theme.muted_foreground)
+                                .child(
+                                    gpui_kit::component::shimmer::ShimmerText::new(text)
+                                        .id(("session-working", sidx))
+                                        .highlight_color(theme.accent),
+                                )
+                        } else {
+                            div()
+                                .truncate()
+                                .text_size(theme.font_size * 0.9)
+                                .text_color(colour)
+                                .child(SharedString::from(text))
+                        }
+                    })
+                    .child({
+                        let mut tags: Vec<&str> = Vec::new();
+                        if s.current {
+                            tags.push("active");
+                        } else if s.open_here {
+                            tags.push("open");
+                        }
+                        if is_working {
+                            tags.push("working");
+                        }
+                        if s.open_elsewhere {
+                            tags.push("open elsewhere");
+                        }
+                        let line = format!(
+                            "{} · {} entr{} · {}{}",
+                            s.started,
+                            s.entries,
+                            if s.entries == 1 { "y" } else { "ies" },
+                            crate::session_list::short_id(&s.id),
+                            tags.iter().map(|t| format!(" · {t}")).collect::<String>()
+                        );
+                        let base = div()
+                            .w_full()
+                            .overflow_hidden()
+                            .text_size(theme.font_size * 0.8)
+                            .text_color(if s.current {
+                                theme.accent
+                            } else {
+                                theme.muted_foreground
+                            });
+                        // The line under it shimmers too, in the same sweep.
+                        if is_working {
+                            base.child(
+                                gpui_kit::component::shimmer::ShimmerText::new(line)
+                                    .id(("session-working-detail", sidx))
+                                    .highlight_color(theme.foreground),
+                            )
+                        } else {
+                            base.child(SharedString::from(line))
+                        }
+                    }),
+                // The session named in full, the way it is named across cases.
+                format!("{}\n{tip}", crate::session_list::reference(&case_id, &s.id)),
+            ));
+        }
         v_flex()
             .size_full()
             .gap_2()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .px_2()
+                    .child(
+                        Label::new(format!("Sessions ({})", sessions.len()))
+                            .text_color(theme.muted_foreground),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("new-session")
+                                    .icon(IconName::Plus)
+                                    .ghost()
+                                    .small()
+                                    .tooltip("Start a new session in this case, in a tab of its own")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(app) = this.app.upgrade() {
+                                            app.update(cx, |app, cx| {
+                                                app.open_session(None, window, cx)
+                                            });
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("close-session")
+                                    .label("Close")
+                                    .small()
+                                    .ghost()
+                                    .tooltip("Close the picked session's tab and let go of the session. It stays in the case")
+                                    .disabled(!can_close)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let (Some(id), Some(app)) =
+                                            (this.session_selection.clone(), this.app.upgrade())
+                                        {
+                                            app.update(cx, |app, cx| {
+                                                app.close_session(&id, window, cx)
+                                            });
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("open-session")
+                                    .label("Open")
+                                    .small()
+                                    .tooltip("Show the picked session's transcript in a tab (double-click does the same)")
+                                    .disabled(!can_open)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let (Some(id), Some(app)) =
+                                            (this.session_selection.clone(), this.app.upgrade())
+                                        {
+                                            app.update(cx, |app, cx| {
+                                                app.open_session(Some(id), window, cx)
+                                            });
+                                        }
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("session-list")
+                    .max_h(px(240.))
+                    .overflow_y_scrollbar()
+                    .child(session_list),
+            )
+            .child(
+                h_flex().px_2().child(
+                    Label::new(format!("Tree of session {active_id}"))
+                        .text_color(theme.muted_foreground),
+                ),
+            )
             .child(
                 h_flex().justify_end().px_2().child(
                     Button::new("switch-branch")
@@ -1320,7 +1640,20 @@ impl Panel for TreePanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![close_button(&self.app, cx.entity())])
+        let app = self.app.clone();
+        Some(vec![
+            Button::new("sessions-refresh")
+                .icon(IconName::RotateCw)
+                .ghost()
+                .small()
+                .tooltip("Read the case's sessions again")
+                .on_click(move |_, _window, cx| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |app, cx| app.refresh_sessions(cx));
+                    }
+                }),
+            close_button(&self.app, cx.entity()),
+        ])
     }
 }
 
@@ -1951,7 +2284,17 @@ impl gpui_kit::base::dock::Panel for ContextPanel {
 
 impl Panel for ContextPanel {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        panel_title_closing(IconName::Layers, "Context", closer(&self.app, cx.entity()))
+        let id = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).active_session_id())
+            .unwrap_or_default();
+        let short = crate::session_list::short_id(&id);
+        panel_title_closing(
+            IconName::Layers,
+            &format!("Context · {short}"),
+            closer(&self.app, cx.entity()),
+        )
     }
 
     fn toolbar_buttons(

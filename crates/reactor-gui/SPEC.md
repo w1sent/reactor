@@ -77,6 +77,13 @@ session per window; branching moves the head within it, and a case holds many se
 - **Saving a case.** *Case › Save as Case…* in the menu (palette: `save-case`). A case can
   only be moved while nothing has it open, so the window closes and a new one opens on
   the same session, saving on its way in (`--save-case`). Refused while a turn runs.
+- **Closing the window while a session works** asks first, before the question about an
+  unsaved state: *Keep working*, or *Interrupt and close*, which stops every session that is
+  working, waits for them to settle (a few seconds at most) and then closes as it would have.
+  What they did stays in their logs. Both the platform's close request and the title bar's
+  own close button go through this. A session that is working stands out in the Session Tree's
+  list: both of its lines shimmer, its whole row breathes (a wash of the accent colour that
+  swells and fades), and it is tagged *working*.
 - **Closing an unsaved state** asks: *Save as Case*, *Delete*, or *Cancel*. The answer is
   carried out by a helper (`reactor-gui case save|discard <dir> --wait`) once the window
   has let go. An unsaved state in which nothing was said is deleted without asking. Both
@@ -92,6 +99,36 @@ session per window; branching moves the head within it, and a case holds many se
   → the session. The Context panel shows each value's origin, previews a reduction, runs
   one now, lists reductions in force with *undo*, and can make the session's values the
   default. Dimmed transcript rows are hidden from the model by a reduction.
+- **Session ids.** A session is numbered within its case: `1`, `2`, `3` … (the number after the
+  highest in the case; a gap is not filled; if another process takes it first the next is
+  asked). Inside the case `#3` is enough — that is how titles, the status bar and the list
+  show it — and across cases it is `<case id>#3` (in the tooltips; the case id is in
+  `case.json`). `--session` takes `3`, `#3` or `<case id>#3`. A session made before numbering
+  keeps its id (a time and a process id, shown by its last part) and is not counted.
+- **Sessions are not tied to the window.** Any number of the case's sessions are open at once,
+  each in a **transcript tab** of its own (titled `Transcript · <id>`, with a dot on the
+  active one). Opening a session never closes anything: it adds a tab, or brings the tab
+  forward if the session is already open (putting it back if it was closed). A session
+  belongs to one window (its lock file), so one open in another window is refused.
+- **The active session** is the one the rest of the window is about: the Session Tree, the
+  Context panel, the status bar, the memory switches, `/` commands, the graph panel's edits.
+  It is the session whose transcript was last in focus — focus anywhere in a tab, its prompt
+  or a click, makes it active — and **it stays so when focus is somewhere else** (the Files
+  panel, say): the last one in focus or opened is the active one. Which one it is, is shown:
+  a `session <id>` item in the status bar (the full id in its tooltip), `Context · <id>`,
+  `Tree of session <id>`, and the dot on its tab.
+- **Sessions of the case** — the top of the Session Tree panel: newest first, what was first
+  said in it, when it was started (local time), its entries, its id, and whether it is
+  *active*, *open* here or *open elsewhere* (greyed). Sessions in which nothing was said are
+  left out (opening a case starts one), except those open here. A click picks one; a **double
+  click**, or *Open*, shows its transcript; *Close* lets go of the picked one (its tab goes, its
+  lock is released; it stays in the case; the window's first session stays, and one that is
+  working is left alone); **+** starts a new session in a tab of its own. Closing a tab only
+  hides it: the session stays open, and keeps working. The refresh icon reads the list again;
+  it is also read at start and after every turn. The row's details are tooltips.
+- Each open session has its own events: its pump, its transcript model, its prompt box
+  and tree/context state; they share the case's database handle and the embedding model.
+  Save as Case is refused while any open session is working.
 - **Tree.** Read from the store; *Continue from here* switches the head to a final
   assistant reply.
 - One attached frontend per session, held by a lock file in the case's `run/`. A second
@@ -604,6 +641,20 @@ is what the agent would have been given.
   document, source, section, kind and metadata. *Open source* opens the file in its viewer
   (or a page in the browser), *Copy* copies the passage, *Around it* shows the two passages
   before and after it in the document. With no documents the panel offers *Import…*.
+- **Closeness.** A result found by meaning shows, after its ranks, its similarity (cosine, 1 is
+  identical, larger is closer) — in the list and as *Meaning* in the detail; the order is by a score
+  made of the ranks, not by this. Settings › Documents › **Meaning threshold** (0 to 1, 0 is none;
+  `embedding.minSimilarity` in `settings.json`) drops the passages whose similarity is under it from
+  a search by meaning, the agent's and this panel's, and is read at each search, so a change applies
+  at once. The status line and the agent's result say when a threshold was in force.
+- **Order.** Results are listed *by relevance*: the order the search ranked them, which fuses the
+  keyword and meaning ranks, so a passage ranked high by its words can come before one that is
+  closer in meaning. Where results have a similarity, *Similarity* (beside the status line) lists
+  them closest first, those found by words only last; the selection stays on the same passage.
+- **Switch.** The agent's use of the documents is the *Documents* switch above the prompt in the
+  transcript panel, with *Other sessions* and *Case graph* (`memory.documents`, same cascade: the
+  setting, then this session's layer; on by default). Off withdraws `docs_search` from the session
+  and refuses a call that still comes; this panel keeps working, since it is the person's own search.
 - **Marking.** The query's words are marked in the snippets and the passage (substring match,
   ignoring ASCII case; it is not what the index matched, only what was typed). A match by
   meaning is between whole passages, so words say little about it: **Why** (offered only

@@ -680,3 +680,68 @@ fn clearing_a_models_vectors_makes_every_passage_pending_for_it_and_only_it() {
         .collect();
     assert_eq!(corpus::store_vectors(db, &a, rows).unwrap(), 2);
 }
+
+#[test]
+fn a_hit_says_how_close_in_meaning_it_is_and_a_threshold_drops_what_is_too_far() {
+    let (_d, case) = case();
+    let db = case.db();
+    corpus::add_document(
+        &case,
+        doc(
+            "a.md",
+            "x",
+            &[
+                ("A", "The loader survives reboots by a run key."),
+                ("B", "It talks to its server over HTTPS."),
+                ("C", "A note about something else entirely here."),
+            ],
+        ),
+    )
+    .unwrap();
+    let m = corpus::register_model(db, "ollama/test", "", 2).unwrap();
+    let ids = corpus::pending(db, m.id, 10).unwrap();
+    // Unit vectors at 0, 60 and 90 degrees from the query: similarities 1.0, 0.5, 0.0.
+    corpus::store_vectors(
+        db,
+        &m,
+        vec![
+            (ids[0].0, vec![1., 0.]),
+            (ids[1].0, vec![0.5, 0.866_025_4]),
+            (ids[2].0, vec![0., 1.]),
+        ],
+    )
+    .unwrap();
+    let q = [1.0f32, 0.0];
+    let run = |min_similarity: f32| {
+        corpus::search_with(
+            db,
+            &Query {
+                text: "zzz",
+                vector: Some((&m, &q)),
+                limit: 10,
+            },
+            &corpus::Options {
+                keywords: false,
+                min_similarity,
+            },
+        )
+        .unwrap()
+    };
+    let all = run(0.0);
+    let sims: Vec<f32> = all.iter().map(|h| h.similarity.unwrap()).collect();
+    assert_eq!(all.len(), 3);
+    assert!(
+        (sims[0] - 1.0).abs() < 1e-4 && (sims[1] - 0.5).abs() < 1e-4 && sims[2].abs() < 1e-4,
+        "{sims:?}"
+    );
+    assert!(
+        sims.windows(2).all(|w| w[0] >= w[1]),
+        "larger is closer, and closest first"
+    );
+    // A threshold drops what is under it, and keeps what is at or over.
+    assert_eq!(run(0.5).len(), 2);
+    assert_eq!(run(0.9).len(), 1);
+    assert!(run(1.01).is_empty());
+    // A keyword-only search has no similarity to report.
+    assert!(keywords(&case, "loader")[0].similarity.is_none());
+}

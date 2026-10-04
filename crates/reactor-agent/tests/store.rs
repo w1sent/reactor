@@ -495,3 +495,25 @@ fn history_reaches_the_other_sessions_of_the_case() {
         "{listing}"
     );
 }
+
+#[test]
+fn sessions_are_numbered_one_two_three_in_a_case_and_older_ids_are_not_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let case = reactor_db::Case::create(dir.path(), None).unwrap();
+    // A session made before numbering, with the old kind of id: not a number, not counted.
+    let old = Store::create(&case, "1759581234-4242").unwrap();
+    drop(old);
+    let a = Store::create_next(&case).unwrap();
+    let b = Store::create_next(&case).unwrap();
+    let c = Store::create_next(&case).unwrap();
+    assert_eq!((a.session(), b.session(), c.session()), ("1", "2", "3"));
+    // A gap is not filled: the number after the highest.
+    drop(b);
+    let d = Store::create_next(&case).unwrap();
+    assert_eq!(d.session(), "4");
+    // The number is the session's, and is in its first entry.
+    assert!(matches!(
+        &d.branch()[0].kind,
+        reactor_agent::entry::Kind::Session { session, .. } if session == "4"
+    ));
+}

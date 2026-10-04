@@ -77,11 +77,18 @@ impl Tool for DocsSearch {
     }
 
     fn available(&self, state: &SessionState) -> bool {
-        state.docs
+        state.docs && state.memory.documents()
     }
 
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
+            // A switch turned off since the tool list was made is still honoured.
+            let global = reactor_context::settings::Settings::load(&ctx.paths).memory;
+            if !ctx.state().memory.over(&global).documents() {
+                return ToolOutput::err(
+                    "this session does not draw on the case's documents (the documents switch is off).",
+                );
+            }
             let Some(query) = str_arg(&args, "query")
                 .map(str::trim)
                 .filter(|q| !q.is_empty())
@@ -103,22 +110,42 @@ impl Tool for DocsSearch {
                 },
             };
             let case = ctx.store.lock().unwrap().case().clone();
-            let found =
-                match embed::search_by(&case, ctx.embedder.as_deref(), query, limit, mode).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return ToolOutput::err(match mode {
-                            Mode::Meaning => format!(
-                                "a search by meaning is not possible here ({e}); search by keyword"
-                            ),
-                            _ => e.to_string(),
-                        });
-                    }
-                };
+            // How close in meaning a passage must be is the user's setting, read as it stands.
+            let min_similarity = reactor_context::settings::Settings::load(&ctx.paths)
+                .embedding
+                .threshold();
+            let found = match embed::search_by(
+                &case,
+                ctx.embedder.as_deref(),
+                query,
+                limit,
+                mode,
+                min_similarity,
+            )
+            .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    return ToolOutput::err(match mode {
+                        Mode::Meaning => format!(
+                            "a search by meaning is not possible here ({e}); search by keyword"
+                        ),
+                        _ => e.to_string(),
+                    });
+                }
+            };
+            let close = if found.min_similarity > 0.0 {
+                format!(
+                    ", close enough: similarity of at least {}",
+                    found.min_similarity
+                )
+            } else {
+                String::new()
+            };
             let how = match (mode, &found.meaning) {
                 (Mode::Keyword, _) => "by keyword".to_string(),
-                (Mode::Meaning, Ok(m)) => format!("by meaning ({})", m.name),
-                (_, Ok(m)) => format!("by keyword and by meaning ({})", m.name),
+                (Mode::Meaning, Ok(m)) => format!("by meaning ({}{close})", m.name),
+                (_, Ok(m)) => format!("by keyword and by meaning ({}{close})", m.name),
                 (_, Err(why)) => format!("by keyword only ({why})"),
             };
             if found.hits.is_empty() {

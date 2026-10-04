@@ -292,6 +292,8 @@ pub struct Found {
     pub hits: Vec<Hit>,
     /// `None`: keywords only, and why.
     pub meaning: std::result::Result<Model, String>,
+    /// The similarity a passage needed to count as a match by meaning (0: none was asked).
+    pub min_similarity: f32,
 }
 
 /// Which rankings a search uses.
@@ -339,7 +341,7 @@ pub async fn search(
     text: &str,
     limit: usize,
 ) -> Result<Found> {
-    search_by(case, embedder, text, limit, Mode::Both).await
+    search_by(case, embedder, text, limit, Mode::Both, 0.0).await
 }
 
 /// [`search`] with the rankings chosen. `Keyword` never calls the model; `Meaning` is
@@ -350,6 +352,7 @@ pub async fn search_by(
     text: &str,
     limit: usize,
     mode: Mode,
+    min_similarity: f32,
 ) -> Result<Found> {
     if mode == Mode::Keyword {
         let hits = corpus::search(
@@ -363,6 +366,7 @@ pub async fn search_by(
         return Ok(Found {
             hits,
             meaning: Err("keyword search was asked for".into()),
+            min_similarity,
         });
     }
     let Some(embedder) = embedder else {
@@ -382,6 +386,7 @@ pub async fn search_by(
         return Ok(Found {
             hits,
             meaning: Err("no embedding model is chosen (set `embedding.model`)".into()),
+            min_similarity,
         });
     };
     let want = embedder.name();
@@ -412,22 +417,27 @@ pub async fn search_by(
         return Ok(Found {
             hits,
             meaning: Err(why),
+            min_similarity,
         });
     };
     let mut vectors = embedder.embed(vec![text.to_string()]).await?;
     let vector = vectors.pop().unwrap_or_default();
-    let hits = corpus::search_ranked(
+    let hits = corpus::search_with(
         case.db(),
         &Query {
             text,
             vector: Some((&model, &vector)),
             limit,
         },
-        mode == Mode::Both,
+        &corpus::Options {
+            keywords: mode == Mode::Both,
+            min_similarity,
+        },
     )?;
     Ok(Found {
         hits,
         meaning: Ok(model),
+        min_similarity,
     })
 }
 

@@ -78,6 +78,22 @@ impl Store {
         })
     }
 
+    /// A new session with the case's next index (`1`, `2`, …) for its id. Another process
+    /// may take the number between asking and creating: then it asks again.
+    pub fn create_next(case: &Case) -> Result<Store> {
+        loop {
+            let id = sessions::next_index(case.db())?;
+            match Store::create(case, &id) {
+                Ok(store) => return Ok(store),
+                // Taken since it was asked: the next one is another number.
+                Err(e) if sessions::exists(case.db(), &id).unwrap_or(false) => {
+                    let _ = e;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Open an existing session.
     pub fn open(case: &Case, session: &str) -> Result<Store> {
         let lock = case.lock_session(session)?;

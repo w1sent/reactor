@@ -1,0 +1,30 @@
+[package]
+name = "reactor-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "REactor's analysis database: SQLite, FTS5 and sqlite-vec compiled into the binary"
+
+[dependencies]
+# `bundled` builds SQLite from source into the binary (ADR-0046: a single executable,
+# nothing to install). This is the workspace's one SQLite binding; `libsqlite3-sys`
+# declares `links = "sqlite3"`, so Cargo refuses a second.
+rusqlite = { version = "0.40", features = ["bundled", "hooks", "backup", "limits"] }
+# Compiles one C file and links it statically: no extension is loaded at runtime.
+# Pinned to the stable release, not the alpha crates.io lists as latest.
+sqlite-vec = "=0.1.9"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+infer = "0.19"
+csv = "1"
+# v7 ids sort by time: change-log rows, cases, unsaved states.
+uuid = { version = "1", features = ["v7"] }
+zip = { version = "8.6.0", default-features = false, features = ["aes-crypto", "deflate"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"

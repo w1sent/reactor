@@ -72,6 +72,10 @@ pub fn suggest(file: &FileRef) -> Viewer {
         .open()
         .and_then(|reader| reader.read_range(0, reactor_fs::HEAD_BYTES))
         .unwrap_or_default();
+    // A SQLite file is a set of tables, whatever its name says.
+    if reactor_db::browse::is_sqlite(&head) {
+        return Viewer::Table;
+    }
     if reactor_fs::identify(&head).is_text {
         Viewer::Editor
     } else {
@@ -200,6 +204,25 @@ mod tests {
         assert_eq!(human_size(1023), "1023 B");
         assert_eq!(human_size(1536), "1.5 KiB");
         assert_eq!(human_size(3 << 30), "3.0 GiB");
+    }
+
+    #[test]
+    fn a_sqlite_file_opens_as_a_table_whatever_it_is_called() {
+        use reactor_fs::{LocalFs, VPath};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["reactor_data.sqlite", "no-extension", "looks-like.txt"] {
+            let c = rusqlite::Connection::open(dir.path().join(name)).unwrap();
+            c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+                .unwrap();
+        }
+        std::fs::write(dir.path().join("plain.txt"), "just text\n").unwrap();
+        let fs: Arc<dyn reactor_fs::Vfs> = Arc::new(LocalFs::new(dir.path(), "test"));
+        let open = |name: &str| suggest(&FileRef::new(fs.clone(), VPath::new(&format!("/{name}"))));
+        assert_eq!(open("reactor_data.sqlite"), Viewer::Table);
+        assert_eq!(open("no-extension"), Viewer::Table);
+        assert_eq!(open("looks-like.txt"), Viewer::Table);
+        assert_eq!(open("plain.txt"), Viewer::Editor);
     }
 
     #[test]

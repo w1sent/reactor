@@ -292,6 +292,27 @@ pub fn commands() -> Vec<Entry> {
             "Settings: fonts, sizes and behaviour",
             "Ctrl+, / Cmd+,",
         ),
+        Entry::fixed(
+            "save-case",
+            "Case",
+            None,
+            "Save as Case",
+            "makes this folder a case: the sessions move into its .reactor/ and the window reopens",
+        ),
+        Entry::fixed(
+            "import",
+            "Case",
+            Args::Optional,
+            "Import context documents",
+            "/import [files, folders or URLs…] — none: choose in a dialog. Wikis, PDFs, Word, web pages, reports; searchable by the agent",
+        ),
+        Entry::fixed(
+            "embedding",
+            "Case",
+            Args::Optional,
+            "Embedding model for searching documents by meaning",
+            "/embedding [provider/name | off | now] — none: show the state. The text of documents is sent to that provider",
+        ),
         Entry::fixed("quit", "Window", None, "Quit REactor", "closes the window"),
         Entry::fixed("help", "Window", None, "List the slash commands", "/help"),
     ]

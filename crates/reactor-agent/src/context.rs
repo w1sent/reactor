@@ -16,8 +16,9 @@ use serde_json::Value;
 
 use crate::entry::{Block, EntryId, Kind, Reduction};
 use crate::store::Store;
-use reactor_context::settings::ContextSettings;
+use reactor_context::settings::{ContextSettings, MemorySettings};
 use reactor_context::{identity, manifest, reporting, scenario};
+use reactor_db::manifest::{Author, Field};
 
 /// A message as the loop and the model seam handle it — ours, not rig's.
 #[derive(Debug, Clone, PartialEq)]
@@ -228,6 +229,11 @@ pub fn msg_tokens(msg: &Msg) -> u64 {
 
 /// The state modules of `reactor-context`, as this session's log holds them: the
 /// latest `custom` entry per key on the branch wins.
+///
+/// One part does not come from the log. The manifest's **goal and guidelines belong to
+/// the case** ([ADR-0045](../../../docs/adr/0045-a-case-is-the-working-directory.md)):
+/// they are read from it and are the same in every session and on every branch. The
+/// manifest's steps and its switch stay the session's.
 #[derive(Debug, Clone, Default)]
 pub struct SessionState {
     pub manifest: manifest::State,
@@ -236,6 +242,16 @@ pub struct SessionState {
     pub scenario: Option<scenario::State>,
     /// This session's own layer of the context settings (ADR-0038).
     pub context: ContextSettings,
+    /// This session's own layer of the memory switches (ADR-0047).
+    pub memory: MemorySettings,
+    /// Whether the case has reference documents to search: what makes `docs_search`
+    /// appear, so that a case without any pays nothing for it.
+    pub docs: bool,
+    /// Whether those documents can be searched by meaning: an embedding model is chosen
+    /// and has a vector for every passage. Not in the log: the agent sets it from the case
+    /// and the chosen model when it gathers a request, and it decides whether the search
+    /// tool offers the choice at all.
+    pub meaning: bool,
 }
 
 pub const KEY_MANIFEST: &str = "manifest";
@@ -243,6 +259,7 @@ pub const KEY_IDENTITY: &str = "identity";
 pub const KEY_REPORTING: &str = "reporting";
 pub const KEY_SCENARIO: &str = "scenario";
 pub const KEY_CONTEXT: &str = "context";
+pub const KEY_MEMORY: &str = "memory";
 
 impl SessionState {
     pub fn load(store: &Store) -> SessionState {
@@ -256,6 +273,7 @@ impl SessionState {
                 KEY_IDENTITY => s.identity = identity::State::normalize(data),
                 KEY_REPORTING => s.reporting = reporting::SessionState::normalize(data),
                 KEY_CONTEXT => s.context = ContextSettings::normalize(data),
+                KEY_MEMORY => s.memory = MemorySettings::normalize(data),
                 KEY_SCENARIO => {
                     s.scenario = serde_json::from_value(data.clone())
                         .ok()
@@ -264,8 +282,54 @@ impl SessionState {
                 _ => {}
             }
         }
+        // The strategy is the case's. A database that cannot be read is treated as a
+        // case with none set, like every other unreadable preference.
+        let case = reactor_db::manifest::current(store.case().db()).unwrap_or_default();
+        s.manifest.goal = case.goal;
+        s.manifest.guidelines = case.guidelines;
+        s.docs = reactor_db::corpus::has_documents(store.case().db()).unwrap_or(false);
         s
     }
+}
+
+/// Store the manifest: its goal and guidelines in the case (a new version each, only
+/// where they changed), its steps and switch in this session.
+pub fn save_manifest(
+    store: &mut Store,
+    state: &manifest::State,
+    author: &Author,
+) -> crate::error::Result<()> {
+    let (db, session) = (store.case().db().clone(), store.session().to_string());
+    for (field, value) in [
+        (Field::Goal, state.goal.as_deref()),
+        (Field::Guidelines, state.guidelines.as_deref()),
+    ] {
+        reactor_db::manifest::set(&db, field, value, author, Some(&session))?;
+    }
+    let session_part = manifest::State {
+        goal: None,
+        guidelines: None,
+        ..state.clone()
+    };
+    let stored = store
+        .branch()
+        .iter()
+        .rev()
+        .find_map(|e| match &e.kind {
+            Kind::Custom { key, data } if key == KEY_MANIFEST => {
+                Some(manifest::State::normalize(data))
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    if stored != session_part {
+        save_state(
+            store,
+            KEY_MANIFEST,
+            serde_json::to_value(&session_part).unwrap(),
+        )?;
+    }
+    Ok(())
 }
 
 /// Store a state module's value as this session's latest.

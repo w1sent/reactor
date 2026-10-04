@@ -18,7 +18,7 @@ use crate::store::Store;
 /// would be told about it).
 pub fn text_of(kind: &Kind) -> String {
     match kind {
-        Kind::Session { session, cwd, .. } => format!("session {session} in {cwd}"),
+        Kind::Session { session, .. } => format!("session {session}"),
         Kind::User { text } => text.clone(),
         Kind::Assistant { blocks, .. } => blocks
             .iter()
@@ -60,16 +60,77 @@ pub fn preview(kind: &Kind, n: usize) -> String {
     }
 }
 
+/// Entries to read, and where their blobs are: this session, or another one of the case.
+pub struct Log<'a> {
+    store: &'a Store,
+    /// `None` for the store's own session.
+    other: Option<(String, Vec<Entry>)>,
+}
+
+impl<'a> Log<'a> {
+    /// The session `store` has open.
+    pub fn own(store: &'a Store) -> Log<'a> {
+        Log { store, other: None }
+    }
+
+    /// Another session of the same case, read from the database.
+    pub fn other(store: &'a Store, session: &str) -> Result<Log<'a>> {
+        if session == store.session() {
+            return Ok(Log::own(store));
+        }
+        let rows = reactor_db::sessions::load(store.case().db(), session)?;
+        if rows.is_empty() {
+            return Err(Error::Store(format!("no session `{session}` in this case")));
+        }
+        let entries = rows
+            .iter()
+            .map(|r| serde_json::from_str::<Entry>(&r.body))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Store(format!("session `{session}` is unreadable: {e}")))?;
+        Ok(Log {
+            store,
+            other: Some((session.to_string(), entries)),
+        })
+    }
+
+    fn entries(&self) -> &[Entry] {
+        match &self.other {
+            Some((_, entries)) => entries,
+            None => self.store.all(),
+        }
+    }
+
+    /// The whole of an entry: a cut tool output is read back from its blob.
+    fn full(&self, entry: &Entry) -> Result<String> {
+        Ok(match &entry.kind {
+            Kind::ToolResult { blob: Some(b), .. } => {
+                String::from_utf8_lossy(&self.store.read_blob(b)?).into_owned()
+            }
+            other => text_of(other),
+        })
+    }
+}
+
 /// `history_index`: one line per entry in `from..=to` (the whole log by default),
 /// marking the ones a reduction currently hides.
 pub fn index_listing(store: &Store, from: Option<EntryId>, to: Option<EntryId>) -> String {
-    let hidden = hidden_by(store);
+    index_of(&Log::own(store), from, to)
+}
+
+/// The same listing for any session of the case. Reductions are a matter of the session
+/// that is open, so another session's entries are listed without marks.
+pub fn index_of(log: &Log, from: Option<EntryId>, to: Option<EntryId>) -> String {
+    let hidden = match log.other {
+        Some(_) => Default::default(),
+        None => hidden_by(log.store),
+    };
+    let entries = log.entries();
     let (from, to) = (
         from.unwrap_or(0),
-        to.unwrap_or(store.len().saturating_sub(1) as EntryId),
+        to.unwrap_or(entries.len().saturating_sub(1) as EntryId),
     );
     let mut lines = Vec::new();
-    for e in store.all().iter().filter(|e| e.id >= from && e.id <= to) {
+    for e in entries.iter().filter(|e| e.id >= from && e.id <= to) {
         let mark = match hidden.get(&e.id) {
             Some(r) => format!(" (hidden by #{r})"),
             None => String::new(),
@@ -90,6 +151,39 @@ pub fn index_listing(store: &Store, from: Option<EntryId>, to: Option<EntryId>) 
     }
 }
 
+/// The case's sessions, one line each, newest first.
+pub fn sessions_listing(store: &Store) -> Result<String> {
+    let sessions = reactor_db::sessions::list(store.case().db())?;
+    Ok(sessions
+        .iter()
+        .map(|s| {
+            format!(
+                "{}{} {} {} entries {}",
+                s.id,
+                if s.id == store.session() {
+                    " (this session)"
+                } else {
+                    ""
+                },
+                s.created_at,
+                s.entries,
+                s.first_prompt
+                    .as_deref()
+                    .map(|p| preview(
+                        &Kind::User {
+                            text: p.to_string()
+                        },
+                        80
+                    ))
+                    .unwrap_or_default()
+            )
+            .trim_end()
+            .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// The size of the whole of an entry: for a tool result, the blob if it was cut.
 fn full_bytes(e: &Entry) -> u64 {
     match &e.kind {
@@ -106,15 +200,20 @@ pub fn read(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<String> {
-    let entry = store
-        .get(id)
+    read_from(&Log::own(store), id, offset, limit)
+}
+
+pub fn read_from(
+    log: &Log,
+    id: EntryId,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<String> {
+    let entry = log
+        .entries()
+        .get(id as usize)
         .ok_or_else(|| Error::Store(format!("no entry #{id}")))?;
-    let full = match &entry.kind {
-        Kind::ToolResult { blob: Some(b), .. } => {
-            String::from_utf8_lossy(&store.read_blob(b)?).into_owned()
-        }
-        other => text_of(other),
-    };
+    let full = log.full(entry)?;
     let lines: Vec<&str> = full.lines().collect();
     let start = offset.unwrap_or(1).max(1) - 1;
     if start >= lines.len().max(1) && !lines.is_empty() {
@@ -140,6 +239,8 @@ pub fn read(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
+    /// The session the entry is in, when it is not the one that is open.
+    pub session: Option<String>,
     pub id: EntryId,
     pub kind: &'static str,
     /// 1-based line within the entry's full text.
@@ -152,35 +253,64 @@ pub struct Hit {
 pub fn search(store: &Store, pattern: &str, kinds: &[String], limit: usize) -> Result<Vec<Hit>> {
     let re = Regex::new(pattern).map_err(|e| Error::Store(format!("bad pattern: {e}")))?;
     let mut hits = Vec::new();
-    'entries: for e in store.all() {
+    search_log(&Log::own(store), &re, kinds, limit, &mut hits)?;
+    Ok(hits)
+}
+
+/// The same search over every session of the case: this one first, then the others,
+/// newest first.
+pub fn search_case(
+    store: &Store,
+    pattern: &str,
+    kinds: &[String],
+    limit: usize,
+) -> Result<Vec<Hit>> {
+    let re = Regex::new(pattern).map_err(|e| Error::Store(format!("bad pattern: {e}")))?;
+    let mut hits = Vec::new();
+    search_log(&Log::own(store), &re, kinds, limit, &mut hits)?;
+    for s in reactor_db::sessions::list(store.case().db())? {
+        if hits.len() >= limit {
+            break;
+        }
+        if s.id != store.session() {
+            search_log(&Log::other(store, &s.id)?, &re, kinds, limit, &mut hits)?;
+        }
+    }
+    Ok(hits)
+}
+
+fn search_log(
+    log: &Log,
+    re: &Regex,
+    kinds: &[String],
+    limit: usize,
+    hits: &mut Vec<Hit>,
+) -> Result<()> {
+    let session = log.other.as_ref().map(|(id, _)| id.clone());
+    for e in log.entries() {
         if !kinds.is_empty() && !kinds.iter().any(|k| k == e.kind.label()) {
             continue;
         }
         if matches!(e.kind, Kind::Session { .. } | Kind::Restore { .. }) {
             continue;
         }
-        let full = match &e.kind {
-            Kind::ToolResult { blob: Some(b), .. } => {
-                String::from_utf8_lossy(&store.read_blob(b)?).into_owned()
-            }
-            other => text_of(other),
-        };
+        let full = log.full(e)?;
         for (i, line) in full.lines().enumerate() {
+            if hits.len() >= limit {
+                return Ok(());
+            }
             if re.is_match(line) {
-                let text: String = line.chars().take(240).collect();
                 hits.push(Hit {
+                    session: session.clone(),
                     id: e.id,
                     kind: e.kind.label(),
                     line: i + 1,
-                    text,
+                    text: line.chars().take(240).collect(),
                 });
-                if hits.len() >= limit {
-                    break 'entries;
-                }
             }
         }
     }
-    Ok(hits)
+    Ok(())
 }
 
 pub fn render_hits(hits: &[Hit], limit: usize) -> String {
@@ -189,7 +319,10 @@ pub fn render_hits(hits: &[Hit], limit: usize) -> String {
     }
     let mut out: Vec<String> = hits
         .iter()
-        .map(|h| format!("#{}:{} ({}) {}", h.id, h.line, h.kind, h.text))
+        .map(|h| match &h.session {
+            Some(s) => format!("session {s} #{}:{} ({}) {}", h.id, h.line, h.kind, h.text),
+            None => format!("#{}:{} ({}) {}", h.id, h.line, h.kind, h.text),
+        })
         .collect();
     if hits.len() >= limit {
         out.push(format!("… stopped at {limit} matches; narrow the pattern"));

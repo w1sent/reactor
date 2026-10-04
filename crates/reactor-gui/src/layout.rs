@@ -41,10 +41,12 @@ pub enum PanelKind {
     Services,
     Files,
     Console,
+    Graph,
+    Docs,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 8] = [
+    pub const ALL: [PanelKind; 10] = [
         PanelKind::Transcript,
         PanelKind::Tree,
         PanelKind::Tools,
@@ -53,6 +55,8 @@ impl PanelKind {
         PanelKind::Services,
         PanelKind::Files,
         PanelKind::Console,
+        PanelKind::Graph,
+        PanelKind::Docs,
     ];
 
     pub fn label(self) -> &'static str {
@@ -65,6 +69,8 @@ impl PanelKind {
             PanelKind::Services => "Services",
             PanelKind::Files => "Files",
             PanelKind::Console => "Console",
+            PanelKind::Graph => "Graph",
+            PanelKind::Docs => "Documents",
         }
     }
 
@@ -79,6 +85,8 @@ impl PanelKind {
             PanelKind::Services => "services",
             PanelKind::Files => "files",
             PanelKind::Console => "console",
+            PanelKind::Graph => "graph",
+            PanelKind::Docs => "docs",
         }
     }
 
@@ -91,7 +99,7 @@ impl PanelKind {
     /// Where it reopens when the active preset does not place it anywhere.
     fn fallback_home(self) -> DockPlacement {
         match self {
-            PanelKind::Transcript => DockPlacement::Center,
+            PanelKind::Transcript | PanelKind::Graph | PanelKind::Docs => DockPlacement::Center,
             PanelKind::Console => DockPlacement::Bottom,
             _ => DockPlacement::Right,
         }
@@ -112,6 +120,8 @@ pub struct Panels {
     pub services: Arc<dyn PanelView>,
     pub files: Arc<dyn PanelView>,
     pub console: Arc<dyn PanelView>,
+    pub graph: Arc<dyn PanelView>,
+    pub docs: Arc<dyn PanelView>,
     /// Takes a panel out of the dock. `DockArea` removes by typed entity, and the handles
     /// above have forgotten their type, so whoever built the panels supplies this.
     pub remove: Arc<Remover>,
@@ -128,6 +138,8 @@ impl Panels {
             PanelKind::Services => &self.services,
             PanelKind::Files => &self.files,
             PanelKind::Console => &self.console,
+            PanelKind::Graph => &self.graph,
+            PanelKind::Docs => &self.docs,
         }
     }
 
@@ -227,7 +239,7 @@ impl LayoutPreset {
         const CONSOLE: Side = (&[Console], 260.);
         match self {
             LayoutPreset::Default => (
-                &[Transcript],
+                &[Transcript, Graph],
                 [
                     (&[], 0.),
                     (&[Tools, Toolsets, Context, Services, Files, Tree], 360.),
@@ -236,7 +248,7 @@ impl LayoutPreset {
             ),
             LayoutPreset::Focus => (&[Transcript], [(&[], 0.), (&[], 0.), CONSOLE]),
             LayoutPreset::Analysis => (
-                &[Transcript],
+                &[Transcript, Graph, Docs],
                 [
                     (&[Files, Tree], 280.),
                     (&[Tools, Toolsets, Context, Services], 360.),

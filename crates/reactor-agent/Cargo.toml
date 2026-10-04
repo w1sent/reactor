@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 reactor-core = { path = "../reactor-core" }
 reactor-context = { path = "../reactor-context" }
+reactor-db = { path = "../reactor-db" }
 rig-core = "0.42"
 serde.workspace = true
 serde_json.workspace = true
@@ -19,4 +20,5 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+reactor-db = { path = "../reactor-db" }
 serde_json = { workspace = true, features = ["preserve_order"] }

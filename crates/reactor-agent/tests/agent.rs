@@ -81,7 +81,8 @@ fn rig_with(
     let root = dir.path().to_path_buf();
     let cwd = root.join("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let store = Store::create(root.join("session"), "s", &cwd).unwrap();
+    let case = reactor_db::Case::create(&cwd, None).unwrap();
+    let store = Store::create(&case, "s").unwrap();
     let paths = Paths::new(root.join("cfg"), Shipped::Embedded);
     let mut cfg = AgentConfig::new(cwd.clone(), paths, window);
     cfg.registry = registry(
@@ -176,7 +177,12 @@ async fn a_turn_without_tools_records_the_exchange_and_streams_it() {
             "edit",
             "history_index",
             "history_read",
-            "history_search"
+            "history_search",
+            "graph_add",
+            "graph_annotate",
+            "graph_query",
+            "graph_pull",
+            "artifact_register"
         ],
         "the state-gated tools are not advertised"
     );
@@ -748,11 +754,22 @@ async fn skills_are_offered_by_their_requirements_and_upstream_skills_by_the_reg
 /// A window small enough that one dump forces a reduction.
 const SMALL: u64 = 5_000;
 
+/// Detach the session from the case's graph: its tools and its block alone are most of
+/// a window this small, and these tests are about the budget, not the graph.
+fn detached(cfg: &mut AgentConfig) {
+    std::fs::create_dir_all(&cfg.paths.config_dir).unwrap();
+    std::fs::write(
+        cfg.paths.config_dir.join("settings.json"),
+        r#"{"memory":{"caseGraph":false}}"#,
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn a_dump_that_overflows_inside_a_turn_is_reduced_at_the_tool_result_boundary() {
     // Older work, then a turn whose tool result pushes past the trigger. The reduction
     // lands *before* the next request, with no continue message and no parked turn.
-    let mut r = rig(
+    let mut r = rig_with(
         vec![
             bash_call(
                 "1",
@@ -767,6 +784,7 @@ async fn a_dump_that_overflows_inside_a_turn_is_reduced_at_the_tool_result_bound
         ],
         Sum::says("EARLIER: looked at two dumps; nothing found"),
         SMALL,
+        detached,
     );
     run(&r, "first, an older question about the sample")
         .await
@@ -1046,10 +1064,13 @@ async fn a_session_resumes_from_its_log_identically() {
     );
     r.agent.command("goal", "find the bug").unwrap();
     run(&r, "go").await.unwrap();
-    let dir = r.agent.store().lock().unwrap().dir().to_path_buf();
+    let case = r.agent.store().lock().unwrap().case().clone();
     let before = project(&r.agent.store().lock().unwrap());
+    // One frontend per session: the session is reopened once the agent has let go.
+    let Rig { _dir, agent, .. } = r;
+    drop(agent);
 
-    let reopened = Store::open(&dir).unwrap();
+    let reopened = Store::open(&case, "s").unwrap();
     assert_eq!(project(&reopened), before);
     assert_eq!(
         SessionState::load(&reopened).manifest.goal.as_deref(),
@@ -1259,17 +1280,16 @@ async fn activation_in_one_session_changes_its_registry_block_and_no_other_sessi
         .with_session_state(dir.path().join("b-activation.json"));
 
     let make = |paths: Paths| {
-        let dir2 = dir.path().join(format!(
-            "s-{}",
-            paths
-                .session_state
-                .as_ref()
-                .unwrap()
-                .file_stem()
-                .unwrap()
-                .to_string_lossy()
-        ));
-        let store = Store::create(&dir2, "s", dir.path()).unwrap();
+        let session = paths
+            .session_state
+            .as_ref()
+            .unwrap()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let case = reactor_db::Case::open_any(dir.path(), &cfg_dir).unwrap();
+        let store = Store::create(&case, &session).unwrap();
         let mut cfg = AgentConfig::new(dir.path().to_path_buf(), paths.clone(), 100_000);
         cfg.registry = reactor_agent::agent::registry_from_core(paths);
         let llm = Arc::new(ScriptedLlm::new(vec![
@@ -1489,4 +1509,130 @@ async fn a_summarizer_that_never_writes_notes_fails_saying_why() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("nothing at all"), "{e}");
+}
+
+// -- the memory switches (ADR-0047) ---------------------------------------------------------
+
+#[tokio::test]
+async fn a_session_reaches_the_cases_other_sessions_unless_the_switch_is_off() {
+    use reactor_agent::context::{KEY_MEMORY, save_state};
+    use reactor_agent::tools::ToolCtx;
+
+    let r = rig(vec![], Sum::says("-"), 100_000);
+    let store = r.agent.store();
+    let case = store.lock().unwrap().case().clone();
+    let mut other = Store::create(&case, "earlier").unwrap();
+    other
+        .append(Kind::User {
+            text: "the beacon interval is 47 seconds".into(),
+        })
+        .unwrap();
+
+    let ctx = ToolCtx {
+        cwd: r.root.join("work"),
+        cancel: CancellationToken::new(),
+        emit: Arc::new(|_: &str| {}),
+        store: store.clone(),
+        paths: r.agent.config().paths.clone(),
+        scenarios_dir: r.root.join("scenarios"),
+        model: "test/model".into(),
+        embedder: None,
+    };
+    let tools = Tools::standard(r.root.join("work"));
+    let search = tools.find("history_search").unwrap();
+    let read = tools.find("history_read").unwrap();
+    let index = tools.find("history_index").unwrap();
+    let across = json!({ "pattern": "beacon", "all_sessions": true });
+
+    // On by default.
+    let out = search.call(across.clone(), &ctx).await;
+    assert!(
+        out.text.contains("session earlier #1:1 (user)"),
+        "{}",
+        out.text
+    );
+    let out = read
+        .call(json!({ "id": 1, "session": "earlier" }), &ctx)
+        .await;
+    assert!(out.text.contains("47 seconds"), "{}", out.text);
+    let out = index.call(json!({ "session": "all" }), &ctx).await;
+    assert!(
+        out.text.contains("earlier") && out.text.contains("s (this session)"),
+        "{}",
+        out.text
+    );
+    // Without asking, a search stays in its own session.
+    let out = search.call(json!({ "pattern": "beacon" }), &ctx).await;
+    assert_eq!(out.text, "no matches");
+
+    // Off globally: every way out of the session explains itself and returns nothing.
+    let settings = ctx.paths.config_dir.join("settings.json");
+    std::fs::create_dir_all(&ctx.paths.config_dir).unwrap();
+    std::fs::write(&settings, r#"{"memory":{"sessionHistory":false}}"#).unwrap();
+    for (tool, args) in [
+        (search, across.clone()),
+        (read, json!({ "id": 1, "session": "earlier" })),
+        (index, json!({ "session": "all" })),
+    ] {
+        let out = tool.call(args, &ctx).await;
+        assert!(
+            out.is_error && out.text.contains("switch is off"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("47 seconds"));
+    }
+    // Its own history is untouched by the switch.
+    assert!(!index.call(json!({}), &ctx).await.is_error);
+
+    // The session's own layer wins over the global one (ADR-0038).
+    save_state(
+        &mut store.lock().unwrap(),
+        KEY_MEMORY,
+        json!({ "sessionHistory": true }),
+    )
+    .unwrap();
+    let out = search.call(across, &ctx).await;
+    assert!(out.text.contains("session earlier #1:1"), "{}", out.text);
+}
+
+// -- the case graph (ADR-0047) --------------------------------------------------------------
+
+#[tokio::test]
+async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detached() {
+    use reactor_agent::context::estimate_tokens;
+    let cost = |r: &Rig| -> (u64, bool, usize) {
+        let req = &r.llm.requests()[0];
+        let tools: u64 = req
+            .tools
+            .iter()
+            .map(|t| {
+                estimate_tokens(&t.name)
+                    + estimate_tokens(&t.description)
+                    + estimate_tokens(&t.parameters.to_string())
+            })
+            .sum();
+        (
+            tools + estimate_tokens(&req.system),
+            req.system.contains("## Case graph"),
+            req.tools.len(),
+        )
+    };
+    let on = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
+    run(&on, "hi").await.unwrap();
+    let off = rig_with(
+        vec![ScriptedLlm::say("ok")],
+        Sum::says("-"),
+        100_000,
+        detached,
+    );
+    run(&off, "hi").await.unwrap();
+
+    let ((with, block, n), (without, no_block, m)) = (cost(&on), cost(&off));
+    assert!(block && !no_block);
+    assert_eq!((n, m), (12, 7), "five tools come and go with the switch");
+    let graph = with - without;
+    eprintln!("the case graph costs {graph} tokens of every request (estimated)");
+    // A ceiling, so that growing it is a decision and not an accident.
+    assert!(graph < 3_000, "{graph}");
 }

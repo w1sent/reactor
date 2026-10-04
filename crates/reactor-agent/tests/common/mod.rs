@@ -5,9 +5,11 @@ use reactor_agent::store::Store;
 use serde_json::json;
 use tempfile::TempDir;
 
+/// A case in a fresh folder, and a session in it.
 pub fn store() -> (TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
-    let s = Store::create(dir.path().join("s1"), "s1", dir.path()).unwrap();
+    let case = reactor_db::Case::create(dir.path(), None).unwrap();
+    let s = Store::create(&case, "s1").unwrap();
     (dir, s)
 }
 

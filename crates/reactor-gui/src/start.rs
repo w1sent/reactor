@@ -18,10 +18,13 @@ pub struct LaunchArgs {
     pub continue_recent: bool,
     /// `-r` / `--resume`: show the native session picker.
     pub resume: bool,
-    /// `--session <dir>`: reopen this session directory.
-    pub session: Option<PathBuf>,
+    /// `--session <id>`: reopen this session of the directory's case.
+    pub session: Option<String>,
     /// `--model provider/name`.
     pub model: Option<String>,
+    /// `--save-case`: save the directory's unsaved state as its case before opening. What
+    /// *Save as Case* relaunches with — the case can only be moved while no window has it.
+    pub save_case: bool,
 }
 
 /// A fully resolved launch: the cwd is known.
@@ -32,16 +35,16 @@ pub struct ResolvedLaunch {
 }
 
 impl ResolvedLaunch {
-    /// The session directory to reopen, if the flags name one.
-    pub fn resume_dir(&self, paths: &reactor_core::Paths) -> Option<PathBuf> {
-        if let Some(dir) = &self.launch_args.session {
-            return Some(dir.clone());
+    /// The session to reopen, if the flags name one.
+    pub fn resume_session(&self, paths: &reactor_core::Paths) -> Option<String> {
+        if let Some(id) = &self.launch_args.session {
+            return Some(id.clone());
         }
         if self.launch_args.continue_recent {
-            return crate::backend::list_sessions(paths, Some(&self.cwd))
+            return crate::backend::list_sessions(paths, &self.cwd)
                 .into_iter()
                 .next()
-                .map(|s| s.dir);
+                .map(|s| s.id);
         }
         None
     }
@@ -56,9 +59,10 @@ pub fn parse_args(args: &[String]) -> LaunchArgs {
         match args[i].as_str() {
             "-c" | "--continue" => launch.continue_recent = true,
             "-r" | "--resume" => launch.resume = true,
+            "--save-case" => launch.save_case = true,
             "--session" => {
                 i += 1;
-                launch.session = args.get(i).map(PathBuf::from);
+                launch.session = args.get(i).cloned();
             }
             "--model" | "-m" => {
                 i += 1;
@@ -167,9 +171,9 @@ mod tests {
         assert!(l.continue_recent && !l.resume);
         assert_eq!(l.model.as_deref(), Some("ollama/qwen"));
 
-        let l = parse_args(&args(&["-r", "--session", "/s/1"]));
+        let l = parse_args(&args(&["-r", "--session", "1759500000-42"]));
         assert!(l.resume && l.cwd.is_none());
-        assert_eq!(l.session.as_deref(), Some(Path::new("/s/1")));
+        assert_eq!(l.session.as_deref(), Some("1759500000-42"));
     }
 
     #[test]
@@ -179,51 +183,77 @@ mod tests {
     }
 
     #[test]
-    fn continue_reopens_the_newest_session_for_the_directory() {
+    fn continue_reopens_the_newest_session_of_the_directorys_case() {
         use reactor_agent::entry::Kind;
         use reactor_agent::store::Store;
-        let dir = tempfile::tempdir().unwrap();
-        let paths = reactor_core::Paths::new(dir.path(), reactor_core::paths::Shipped::Embedded);
-        let make = |id: &str, cwd: &str, prompt: &str| {
-            let mut s =
-                Store::create(dir.path().join("sessions").join(id), id, Path::new(cwd)).unwrap();
+        use reactor_db::Case;
+        let (config, work, elsewhere, plain) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let paths = reactor_core::Paths::new(config.path(), reactor_core::paths::Shipped::Embedded);
+        let make = |case: &Case, id: &str, prompt: &str| {
+            let mut s = Store::create(case, id).unwrap();
             s.append(Kind::User {
                 text: prompt.into(),
             })
             .unwrap();
         };
-        make("a", "/work", "the older one");
+        // A saved case with two sessions, and another folder's unsaved state with one.
+        let case = Case::create(work.path(), None).unwrap();
+        make(&case, "a", "the older one");
         std::thread::sleep(std::time::Duration::from_millis(5));
-        make("b", "/work", "the newer one");
-        make("c", "/elsewhere", "a different project");
+        make(&case, "b", "the newer one");
+        drop(case);
+        let other = Case::open_any(elsewhere.path(), config.path()).unwrap();
+        make(&other, "c", "a different folder");
+        drop(other);
 
-        let launch = ResolvedLaunch {
-            cwd: "/work".into(),
-            launch_args: LaunchArgs {
-                continue_recent: true,
-                ..Default::default()
-            },
+        let launch = |cwd: &Path, args: LaunchArgs| ResolvedLaunch {
+            cwd: cwd.to_path_buf(),
+            launch_args: args,
         };
-        assert!(launch.resume_dir(&paths).unwrap().ends_with("sessions/b"));
-        let listed = crate::backend::list_sessions(&paths, Some(Path::new("/work")));
+        let cont = LaunchArgs {
+            continue_recent: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            launch(work.path(), cont.clone())
+                .resume_session(&paths)
+                .as_deref(),
+            Some("b")
+        );
+        let listed = crate::backend::list_sessions(&paths, work.path());
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].first_prompt.as_deref(), Some("the newer one"));
-
-        let named = ResolvedLaunch {
-            cwd: "/work".into(),
-            launch_args: LaunchArgs {
-                session: Some("/x/y".into()),
-                ..Default::default()
-            },
-        };
-        assert_eq!(named.resume_dir(&paths).as_deref(), Some(Path::new("/x/y")));
-        assert!(
-            ResolvedLaunch {
-                cwd: "/work".into(),
-                launch_args: LaunchArgs::default()
-            }
-            .resume_dir(&paths)
-            .is_none()
+        // An unsaved state has sessions too.
+        assert_eq!(
+            launch(elsewhere.path(), cont.clone())
+                .resume_session(&paths)
+                .as_deref(),
+            Some("c")
         );
+
+        let named = LaunchArgs {
+            session: Some("a".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            launch(work.path(), named).resume_session(&paths).as_deref(),
+            Some("a")
+        );
+        assert!(
+            launch(work.path(), LaunchArgs::default())
+                .resume_session(&paths)
+                .is_none()
+        );
+
+        // Asking about a folder that is neither does not make it anything.
+        assert!(crate::backend::list_sessions(&paths, plain.path()).is_empty());
+        assert!(launch(plain.path(), cont).resume_session(&paths).is_none());
+        assert!(!Case::has_unsaved(plain.path(), config.path()));
+        assert_eq!(std::fs::read_dir(plain.path()).unwrap().count(), 0);
     }
 }

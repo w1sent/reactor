@@ -22,8 +22,9 @@ use reactor_agent::llm::{LlmSummarizer, Switchable};
 use reactor_agent::provider::{AnyLlm, default_window};
 use reactor_agent::store::Store;
 use reactor_agent::tools::Tools;
-use reactor_context::settings::{ContextSettings, Origin, Settings};
+use reactor_context::settings::{ContextSettings, MemorySettings, Origin, Settings};
 use reactor_core::Paths;
+use reactor_db::Case;
 use tokio_util::sync::CancellationToken;
 
 pub type GuiAgent = Agent<Switchable<AnyLlm>, LlmSummarizer<Switchable<AnyLlm>>>;
@@ -39,14 +40,21 @@ pub enum UiEvent {
     /// The context window, taken apart.
     Inspect(std::result::Result<reactor_agent::inspect::ContextPreview, String>),
     Context(ContextView),
+    /// Something to tell the person, from work done in the background.
+    Notice {
+        kind: &'static str,
+        text: String,
+    },
+    /// Vectors are being made: how far along, or `None` when the run is over.
+    Embedding(Option<reactor_db::corpus::Progress>),
 }
 
 /// How to start a session.
 #[derive(Debug, Clone, Default)]
 pub struct StartOptions {
     pub cwd: PathBuf,
-    /// Open this existing session directory instead of creating one.
-    pub resume: Option<PathBuf>,
+    /// Open this existing session of the cwd's case instead of creating one.
+    pub resume: Option<String>,
     /// `provider/name`; else settings' `defaultModel`; else `REACTOR_MODEL`.
     pub model: Option<String>,
 }
@@ -60,6 +68,13 @@ pub struct Backend {
     ui_rx: Mutex<Option<Receiver<UiEvent>>>,
     running: Mutex<Option<CancellationToken>>,
     pub paths: Paths,
+    /// The user's embedding model, shared with the agent so that choosing one applies at once.
+    pub embedder: reactor_agent::embed::EmbedderSlot,
+    embed_cancel: Mutex<Option<CancellationToken>>,
+    /// The cwd's case, or the unsaved state it has until it is saved as one (ADR-0045).
+    pub case: Case,
+    pub session_id: String,
+    /// The session's own directory in the case (`activation.json`).
     pub session_dir: PathBuf,
     /// The model in use (`provider/name`), or empty when none is chosen.
     model: Mutex<String>,
@@ -112,17 +127,23 @@ impl Backend {
         paths.cwd = Some(opts.cwd.clone());
         let settings = Settings::load(&paths);
 
-        let (store, session_dir) = match &opts.resume {
-            Some(dir) => (Store::open(dir).map_err(|e| e.to_string())?, dir.clone()),
+        // The folder's case, else its unsaved state: nothing is written into a folder
+        // that has not been saved as a case (ADR-0045).
+        let case = Case::open_any(&opts.cwd, &paths.config_dir).map_err(|e| e.to_string())?;
+        if case.is_saved() {
+            let _ = reactor_db::case::remember(&paths.config_dir, case.root());
+        }
+        let (store, session_id) = match &opts.resume {
+            Some(id) => (
+                Store::open(&case, id).map_err(|e| e.to_string())?,
+                id.clone(),
+            ),
             None => {
                 let id = new_session_id();
-                let dir = paths.config_dir.join("sessions").join(&id);
-                (
-                    Store::create(&dir, &id, &opts.cwd).map_err(|e| e.to_string())?,
-                    dir,
-                )
+                (Store::create(&case, &id).map_err(|e| e.to_string())?, id)
             }
         };
+        let session_dir = store.dir().to_path_buf();
         // Activation is per session (ADR-0038): this file, inside the session, wins over
         // the machine's.
         let paths = paths.with_session_state(session_dir.join("activation.json"));
@@ -136,7 +157,18 @@ impl Backend {
         let llm = Switchable::new(llm);
         let summarizer = Switchable::new(llm.current());
 
+        // The embedding model the user chose, if any. A model that cannot be set up is said
+        // so in the window, which still opens: search is then by keyword.
+        let embedder = reactor_agent::embed::EmbedderSlot::default();
+        let mut embed_problem = None;
+        if let Some(spec) = &settings.embedding.model {
+            match reactor_agent::embed::from_spec(spec) {
+                Ok(e) => embedder.set(Some(e)),
+                Err(e) => embed_problem = Some(format!("embedding model: {e}")),
+            }
+        }
         let mut cfg = AgentConfig::new(opts.cwd.clone(), paths.clone(), window);
+        cfg.embedder = embedder.clone();
         if let Some(d) = find_bundled("prompts/scenarios") {
             cfg.scenarios_dir = d;
         }
@@ -177,12 +209,319 @@ impl Backend {
             ui_rx: Mutex::new(Some(ui_rx)),
             running: Mutex::new(None),
             paths,
+            embedder,
+            embed_cancel: Mutex::new(None),
+            case,
+            session_id,
             session_dir,
             model: Mutex::new(model),
             default_window: Mutex::new(window),
         };
         backend.sync_summarizer();
+        if let Some(text) = embed_problem {
+            let _ = backend.ui_tx.send(UiEvent::Notice {
+                kind: "warning",
+                text,
+            });
+        }
         Ok(backend)
+    }
+
+    // -- context documents (ADR-0046) ----------------------------------------------------------
+
+    fn notice(tx: &Sender<UiEvent>, kind: &'static str, text: impl Into<String>) {
+        let _ = tx.send(UiEvent::Notice {
+            kind,
+            text: text.into(),
+        });
+    }
+
+    /// Import files, folders and URLs into the case's corpus, then make the vectors they
+    /// need. Runs in the background; the outcome arrives as notices.
+    pub fn import(&self, sources: Vec<String>) {
+        let (case, tx) = (self.case.clone(), self.ui_tx.clone());
+        let this = self.embed_job();
+        self.runtime.spawn(async move {
+            let items = match crate::import::plan(&case, &sources) {
+                Ok(items) if !items.is_empty() => items,
+                Ok(_) => return Self::notice(&tx, "warning", "import: nothing to import there"),
+                Err(e) => return Self::notice(&tx, "error", format!("import: {e}")),
+            };
+            Self::notice(
+                &tx,
+                "info",
+                format!("importing {} source(s) in the background…", items.len()),
+            );
+            let summary = {
+                let case = case.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::import::run(&case, &items, &mut |_, _, _| {})
+                })
+                .await
+            };
+            let Ok(summary) = summary else {
+                return Self::notice(&tx, "error", "import: stopped unexpectedly");
+            };
+            let mut text = format!(
+                "imported {} document(s), {} passages; {} unchanged",
+                summary.stored, summary.passages, summary.unchanged
+            );
+            if summary.replaced > 0 {
+                text.push_str(&format!(
+                    ", {} replaced an earlier version",
+                    summary.replaced
+                ));
+            }
+            for (source, why) in summary.failures.iter().take(5) {
+                text.push_str(&format!("\n! {source}: {why}"));
+            }
+            if summary.failures.len() > 5 {
+                text.push_str(&format!(
+                    "\n… and {} more failed",
+                    summary.failures.len() - 5
+                ));
+            }
+            let kind = if summary.failures.is_empty() {
+                "info"
+            } else {
+                "warning"
+            };
+            Self::notice(&tx, kind, text);
+            if summary.stored > 0 {
+                this.run().await;
+            }
+        });
+    }
+
+    /// What a background embedding run needs, owned.
+    fn embed_job(&self) -> EmbedJob {
+        EmbedJob {
+            case: self.case.clone(),
+            slot: self.embedder.clone(),
+            tx: self.ui_tx.clone(),
+            cancel: {
+                let token = CancellationToken::new();
+                *self.embed_cancel.lock().unwrap() = Some(token.clone());
+                token
+            },
+        }
+    }
+
+    /// Make the vectors the passages are missing, in the background.
+    pub fn embed(&self) {
+        if self.embedder.get().is_none() {
+            return Self::notice(
+                &self.ui_tx,
+                "warning",
+                "no embedding model is chosen: /embedding provider/name",
+            );
+        }
+        let job = self.embed_job();
+        self.runtime.spawn(async move { job.run().await });
+    }
+
+    /// Make every vector again with the chosen model: stop a run that is going, forget the
+    /// model's vectors, and embed all passages afresh, in the background. Until it has
+    /// finished the passages cannot be searched by meaning. The passages' text goes to the
+    /// provider again.
+    pub fn reembed_all(&self) {
+        if self.embedder.get().is_none() {
+            return Self::notice(
+                &self.ui_tx,
+                "warning",
+                "no embedding model is chosen: /embedding provider/name",
+            );
+        }
+        if let Some(running) = self.embed_cancel.lock().unwrap().take() {
+            running.cancel();
+        }
+        let job = self.embed_job();
+        self.runtime.spawn(async move {
+            let Some(embedder) = job.slot.get() else {
+                return;
+            };
+            // The run that was stopped lets go of the case after its current batch.
+            let mut lock = None;
+            for _ in 0..100 {
+                match job.case.lock_embedding() {
+                    Ok(Some(l)) => {
+                        lock = Some(l);
+                        break;
+                    }
+                    Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                    Err(e) => {
+                        return Self::notice(&job.tx, "error", format!("re-embedding: {e}"));
+                    }
+                }
+            }
+            let Some(lock) = lock else {
+                return Self::notice(
+                    &job.tx,
+                    "warning",
+                    "re-embedding: another embedding run holds this case",
+                );
+            };
+            let name = embedder.name();
+            let db = job.case.db();
+            let total = reactor_db::corpus::counts(db).map_or(0, |(_, passages)| passages);
+            let cleared = reactor_db::corpus::models(db)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.name == name)
+                .try_for_each(|m| reactor_db::corpus::clear_vectors(db, m.id));
+            drop(lock);
+            if let Err(e) = cleared {
+                return Self::notice(&job.tx, "error", format!("re-embedding: {e}"));
+            }
+            let _ = job
+                .tx
+                .send(UiEvent::Embedding(Some(reactor_db::corpus::Progress {
+                    embedded: 0,
+                    total,
+                })));
+            let _ = job.tx.send(UiEvent::Notice {
+                kind: "info",
+                text: format!("re-embedding {total} passage(s) with {name}"),
+            });
+            job.run().await;
+        });
+    }
+
+    /// Choose the embedding model (`None` to go back to keyword search), remember it as the
+    /// default, and start making the vectors.
+    pub fn set_embedding_model(&self, spec: Option<&str>) -> std::result::Result<(), String> {
+        let embedder = match spec {
+            Some(spec) => Some(reactor_agent::embed::from_spec(spec).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let model = match spec {
+            Some(s) => serde_json::json!({ "model": s }),
+            None => serde_json::json!({}),
+        };
+        let mut patch = serde_json::Map::new();
+        patch.insert("embedding".into(), model);
+        Settings::patch(&self.paths, patch).map_err(|e| e.to_string())?;
+        self.embedder.set(embedder);
+        if spec.is_some() {
+            self.embed();
+        }
+        Ok(())
+    }
+
+    /// One paragraph on the corpus and its vectors, for `/embedding`.
+    pub fn corpus_status(&self) -> String {
+        let db = self.case.db();
+        let (docs, chunks) = reactor_db::corpus::counts(db).unwrap_or((0, 0));
+        let mut out = vec![format!("{docs} document(s), {chunks} passages.")];
+        match self.embedder.get() {
+            Some(e) => out.push(format!(
+                "Embedding model: {}. The text of imported documents is sent to its provider to be embedded.",
+                e.name()
+            )),
+            None => out.push(
+                "No embedding model chosen: documents are searched by keyword only. Choose one with /embedding provider/name (openai, gemini, or ollama for a model on this machine).".into(),
+            ),
+        }
+        for m in reactor_db::corpus::models(db).unwrap_or_default() {
+            if let Ok(p) = reactor_db::corpus::progress(db, m.id) {
+                out.push(format!(
+                    "  {} ({} dimensions): {}/{} passages{}",
+                    m.name,
+                    m.dim,
+                    p.embedded,
+                    p.total,
+                    if p.complete() {
+                        ""
+                    } else {
+                        " — in progress or interrupted"
+                    }
+                ));
+            }
+        }
+        out.join("\n")
+    }
+
+    /// Search the case's documents as the agent's tool does, off the window's thread: the
+    /// query may have to be embedded by a provider over the network.
+    pub fn search_docs(
+        &self,
+        text: String,
+        limit: usize,
+        mode: reactor_agent::embed::Mode,
+    ) -> tokio::task::JoinHandle<std::result::Result<reactor_agent::embed::Found, String>> {
+        let (case, embedder) = (self.case.clone(), self.embedder.get());
+        self.runtime.spawn(async move {
+            reactor_agent::embed::search_by(&case, embedder.as_deref(), &text, limit, mode)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// Which sentences of a passage are closest in meaning to a query, by the model whose
+    /// vectors the search uses. Asks the provider; only where meaning can be searched.
+    pub fn explain_hit(
+        &self,
+        query: String,
+        passage: String,
+    ) -> tokio::task::JoinHandle<std::result::Result<Vec<reactor_agent::embed::Sentence>, String>>
+    {
+        let embedder = self.embedder.get();
+        let ready = self.meaning_status();
+        self.runtime.spawn(async move {
+            ready?;
+            let embedder = embedder.ok_or("no embedding model is chosen")?;
+            reactor_agent::embed::explain(embedder.as_ref(), &query, &passage)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// Whether the documents can be searched by meaning: the model's name if so, else why
+    /// not.
+    pub fn meaning_status(&self) -> std::result::Result<String, String> {
+        let Some(e) = self.embedder.get() else {
+            return Err("No embedding model is chosen (Settings → Documents).".into());
+        };
+        let want = e.name();
+        match reactor_db::corpus::usable_model(self.case.db(), Some(&want)) {
+            Ok(Some(m)) if m.name == want => Ok(m.name),
+            _ => Err(format!(
+                "{want} has not made vectors for every passage yet: the status bar shows how far it is."
+            )),
+        }
+    }
+
+    /// Whether this folder is still an unsaved state rather than a case (ADR-0045).
+    pub fn is_unsaved(&self) -> bool {
+        !self.case.is_saved()
+    }
+
+    /// Whether anything was said in any session of the case — what decides if closing an
+    /// unsaved state is worth a question.
+    pub fn has_work(&self) -> bool {
+        reactor_db::sessions::list(self.case.db())
+            .map(|sessions| sessions.iter().any(|s| s.first_prompt.is_some()))
+            .unwrap_or(true)
+    }
+
+    /// The memory switches in effect (ADR-0047): the session's layer over the default.
+    pub fn memory(&self) -> MemorySettings {
+        let global = Settings::load(&self.paths).memory;
+        self.agent.session_state().memory.over(&global)
+    }
+
+    /// Set one or both switches for this session.
+    pub fn set_session_memory(&self, change: MemorySettings) -> std::result::Result<(), String> {
+        let store = self.store();
+        let mut store = store.lock().unwrap();
+        let layer = change.over(&SessionState::load(&store).memory);
+        reactor_agent::context::save_state(
+            &mut store,
+            reactor_agent::context::KEY_MEMORY,
+            serde_json::to_value(layer).unwrap(),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// The channel the window's pump drains. Once.
@@ -589,49 +928,77 @@ pub fn trigger_label(t: Trigger) -> &'static str {
     }
 }
 
-/// Session directories under `~/.reactor/sessions/`, newest first — the picker's feed.
-pub fn list_sessions(paths: &Paths, cwd: Option<&Path>) -> Vec<SessionSummary> {
-    let dir = paths.config_dir.join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+/// The sessions of `cwd`'s case (or of its unsaved state), newest first — the picker's
+/// feed. A folder that is neither has none, and asking does not make it one.
+pub fn list_sessions(paths: &Paths, cwd: &Path) -> Vec<SessionSummary> {
+    if !Case::is_case(cwd) && !Case::has_unsaved(cwd, &paths.config_dir) {
+        return vec![];
+    }
+    let Ok(case) = Case::open_any(cwd, &paths.config_dir) else {
         return vec![];
     };
-    let mut out: Vec<SessionSummary> = entries
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            let store = Store::open(&path).ok()?;
-            let session_cwd = match &store.get(0)?.kind {
-                Kind::Session { cwd, .. } => cwd.clone(),
-                _ => return None,
-            };
-            if let Some(want) = cwd
-                && Path::new(&session_cwd) != want
-            {
-                return None;
-            }
-            let first_user = store.all().iter().find_map(|e| match &e.kind {
-                Kind::User { text } => Some(first_words(text, 80)),
-                _ => None,
-            });
-            let ts = store.get(0).map(|e| e.ts).unwrap_or(0);
-            Some(SessionSummary {
-                dir: path,
-                cwd: session_cwd,
-                first_prompt: first_user,
-                started_ms: ts,
-                entries: store.len(),
-            })
+    reactor_db::sessions::list(case.db())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| SessionSummary {
+            id: s.id,
+            first_prompt: s.first_prompt.map(|p| first_words(&p, 80)),
+            created_at: s.created_at,
+            entries: s.entries,
         })
-        .collect();
-    out.sort_by_key(|s| std::cmp::Reverse(s.started_ms));
-    out
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSummary {
-    pub dir: PathBuf,
-    pub cwd: String,
+    pub id: String,
     pub first_prompt: Option<String>,
-    pub started_ms: u64,
+    /// RFC 3339 UTC.
+    pub created_at: String,
     pub entries: usize,
+}
+
+/// One background embedding run, owned so that it can outlive the call that started it.
+struct EmbedJob {
+    case: Case,
+    slot: reactor_agent::embed::EmbedderSlot,
+    tx: Sender<UiEvent>,
+    cancel: CancellationToken,
+}
+
+impl EmbedJob {
+    async fn run(self) {
+        let Some(embedder) = self.slot.get() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let result = reactor_agent::embed::embed_pending(
+            &self.case,
+            embedder.as_ref(),
+            &self.cancel,
+            &mut |p| {
+                let _ = tx.send(UiEvent::Embedding(Some(p)));
+            },
+        )
+        .await;
+        let _ = self.tx.send(UiEvent::Embedding(None));
+        let (kind, text) = match result {
+            Ok(done) if done.now == 0 => return,
+            Ok(done) => (
+                "info",
+                format!(
+                    "embedded {} passage(s) with {}: {}/{} done",
+                    done.now,
+                    embedder.name(),
+                    done.progress.embedded,
+                    done.progress.total
+                ),
+            ),
+            Err(e) => (
+                "warning",
+                format!("embedding stopped: {e}. It continues where it left off next time."),
+            ),
+        };
+        let _ = self.tx.send(UiEvent::Notice { kind, text });
+    }
 }

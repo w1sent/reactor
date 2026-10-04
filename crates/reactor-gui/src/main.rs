@@ -22,7 +22,23 @@ use reactor_gui::theme;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let launch = parse_args(&args);
+    // Headless commands run before gpui exists, so they work with no display (ADR-0045).
+    if let Some(code) =
+        reactor_gui::headless::dispatch(&args, &mut std::io::stdout(), &mut std::io::stderr())
+    {
+        std::process::exit(code);
+    }
+    let mut launch = parse_args(&args);
+    // *Save as Case* relaunched us: the window that asked is closing, and the move happens
+    // here, before anything opens the case. A failure is shown in the window that opens.
+    let mut save_error = None;
+    if std::mem::take(&mut launch.save_case)
+        && let Some(cwd) = &launch.cwd
+    {
+        let config = reactor_core::Paths::from_env().config_dir;
+        save_error = reactor_gui::headless::save_when_free(&config, cwd).err();
+    }
+    reactor_gui::app::set_startup_note(save_error.map(|e| format!("could not save the case: {e}")));
 
     // `.with_assets(AllAssets)` registers the platform `AssetSource` icon
     // SVGs are resolved through at paint time. Its absence is silent — no
@@ -79,8 +95,8 @@ fn main() {
 /// the model and thinking pickers (see its `Render`).
 fn install_menus(cx: &mut App) {
     use reactor_gui::app::{
-        ApplyLayoutAction, MainWindow, OpenPalette, OpenSettings, ToggleDockAction,
-        TogglePanelAction,
+        ApplyLayoutAction, ImportDocuments, MainWindow, OpenPalette, OpenSettings, SaveCase,
+        ToggleDockAction, TogglePanelAction,
     };
     use reactor_gui::layout::{DockSide, LayoutPreset, PanelKind};
 
@@ -166,6 +182,32 @@ fn install_menus(cx: &mut App) {
         });
     });
 
+    cx.on_action(|_: &SaveCase, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.save_case(window, cx));
+                }
+            });
+        });
+    });
+
+    cx.on_action(|_: &ImportDocuments, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.import_documents("", window, cx));
+                }
+            });
+        });
+    });
+
     let mut items: Vec<MenuItem> = LayoutPreset::ALL
         .iter()
         .map(|preset| MenuItem::action(preset.label(), ApplyLayoutAction { preset: *preset }))
@@ -196,6 +238,14 @@ fn install_menus(cx: &mut App) {
                 items: vec![
                     MenuItem::action("Command Palette…", OpenPalette),
                     MenuItem::action("Settings…", OpenSettings),
+                ],
+                disabled: false,
+            },
+            Menu {
+                name: "Case".into(),
+                items: vec![
+                    MenuItem::action("Import Documents…", ImportDocuments),
+                    MenuItem::action("Save as Case…", SaveCase),
                 ],
                 disabled: false,
             },
@@ -412,7 +462,7 @@ struct SessionPicker {
 
 impl SessionPicker {
     fn open(cx: &mut App, resolved: ResolvedLaunch) {
-        let sessions = list_sessions(&reactor_core::Paths::from_env(), Some(&resolved.cwd));
+        let sessions = list_sessions(&reactor_core::Paths::from_env(), &resolved.cwd);
         let bounds = gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(
             None,
             size(px(780.), px(440.)),
@@ -457,7 +507,7 @@ impl Render for SessionPicker {
                     .collect();
                 let label = format!("{prompt}  ·  {} entries", session.entries);
                 SessionRow {
-                    path: session.dir.clone(),
+                    id: session.id.clone(),
                     label,
                 }
             })
@@ -479,22 +529,22 @@ impl Render for SessionPicker {
             );
         }
         for row in &rows {
-            let session_path = row.path.clone();
+            let session_id = row.id.clone();
             let session_label = row.label.clone();
             list = list.child(
                 div()
-                    .id(SharedString::from(session_path.display().to_string()))
+                    .id(SharedString::from(session_id.clone()))
                     .px_2()
                     .py_1()
                     .rounded_md()
                     .hover(|style| style.bg(theme.list_hover))
                     .on_click({
-                        let session_path = session_path.clone();
+                        let session_id = session_id.clone();
                         let resolved = self.resolved.clone();
                         move |_, window, cx| {
                             window.remove_window();
                             let mut launch_args = resolved.launch_args.clone();
-                            launch_args.session = Some(session_path.clone());
+                            launch_args.session = Some(session_id.clone());
                             let resolved = ResolvedLaunch {
                                 cwd: resolved.cwd.clone(),
                                 launch_args,
@@ -524,6 +574,6 @@ impl Render for SessionPicker {
 /// One row of the session picker, as rendered.
 #[derive(Debug, Clone, PartialEq)]
 struct SessionRow {
-    path: PathBuf,
+    id: String,
     label: String,
 }

@@ -4,6 +4,9 @@
 //! not pi's and not rig's — rig's message types are converted to and from these at
 //! the model seam, so a rig release never changes what is on disk.
 //!
+//! Entries are rows in the case's database (ADR-0046); each row's body is the entry as
+//! JSON, in the shape below.
+//!
 //! An entry has an `id` unique within its session, a `parent` pointer (branches are
 //! parent pointers, so a fork is just an append whose parent is not the tip), a
 //! timestamp, and a kind. Bulk is never stored inline in the log line unbounded: a
@@ -29,10 +32,10 @@ pub struct Entry {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Kind {
     /// The first line of every log: what this file is.
+    /// It names no directory: a case is moved as a unit (ADR-0045).
     Session {
         version: u32,
         session: String,
-        cwd: String,
     },
     User {
         text: String,
@@ -104,8 +107,8 @@ pub struct Usage {
 /// Where the whole of a truncated tool output lives, and how big it was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Blob {
-    /// File name under the session's `blobs/` directory.
-    pub file: String,
+    /// Its address in the case's blob store.
+    pub sha256: String,
     /// The full size, in bytes.
     pub bytes: u64,
 }

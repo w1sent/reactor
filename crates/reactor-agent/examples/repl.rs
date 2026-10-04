@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! cargo run -p reactor-agent --example repl -- --model anthropic/claude-sonnet-5-5 [--window N] [--mode auto|fade|compact]
-//!               [--summarizer provider/name] [--cwd DIR] [--resume SESSION_DIR]
+//!               [--summarizer provider/name] [--cwd DIR] [--resume SESSION_ID]
 //!               [--scenarios DIR] [--skills DIR]
 //! ```
 //! Lines starting with `/` are commands: `/goal`, `/guidelines`, `/manifest`, `/frame`,
@@ -36,7 +36,7 @@ struct Args {
     window: Option<u64>,
     mode: Mode,
     cwd: PathBuf,
-    resume: Option<PathBuf>,
+    resume: Option<String>,
     scenarios: Option<PathBuf>,
     skills: Option<PathBuf>,
 }
@@ -78,7 +78,7 @@ fn parse_args() -> Result<Args, String> {
                 a.mode = parse_mode(&value("--mode")?).ok_or("--mode is fade, compact or auto")?
             }
             "--cwd" => a.cwd = PathBuf::from(value("--cwd")?),
-            "--resume" => a.resume = Some(PathBuf::from(value("--resume")?)),
+            "--resume" => a.resume = Some(value("--resume")?),
             "--scenarios" => a.scenarios = Some(PathBuf::from(value("--scenarios")?)),
             "--skills" => a.skills = Some(PathBuf::from(value("--skills")?)),
             "-h" | "--help" => return Err(String::new()),
@@ -88,7 +88,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
-const USAGE: &str = "usage: cargo run -p reactor-agent --example repl -- --model provider/name [--window N] [--mode auto|fade|compact] [--summarizer provider/name] [--cwd DIR] [--resume SESSION_DIR] [--scenarios DIR] [--skills DIR]\n\nproviders: anthropic, openai, gemini, openrouter, ollama (credentials from the provider's usual environment variable)";
+const USAGE: &str = "usage: cargo run -p reactor-agent --example repl -- --model provider/name [--window N] [--mode auto|fade|compact] [--summarizer provider/name] [--cwd DIR] [--resume SESSION_ID] [--scenarios DIR] [--skills DIR]\n\nproviders: anthropic, openai, gemini, openrouter, ollama (credentials from the provider's usual environment variable)";
 
 #[tokio::main]
 async fn main() {
@@ -120,8 +120,11 @@ async fn run(args: Args) -> Result<(), String> {
     };
 
     let paths = Paths::from_env();
+    // The cwd's case, or the unsaved state it gets when it is not one (ADR-0045).
+    let case =
+        reactor_db::Case::open_any(&args.cwd, &paths.config_dir).map_err(|e| e.to_string())?;
     let store = match &args.resume {
-        Some(dir) => Store::open(dir).map_err(|e| e.to_string())?,
+        Some(session) => Store::open(&case, session).map_err(|e| e.to_string())?,
         None => {
             let id = format!(
                 "{}-{}",
@@ -131,11 +134,15 @@ async fn run(args: Args) -> Result<(), String> {
                     .unwrap_or(0),
                 std::process::id()
             );
-            Store::create(paths.config_dir.join("sessions").join(&id), &id, &args.cwd)
-                .map_err(|e| e.to_string())?
+            Store::create(&case, &id).map_err(|e| e.to_string())?
         }
     };
-    eprintln!("session {}", store.dir().display());
+    eprintln!(
+        "session {} in {} ({})",
+        store.session(),
+        case.root().display(),
+        if case.is_saved() { "case" } else { "unsaved" }
+    );
 
     let mut cfg = AgentConfig::new(
         args.cwd.clone(),

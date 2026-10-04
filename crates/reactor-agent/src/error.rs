@@ -49,4 +49,13 @@ impl From<reactor_core::ReactorError> for Error {
     }
 }
 
+impl From<reactor_db::Error> for Error {
+    fn from(e: reactor_db::Error) -> Error {
+        match e {
+            reactor_db::Error::Io(m) => Error::Io(m),
+            other => Error::Store(other.to_string()),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

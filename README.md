@@ -70,6 +70,10 @@ crates/
   reactor-client   the seam the GUI panels use: in-process, or the CLI
   reactor-fs       a virtual filesystem seam: browse, read, hash, identify, search
                    (ADR-0044)
+  reactor-db       the case and its analysis database: sessions, the graph, the file
+                   registry; SQLite, FTS5 and sqlite-vec compiled in (ADR-0045..0047)
+  reactor-ingest   context documents: PDF, Word, OpenDocument, EPUB, HTML, wiki dumps to
+                   Markdown, and Markdown to passages (ADR-0046)
   reactor-context  manifest / identity / reporting / scenario state machines
                    (ADR-0040)
   reactor-agent    session store, the loop over rig, the context budget

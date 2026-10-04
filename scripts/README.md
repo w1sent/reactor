@@ -81,3 +81,10 @@ runtime package-availability probing ADR-0010 rejects. The cost that made
 probing wrong — a network round trip per candidate per tool, on a user's
 machine, to refine a recommendation they are about to read — is not a cost here,
 because it is paid once by whoever edits the catalogue.
+
+## `check-stix.py` — a STIX bundle against the official schemas
+
+Checks a bundle made by `reactor-gui graph export` against the OASIS STIX 2.1 JSON schemas.
+Not run by `cargo test`: it needs `jsonschema` and a clone of
+`oasis-open/cti-stix2-json-schemas`, and the usage is in the script's docstring. Run it
+when the STIX mapping changes.

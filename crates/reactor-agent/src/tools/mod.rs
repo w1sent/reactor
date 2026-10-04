@@ -4,7 +4,9 @@
 //! *state*, not a gate that refuses: the manifest's `update_steps` is advertised only
 //! while a goal is set and the switch is on, the scenario's `reactor_phase_complete`
 //! only while a scenario runs — and a stale call still gets an explanation rather than
-//! a block ([ADR-0030](../../../docs/adr/0030-gated-tools-advertise-by-state.md)).
+//! a block ([ADR-0030](../../../docs/adr/0030-gated-tools-advertise-by-state.md)). The
+//! graph tools follow the same rule: there while the session is attached to the case's
+//! graph, gone while it is detached.
 //!
 //! There is deliberately **no permission or approval layer**
 //! ([ADR-0033](../../../docs/adr/0033-reactor-is-a-rust-project-on-rig.md)): an agent
@@ -25,7 +27,9 @@ use crate::llm::ToolSpec;
 use crate::store::Store;
 
 pub mod bash;
+pub mod docs;
 pub mod files;
+pub mod graph;
 pub mod session;
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -69,6 +73,10 @@ pub struct ToolCtx {
     pub paths: Paths,
     /// Where scenario directories live.
     pub scenarios_dir: PathBuf,
+    /// The model on this turn (`provider/name`): the author of what it writes to the case.
+    pub model: String,
+    /// Makes the vectors a query is compared with, when the user chose a model.
+    pub embedder: Option<Arc<dyn crate::embed::Embedder>>,
 }
 
 impl ToolCtx {
@@ -79,6 +87,11 @@ impl ToolCtx {
 
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
+    /// What to advertise for this state, where the description or the parameters depend
+    /// on it (an option that cannot work is not offered).
+    fn spec_for(&self, _state: &SessionState) -> ToolSpec {
+        self.spec()
+    }
     /// Whether to advertise it right now.
     fn available(&self, _state: &SessionState) -> bool {
         true
@@ -111,6 +124,12 @@ impl Tools {
             .with(session::HistorySearch)
             .with(session::UpdateSteps)
             .with(session::PhaseComplete)
+            .with(graph::GraphAdd)
+            .with(graph::GraphAnnotate)
+            .with(graph::GraphQuery)
+            .with(graph::GraphPull)
+            .with(graph::ArtifactRegister)
+            .with(docs::DocsSearch)
     }
 
     /// What to advertise for this session state.
@@ -118,7 +137,7 @@ impl Tools {
         self.0
             .iter()
             .filter(|t| t.available(state))
-            .map(|t| t.spec())
+            .map(|t| t.spec_for(state))
             .collect()
     }
 

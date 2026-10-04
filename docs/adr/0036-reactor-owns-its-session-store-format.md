@@ -1,5 +1,14 @@
 # REactor owns its session store format
 
+> **Store superseded by
+> [ADR-0046](0046-the-analysis-database-is-sqlite-inside-the-case.md):** the
+> session log moves from a JSONL file under `~/.reactor/sessions/` into the
+> case's SQLite database. The condition this ADR set for revisiting SQLite has
+> arrived: entries must be citable from the analysis graph and searchable
+> across the sessions of a case. Everything else decided here holds — the
+> format is REactor's own, the log is append-only, branches are parent
+> pointers, and originals survive every reduction.
+
 The Rust harness defines its own on-disk session format rather than reading or
 writing pi's. Append-only JSONL plus an index; branches as parent pointers on
 entries; a context reduction recorded as an entry describing the range it

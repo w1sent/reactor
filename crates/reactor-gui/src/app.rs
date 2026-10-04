@@ -68,6 +68,10 @@ actions!(
         ClosePalette,
         /// Open the settings window (Cmd+, / Ctrl+,, or the Commands menu).
         OpenSettings,
+        /// The Case menu: make this folder a case (ADR-0045).
+        SaveCase,
+        /// The Case menu: import context documents (ADR-0046).
+        ImportDocuments,
         /// Esc in the notification history.
         CloseNotices,
         /// Up in the prompt, on its top line: the previous message you sent.
@@ -119,6 +123,12 @@ pub struct ReactorApp {
     pub host_fs: Arc<reactor_fs::LocalFs>,
     /// `None` only when the agent could not start; the window opens anyway and says why.
     backend: Option<Arc<Backend>>,
+    /// Vectors are being made for the case's documents: how far along.
+    embedding: Option<reactor_db::corpus::Progress>,
+    /// The case's graph, drawn. Told to read again whenever the agent may have written.
+    graph_panel: Entity<crate::graph::panel::GraphPanel>,
+    /// The documents, searched by hand.
+    docs_panel: Entity<crate::docs_panel::DocsPanel>,
     reactor: Client,
     pub session: Entity<Session>,
     pub composer: Entity<TextareaState>,
@@ -170,10 +180,17 @@ pub struct ReactorApp {
     family_drafts: std::collections::HashMap<crate::settings::Slot, String>,
     /// The model page's provider and name fields.
     pub model_draft: crate::settings_window::ModelDraft,
+    /// The provider and name typed on the Documents page for the embedding model.
+    pub embedding_draft: crate::settings_window::ModelDraft,
+    /// "Re-embed everything" was pressed once and waits for its confirmation.
+    pub reembed_armed: bool,
     /// Which layer of the context budget the settings window edits.
     pub context_scope: crate::settings_window::ContextScope,
     /// The settings window, while it is open.
     pub settings_window: Option<gpui_kit::AnyWindowHandle>,
+    /// The window may close without asking: the question about an unsaved state has been
+    /// answered, or there was nothing to ask.
+    closing: bool,
 }
 
 /// The open command palette.
@@ -247,7 +264,328 @@ pub struct MainWindow {
 
 impl gpui_kit::Global for MainWindow {}
 
+/// Something the launcher wants said once the window is up (a save that failed).
+static STARTUP_NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_startup_note(note: Option<String>) {
+    *STARTUP_NOTE.lock().unwrap() = note;
+}
+
+/// Start this program again, detached: it outlives the window that asked.
+fn spawn_self(args: &[std::ffi::OsString]) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    Command::new(std::env::current_exe()?)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
+/// What the person chose when closing an unsaved state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseChoice {
+    Save,
+    Delete,
+    Cancel,
+}
+
 impl ReactorApp {
+    // -- the case (ADR-0045) -----------------------------------------------------------------
+
+    /// *Save as Case*: make this folder a case. The case can only be moved while nothing
+    /// has it open, so the window closes and a new one opens on the same session, saving
+    /// on its way in.
+    pub fn save_case(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(b) = self.backend.clone() else {
+            self.push_note(
+                "warning",
+                "The agent did not start, so there is nothing to save.",
+            );
+            return;
+        };
+        if !b.is_unsaved() {
+            self.push_note(
+                "info",
+                format!("{} is already a case.", b.case.root().display()),
+            );
+            return;
+        }
+        if b.is_running() {
+            self.push_note(
+                "warning",
+                "The agent is working. Interrupt it or let it finish, then save.",
+            );
+            return;
+        }
+        let mut args: Vec<std::ffi::OsString> = vec![
+            b.case.root().as_os_str().to_owned(),
+            "--session".into(),
+            b.session_id.clone().into(),
+            "--save-case".into(),
+        ];
+        let model = b.model();
+        if !model.is_empty() {
+            args.extend(["--model".into(), model.into()]);
+        }
+        match spawn_self(&args) {
+            Ok(()) => {
+                self.closing = true;
+                cx.quit();
+            }
+            Err(e) => self.push_note("error", format!("could not reopen REactor to save: {e}")),
+        }
+    }
+
+    // -- context documents (ADR-0046) ------------------------------------------------------------
+
+    /// `/import [sources…]`: what was named, or — with nothing named — what the person picks
+    /// in the system's file dialog (files and folders both).
+    pub fn import_documents(&mut self, args: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            self.push_note(
+                "warning",
+                "The agent did not start, so there is no case to import into.",
+            );
+            return;
+        };
+        let named = split_words(args);
+        if !named.is_empty() {
+            backend.import(named);
+            return;
+        }
+        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        window
+            .spawn(cx, async move |_| {
+                if let Ok(Ok(Some(paths))) = receiver.await {
+                    backend.import(
+                        paths
+                            .into_iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
+                    );
+                }
+            })
+            .detach();
+    }
+
+    /// The embedding model in `settings.json`, if one is chosen.
+    pub fn embedding_model(&self) -> Option<String> {
+        self.backend
+            .as_ref()
+            .and_then(|b| Settings::load(&b.paths).embedding.model)
+    }
+
+    /// The corpus and its vectors, in words (what `/embedding` says).
+    pub fn corpus_status(&self) -> String {
+        self.backend
+            .as_ref()
+            .map(|b| b.corpus_status())
+            .unwrap_or_else(|| "The agent did not start, so there is no case.".into())
+    }
+
+    /// Choose the model typed on the Documents page.
+    pub fn set_typed_embedding(&mut self, cx: &mut Context<Self>) {
+        let name = self.embedding_draft.name.trim().to_string();
+        if name.is_empty() {
+            self.push_note("warning", "type an embedding model name first");
+            return;
+        }
+        let spec = format!("{}/{}", self.embedding_draft.provider, name);
+        self.embedding_command(&spec, cx);
+    }
+
+    /// How far the vectors being made have got, while a run is going.
+    pub fn embedding_progress(&self) -> Option<reactor_db::corpus::Progress> {
+        self.embedding
+    }
+
+    /// First press of *Re-embed everything*: ask for a second, because it sends all the
+    /// passages to the provider again and takes the meaning search away until it is done.
+    pub fn reembed_arm(&mut self, cx: &mut Context<Self>) {
+        self.reembed_armed = true;
+        cx.notify();
+    }
+
+    pub fn reembed_cancel(&mut self, cx: &mut Context<Self>) {
+        self.reembed_armed = false;
+        cx.notify();
+    }
+
+    /// The second press.
+    pub fn reembed_confirm(&mut self, cx: &mut Context<Self>) {
+        self.reembed_armed = false;
+        if let Some(backend) = &self.backend {
+            backend.reembed_all();
+        }
+        cx.notify();
+    }
+
+    pub fn embedding_off(&mut self, cx: &mut Context<Self>) {
+        self.embedding_command("off", cx);
+    }
+
+    pub fn embedding_now(&mut self, cx: &mut Context<Self>) {
+        self.embedding_command("now", cx);
+    }
+
+    /// `/embedding`: show the state, choose the model, turn it off, or run it now.
+    fn embedding_command(&mut self, args: &str, cx: &mut Context<Self>) {
+        cx.notify();
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        match args.trim() {
+            "" => self.push_note("info", backend.corpus_status()),
+            "now" => backend.embed(),
+            "off" => match backend.set_embedding_model(None) {
+                Ok(()) => self.push_note("info", "Documents are searched by keyword only."),
+                Err(e) => self.push_note("error", format!("embedding: {e}")),
+            },
+            spec => match backend.set_embedding_model(Some(spec)) {
+                Ok(()) => self.push_note(
+                    "info",
+                    format!("Embedding model is {spec}. The text of the documents is being sent to its provider to be embedded; documents are searched by keyword until it has finished."),
+                ),
+                Err(e) => self.push_note("error", format!("embedding: {e}")),
+            },
+        }
+    }
+
+    /// Whether the window may close now. An unsaved state with something in it asks
+    /// first; an empty one is simply dropped, so opening a folder by accident leaves
+    /// nothing behind.
+    pub fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.closing {
+            return true;
+        }
+        let Some(b) = self.backend.clone() else {
+            return true;
+        };
+        if !b.is_unsaved() {
+            return true;
+        }
+        if !b.has_work() {
+            self.finish_unsaved("discard", &b);
+            return true;
+        }
+        self.ask_before_close(window, cx);
+        false
+    }
+
+    /// Hand the unsaved state to a helper that acts once this window has let go of it.
+    fn finish_unsaved(&mut self, verb: &str, b: &Backend) {
+        let args: Vec<std::ffi::OsString> = vec![
+            "case".into(),
+            verb.into(),
+            b.case.root().as_os_str().to_owned(),
+            "--wait".into(),
+        ];
+        if let Err(e) = spawn_self(&args) {
+            // Nothing is lost: the unsaved state stays where it is and is offered again
+            // the next time this folder is opened.
+            eprintln!("reactor-gui: could not {verb} the unsaved state: {e}");
+        }
+        self.closing = true;
+    }
+
+    fn ask_before_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
+        let folder = b.case.root().display().to_string();
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let folder = folder.clone();
+            let button = |id: &'static str, label: &'static str, choice: CloseChoice| {
+                let weak = weak.clone();
+                Button::new(id).label(label).on_click(move |_, window, cx| {
+                    let _ = weak.update(cx, |app, cx| app.close_with(choice, window, cx));
+                })
+            };
+            dialog
+                .w(px(560.))
+                .close_button(false)
+                .overlay_closable(false)
+                .title("This folder is not a case yet")
+                .content(move |content, _window, cx| {
+                    content.child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "Save as a case to keep this session in {folder}/.reactor, or delete it. Files the agent wrote into the folder stay either way."
+                            )),
+                    )
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_end()
+                        .child(button("close-cancel", "Cancel", CloseChoice::Cancel))
+                        .child(button("close-delete", "Delete", CloseChoice::Delete).danger())
+                        .child(button("close-save", "Save as Case", CloseChoice::Save).primary()),
+                )
+        });
+        cx.notify();
+    }
+
+    /// Carry out the answer to [`Self::ask_before_close`].
+    pub fn close_with(&mut self, choice: CloseChoice, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        if window.has_active_dialog(cx) {
+            window.close_dialog(cx);
+        }
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
+        match choice {
+            CloseChoice::Cancel => return,
+            CloseChoice::Save => self.finish_unsaved("save", &b),
+            CloseChoice::Delete => self.finish_unsaved("discard", &b),
+        }
+        cx.quit();
+    }
+
+    /// Quit, asking first when there is an unsaved state to decide about.
+    pub fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.should_close(window, cx) {
+            cx.quit();
+        }
+    }
+
+    // -- the memory switches (ADR-0047) -------------------------------------------------------
+
+    /// The switches in effect for this session: (other sessions' history, the case graph).
+    pub fn memory(&self) -> (bool, bool) {
+        self.backend
+            .as_ref()
+            .map(|b| b.memory())
+            .map(|m| (m.session_history(), m.case_graph()))
+            .unwrap_or((true, true))
+    }
+
+    /// Set one of them for this session.
+    pub fn set_memory(
+        &mut self,
+        change: reactor_context::settings::MemorySettings,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(b) = self.backend.clone()
+            && let Err(e) = b.set_session_memory(change)
+        {
+            self.push_note("error", format!("could not change the switch: {e}"));
+        }
+        cx.notify();
+    }
+
     /// Open the main window: theme, dock, agent, event pump — in the order the spec's §6
     /// anatomy needs.
     pub fn open(cx: &mut App, args: &crate::start::ResolvedLaunch) -> anyhow::Result<()> {
@@ -272,6 +610,13 @@ impl ReactorApp {
                 handle: window.window_handle(),
                 app: app.downgrade(),
             });
+            // Closing a folder that is not a case yet asks first: save it as one, or
+            // delete what was said (ADR-0045).
+            let weak = app.downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                weak.update(cx, |app, cx| app.should_close(window, cx))
+                    .unwrap_or(true)
+            });
             let root_view: gpui_kit::AnyView = app.into();
             cx.new(|cx| Root::new(root_view, window, cx))
         })?;
@@ -279,6 +624,9 @@ impl ReactorApp {
 
         let app = app_entity.expect("window's root view was built");
         app.update(cx, |app, cx| {
+            if let Some(note) = STARTUP_NOTE.lock().unwrap().take() {
+                app.push_note("error", note);
+            }
             app.start_pump(cx);
             app.start_notice_clock(cx);
             app.refresh_catalogue(cx);
@@ -346,6 +694,10 @@ impl ReactorApp {
         });
         let console =
             cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx));
+        let graph = cx.new(|cx| crate::graph::panel::GraphPanel::new(weak_app.clone(), window, cx));
+        let graph_panel = graph.clone();
+        let docs = cx.new(|cx| crate::docs_panel::DocsPanel::new(weak_app.clone(), window, cx));
+        let docs_panel = docs.clone();
         let panels = crate::layout::Panels {
             transcript: panel_handle(transcript.clone()),
             tree: panel_handle(tree.clone()),
@@ -355,6 +707,8 @@ impl ReactorApp {
             services: panel_handle(services.clone()),
             files: panel_handle(files.clone()),
             console: panel_handle(console.clone()),
+            graph: panel_handle(graph.clone()),
+            docs: panel_handle(docs.clone()),
             // `DockArea` removes by typed entity; the handles above have lost the type.
             remove: std::sync::Arc::new(move |kind, area, window, cx| {
                 use crate::layout::PanelKind::*;
@@ -367,6 +721,8 @@ impl ReactorApp {
                     Services => area.remove_panel(services.clone(), window, cx),
                     Files => area.remove_panel(files.clone(), window, cx),
                     Console => area.remove_panel(console.clone(), window, cx),
+                    Graph => area.remove_panel(graph.clone(), window, cx),
+                    Docs => area.remove_panel(docs.clone(), window, cx),
                 }
             }),
         };
@@ -377,13 +733,16 @@ impl ReactorApp {
         // The agent. A failure to start is shown, not fatal: the window stays open.
         let opts = StartOptions {
             cwd: cwd.clone(),
-            resume: args.resume_dir(&reactor_core::Paths::from_env()),
+            resume: args.resume_session(&reactor_core::Paths::from_env()),
             model: args.launch_args.model.clone(),
         };
         let (backend, startup_error) = match Backend::start(opts) {
             Ok(b) => (Some(Arc::new(b)), None),
             Err(e) => (None, Some(format!("could not start the agent: {e}"))),
         };
+        // The graph panel reads the case through the backend, which exists only now.
+        graph_panel.update(cx, |g, cx| g.set_backend(backend.clone(), cx));
+        docs_panel.update(cx, |d, cx| d.set_backend(backend.clone(), cx));
         let reactor = match &backend {
             Some(b) => Client::for_session(b.paths.clone(), Some(cwd.clone())),
             None => Client::from_env(Some(cwd.clone())),
@@ -435,6 +794,9 @@ impl ReactorApp {
             host_fs: Arc::new(reactor_fs::LocalFs::new("/", "/")),
             cwd,
             backend,
+            embedding: None,
+            graph_panel,
+            docs_panel,
             reactor,
             session,
             composer,
@@ -469,8 +831,15 @@ impl ReactorApp {
             inspect: None,
             family_drafts: Default::default(),
             model_draft: Default::default(),
+            reembed_armed: false,
+            embedding_draft: crate::settings_window::ModelDraft {
+                // The one that needs no key and keeps the text on this machine.
+                provider: "ollama".into(),
+                name: String::new(),
+            },
             context_scope: crate::settings_window::ContextScope::Default,
             settings_window: None,
+            closing: false,
         }
     }
 
@@ -535,9 +904,14 @@ impl ReactorApp {
                     self.refresh_tree(cx);
                     self.refresh_statuses(cx);
                 }
+                // A tool may have written to the case's graph: show it as it happens.
+                if matches!(e, Event::ToolEnd { .. }) {
+                    self.graph_panel.update(cx, |g, cx| g.refresh(cx));
+                }
             }
             UiEvent::TurnEnded(result) => {
                 backend.turn_finished();
+                self.graph_panel.update(cx, |g, cx| g.refresh(cx));
                 let store = backend.store();
                 let ok = result.is_ok();
                 // A finished prompt is annotated: when, how long, how much it streamed. It goes
@@ -628,6 +1002,18 @@ impl ReactorApp {
                 self.session
                     .update(cx, |s, _| s.context_percent = Some(view.percent()));
                 self.context = Some(view);
+            }
+            UiEvent::Notice { kind, text } => {
+                // An import ends with a notice: what is in the case has changed.
+                self.docs_panel.update(cx, |d, cx| d.refresh(cx));
+                self.push_note(kind, text)
+            }
+            UiEvent::Embedding(progress) => {
+                // The search choices change when the vectors are complete.
+                if progress.is_none_or(|p| p.complete()) {
+                    self.docs_panel.update(cx, |d, cx| d.refresh(cx));
+                }
+                self.embedding = progress;
             }
         }
         cx.notify();
@@ -865,6 +1251,52 @@ impl ReactorApp {
         cx: &mut Context<Self>,
     ) {
         crate::layout::toggle_panel(kind, self.layout, &self.panels, &self.dock_area, window, cx);
+        cx.notify();
+    }
+
+    /// Open the agent's `docs_search` result in the Documents panel, with the passage at
+    /// `index` selected. The passages are looked up in the case again, so what is shown is
+    /// the stored text with its document and neighbours; any that cannot be found (the
+    /// document was removed since) are left out.
+    pub fn show_docs(
+        &mut self,
+        query: String,
+        passages: Vec<reactor_agent::tools::docs::ResultPassage>,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use reactor_agent::tools::docs::defang;
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let mut hits = Vec::new();
+        let mut chosen = 0;
+        for (i, p) in passages.iter().enumerate() {
+            let candidates = reactor_db::corpus::hits_at(backend.case.db(), &p.source, &p.section)
+                .unwrap_or_default();
+            let hit = candidates
+                .iter()
+                .find(|h| defang(&h.text) == p.text)
+                .or(candidates.first())
+                .cloned();
+            if let Some(hit) = hit {
+                if i == index {
+                    chosen = hits.len();
+                }
+                hits.push(hit);
+            }
+        }
+        let kind = crate::layout::PanelKind::Docs;
+        let open = self.panels.is_open(kind, self.dock_area.read(cx), cx);
+        if !open {
+            self.toggle_panel(kind, window, cx);
+        }
+        let id = self.panels.view(kind).panel_id(cx);
+        self.dock_area
+            .update(cx, |area, cx| area.select_panel(id, window, cx));
+        self.docs_panel
+            .update(cx, |d, cx| d.show(query, hits, chosen, window, cx));
         cx.notify();
     }
 
@@ -1700,7 +2132,10 @@ impl ReactorApp {
             "settings" => self.toggle_settings(window, cx),
             "inspect" => self.toggle_inspect(window, cx),
             "notifications" => self.toggle_notices(window, cx),
-            "quit" => cx.quit(),
+            "quit" => self.request_quit(window, cx),
+            "save-case" => self.save_case(window, cx),
+            "import" => self.import_documents(args, window, cx),
+            "embedding" => self.embedding_command(args, cx),
             "refresh" => {
                 self.refresh_catalogue(cx);
                 self.refresh_services(true, cx);
@@ -2196,6 +2631,14 @@ impl ReactorApp {
                     .child(format!("context {p}%")),
             );
         }
+        if let Some(p) = self.embedding {
+            right = right.child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(cx.theme().font_size * 0.85)
+                    .child(format!("embedding {}/{}", p.embedded, p.total)),
+            );
+        }
         right = right.child(
             Button::new("model-picker")
                 .ghost()
@@ -2364,17 +2807,82 @@ impl Render for ReactorApp {
                     this.interrupt(window, cx);
                 }
             }))
-            .child(crate::chrome::title_bar(
-                format!("REactor — {}", self.cwd.display()),
-                self.menu_bar.as_ref(),
-                Some(crate::notices_ui::bell(self, cx.weak_entity(), cx)),
-                cx,
-            ))
+            .child(
+                crate::chrome::title_bar(
+                    format!("REactor — {}", self.cwd.display()),
+                    self.menu_bar.as_ref(),
+                    Some(crate::notices_ui::bell(self, cx.weak_entity(), cx)),
+                    cx,
+                )
+                // The title bar's own X removes the window without asking anyone, so
+                // the question about an unsaved state (ADR-0045) is put here as well as
+                // on the platform's close request.
+                .on_close_window({
+                    let weak = cx.weak_entity();
+                    move |_, window, cx| {
+                        let (may_close, helper_started) = weak
+                            .update(cx, |app, cx| (app.should_close(window, cx), app.closing))
+                            .unwrap_or((true, false));
+                        if may_close {
+                            window.remove_window();
+                            // A helper is waiting for this process to let go of the
+                            // unsaved state: do not linger behind another window.
+                            if helper_started {
+                                cx.quit();
+                            }
+                        }
+                    }
+                }),
+            )
             .child(self.dock_area.clone())
             .child(self.render_status_bar(window, cx))
             .when_some(
                 crate::notices_ui::history(self, cx.weak_entity(), cx),
                 |el, popup| el.child(popup),
             )
+    }
+}
+
+/// Words of a command's arguments, where `"double quotes"` hold one together: a path with a
+/// space in it is one path.
+fn split_words(text: &str) -> Vec<String> {
+    let (mut words, mut cur, mut quoted, mut any) = (Vec::new(), String::new(), false, false);
+    for c in text.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if any {
+                    words.push(std::mem::take(&mut cur));
+                    any = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                any = true;
+            }
+        }
+    }
+    if any {
+        words.push(cur);
+    }
+    words
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::split_words;
+
+    #[test]
+    fn arguments_split_on_spaces_unless_quoted() {
+        assert_eq!(split_words("  a  b "), ["a", "b"]);
+        assert_eq!(
+            split_words(r#"/x/my docs "/x/my docs/a b.md" https://e.org/p"#),
+            ["/x/my", "docs", "/x/my docs/a b.md", "https://e.org/p"]
+        );
+        assert_eq!(split_words(r#""" a"#), ["", "a"]);
+        assert!(split_words("   ").is_empty());
     }
 }

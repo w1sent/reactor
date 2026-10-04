@@ -13,6 +13,7 @@ pub enum Origin {
     Identity,
     Registry,
     Skills,
+    CaseGraph,
     Manifest,
     Reporting,
     Scenario,
@@ -25,11 +26,12 @@ pub enum Origin {
 }
 
 impl Origin {
-    pub const ALL: [Origin; 13] = [
+    pub const ALL: [Origin; 14] = [
         Origin::Base,
         Origin::Identity,
         Origin::Registry,
         Origin::Skills,
+        Origin::CaseGraph,
         Origin::Manifest,
         Origin::Reporting,
         Origin::Scenario,
@@ -47,6 +49,7 @@ impl Origin {
             Origin::Identity => "Identity",
             Origin::Registry => "Tool registry",
             Origin::Skills => "Skills",
+            Origin::CaseGraph => "Case graph",
             Origin::Manifest => "Manifest",
             Origin::Reporting => "Reporting",
             Origin::Scenario => "Scenario",
@@ -72,8 +75,11 @@ impl Origin {
             Origin::Skills => {
                 "Skills of active tools: REactor's own, and upstream skills fetched by `reactor setup`."
             }
+            Origin::CaseGraph => {
+                "How to use the case's graph. The same text in every request; the *Case graph* switch above the prompt takes it out, with the graph tools."
+            }
             Origin::Manifest => {
-                "The session manifest: `/goal`, `/guidelines` and the agent's own steps. `/manifest off` leaves it out."
+                "The manifest: the case's goal and guidelines (`/goal`, `/guidelines`) and this session's steps. `/manifest off` leaves it out."
             }
             Origin::Reporting => "The reporting discipline: `/report on`, level and folder.",
             Origin::Scenario => "The current scenario phase's briefing: `/reactor-scenario`.",

@@ -27,13 +27,14 @@ use reactor_context::settings::Settings;
 use reactor_context::{identity, manifest, reporting, scenario};
 use reactor_core::Paths;
 use reactor_core::probe::Status;
+use reactor_db::manifest::Author;
 use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::{self, BudgetConfig, Plan, Summarizer, context_tokens, needs_reduction, plan};
 use crate::context::{
-    self, Item, KEY_IDENTITY, KEY_MANIFEST, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
+    self, Item, KEY_IDENTITY, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
     estimate_tokens, msg_tokens, project, save_state,
 };
 use crate::entry::{EntryId, Kind, Mode, Trigger, Usage};
@@ -99,6 +100,8 @@ pub struct AgentConfig {
     pub max_tokens: Option<u64>,
     /// What the catalogue says now. Replaceable, so the loop can be tested without probing.
     pub registry: Arc<dyn Fn() -> RegistryView + Send + Sync>,
+    /// The user's embedding model, if they chose one: it lets `docs_search` ask by meaning.
+    pub embedder: crate::embed::EmbedderSlot,
 }
 
 impl AgentConfig {
@@ -115,6 +118,7 @@ impl AgentConfig {
             max_rounds: 200,
             max_tokens: None,
             registry,
+            embedder: Default::default(),
         }
     }
 }
@@ -272,10 +276,22 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             .await
             .map_err(|e| Error::Store(e.to_string()))?;
         let settings = self.settings();
-        let (state, items) = {
+        let (mut state, items) = {
             let store = self.store.lock().unwrap();
             (SessionState::load(&store), project(&store))
         };
+        // What is advertised and said about the case follows the switches in effect:
+        // the session's layer over the default (ADR-0038).
+        state.memory = state.memory.over(&settings.memory);
+        if state.docs {
+            let case = self.store.lock().unwrap().case().clone();
+            let embedder = self.cfg.embedder.get();
+            state.meaning = tokio::task::spawn_blocking(move || {
+                crate::embed::meaning_ready(&case, embedder.as_deref())
+            })
+            .await
+            .unwrap_or(false);
+        }
         let offered = skills::offered(&self.authored_skills, &view.usable, &view.skill_dirs);
         Ok(Gathered {
             view,
@@ -358,6 +374,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 prompt::Part::Identity => (Origin::Identity, "Identity"),
                 prompt::Part::Registry => (Origin::Registry, "Available tools"),
                 prompt::Part::Skills => (Origin::Skills, "Skills"),
+                prompt::Part::CaseGraph => (Origin::CaseGraph, "Case graph"),
                 prompt::Part::Manifest => (Origin::Manifest, "Manifest"),
                 prompt::Part::Reporting => (Origin::Reporting, "Reporting"),
                 prompt::Part::Scenario => (Origin::Scenario, "Scenario phase"),
@@ -796,6 +813,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 store: self.store.clone(),
                 paths: self.cfg.paths.clone(),
                 scenarios_dir: self.cfg.scenarios_dir.clone(),
+                model: self.llm.name(),
+                embedder: self.cfg.embedder.get(),
             };
             let out = match self.tools.find(name) {
                 Some(tool) => tool.call(args.clone(), &ctx).await,
@@ -856,10 +875,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         }
         let mut store = self.store.lock().unwrap();
         let entry_id = store.len() as EntryId;
-        let label = format!("{name}-{entry_id}");
         let blob = match &out.full {
-            Some(path) => store.adopt_blob(&label, path)?,
-            None => store.write_blob(&label, out.text.as_bytes())?,
+            Some(path) => store.adopt_blob(path)?,
+            None => store.write_blob(out.text.as_bytes())?,
         };
         let content = truncate::view(&out.text, total, entry_id);
         Ok(Kind::ToolResult {
@@ -889,7 +907,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     unreachable!()
                 };
                 if e.persist {
-                    save_state(&mut store, KEY_MANIFEST, serde_json::to_value(&m).unwrap())?;
+                    // A person typed this, so the case records them as its author.
+                    context::save_manifest(&mut store, &m, &Author::analyst())?;
                 }
                 result.notices = e.notices;
             }

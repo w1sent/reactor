@@ -501,7 +501,8 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store) {
         let d = tempfile::tempdir().unwrap();
-        let s = Store::create(d.path().join("s"), "s", d.path()).unwrap();
+        let case = reactor_db::Case::create(d.path(), None).unwrap();
+        let s = Store::create(&case, "s").unwrap();
         (d, s)
     }
 

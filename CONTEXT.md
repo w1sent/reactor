@@ -106,6 +106,77 @@ catalogue entry. They are cloned, released and installed independently,
 and REactor assumes nothing about where they sit.
 _Avoid_: submodule, vendored tool, subproject.
 
+**Case**:
+One investigation, held in one directory: its evidence, its analysis database and
+every session about it. The case *is* the working directory; REactor's own files
+sit in a hidden `.reactor/` inside it. A directory becomes a case only when the
+user saves ([ADR-0045](docs/adr/0045-a-case-is-the-working-directory.md)).
+_Avoid_: workspace, project, investigation folder.
+
+**Session**:
+One conversation with the agent inside a case. A case holds many. A *branch* is
+a fork within one session ("try this turn again differently"); a new session is
+a new conversation about the same case.
+_Avoid_: chat, thread, run.
+
+**Unsaved state**:
+What REactor works in when the folder it was opened on is not a case yet: the
+same layout as `.reactor/`, kept under `~/.reactor/unsaved/`. Saving moves it
+into the folder and makes the folder a case; quitting asks whether to save or
+delete it.
+_Avoid_: temp case, draft, scratch session.
+
+**Analysis database**:
+`.reactor/analysis.db` — the case's SQLite file: session logs, change log, the
+graph, the file registry and the context corpus. Written only by REactor itself
+([ADR-0046](docs/adr/0046-the-analysis-database-is-sqlite-inside-the-case.md)).
+_Avoid_: store (that is the session store, the API over it), tool database, case db.
+
+**Data file**:
+`reactor_data.sqlite` in the case root — the tables the agent and its scripts
+create. A visible, ordinary file, queried with `sqlite3`; never the analysis
+database.
+_Avoid_: scratch database, working db.
+
+**Graph**:
+The case's analysis graph: what was seen, what is related, and what was
+concluded. A view of the analysis, not a model of the data — absence means "not
+pulled", not "does not exist"
+([ADR-0047](docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)).
+_Avoid_: knowledge graph, memory, mental model, ontology.
+
+**Element**:
+A node of the graph, of one of five kinds: *Entity* (a thing that can appear in
+many statements), *Event* (something that happened), *Observation* (something a
+source reports as holding), *Annotation* (an assessment, hypothesis, note or
+question), *External* (a reference to data outside the graph).
+_Avoid_: object, record, item.
+
+**Claim**:
+An Event or an Observation: a statement with a source, stored as a node so it can
+be dated, questioned and contradicted. What an analyst or the agent concludes is
+an Annotation, not a claim.
+_Avoid_: fact, finding (a finding is an Annotation), relationship, link.
+
+**Context document**:
+Reference material the user imports into a case — a wiki dump, a vendor paper, an advisory,
+a report — so the agent can find what it says. Converted to Markdown, cut into passages and
+indexed by keyword and, if an embedding model is chosen, by meaning. Imported by the user
+only, never by the agent; its text is data, never instruction
+([ADR-0046](docs/adr/0046-the-analysis-database-is-sqlite-inside-the-case.md)).
+_Avoid_: knowledge base, corpus entry, attachment, evidence (evidence is a file in the workdir).
+
+**Passage**:
+One searchable piece of a context document, with the headings it sits under
+(`Install > Linux`). What `docs_search` returns, quoted with where it came from.
+_Avoid_: chunk (the code's word for it), snippet, excerpt.
+
+**Pull**:
+Turning rows of an External — a SQLite table, a CSV, JSON or JSONL file — into
+graph elements, each linked back to where it came from. The only bulk way into
+the graph; pulling the same rows twice changes nothing.
+_Avoid_: import, ingest (that is for context documents), sync, load.
+
 **Manifest**:
 The session block `reactor-context` keeps in the system prompt: the user's goal,
 the agent's self-maintained steps (each a conceptual summary with a 3-word

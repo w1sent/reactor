@@ -9,9 +9,11 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, SharedString, Window, div, px, size};
@@ -116,6 +118,7 @@ impl Render for SettingsWindow {
                             fonts_page(&app, cx),
                             behaviour_page(&app),
                             model_page(&app, cx),
+                            documents_page(&app, cx),
                             context_page(&app),
                             tools_page(&app),
                         ]),
@@ -167,6 +170,53 @@ fn actions(title: &'static str, buttons: Vec<Action>, app: &Entity<ReactorApp>) 
             );
         }
         row
+    })
+}
+
+/// A row of tabs, one per provider, with the current one selected: every choice is in sight,
+/// and a click makes it. (`set` stores the choice in the app's draft.)
+fn provider_tabs(
+    id: &'static str,
+    providers: &'static [&'static str],
+    current: String,
+    app: &Entity<ReactorApp>,
+    set: fn(&mut ReactorApp, &str),
+) -> SettingItem {
+    let app = app.clone();
+    SettingItem::render(move |_, _w, _cx| {
+        let app = app.clone();
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().w(px(160.)).child("Provider"))
+            .child(
+                TabBar::new(id)
+                    .segmented()
+                    .selected_index(providers.iter().position(|p| *p == current).unwrap_or(0))
+                    .children(providers.iter().map(|p| Tab::new().label(*p)))
+                    .on_click(move |ix, _w, cx| {
+                        let Some(provider) = providers.get(*ix) else {
+                            return;
+                        };
+                        app.update(cx, |app, cx| {
+                            set(app, provider);
+                            cx.notify();
+                        });
+                    }),
+            )
+    })
+}
+
+/// A line across the group: what comes above it is about the provider, below it about the
+/// model.
+fn divider() -> SettingItem {
+    SettingItem::render(|_, _w, cx| {
+        div()
+            .w_full()
+            .h(px(1.))
+            .my_1()
+            .bg(cx.theme().border)
+            .into_any_element()
     })
 }
 
@@ -366,13 +416,8 @@ fn model_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
         options.push((shared(d.clone()), shared(d.clone())));
     }
     let (d_get, d_set) = (app.clone(), app.clone());
-    let (p_get, p_set) = (app.clone(), app.clone());
     let (n_get, n_set) = (app.clone(), app.clone());
 
-    let providers: Vec<(SharedString, SharedString)> = reactor_agent::provider::PROVIDERS
-        .iter()
-        .map(|p| (shared(*p), shared(*p)))
-        .collect();
     let provider = app.read(cx).model_draft.provider.clone();
     let variable = key_variable(&provider);
     let key_ok = provider == "ollama" || std::env::var_os(variable).is_some();
@@ -419,19 +464,12 @@ fn model_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
         ));
     let add = SettingGroup::new()
         .title("Add a model")
-        .item(SettingItem::new(
-            "Provider",
-            SettingField::<SharedString>::dropdown(
-                providers,
-                move |cx| shared(p_get.read(cx).model_draft.provider.clone()),
-                move |v, cx| {
-                    p_set.update(cx, |app, cx| {
-                        app.model_draft.provider = v.to_string();
-                        cx.notify();
-                    });
-                },
-            )
-            .default_value(shared(reactor_agent::provider::PROVIDERS[0])),
+        .item(provider_tabs(
+            "model-provider",
+            &reactor_agent::provider::PROVIDERS,
+            provider.clone(),
+            app,
+            |app, p| app.model_draft.provider = p.to_string(),
         ))
         .item(SettingItem::render(move |_, _w, cx| {
             h_flex()
@@ -449,6 +487,7 @@ fn model_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
                     key_help.clone(),
                 ))
         }))
+        .item(divider())
         .item(SettingItem::new(
             "Model name",
             SettingField::<SharedString>::input(
@@ -532,6 +571,187 @@ fn model_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
             .groups([group, add, picker]),
         "model-info",
         "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is on the Context page.",
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Documents: the embedding model (ADR-0046)
+// ---------------------------------------------------------------------------------------------
+
+fn documents_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
+    let chosen = app.read(cx).embedding_model();
+    let status = app.read(cx).corpus_status();
+    let provider = app.read(cx).embedding_draft.provider.clone();
+    let variable = key_variable(&provider);
+    let local = provider == "ollama";
+    let key_ok = local || std::env::var_os(variable).is_some();
+    let key_text = if local {
+        "local".to_string()
+    } else if key_ok {
+        format!("{variable} set")
+    } else {
+        format!("{variable} not set")
+    };
+    let key_help = if local {
+        format!(
+            "Ollama runs on this machine: the text of your documents does not leave it. {variable} overrides its address."
+        )
+    } else {
+        format!(
+            "REactor reads the key from {variable} in the environment and never stores it. Set it before starting the GUI."
+        )
+    };
+    let (n_get, n_set) = (app.clone(), app.clone());
+    let running = app.read(cx).embedding_progress();
+    let armed = app.read(cx).reembed_armed;
+
+    let state =
+        SettingGroup::new()
+            .title("State")
+            .item(SettingItem::render(move |_, _w, cx| {
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().w(px(160.)).child("Embedding model"))
+                            .child(
+                                div()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(cx.theme().mono_font_size)
+                                    .child(chosen.clone().unwrap_or_else(|| {
+                                        "none: searching by keyword only".into()
+                                    })),
+                            ),
+                    )
+                    .children(status.lines().map(|l| {
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .text_size(cx.theme().font_size * 0.9)
+                            .child(l.to_string())
+                    }))
+            }))
+            // The run that is going: how far it has got. The page is drawn again as each
+            // batch is stored.
+            .item(SettingItem::render(move |_, _w, cx| match running {
+                Some(p) => {
+                    let percent = if p.total == 0 {
+                        0.
+                    } else {
+                        p.embedded as f32 * 100. / p.total as f32
+                    };
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(div().w(px(160.)).child("Making vectors"))
+                                .child(format!(
+                                    "{} of {} passages · {:.0}%",
+                                    p.embedded, p.total, percent
+                                )),
+                        )
+                        .child(
+                            div()
+                                .pl(px(168.))
+                                .w(px(460.))
+                                .child(Progress::new("embedding-progress").value(percent)),
+                        )
+                        .into_any_element()
+                }
+                None => div()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(cx.theme().font_size * 0.9)
+                    .child("No run is going")
+                    .into_any_element(),
+            }))
+            .item(actions(
+                "Run",
+                if armed {
+                    vec![
+                        (
+                            "Yes, re-embed everything",
+                            "Forget this model's vectors and make them all again. Every passage is sent to the provider again, and the documents cannot be searched by meaning until it has finished",
+                            |app, cx| app.reembed_confirm(cx),
+                        ),
+                        ("Cancel", "Keep the vectors as they are", |app, cx| {
+                            app.reembed_cancel(cx)
+                        }),
+                    ]
+                } else {
+                    vec![
+                        (
+                            "Embed now",
+                            "Make the vectors any passage is missing, or finish an interrupted run",
+                            |app, cx| app.embedding_now(cx),
+                        ),
+                        (
+                            "Re-embed everything",
+                            "Forget the chosen model's vectors and make them all again: after the documents were stored differently, or the model was changed under the same name. Asks for a confirmation",
+                            |app, cx| app.reembed_arm(cx),
+                        ),
+                        (
+                            "Turn off",
+                            "Search by keyword only. Vectors already made are kept",
+                            |app, cx| app.embedding_off(cx),
+                        ),
+                    ]
+                },
+                app,
+            ));
+    let choose = SettingGroup::new()
+        .title("Choose the model")
+        .item(provider_tabs(
+            "embedding-provider",
+            &reactor_agent::embed::EMBEDDING_PROVIDERS,
+            provider.clone(),
+            app,
+            |app, p| app.embedding_draft.provider = p.to_string(),
+        ))
+        .item(SettingItem::render(move |_, _w, cx| {
+            h_flex()
+                .gap_2()
+                .child(div().w(px(160.)).child("Key / address"))
+                .child(crate::hints::tip(
+                    div()
+                        .id("embed-key-status")
+                        .text_color(if key_ok {
+                            cx.theme().muted_foreground
+                        } else {
+                            cx.theme().warning
+                        })
+                        .child(key_text.clone()),
+                    key_help.clone(),
+                ))
+        }))
+        .item(divider())
+        .item(SettingItem::new(
+            "Model name",
+            SettingField::<SharedString>::input(
+                move |cx| shared(n_get.read(cx).embedding_draft.name.clone()),
+                move |v, cx| {
+                    n_set.update(cx, |app, cx| {
+                        app.embedding_draft.name = v.to_string();
+                        cx.notify();
+                    });
+                },
+            ),
+        ))
+        .item(actions(
+            "Use it",
+            vec![(
+                "Use this model",
+                "Remember it as the embedding model and start making the vectors. Until it has finished, search keeps using the earlier vectors, or keywords",
+                |app, cx| app.set_typed_embedding(cx),
+            )],
+            app,
+        ));
+    info(
+        SettingPage::new("Documents")
+            .icon(IconName::BookOpen)
+            .groups([state, choose]),
+        "documents-info",
+        "The model that lets the agent search imported documents by meaning. There is no default. With OpenAI or Gemini the text of your documents is sent to that provider; with Ollama it stays on this machine. Changing the model re-embeds in the background. Saved in ~/.reactor/settings.json. Import documents with /import or Case > Import Documents.",
     )
 }
 

@@ -23,6 +23,24 @@ Your context is finite and is managed for you. Long tool output is cut to its he
 
 Do the work and report what you found. Do not ask permission for routine analysis; do stop and ask when an action is destructive or cannot be undone.";
 
+/// What the agent is told about the case's graph (ADR-0047). The same text on every
+/// request while the session is attached, so the prompt cache holds; absent while the
+/// *Case graph* switch is off. It says nothing of what the graph holds: the user leads,
+/// and the agent asks the graph when it needs to.
+pub const CASE_GRAPH: &str = "## Case graph
+
+This case has a graph: the shared record of what was seen, what is related and what was concluded. It outlives this session, and the user reads and edits it too. Keep it in step with the work, the way an analyst keeps notes -- as you go, not at the end.
+
+- Record what matters to the case, not everything you looked at. Absence in the graph means \"not recorded\", never \"does not exist\".
+- What a source says is an event (it happened) or an observation (it holds), added with `graph_add` and always with its source: a file or table in the case, or the session entry it came from. What you or the user conclude is an annotation, added with `graph_annotate`: a hypothesis, a judgement of a claim with a confidence, a note or question. Do not dress a conclusion up as an observation.
+- Things that can show up in more than one place -- addresses, domains, hosts, accounts, hashes -- are entities. Give the type and the value as you found it; the same value always lands on the same node, which is how separate findings connect. Values that connect almost everything (a common port, 127.0.0.1, svchost.exe) are properties, not entities.
+- For more than a handful of rows, write them to `reactor_data.sqlite` (or a CSV/JSONL file) with a script and bring the relevant ones in with `graph_pull`. Bulk data stays in its source.
+- Before adding, look: `graph_query` shows what is already there and where else an entity shows up. When you look for something and find nothing, record that too (`search_negative`), with where you looked -- \"not seen\" and \"not checked\" must not look the same.
+- Nothing is overwritten. Revise with a change (a new version, the old one kept); soft-delete what turned out wrong; revert only a slip nothing builds on.
+- Register files you rely on or produce with `artifact_register`; they stay where they are.
+
+The user decides what to pursue. Do not act on what the graph holds unless it bears on what you were asked.";
+
 /// What the catalogue says right now (from `reactor registry`).
 #[derive(Debug, Clone, Default)]
 pub struct RegistryView {
@@ -50,6 +68,7 @@ pub enum Part {
     Identity,
     Registry,
     Skills,
+    CaseGraph,
     Manifest,
     Reporting,
     Scenario,
@@ -71,6 +90,10 @@ pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
         (!i.registry.block.is_empty()).then(|| i.registry.block.clone()),
     );
     push(Part::Skills, skills_block(i.skills));
+    push(
+        Part::CaseGraph,
+        i.state.memory.case_graph().then(|| CASE_GRAPH.to_string()),
+    );
     push(
         Part::Manifest,
         manifest::block(&i.state.manifest, &i.settings.manifest),

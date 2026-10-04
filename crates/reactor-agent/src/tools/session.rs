@@ -8,9 +8,22 @@ use reactor_context::settings::Settings;
 use serde_json::{Value, json};
 
 use super::{BoxFut, Tool, ToolCtx, ToolOutput, str_arg, usize_arg};
-use crate::context::{KEY_MANIFEST, KEY_SCENARIO, SessionState, save_state};
+use crate::context::{KEY_SCENARIO, SessionState, save_manifest, save_state};
 use crate::history;
 use crate::llm::ToolSpec;
+use reactor_db::manifest::Author;
+
+/// The answer when a tool is asked to look outside this session while the
+/// session-history switch is off (ADR-0047). It explains rather than blocks silently
+/// (ADR-0030).
+fn other_sessions_off(ctx: &ToolCtx) -> Option<ToolOutput> {
+    let global = Settings::load(&ctx.paths).memory;
+    (!ctx.state().memory.over(&global).session_history()).then(|| {
+        ToolOutput::err(
+            "this session does not draw on the case's other sessions (the session-history switch is off). Only this session's own history is available.",
+        )
+    })
+}
 
 pub struct HistoryIndex;
 
@@ -18,24 +31,40 @@ impl Tool for HistoryIndex {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_index".into(),
-            description: "List the session log, one line per entry: #id, kind, size, a preview, and whether a context reduction currently hides it. Everything ever said or run is here, including what has left your context.".into(),
+            description: "List the session log, one line per entry: #id, kind, size, a preview, and whether a context reduction currently hides it. Everything ever said or run is here, including what has left your context. With `session`, list another session of this case instead; with `session: \"all\"`, list the case's sessions.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "from": { "type": "integer", "description": "First entry id." },
-                    "to": { "type": "integer", "description": "Last entry id." }
+                    "to": { "type": "integer", "description": "Last entry id." },
+                    "session": { "type": "string", "description": "Another session's id, or `all` for the list of sessions. Default: this session." }
                 }
             }),
         }
     }
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
-            let store = ctx.store.lock().unwrap();
-            ToolOutput::ok(history::index_listing(
-                &store,
+            let (from, to) = (
                 usize_arg(&args, "from").map(|n| n as u64),
                 usize_arg(&args, "to").map(|n| n as u64),
-            ))
+            );
+            let Some(session) = str_arg(&args, "session") else {
+                let store = ctx.store.lock().unwrap();
+                return ToolOutput::ok(history::index_listing(&store, from, to));
+            };
+            if let Some(refusal) = other_sessions_off(ctx) {
+                return refusal;
+            }
+            let store = ctx.store.lock().unwrap();
+            let listing = if session == "all" {
+                history::sessions_listing(&store)
+            } else {
+                history::Log::other(&store, session).map(|log| history::index_of(&log, from, to))
+            };
+            match listing {
+                Ok(t) => ToolOutput::ok(t),
+                Err(e) => ToolOutput::err(e.to_string()),
+            }
         })
     }
 }
@@ -46,13 +75,14 @@ impl Tool for HistoryRead {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_read".into(),
-            description: "Read one session entry in full by its #id -- a tool output that was cut or dropped from your context is here whole. Page a large one with `offset` (1-based line) and `limit`.".into(),
+            description: "Read one session entry in full by its #id -- a tool output that was cut or dropped from your context is here whole. Page a large one with `offset` (1-based line) and `limit`. With `session`, read an entry of another session of this case.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "integer" },
                     "offset": { "type": "integer" },
-                    "limit": { "type": "integer" }
+                    "limit": { "type": "integer" },
+                    "session": { "type": "string", "description": "Another session's id. Default: this session." }
                 },
                 "required": ["id"]
             }),
@@ -63,13 +93,26 @@ impl Tool for HistoryRead {
             let Some(id) = usize_arg(&args, "id") else {
                 return ToolOutput::err("history_read needs an integer `id`");
             };
+            let session = str_arg(&args, "session");
+            if session.is_some()
+                && let Some(refusal) = other_sessions_off(ctx)
+            {
+                return refusal;
+            }
             let store = ctx.store.lock().unwrap();
-            match history::read(
-                &store,
-                id as u64,
-                usize_arg(&args, "offset"),
-                usize_arg(&args, "limit"),
-            ) {
+            let read = match session {
+                Some(s) => history::Log::other(&store, s),
+                None => Ok(history::Log::own(&store)),
+            }
+            .and_then(|log| {
+                history::read_from(
+                    &log,
+                    id as u64,
+                    usize_arg(&args, "offset"),
+                    usize_arg(&args, "limit"),
+                )
+            });
+            match read {
                 Ok(t) => ToolOutput::ok(t),
                 Err(e) => ToolOutput::err(e.to_string()),
             }
@@ -83,13 +126,14 @@ impl Tool for HistorySearch {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_search".into(),
-            description: "Search every line of every session entry -- including dropped ones and the whole of cut tool output -- with a regular expression. Returns #id:line matches. Optionally restrict to kinds: user, assistant, tool_result.".into(),
+            description: "Search every line of every session entry -- including dropped ones and the whole of cut tool output -- with a regular expression. Returns #id:line matches. Optionally restrict to kinds: user, assistant, tool_result. With `all_sessions`, search the case's other sessions too; their matches are prefixed `session <id>`.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string" },
                     "kinds": { "type": "array", "items": { "type": "string" } },
-                    "limit": { "type": "integer", "description": "Default 50." }
+                    "limit": { "type": "integer", "description": "Default 50." },
+                    "all_sessions": { "type": "boolean", "description": "Also search the other sessions of this case. Default false." }
                 },
                 "required": ["pattern"]
             }),
@@ -110,8 +154,20 @@ impl Tool for HistorySearch {
                 })
                 .unwrap_or_default();
             let limit = usize_arg(&args, "limit").unwrap_or(50);
+            let all = args
+                .get("all_sessions")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if all && let Some(refusal) = other_sessions_off(ctx) {
+                return refusal;
+            }
             let store = ctx.store.lock().unwrap();
-            match history::search(&store, pattern, &kinds, limit) {
+            let found = if all {
+                history::search_case(&store, pattern, &kinds, limit)
+            } else {
+                history::search(&store, pattern, &kinds, limit)
+            };
+            match found {
                 Ok(hits) => ToolOutput::ok(history::render_hits(&hits, limit)),
                 Err(e) => ToolOutput::err(e.to_string()),
             }
@@ -167,11 +223,9 @@ impl Tool for UpdateSteps {
             let mut state = SessionState::load(&store).manifest;
             let out = manifest::update_steps(&mut state, &cfg, &steps);
             if out.persist {
-                let _ = save_state(
-                    &mut store,
-                    KEY_MANIFEST,
-                    serde_json::to_value(&state).unwrap(),
-                );
+                // Steps are the session's; the goal and guidelines are untouched here, so
+                // nothing is written to the case.
+                let _ = save_manifest(&mut store, &state, &Author::agent(""));
             }
             ToolOutput::ok(out.text)
         })

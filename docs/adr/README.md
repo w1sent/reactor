@@ -13,6 +13,9 @@ of them; each says so in a note at the top of its own file, and the pi flavor
 they describe was removed from the tree in
 [ADR-0043](0043-the-pi-flavor-is-removed-from-the-tree.md) (commit `014a9b8` has it).
 
+ADRs **0045–0047** add cases, the analysis database and the analysis graph. 0046
+supersedes the store choice of 0036, which is marked † for that reason.
+
 | # | Decision |
 |---|---|
 | †&nbsp;[0001](0001-pi-is-the-only-target-harness.md) | pi is the only target harness |
@@ -50,7 +53,7 @@ they describe was removed from the tree in
 | [0033](0033-reactor-is-a-rust-project-on-rig.md) | REactor is a Rust project on rig; pi becomes a client, not the host |
 | [0034](0034-reactor-cli-becomes-a-rust-library-with-a-binary.md) | The `reactor` CLI becomes a Rust library with a binary over it |
 | [0035](0035-portable-surface-is-machine-facts.md) | The portable surface is machine facts; session state is REactor-native |
-| [0036](0036-reactor-owns-its-session-store-format.md) | REactor owns its session store format |
+| †&nbsp;[0036](0036-reactor-owns-its-session-store-format.md) | REactor owns its session store format |
 | [0037](0037-context-reduction-is-one-budget-manager.md) | Context reduction is one budget manager with three modes, not two mechanisms |
 | [0038](0038-settings-resolve-global-then-session.md) | Settings resolve global default, then session override |
 | [0039](0039-the-executables-contain-no-python.md) | The REactor executables contain no Python |
@@ -59,3 +62,6 @@ they describe was removed from the tree in
 | [0042](0042-the-gui-hosts-the-agent-in-process.md) | The GUI hosts the agent in process, and activation is session-scoped |
 | [0043](0043-the-pi-flavor-is-removed-from-the-tree.md) | The pi flavor is removed from the tree |
 | [0044](0044-filesystem-panels-read-through-a-vfs.md) | The filesystem panels read through a `Vfs` |
+| [0045](0045-a-case-is-the-working-directory.md) | A case is the working directory, and it is created by saving |
+| [0046](0046-the-analysis-database-is-sqlite-inside-the-case.md) | The analysis database is SQLite inside the case, and the session log lives in it |
+| [0047](0047-the-analysis-graph-is-the-case-s-model.md) | The analysis graph is the case's model: claims are nodes, and history is never overwritten |

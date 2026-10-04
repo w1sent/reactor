@@ -3,8 +3,11 @@
 //! them can be open.
 //!
 //! The grid comes from [`super::table_model`], which holds [`Sheet`]s so another format can
-//! feed the same panel later.
+//! feed the same panel later. A SQLite file is one: its tables are picked from the toolbar and
+//! read through `reactor_db::browse`, which opens the file read-only and never changes it —
+//! the agent's `reactor_data.sqlite` is read here.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
@@ -150,6 +153,16 @@ pub struct TablePanel {
     problem: Option<String>,
     font: (SharedString, Pixels),
     focus: FocusHandle,
+    /// A SQLite file: where it is on disk, its tables, and which one is shown.
+    sqlite: Option<Database>,
+}
+
+struct Database {
+    path: PathBuf,
+    tables: Vec<reactor_db::browse::TableInfo>,
+    shown: Option<String>,
+    /// The table has more rows than were read.
+    truncated: bool,
 }
 
 impl TablePanel {
@@ -170,15 +183,12 @@ impl TablePanel {
             },
         )
         .detach();
-        let font = app
-            .upgrade()
-            .map(|a| a.read(cx).ui.text(Slot::Mono, cx.theme()))
-            .unwrap_or_else(|| {
-                (
-                    cx.theme().mono_font_family.clone(),
-                    cx.theme().mono_font_size,
-                )
-            });
+        // The app is mid-update while it opens a panel, so it cannot be read here; the
+        // user's mono font is picked up in `render`.
+        let font = (
+            cx.theme().mono_font_family.clone(),
+            cx.theme().mono_font_size,
+        );
         let mut this = Self {
             app,
             file,
@@ -191,12 +201,23 @@ impl TablePanel {
             problem: None,
             font,
             focus: cx.focus_handle(),
+            sqlite: None,
         };
         this.load(window, cx);
         this
     }
 
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let head = self
+            .file
+            .open()
+            .and_then(|r| r.read_range(0, 16))
+            .unwrap_or_default();
+        if reactor_db::browse::is_sqlite(&head) {
+            self.load_database(window, cx);
+            return;
+        }
+        self.sqlite = None;
         let bytes = match self.file.read_all(MAX_BYTES) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -213,6 +234,66 @@ impl TablePanel {
             .unwrap_or_else(|| model::detect_delimiter(&self.text));
         self.auto = true;
         self.reparse(window, cx);
+    }
+
+    /// A SQLite file: list its tables and show the one that was open, or the first.
+    fn load_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.file.fs.local_path(&self.file.path) else {
+            self.problem = Some(format!(
+                "{} is a SQLite database, which can only be read from the local disk",
+                self.file.path
+            ));
+            self.table = None;
+            return;
+        };
+        let tables = match reactor_db::browse::tables(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.problem = Some(e.to_string());
+                self.table = None;
+                return;
+            }
+        };
+        let keep = self.sqlite.as_ref().and_then(|d| d.shown.clone());
+        let shown = keep
+            .filter(|k| tables.iter().any(|t| t.name == *k))
+            .or_else(|| tables.first().map(|t| t.name.clone()));
+        self.sqlite = Some(Database {
+            path,
+            tables,
+            shown,
+            truncated: false,
+        });
+        self.show_table(window, cx);
+    }
+
+    /// Read the chosen table into the grid.
+    fn show_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(db) = &mut self.sqlite else { return };
+        let Some(name) = db.shown.clone() else {
+            self.problem = Some("this database has no tables".into());
+            self.table = None;
+            cx.notify();
+            return;
+        };
+        match reactor_db::browse::read_table(&db.path, &name, reactor_db::browse::MAX_ROWS) {
+            Ok(read) => {
+                db.truncated = read.truncated;
+                self.problem = None;
+                self.header_rows = 1;
+                let sheet = Sheet {
+                    name,
+                    rows: read.rows,
+                };
+                let mut grid = Grid::new(Arc::new(sheet), self.font.clone());
+                grid.header_rows = self.header_rows;
+                grid.filter = self.filter.read(cx).value().to_string();
+                grid.reorder();
+                self.table = Some(cx.new(|cx| TableState::new(grid, window, cx)));
+            }
+            Err(e) => self.problem = Some(e.to_string()),
+        }
+        cx.notify();
     }
 
     /// Parse the text again with the current delimiter and rebuild the table.
@@ -305,6 +386,24 @@ impl Render for TablePanel {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
 
+        let ui = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).ui.clone())
+            .unwrap_or_default();
+        let font = ui.text(Slot::Mono, &theme);
+        if font != self.font {
+            self.font = font.clone();
+            if let Some(table) = &self.table {
+                table.update(cx, |table, cx| {
+                    let grid = table.delegate_mut();
+                    grid.font = font;
+                    grid.reorder();
+                    table.refresh(cx);
+                });
+            }
+        }
+
         let (Some(table), None) = (&self.table, &self.problem) else {
             return div()
                 .p_3()
@@ -322,6 +421,8 @@ impl Render for TablePanel {
             )
         };
         let weak = cx.entity().downgrade();
+        let weak_tables = weak.clone();
+        let truncated = self.sqlite.as_ref().is_some_and(|d| d.truncated);
         let header_rows = self.header_rows;
         let delimiter = self.delimiter;
 
@@ -362,34 +463,75 @@ impl Render for TablePanel {
                         this.set_header_rows(rows, cx)
                     })),
             )
-            .child(
-                Button::new("table-delimiter")
-                    .ghost()
-                    .small()
-                    .label(format!(
-                        "{}{}",
-                        delimiter.label(),
-                        if self.auto { " (detected)" } else { "" }
-                    ))
-                    .tooltip("Field delimiter")
-                    .dropdown_menu(move |mut menu, _window, _cx| {
-                        for choice in Delimiter::ALL {
-                            let weak = weak.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(choice.label())
-                                    .checked(choice == delimiter)
-                                    .on_click(move |_, window, cx| {
-                                        let _ = weak.update(cx, |panel, cx| {
-                                            panel.delimiter = choice;
-                                            panel.auto = false;
-                                            panel.reparse(window, cx);
-                                        });
-                                    }),
-                            );
-                        }
-                        menu
-                    }),
-            );
+            .when_some(
+                self.sqlite
+                    .as_ref()
+                    .map(|d| (d.tables.clone(), d.shown.clone().unwrap_or_default())),
+                |bar, (tables, shown)| {
+                    let weak = weak_tables.clone();
+                    bar.child(
+                        Button::new("table-picker")
+                            .ghost()
+                            .small()
+                            .label(format!("Table: {shown}"))
+                            .tooltip("Which table of this database to show")
+                            .dropdown_menu(move |mut menu, _window, _cx| {
+                                for t in &tables {
+                                    let (weak, name) = (weak.clone(), t.name.clone());
+                                    menu =
+                                        menu.item(
+                                            PopupMenuItem::new(format!(
+                                                "{} — {}",
+                                                t.name,
+                                                t.rows_label()
+                                            ))
+                                            .checked(t.name == shown)
+                                            .on_click(move |_, window, cx| {
+                                                let name = name.clone();
+                                                let _ = weak.update(cx, |panel, cx| {
+                                                    if let Some(d) = &mut panel.sqlite {
+                                                        d.shown = Some(name);
+                                                    }
+                                                    panel.show_table(window, cx);
+                                                });
+                                            }),
+                                        );
+                                }
+                                menu
+                            }),
+                    )
+                },
+            )
+            .when(self.sqlite.is_none(), |bar| {
+                bar.child(
+                    Button::new("table-delimiter")
+                        .ghost()
+                        .small()
+                        .label(format!(
+                            "{}{}",
+                            delimiter.label(),
+                            if self.auto { " (detected)" } else { "" }
+                        ))
+                        .tooltip("Field delimiter")
+                        .dropdown_menu(move |mut menu, _window, _cx| {
+                            for choice in Delimiter::ALL {
+                                let weak = weak.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::new(choice.label())
+                                        .checked(choice == delimiter)
+                                        .on_click(move |_, window, cx| {
+                                            let _ = weak.update(cx, |panel, cx| {
+                                                panel.delimiter = choice;
+                                                panel.auto = false;
+                                                panel.reparse(window, cx);
+                                            });
+                                        }),
+                                );
+                            }
+                            menu
+                        }),
+                )
+            });
 
         v_flex()
             .size_full()
@@ -406,7 +548,13 @@ impl Render for TablePanel {
                     .py_1()
                     .gap_3()
                     .text_color(muted)
-                    .child(format!("{shown} of {total} rows × {columns} columns")),
+                    .child(format!("{shown} of {total} rows × {columns} columns"))
+                    .when(truncated, |bar| {
+                        bar.child(format!(
+                            "only the first {} rows were read",
+                            reactor_db::browse::MAX_ROWS
+                        ))
+                    }),
             )
             .into_any_element()
     }

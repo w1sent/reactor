@@ -37,6 +37,7 @@ fn colour(origin: Origin, theme: &Theme) -> Hsla {
         Origin::Identity => theme.chart_1,
         Origin::Registry => theme.chart_2,
         Origin::Skills => theme.chart_3,
+        Origin::CaseGraph => theme.primary,
         Origin::Manifest => theme.chart_4,
         Origin::Reporting => theme.chart_5,
         Origin::Scenario => theme.info,

@@ -19,6 +19,7 @@ use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerStat
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, Theme};
 use gpui_kit::prelude::*;
@@ -26,6 +27,7 @@ use gpui_kit::*;
 use gpui_kit::{
     Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Window, div, px,
 };
+use reactor_context::settings::MemorySettings;
 
 use crate::app::ReactorApp;
 use crate::backend::TreeRow;
@@ -250,6 +252,8 @@ pub struct TranscriptPanel {
     /// collapsible": the trigger existed but had no click handler and always
     /// passed `open(false)`, so it never actually did anything.
     expanded_thinking: std::collections::HashSet<usize>,
+    /// The message whose copy button was just pressed (it shows a tick for a moment).
+    copied: Option<usize>,
     weak_self: gpui_kit::WeakEntity<Self>,
 }
 
@@ -270,6 +274,7 @@ impl TranscriptPanel {
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
             last_item_count: 0,
             expanded_thinking: std::collections::HashSet::new(),
+            copied: None,
             weak_self: cx.weak_entity(),
         }
     }
@@ -304,7 +309,21 @@ struct FileLinks {
     cwd: std::path::PathBuf,
     /// Path as written, its line, the modifier keys held for the click.
     open: std::sync::Arc<OpenReference>,
+    /// Open a `docs_search` result in the Documents panel: the query, its passages and the
+    /// one to select.
+    show_docs: std::sync::Arc<ShowDocs>,
+    /// Put a message's text on the clipboard: its index and its text as written.
+    copy: std::sync::Arc<CopyText>,
+    /// The message just copied.
+    copied: Option<usize>,
 }
+
+/// A message's index and its text, to put on the clipboard.
+type CopyText = dyn Fn(usize, String, &mut Window, &mut App) + Send + Sync;
+
+type ShowDocs = dyn Fn(String, Vec<reactor_agent::tools::docs::ResultPassage>, usize, &mut Window, &mut App)
+    + Send
+    + Sync;
 
 type OpenReference = dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync;
 
@@ -330,8 +349,32 @@ fn render_item(
                 crate::files::refs::exists(&links.cwd, path)
             });
             let open = links.open.clone();
+            // The text as the model wrote it — Markdown and all — for the clipboard.
+            let (copy, raw) = (links.copy.clone(), text.clone());
+            let copied = links.copied == Some(index);
             div()
+                .relative()
                 .px_2()
+                .pr_12()
+                .child(
+                    // Clear of the scrollbar, which runs down the right edge.
+                    div().absolute().top_0().right(px(16.)).child(
+                        Button::new(("copy-message", index))
+                            .icon(if copied {
+                                IconName::Check
+                            } else {
+                                IconName::Copy
+                            })
+                            .ghost()
+                            .small()
+                            .tooltip(if copied {
+                                "Copied"
+                            } else {
+                                "Copy the message as written (Markdown)"
+                            })
+                            .on_click(move |_, window, cx| copy(index, raw.clone(), window, cx)),
+                    ),
+                )
                 .child(
                     TextView::markdown(format!("assistant-{index}"), linked)
                         .style(crate::theme::text_view_style(theme))
@@ -404,6 +447,10 @@ fn render_item(
             } else {
                 *theme.tokens.tab_bar
             };
+            // A finished passage search is shown as a list, not as the tagged text the model got.
+            let docs = (name == "docs_search" && *done && !*is_error)
+                .then(|| reactor_agent::tools::docs::parse_result(output))
+                .flatten();
             // On a character boundary: tool output is arbitrary text and `…` and friends are
             // not one byte. (The whole output is in the session, and `history_read` gets it.)
             let output = if output.len() > tools.max_chars {
@@ -446,7 +493,15 @@ fn render_item(
                                 .document_order(index as u64 * 10),
                         ),
                 )
-                .when(!output.is_empty(), |el| {
+                .children(docs.as_ref().map(|parsed| {
+                    let query = args
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    docs_result(index, parsed, query, theme, tools, links)
+                }))
+                .when(!output.is_empty() && docs.is_none(), |el| {
                     el.child(
                         div()
                             .px_2()
@@ -549,6 +604,114 @@ fn render_item(
                 .child(message.clone()),
         ),
     }
+}
+
+/// How many matches of a search the transcript lists; the rest are in the panel.
+const DOCS_LINES: usize = 5;
+
+/// A `docs_search` result for the transcript: what the search was, and one line for each of
+/// the best matches (title, section, the start of the passage). A line opens the whole
+/// result in the Documents panel at that passage; its tooltip has more of the text.
+fn docs_result(
+    index: usize,
+    parsed: &reactor_agent::tools::docs::ParsedResult,
+    query: String,
+    theme: &gpui_kit::component::Theme,
+    tools: &ToolStyle,
+    links: &FileLinks,
+) -> gpui_kit::Div {
+    let small = tools.size;
+    let words = crate::docs_panel::query_words(&query);
+    let open = links.show_docs.clone();
+    let passages = parsed.passages.clone();
+    let lines = parsed
+        .passages
+        .iter()
+        .take(DOCS_LINES)
+        .enumerate()
+        .map(|(i, p)| {
+            let (open, passages, query) = (open.clone(), passages.clone(), query.clone());
+            let heading = if p.title.is_empty() {
+                p.source.clone()
+            } else {
+                p.title.clone()
+            };
+            let more: String = p.text.chars().take(600).collect();
+            let row = h_flex()
+                .id(SharedString::from(format!("docs-line-{index}-{i}")))
+                .gap_2()
+                .px_1()
+                .rounded_sm()
+                .overflow_hidden()
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.list_hover))
+                .text_size(small)
+                .on_click(move |_, window, cx| open(query.clone(), passages.clone(), i, window, cx))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(16.))
+                        .text_color(theme.muted_foreground)
+                        .child(format!("{}", i + 1)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(220.))
+                        .truncate()
+                        .text_color(theme.foreground)
+                        .child(SharedString::from(heading)),
+                )
+                .when(!p.section.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .max_w(px(200.))
+                            .truncate()
+                            .text_color(theme.info)
+                            .child(SharedString::from(p.section.clone())),
+                    )
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(crate::docs_panel::snippet(
+                            &p.text, &words, 140,
+                        ))),
+                );
+            crate::hints::tip(row, SharedString::from(format!("{}\n\n{more}", p.source)))
+        })
+        .collect::<Vec<_>>();
+    let rest = parsed.passages.len().saturating_sub(DOCS_LINES);
+    let all = {
+        let (open, passages, query) = (open.clone(), passages.clone(), query.clone());
+        Button::new(("docs-open-all", index))
+            .small()
+            .ghost()
+            .icon(IconName::BookOpen)
+            .label(if rest > 0 { format!("All {} in Documents", parsed.passages.len()) } else { "Open in Documents".to_string() })
+            .tooltip("Open this result in the Documents panel: the whole passage, its neighbours, its source")
+            .on_click(move |_, window, cx| open(query.clone(), passages.clone(), 0, window, cx))
+    };
+    v_flex()
+        .px_2()
+        .gap_0p5()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(small)
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(parsed.summary.clone())),
+                )
+                .child(all),
+        )
+        .children(lines)
 }
 
 /// The command a tool call ran, as text: a shell command as typed, a string as it is, other
@@ -690,6 +853,42 @@ impl Render for TranscriptPanel {
                         if let Some(app) = app.upgrade() {
                             app.update(cx, |app, cx| {
                                 app.open_reference(&path, line, modifiers, window, cx)
+                            });
+                        }
+                    })
+                },
+                copy: {
+                    let weak_self = self.weak_self.clone();
+                    std::sync::Arc::new(move |index, text, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        if let Some(panel) = weak_self.upgrade() {
+                            panel.update(cx, |panel, cx| {
+                                panel.copied = Some(index);
+                                cx.notify();
+                                // The tick goes after a moment, if nothing else was copied.
+                                cx.spawn(async move |this, cx| {
+                                    cx.background_executor()
+                                        .timer(std::time::Duration::from_millis(1500))
+                                        .await;
+                                    let _ = this.update(cx, |panel, cx| {
+                                        if panel.copied == Some(index) {
+                                            panel.copied = None;
+                                            cx.notify();
+                                        }
+                                    });
+                                })
+                                .detach();
+                            });
+                        }
+                    })
+                },
+                copied: self.copied,
+                show_docs: {
+                    let app = self.app.clone();
+                    std::sync::Arc::new(move |query, passages, index, window, cx| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |app, cx| {
+                                app.show_docs(query, passages, index, window, cx)
                             });
                         }
                     })
@@ -840,6 +1039,54 @@ impl Render for TranscriptPanel {
             list
         });
 
+        // What this session may draw on from the rest of its case (ADR-0047).
+        let (history_on, graph_on) = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).memory())
+            .unwrap_or((true, true));
+        let switch = |id: &'static str,
+                      label: &'static str,
+                      on: bool,
+                      tip: &'static str,
+                      change: fn(bool) -> MemorySettings| {
+            let app = self.app.clone();
+            Switch::new(id)
+                .small()
+                .checked(on)
+                .label(label)
+                .tooltip(tip)
+                .on_click(move |next, _window, cx| {
+                    let next = *next;
+                    let _ = app.update(cx, |app, cx| app.set_memory(change(next), cx));
+                })
+        };
+        let memory_switches = h_flex()
+            .gap_4()
+            .items_center()
+            .text_size(cx.theme().font_size * 0.85)
+            .text_color(cx.theme().muted_foreground)
+            .child(switch(
+                "memory-history",
+                "Other sessions",
+                history_on,
+                "On: the agent may search and read this case's other sessions. Off: it sees only this session.",
+                |on| MemorySettings {
+                    session_history: Some(on),
+                    case_graph: None,
+                },
+            ))
+            .child(switch(
+                "memory-graph",
+                "Case graph",
+                graph_on,
+                "On: the agent reads and writes the case's graph. Off: this session is detached from it and leaves the case's results untouched.",
+                |on| MemorySettings {
+                    session_history: None,
+                    case_graph: Some(on),
+                },
+            ));
+
         let composer = v_flex()
             .key_context(if slash_open { "PromptComposer SlashPopup" } else { "PromptComposer" })
             .border_t_1()
@@ -847,6 +1094,7 @@ impl Render for TranscriptPanel {
             .p_2()
             .gap_2()
             .children(popup)
+            .child(memory_switches)
             .child(
                 h_flex()
                     .gap_2()

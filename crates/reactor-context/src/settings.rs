@@ -233,6 +233,72 @@ impl ContextSettings {
     }
 }
 
+/// What a session may draw on from the rest of its case
+/// ([ADR-0047](../../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)), as one
+/// *layer* like [`ContextSettings`]: an absent field means "the layer below decides", and
+/// with no layer deciding, both are on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySettings {
+    /// Whether the session may search and read the case's other sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_history: Option<bool>,
+    /// Whether the session is attached to the case's graph. Off detaches it: no reading,
+    /// no writing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_graph: Option<bool>,
+}
+
+impl MemorySettings {
+    /// Read a stored layer, keeping only what has the right shape.
+    pub fn normalize(raw: &Value) -> MemorySettings {
+        let Some(r) = raw.as_object() else {
+            return MemorySettings::default();
+        };
+        MemorySettings {
+            session_history: r.get("sessionHistory").and_then(Value::as_bool),
+            case_graph: r.get("caseGraph").and_then(Value::as_bool),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == MemorySettings::default()
+    }
+
+    /// This layer over `below` -- [`resolve`]'s rule, per field.
+    pub fn over(&self, below: &MemorySettings) -> MemorySettings {
+        MemorySettings {
+            session_history: self.session_history.or(below.session_history),
+            case_graph: self.case_graph.or(below.case_graph),
+        }
+    }
+
+    pub fn session_history(&self) -> bool {
+        self.session_history.unwrap_or(true)
+    }
+
+    pub fn case_graph(&self) -> bool {
+        self.case_graph.unwrap_or(true)
+    }
+}
+
+/// The model that makes the vectors the context documents are searched by
+/// ([ADR-0046](../../../docs/adr/0046-the-analysis-database-is-sqlite-inside-the-case.md)).
+/// Global only: a case records which model made its vectors, and a new session simply uses
+/// what is chosen. There is no default — until one is chosen, search is by keyword.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct EmbeddingSettings {
+    /// `provider/name`, in the same form as the chat model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl EmbeddingSettings {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -244,6 +310,10 @@ pub struct Settings {
     pub identity: IdentitySettings,
     pub reporting: ReportingSettings,
     pub context: ContextSettings,
+    #[serde(skip_serializing_if = "MemorySettings::is_empty")]
+    pub memory: MemorySettings,
+    #[serde(skip_serializing_if = "EmbeddingSettings::is_empty")]
+    pub embedding: EmbeddingSettings,
     /// Models to offer in a picker, as `provider/name`.
     pub models: Vec<String>,
     /// The model a new session starts on.
@@ -259,6 +329,8 @@ impl Default for Settings {
             identity: IdentitySettings::default(),
             reporting: ReportingSettings::default(),
             context: ContextSettings::default(),
+            memory: MemorySettings::default(),
+            embedding: EmbeddingSettings::default(),
             models: Vec::new(),
             default_model: None,
         }
@@ -330,6 +402,15 @@ impl Settings {
         if let Some(c) = root.get("context") {
             s.context = ContextSettings::normalize(c);
         }
+        if let Some(m) = root.get("memory") {
+            s.memory = MemorySettings::normalize(m);
+        }
+        s.embedding.model = root
+            .get("embedding")
+            .and_then(|e| e.get("model"))
+            .and_then(Value::as_str)
+            .filter(|m| m.contains('/'))
+            .map(str::to_string);
 
         if let Some(r) = root.get("reporting").and_then(Value::as_object) {
             if let Some(level) = number(r.get("level"))

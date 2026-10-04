@@ -56,20 +56,34 @@ runs agent work.
 - The catalogue panels use `Client::for_session` — `reactor-core` in process, with the
   session's paths so activation edits land in the session's scope (§3).
 
-## 3. Session model: REactor's own store
+## 3. Session model: sessions of a case
 
-Sessions are `reactor-agent` stores (ADR-0036): `~/.reactor/sessions/<id>/session.jsonl`.
-The GUI is bound to one session per window; branching moves the head within it.
+A session is a `reactor-agent` store in the **case** of the working directory
+(ADR-0045, ADR-0046): rows in `<workdir>/.reactor/analysis.db`. A folder that is not a
+case yet gets an **unsaved state** under `~/.reactor/unsaved/`, with the same layout;
+nothing is written into the folder until it is saved as a case. The GUI is bound to one
+session per window; branching moves the head within it, and a case holds many sessions.
 
 | launch | effect |
 |---|---|
-| `reactor-gui <dir>` | new session in that cwd |
+| `reactor-gui <dir>` | new session in that folder's case, or in its unsaved state |
 | bare `reactor-gui` | **workdir chooser**, then the above |
-| `-c` / `--continue` | the newest session for the cwd |
-| `-r` / `--resume` | **session picker** over the store, then that session |
-| `--session <dir>` | that session |
+| `-c` / `--continue` | the newest session of the folder's case |
+| `-r` / `--resume` | **session picker** over the case's sessions, then that session |
+| `--session <id>` | that session of the folder's case |
 | `--model provider/name` | start on that model |
+| `case …`, `db …` | headless commands: no window is opened (`src/headless.rs`) |
 
+- **Saving a case.** *Case › Save as Case…* in the menu (palette: `save-case`). A case can
+  only be moved while nothing has it open, so the window closes and a new one opens on
+  the same session, saving on its way in (`--save-case`). Refused while a turn runs.
+- **Closing an unsaved state** asks: *Save as Case*, *Delete*, or *Cancel*. The answer is
+  carried out by a helper (`reactor-gui case save|discard <dir> --wait`) once the window
+  has let go. An unsaved state in which nothing was said is deleted without asking. Both
+  the platform's close request and the title bar's own close button go through this.
+- **Memory switches** (ADR-0047) sit above the prompt in the transcript panel: *Other
+  sessions* and *Case graph*. A click sets this session's layer; the default is
+  `memory` in `settings.json`.
 - **Session-scoped activation** (ADR-0042). Tool/toolset toggles write
   `<session dir>/activation.json`, and the panels show whether the session overrides the
   machine default. *make default* promotes the session's state to `state.json`;
@@ -80,7 +94,8 @@ The GUI is bound to one session per window; branching moves the head within it.
   default. Dimmed transcript rows are hidden from the model by a reduction.
 - **Tree.** Read from the store; *Continue from here* switches the head to a final
   assistant reply.
-- One attached frontend per session directory, by contract (no locking).
+- One attached frontend per session, held by a lock file in the case's `run/`. A second
+  window on the same session is refused; a second window on the same *case* is fine.
 
 ## 4. Extension views — none
 
@@ -131,7 +146,9 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
 
 - **Center**: transcript + composer.
   - Transcript: `Session::rebuild` of the store's current branch, plus live
-    streaming buffers. Assistant text renders as markdown; thinking blocks
+    streaming buffers. Assistant text renders as markdown, with a copy icon at
+    its top right that puts the text *as written* (the Markdown source, not what is
+    drawn) on the clipboard and shows a tick for a moment; thinking blocks
     render collapsed; tool calls are cards (name, args, streamed output,
     result, error state). Reductions render as cards with *undo*; rows a
     reduction hides from the model are dimmed.
@@ -323,6 +340,22 @@ the main window's state, follows it when it changes, and shows the same notifica
   key variable is set), a model name, and *Set as default* / *Use in this session* / *Add to picker
   list*; the picker's list itself; *Make its model the default* for the session's model. API keys are
   read from the environment, never stored.
+- Where a page chooses a provider (Model, Documents) the providers are a row of **tabs**, the
+  current one selected, not a dropdown: every choice is in sight and a click makes it.
+- **Documents** (ADR-0046) — the embedding model that lets the agent search imported documents by
+  meaning (`embedding.model` in `settings.json`; none by default, and until one is chosen search is by
+  keyword). The page shows the current model, how many documents and passages the case has, and each
+  model's progress. While vectors are being made, a bar and "N of M passages · P%" show how far
+  the run has got, live (the page is drawn again as each batch is stored). *Embed now* resumes an
+  interrupted run; **Re-embed everything** forgets the chosen model's vectors and makes them all
+  again (after documents were stored differently, or a model changed under the same name) — it asks
+  for a second press first, because every passage goes to the provider again and the documents
+  cannot be searched by meaning until it has finished; it stops a run that is going and starts
+  afresh. *Turn off* returns to keyword search.
+  Choosing: a provider (openai, gemini, ollama; the page says whether its key variable is set, and that
+  with Ollama the text stays on this machine and with the others it is sent to the provider), a model
+  name, *Use this model*. Changing the model re-embeds in the background and search keeps the earlier
+  vectors until the new set is complete. Importing is `/import` or *Case › Import Documents…*.
 - **Context** — the agent's context budget: reduction mode, the window in tokens (REactor does not ask
   the provider for it: set it for your model), the reserve for the reply, when a reduction starts and
   how far it goes (percentages of the usable window), and the summarizer model. A dropdown chooses
@@ -463,6 +496,136 @@ The GUI's own contribution on top of that freedom is the way back:
   the transcript's expanded thinking blocks and every scroll position —
   state that lives inside those entities and would be silently thrown away
   by constructing them afresh.
+
+**SQLite files in the table viewer.** A file that starts with SQLite's magic bytes opens in
+the table viewer whatever it is called (`files::suggest`), with its tables and views
+picked from the toolbar (`Table: …`, with row counts) and read through
+`reactor_db::browse`: opened read-only, journal mode untouched, nothing written, at most
+100,000 rows per table (the footer says when it stopped). That is how the agent's
+`reactor_data.sqlite` — and the case's own `.reactor/analysis.db` — are looked at. It needs
+the file on local disk.
+
+**Context documents** (ADR-0046). *Case › Import Documents…* or `/import [files, folders or
+URLs…]` (none named: the system's file dialog, files and folders both) converts, cuts and
+stores them in the background and says what happened as a notice: how many, how many
+were already there, and which failed and why. Repeating an import adds only what is new.
+`/embedding` shows the corpus and its vectors; `/embedding provider/name` chooses the
+model (remembered as the default in `settings.json`, and said to send the documents'
+text to that provider), `/embedding off` returns to keyword search, `/embedding now`
+resumes an interrupted run. While vectors are being made the status bar says
+`embedding n/m`. The same work is available headless: `reactor-gui ingest`, `embed` and
+`case rebuild-indexes`.
+
+**Handing over** has no window controls; it is headless (ADR-0045): `reactor-gui case export
+<dir> <file.zip> [--password P]` writes the whole case as one AES-256 ZIP (password `infected`
+unless given), `case import <file.zip> <dir>` unpacks it into an empty folder, and `graph
+export|import|check` take the graph to and from STIX 2.1, CSV and graph libraries.
+
+### 6.3 The graph panel
+
+ADR-0047. `src/graph/model.rs` turns the stored graph into what is drawn and lays it out
+(pure, tested without a window); `src/graph/panel.rs` draws it. It shares the centre with
+the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel graph`).
+
+- **What is drawn.** Entities are boxes. A claim that relates exactly two entities, and
+  that nothing else refers to, is one labeled line between them, with an arrow where the
+  roles give a direction (`src → dst`, `actor → target`, `query → answer`, …). Several
+  claims of one type between the same pair are one line (`net.resolution ×2`). A claim
+  with more participants, or one an annotation is about, stays a node with a line per
+  role — a node in the middle means "this relation is being discussed". Annotations are
+  boxes with dashed lines to what they are about. Sources are not drawn; they are in the
+  detail. Disputed is the warning colour; soft-deleted is hidden unless the eye is on.
+- **Layout.** Force-directed, reproducible. What already has a place keeps it: only new
+  nodes are placed, near what they connect to. A dragged node stays where it is put.
+  *Auto-layout* in the toolbar arranges everything afresh and fits it into view, giving
+  up the positions that were dragged.
+  Positions live for the window's lifetime; they are not stored yet.
+- **Moving about.** Drag the background to pan; the wheel zooms about the pointer
+  (4 % to 300 %); *fit* in the toolbar brings everything into view. **Zoom scales
+  everything**: node boxes, text, line widths and arrowheads shrink with it, so zooming
+  out is a bigger picture and not the same crowd further apart. Below a readable text size
+  a node is an empty box and its tooltip says what it is; below 60 % a relation's label
+  is a dot on the line (click it to select the relation, hover for its words). Every
+  node has a tooltip with its type and full text.
+- **Added things are seen.** Whatever is added by hand goes where it can be seen: beside
+  what is selected, else near the middle of the view, and the view pans (and zooms to at
+  least 50 %) if it would be out of sight. *Right-click* on the plane opens the add form
+  at that spot and the node lands *exactly* there; the form switches between *Entity*
+  (type, with known types offered, and value) and *Note* (free text, about nothing in
+  particular).
+- **Selecting.** Click a node or a line's label. Ctrl/Cmd+click or Shift+click picks a
+  node up or puts it down; Shift+drag on the plane sweeps an area; dragging any selected
+  node moves them all. With several selected, the detail box lists what they are and the
+  buttons below act on all of them: *Tag*/*Untag*, *Add note* (one note about all of
+  them), *Confidence*, *Dispute*, *Restore*, *Soft-delete*, and **Connect…**: two nodes
+  get a relation with a role each; more are the members of one claim (a node in the
+  middle, a line to each). With one selected, the detail box shows the element in
+  full as a description list — a fixed label column and values that wrap — with its
+  type, value, time as written, properties, everything it links to (`→ role`, its source
+  and locator among them), everything that points at it (`← role`), and who recorded
+  which version. The box has a fixed width, never more than the panel, and scrolls.
+- **Editing.** All of it goes through the write path the agent uses and is recorded as
+  the analyst's (`reactor_db::graph::edit`, tested without a window). Toolbar: **+** adds
+  an entity or a note (the same value is always the same node). **Type fields offer the
+  known types as they are typed** — those it begins, then a part of a dotted name
+  (`ipv4` finds `net.ipv4`), then containing it, then by alias; most-used first — as
+  chips under the field; a click takes one, its tooltip says how much it is used. In the detail box, for what is
+  selected: *Confidence* (a menu of the calibrated scale), *Dispute* and *Restore*
+  (status), *Hypothesis* (open, supported, rejected — only on a hypothesis), *Tag* and
+  *Untag*, *Add note*, *Soft-delete*, and — for a single element — *Undo last change*,
+  which previews what would go, whose it is, and is refused if something builds on it.
+  *Relate to…* on a node: click the other end, then name the relation's type and the two
+  roles; it is recorded as an observation sourced to the current session entry, so a
+  relation a person states is as traceable as one pulled from a table. Explanations are
+  tooltips and (i) buttons (the one at the panel's top left lists the gestures), per the
+  design rule in `hints.rs`.
+- **Refreshing.** After every tool call and every turn, and with the toolbar button.
+- *Not built yet:* group outlines for tags and clusters, progressive disclosure, the type
+  and tag filters, storing positions, adding an annotation other than a note by hand.
+
+### 6.4 The documents panel
+
+`src/docs_panel.rs` (`PanelKind::Docs`, `/panel docs`; in the Analysis preset's centre, closed
+in the others). The case's reference documents, searched by hand. It runs the same search
+as the agent's `docs_search` tool (`reactor_agent::embed::search_by`), so what is seen here
+is what the agent would have been given.
+
+- **Searching.** A box (Enter or *Search*). Where a search by meaning can be made — a model
+  is chosen and has a vector for every passage — a choice of *Both* (fused, the default),
+  *Keyword* (the words as written) and *Meaning*. Where it cannot there is no choice, and an
+  (i) says why. The same rule decides what the agent is told: its tool has a `mode`
+  parameter only then, and no word about meaning otherwise.
+- **Empty passages.** A passage with only headings or code-fence lines is never listed (the store joins such passages to the next one; this also covers cases stored before that).
+- **Results.** The list and the passage are side by side with a draggable divider between them (the list starts at 380 px, 160 px at least; the width is kept while the window is open, not stored). Up to 30 passages, best first: the document's title (or its source), the
+  section, a snippet around the first match with the query's words marked, and the ranks
+  (K for keyword, M for meaning; the fused score is in the tooltip). The status line says how
+  the search ran.
+- **Inspecting.** The selected passage in full, with the query's words marked, and the
+  document, source, section, kind and metadata. *Open source* opens the file in its viewer
+  (or a page in the browser), *Copy* copies the passage, *Around it* shows the two passages
+  before and after it in the document. With no documents the panel offers *Import…*.
+- **Marking.** The query's words are marked in the snippets and the passage (substring match,
+  ignoring ASCII case; it is not what the index matched, only what was typed). A match by
+  meaning is between whole passages, so words say little about it: **Why** (offered only
+  where meaning can be searched) splits the selected passage into sentences, embeds them
+  with the query in one request to the chosen model and marks the closest (up to three, within
+  0.08 cosine of the best) in a second colour, with their similarities in a line above. It
+  sends the passage's text to the provider, so it is asked for per switch-on and not done
+  on its own; the sentences are those of `reactor_agent::embed::explain`.
+- **From the transcript.** A finished `docs_search` call is not shown as the tagged text the
+  model received. The transcript parses it (`reactor_agent::tools::docs::parse_result`, kept
+  next to the code that writes it and tested to round-trip) and shows the summary line
+  (how many, for what, by which means) and one line for each of the best five matches:
+  number, document, section, the start of the passage with the query's words as the anchor.
+  The tooltip of a line has its source and more of the text. A line opens the whole result
+  in this panel with that passage selected; so does *Open in Documents* (*All N in
+  Documents* when there are more than five). The panel looks the passages up in the case
+  again (`corpus::hits_at`), so it shows the stored text with its neighbours and source;
+  nothing is searched or embedded again, and a passage whose document was removed since is
+  left out. An error or "no passage matches" is shown as plain text, as before.
+- The panel reads the counts and whether meaning is available again after an import and when
+  the vectors are complete. The search runs on the agent's runtime: the query may be embedded
+  by a provider over the network.
 
 ### 6.2 The filesystem panels
 

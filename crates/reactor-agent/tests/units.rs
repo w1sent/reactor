@@ -182,12 +182,23 @@ fn inputs<'a>(
 }
 
 #[test]
-fn an_untouched_session_is_the_base_and_the_registry_and_nothing_else() {
-    let (settings, state) = (Settings::default(), SessionState::default());
+fn an_untouched_session_is_the_base_the_registry_and_the_case_graph_and_nothing_else() {
+    let (settings, mut state) = (Settings::default(), SessionState::default());
     let registry = RegistryView {
         block: "## Available RE tools (this machine)\n\nsh  shell".into(),
         ..Default::default()
     };
+    // Attached to the case's graph by default (ADR-0047): the block is static text, so
+    // the prompt is still the same bytes from one request to the next.
+    assert_eq!(
+        prompt::system_prompt(&inputs(&settings, &state, &registry, &[])),
+        format!(
+            "BASE\n\n## Available RE tools (this machine)\n\nsh  shell\n\n{}",
+            prompt::CASE_GRAPH
+        )
+    );
+    // Detached, nothing about the graph is said at all.
+    state.memory.case_graph = Some(false);
     assert_eq!(
         prompt::system_prompt(&inputs(&settings, &state, &registry, &[])),
         "BASE\n\n## Available RE tools (this machine)\n\nsh  shell"

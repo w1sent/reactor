@@ -90,10 +90,13 @@ pub fn history(
     } else {
         px(76.)
     };
+    // Its own height, up to a limit, then it scrolls. Not `flex_1`: the card's height comes
+    // from its content, and a share of that is nothing: the list was drawn zero pixels tall,
+    // which looked like an empty history.
     let mut list = v_flex()
         .id("notices-list")
-        .flex_1()
-        .min_h_0()
+        .w_full()
+        .max_h(px(460.))
         .overflow_y_scrollbar()
         .gap_1();
     let mut any = false;

@@ -2,8 +2,6 @@
 
 mod common;
 
-use std::io::Write;
-
 use common::*;
 use reactor_agent::context::{self, Msg, Source, active_reductions, hidden_by, project};
 use reactor_agent::entry::{Kind, Mode, Reduction, Stub, Trigger};
@@ -15,74 +13,88 @@ use serde_json::json;
 
 #[test]
 fn a_session_is_an_append_only_log_that_reopens_identically() {
-    let (dir, mut s) = store();
+    let (_dir, mut s) = store();
     user(&mut s, "look at a.out");
     assistant(&mut s, "on it");
     bash(&mut s, "c1", "file a.out", "ELF 64-bit");
     let before: Vec<_> = s.all().to_vec();
     let head = s.head();
-    let path = s.dir().to_path_buf();
+    let case = s.case().clone();
     drop(s);
 
-    let s = Store::open(&path).unwrap();
+    let s = Store::open(&case, "s1").unwrap();
     assert_eq!(s.all(), before.as_slice());
     assert_eq!(s.head(), head);
-    // One entry per line, nothing rewritten.
-    let text = std::fs::read_to_string(path.join("session.jsonl")).unwrap();
-    assert_eq!(text.lines().count(), before.len());
-    drop(dir);
-}
-
-#[test]
-fn a_second_session_cannot_be_created_over_an_existing_one() {
-    let (dir, s) = store();
-    assert!(Store::create(s.dir(), "again", dir.path()).is_err());
-}
-
-#[test]
-fn a_torn_last_line_is_dropped_and_the_next_append_starts_clean() {
-    // The crash story: a killed process loses at most the entry being written.
-    let (_dir, mut s) = store();
-    user(&mut s, "one");
-    user(&mut s, "two");
-    let path = s.dir().to_path_buf();
-    drop(s);
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(path.join("session.jsonl"))
-        .unwrap();
-    f.write_all(b"{\"id\":3,\"parent\":2,\"ts\":1,\"type\":\"user\",\"te")
-        .unwrap();
-    drop(f);
-
-    let mut s = Store::open(&path).unwrap();
-    assert_eq!(
-        s.len(),
-        3,
-        "session header + two entries; the torn one is gone"
-    );
-    user(&mut s, "three");
-    let text = std::fs::read_to_string(path.join("session.jsonl")).unwrap();
+    // One entry per row, and the export is what the log file used to be.
+    let mut out = Vec::new();
+    let n = reactor_db::sessions::export_jsonl(case.db(), "s1", &mut out).unwrap();
+    assert_eq!(n, before.len());
+    let text = String::from_utf8(out).unwrap();
     assert!(
         text.lines()
             .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()),
         "every line parses"
     );
-    assert_eq!(Store::open(&path).unwrap().len(), 4);
 }
 
 #[test]
-fn corruption_in_the_middle_is_an_error_not_a_silent_gap() {
+fn a_second_session_cannot_be_created_over_an_existing_one() {
+    let (_dir, s) = store();
+    let case = s.case().clone();
+    assert!(Store::create(&case, "s1").is_err(), "while it is open");
+    drop(s);
+    assert!(Store::create(&case, "s1").is_err(), "nor afterwards");
+    assert!(Store::open(&case, "nope").is_err());
+}
+
+#[test]
+fn a_session_is_open_in_one_place_at_a_time() {
+    // The contract SPEC §3 stated without a lock is now held by one.
+    let (_dir, s) = store();
+    let case = s.case().clone();
+    let err = Store::open(&case, "s1").err().expect("already open");
+    assert!(err.to_string().contains("another window"), "{err}");
+    drop(s);
+    Store::open(&case, "s1").unwrap();
+}
+
+#[test]
+fn a_written_entry_is_never_changed_or_removed() {
+    // The crash story: an append is one transaction, and the database refuses to
+    // rewrite history -- for this code and for anything else that opens the file.
     let (_dir, mut s) = store();
     user(&mut s, "one");
-    user(&mut s, "two");
-    let path = s.dir().join("session.jsonl");
+    for sql in ["UPDATE entry SET body = '{}'", "DELETE FROM entry"] {
+        let err = s
+            .case()
+            .db()
+            .write(move |tx| Ok(tx.execute(sql, [])?))
+            .unwrap_err();
+        assert!(err.to_string().contains("append-only"), "{err}");
+    }
+    let case = s.case().clone();
     drop(s);
-    let text = std::fs::read_to_string(&path).unwrap();
-    let mut lines: Vec<&str> = text.lines().collect();
-    lines[1] = "{ not json";
-    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-    assert!(Store::open(path.parent().unwrap()).is_err());
+    assert_eq!(Store::open(&case, "s1").unwrap().len(), 2);
+}
+
+#[test]
+fn the_first_entry_names_the_session_and_no_directory() {
+    // ADR-0045: a case is moved as a unit, so nothing in it says where it is.
+    let (dir, s) = store();
+    let body = serde_json::to_string(s.get(0).unwrap()).unwrap();
+    assert!(body.contains("\"session\":\"s1\""), "{body}");
+    assert!(!body.contains(&*dir.path().to_string_lossy()), "{body}");
+}
+
+#[test]
+fn two_sessions_of_one_case_keep_their_own_dense_ids() {
+    let (_dir, mut a) = store();
+    let mut b = Store::create(&a.case().clone(), "s2").unwrap();
+    assert_eq!(user(&mut a, "in a"), 1);
+    assert_eq!(user(&mut b, "in b"), 1);
+    assert_eq!(user(&mut a, "more a"), 2);
+    assert_eq!((a.len(), b.len()), (3, 2));
+    assert_ne!(a.dir(), b.dir());
 }
 
 // -- branches -------------------------------------------------------------------------
@@ -92,9 +104,7 @@ fn a_branch_is_a_parent_pointer_and_forking_rewrites_nothing() {
     let (_dir, mut s) = store();
     let u = user(&mut s, "question");
     let a1 = assistant(&mut s, "first answer");
-    let bytes_before = std::fs::metadata(s.dir().join("session.jsonl"))
-        .unwrap()
-        .len();
+    let before = s.get(a1).unwrap().clone();
 
     s.set_head(u).unwrap();
     let a2 = assistant(&mut s, "second answer");
@@ -110,45 +120,29 @@ fn a_branch_is_a_parent_pointer_and_forking_rewrites_nothing() {
     );
     assert_eq!(s.children(u), [a1, a2]);
     assert_eq!(s.leaves(), [a1, a2]);
-    // The original branch's bytes are untouched: the log only grew.
-    let after = std::fs::read(s.dir().join("session.jsonl")).unwrap();
-    assert!(after.len() as u64 > bytes_before);
+    // The original branch is untouched: the log only grew.
+    assert_eq!(s.get(a1).unwrap(), &before);
+    assert_eq!(s.len(), 4);
     assert!(s.set_head(999).is_err());
 }
 
 // -- blobs and the index ---------------------------------------------------------------
 
 #[test]
-fn a_blob_keeps_every_byte_and_names_itself_after_its_label() {
+fn a_blob_keeps_every_byte_and_is_named_by_its_content() {
     let (_dir, mut s) = store();
-    let a = s.write_blob("bash 12", b"whole output").unwrap();
-    let b = s.write_blob("bash 12", b"another").unwrap();
-    assert_ne!(a.file, b.file, "no overwriting");
+    let a = s.write_blob(b"whole output").unwrap();
+    let b = s.write_blob(b"another").unwrap();
+    assert_ne!(a.sha256, b.sha256);
     assert_eq!(s.read_blob(&a).unwrap(), b"whole output");
     assert_eq!(a.bytes, 12);
-    assert!(a.file.starts_with("bash_12-"), "{}", a.file);
-}
-
-#[test]
-fn the_index_is_derived_and_rebuilt_when_stale() {
-    let (_dir, mut s) = store();
-    user(&mut s, "hello there");
-    let idx = s.index().unwrap();
-    assert_eq!(idx.entries.len(), 2);
-    assert_eq!(idx.entries[1].kind, "user");
-    assert_eq!(idx.entries[1].preview, "hello there");
-
-    // Delete it: it comes back.
-    std::fs::remove_file(s.dir().join("index.json")).unwrap();
-    assert_eq!(s.index().unwrap(), idx);
-
-    // Corrupt it: it comes back.
-    std::fs::write(s.dir().join("index.json"), "junk").unwrap();
-    assert_eq!(s.index().unwrap(), idx);
-
-    // Grow the log: the stale index is not believed.
-    user(&mut s, "and another");
-    assert_eq!(s.index().unwrap().entries.len(), 3);
+    assert_eq!(
+        s.write_blob(b"whole output").unwrap(),
+        a,
+        "the same bytes are one blob"
+    );
+    assert!(s.blob_path(&a).is_file());
+    assert!(s.blob_path(&a).starts_with(s.case().dir().join("blobs")));
 }
 
 // -- history -----------------------------------------------------------------------------
@@ -160,7 +154,7 @@ fn history_reads_a_truncated_result_back_from_its_blob() {
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let blob = s.write_blob("strings", full.as_bytes()).unwrap();
+    let blob = s.write_blob(full.as_bytes()).unwrap();
     let id = s
         .append(Kind::ToolResult {
             call_id: "c".into(),
@@ -186,9 +180,7 @@ fn history_reads_a_truncated_result_back_from_its_blob() {
 fn history_search_reaches_blobs_and_every_kind_of_entry() {
     let (_dir, mut s) = store();
     user(&mut s, "find the license check");
-    let blob = s
-        .write_blob("dump", b"aaa\nthe key is 0xDEADBEEF\nzzz")
-        .unwrap();
+    let blob = s.write_blob(b"aaa\nthe key is 0xDEADBEEF\nzzz").unwrap();
     s.append(Kind::ToolResult {
         call_id: "c".into(),
         name: "bash".into(),
@@ -389,7 +381,8 @@ fn session_state_is_the_latest_custom_entry_per_key_on_the_branch() {
     save(&mut s, "reporting", json!({"enabled": true, "level": 2}));
 
     let st = context::SessionState::load(&s);
-    assert_eq!(st.manifest.goal.as_deref(), Some("two"));
+    // The goal is the case's (ADR-0045): one stored in a session entry is not read.
+    assert_eq!(st.manifest.goal, None);
     assert_eq!(st.identity.active.as_deref(), Some("publisher"));
     assert_eq!(st.scenario.as_ref().unwrap().step_index, 1);
     assert!(st.reporting.is_enabled());
@@ -397,4 +390,108 @@ fn session_state_is_the_latest_custom_entry_per_key_on_the_branch() {
     // A cleared scenario is stored as null and reads back as none.
     save(&mut s, "scenario", json!(null));
     assert!(context::SessionState::load(&s).scenario.is_none());
+}
+
+// -- the case: strategy and the other sessions ---------------------------------------------
+
+#[test]
+fn the_goal_and_guidelines_are_the_cases_and_the_steps_are_the_sessions() {
+    use reactor_context::manifest::{State, Step};
+    use reactor_db::manifest::Author;
+    let (_dir, mut a) = store();
+    let mut b = Store::create(&a.case().clone(), "s2").unwrap();
+
+    let step = |t: &str| Step {
+        summary: t.into(),
+        status: "in progress".into(),
+    };
+    let in_a = State {
+        goal: Some("find the C2".into()),
+        guidelines: Some("static first".into()),
+        steps: vec![step("triage")],
+        ..State::default()
+    };
+    context::save_manifest(&mut a, &in_a, &Author::analyst()).unwrap();
+
+    // The other session sees the strategy at once, and none of the steps.
+    let seen = context::SessionState::load(&b).manifest;
+    assert_eq!(seen.goal.as_deref(), Some("find the C2"));
+    assert_eq!(seen.guidelines.as_deref(), Some("static first"));
+    assert!(seen.steps.is_empty());
+
+    // It changes the goal; the first session's next load has it, and keeps its steps.
+    let in_b = State {
+        goal: Some("find the C2 and the dropper".into()),
+        steps: vec![step("unpack")],
+        ..seen
+    };
+    context::save_manifest(&mut b, &in_b, &Author::analyst()).unwrap();
+    let back = context::SessionState::load(&a).manifest;
+    assert_eq!(back.goal.as_deref(), Some("find the C2 and the dropper"));
+    assert_eq!(back.steps, vec![step("triage")]);
+
+    // Branching a session does not branch the goal.
+    a.set_head(0).unwrap();
+    user(&mut a, "another way");
+    let forked = context::SessionState::load(&a).manifest;
+    assert_eq!(forked.goal.as_deref(), Some("find the C2 and the dropper"));
+    assert!(
+        forked.steps.is_empty(),
+        "the steps were on the other branch"
+    );
+
+    // Saving what is already stored writes nothing.
+    let n = a.len();
+    context::save_manifest(&mut a, &forked, &Author::analyst()).unwrap();
+    assert_eq!(a.len(), n);
+}
+
+#[test]
+fn history_reaches_the_other_sessions_of_the_case() {
+    let (_dir, mut a) = store();
+    let mut b = Store::create(&a.case().clone(), "s2").unwrap();
+    user(&mut a, "the mutex is Global/Zx9");
+    let blob = b
+        .write_blob(b"aaa\nmutex Global/Zx9 seen in sample\nzzz")
+        .unwrap();
+    b.append(Kind::ToolResult {
+        call_id: "c".into(),
+        name: "bash".into(),
+        content: "aaa".into(),
+        is_error: false,
+        blob: Some(blob),
+    })
+    .unwrap();
+
+    // On its own a session searches itself.
+    assert_eq!(history::search(&a, "Zx9", &[], 10).unwrap().len(), 1);
+    // Across the case: its own hits first, then the others', each saying where it is.
+    let hits = history::search_case(&a, "Zx9", &[], 10).unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!((hits[0].session.as_deref(), hits[0].id), (None, 1));
+    assert_eq!(
+        (hits[1].session.as_deref(), hits[1].id, hits[1].line),
+        (Some("s2"), 1, 2)
+    );
+    assert!(history::render_hits(&hits, 10).contains("session s2 #1:2 (tool_result)"));
+    assert_eq!(
+        history::search_case(&a, "Zx9", &[], 1).unwrap().len(),
+        1,
+        "the limit holds"
+    );
+
+    // And an entry of the other session reads back whole, blob included.
+    let other = history::Log::other(&a, "s2").unwrap();
+    assert!(
+        history::read_from(&other, 1, None, None)
+            .unwrap()
+            .contains("seen in sample")
+    );
+    assert!(history::index_of(&other, None, None).starts_with("#0 session"));
+    assert!(history::Log::other(&a, "nope").is_err());
+    let listing = history::sessions_listing(&a).unwrap();
+    assert!(
+        listing.contains("s1 (this session)") && listing.contains("s2 "),
+        "{listing}"
+    );
 }

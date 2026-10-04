@@ -20,6 +20,8 @@ reactor-agent = { path = "../reactor-agent" }
 reactor-context = { path = "../reactor-context" }
 reactor-core = { path = "../reactor-core" }
 reactor-fs = { path = "../reactor-fs" }
+reactor-db = { path = "../reactor-db" }
+reactor-ingest = { path = "../reactor-ingest" }
 # The agent is async (rig is); it runs on its own runtime on background threads,
 # never on gpui's executor (docs/adr/0042).
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
@@ -45,6 +47,8 @@ icon = ["../../assets/icon.icns"]
 
 [dev-dependencies]
 tempfile = "3"
+# The same single SQLite binding reactor-db brings in; here only to make a database to open.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Linux: the desktop portal's "Open With" chooser needs a file descriptor handed over D-Bus.
 [target.'cfg(target_os = "linux")'.dependencies]

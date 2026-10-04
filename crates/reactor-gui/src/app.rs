@@ -138,7 +138,8 @@ struct OpenSession {
     transcript: Entity<crate::panels::TranscriptPanel>,
     /// How the dock holds the tab; the tab may be closed while the session stays open.
     handle: Arc<dyn PanelView>,
-    /// The first session's tab is the one the layouts place; it is not closed.
+    /// This session's tab is the one the layouts place (the Transcript panel of the presets
+    /// and the Panels menu). When it is closed another session takes its place.
     primary: bool,
 }
 
@@ -191,6 +192,9 @@ pub struct ReactorApp {
     /// a session — tree, context, status, the switches — is the active one's.
     open: Vec<OpenSession>,
     active: String,
+    /// The transcript the layouts' *Transcript* panel is, which `Panels::remove` takes out of
+    /// the dock: the primary session's, and changed when that session is closed.
+    transcript_slot: Arc<std::sync::Mutex<Entity<TranscriptPanel>>>,
 
     /// The context panel's feed, and the preview last asked for.
     pub context: Option<ContextView>,
@@ -865,6 +869,8 @@ impl ReactorApp {
             )
         });
         let primary_transcript = transcript.clone();
+        let transcript_slot = Arc::new(std::sync::Mutex::new(transcript.clone()));
+        let slot_for_remove = transcript_slot.clone();
         let tree = cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx));
         let tree_panel = tree.clone();
         let tools = cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx));
@@ -900,7 +906,10 @@ impl ReactorApp {
             remove: std::sync::Arc::new(move |kind, area, window, cx| {
                 use crate::layout::PanelKind::*;
                 match kind {
-                    Transcript => area.remove_panel(transcript.clone(), window, cx),
+                    Transcript => {
+                        let current = slot_for_remove.lock().unwrap().clone();
+                        area.remove_panel(current, window, cx)
+                    }
                     Tree => area.remove_panel(tree.clone(), window, cx),
                     Tools => area.remove_panel(tools.clone(), window, cx),
                     Toolsets => area.remove_panel(toolsets.clone(), window, cx),
@@ -1019,6 +1028,7 @@ impl ReactorApp {
             sessions: Vec::new(),
             open,
             active: first_id,
+            transcript_slot,
             context: None,
             preview: None,
             context_busy: false,
@@ -1611,16 +1621,17 @@ impl ReactorApp {
     }
 
     /// Let go of a session this window has open: its tab goes and its lock is released. The
-    /// session is kept in the case and can be opened again. The first session of the window
-    /// stays (its tab is the one the layouts place), and one that is working is left alone.
+    /// session is kept in the case and can be opened again. Any session can be closed — the
+    /// window's first too, when another is open to take its place as the one the layouts
+    /// show — except the last one, and one that is working, which is left alone.
     pub fn close_session(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(at) = self.open.iter().position(|o| o.id == id) else {
             return;
         };
-        if self.open[at].primary {
+        if self.open.len() == 1 {
             self.push_note(
                 "info",
-                "The window's first session stays open; close the window to let go of it.",
+                "A window keeps one session open: open another first, or close the window.",
             );
             return;
         }
@@ -1650,9 +1661,26 @@ impl ReactorApp {
         }
         if let Some(at) = self.open.iter().position(|o| o.id == id) {
             let closed = self.open.remove(at);
+            // The tab the layouts place goes to another session: the one now in front.
+            if closed.primary
+                && let Some(next) = self.open.iter_mut().find(|o| o.id == self.active)
+            {
+                next.primary = true;
+                self.panels.transcript = next.handle.clone();
+                *self.transcript_slot.lock().unwrap() = next.transcript.clone();
+            }
             self.dock_area.update(cx, |area, cx| {
                 area.remove_panel(closed.transcript.clone(), window, cx)
             });
+        }
+        // What is left shows the session in front, its tab put back if it was closed.
+        if let Some(handle) = self
+            .open
+            .iter()
+            .find(|o| o.id == self.active)
+            .map(|o| o.handle.clone())
+        {
+            self.show_transcript(handle, window, cx);
         }
         self.refresh_sessions(cx);
     }

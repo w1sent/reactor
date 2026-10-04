@@ -5,12 +5,14 @@
 //! Viewers are created on demand, any number of them, as tabs in the centre; the explorer is
 //! the one fixed panel ([`crate::layout::PanelKind::Files`]).
 
+pub mod archive;
 pub mod data;
 pub mod data_model;
 pub mod editor;
 pub mod explorer;
 pub mod hex;
 pub mod language;
+pub mod plist;
 pub mod props;
 pub mod refs;
 pub mod table;
@@ -75,6 +77,15 @@ pub fn suggest(file: &FileRef) -> Viewer {
     // A SQLite file is a set of tables, whatever its name says.
     if reactor_db::browse::is_sqlite(&head) {
         return Viewer::Table;
+    }
+    // Markdown is read rendered, and a property list — binary or XML — as a tree: both in the
+    // data viewer. (The text editor and the hex viewer are one choice away.)
+    let name = file.name();
+    if data_model::is_markdown_name(&name)
+        || head.starts_with(b"bplist")
+        || (name.to_ascii_lowercase().ends_with(".plist") && plist::looks_like_xml_plist(&head))
+    {
+        return Viewer::Data;
     }
     if reactor_fs::identify(&head).is_text {
         Viewer::Editor
@@ -217,12 +228,33 @@ mod tests {
                 .unwrap();
         }
         std::fs::write(dir.path().join("plain.txt"), "just text\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Notes\n").unwrap();
+        std::fs::write(
+            dir.path().join("Info"),
+            include_bytes!("../../tests/fixtures/sample.bplist"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Settings.plist"),
+            include_bytes!("../../tests/fixtures/sample.plist"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("fake.plist"), "just text\n").unwrap();
         let fs: Arc<dyn reactor_fs::Vfs> = Arc::new(LocalFs::new(dir.path(), "test"));
         let open = |name: &str| suggest(&FileRef::new(fs.clone(), VPath::new(&format!("/{name}"))));
         assert_eq!(open("reactor_data.sqlite"), Viewer::Table);
         assert_eq!(open("no-extension"), Viewer::Table);
         assert_eq!(open("looks-like.txt"), Viewer::Table);
         assert_eq!(open("plain.txt"), Viewer::Editor);
+        // Rendered Markdown, a property list as a tree: the data viewer.
+        assert_eq!(open("README.md"), Viewer::Data);
+        assert_eq!(open("Info"), Viewer::Data, "binary, whatever it is called");
+        assert_eq!(open("Settings.plist"), Viewer::Data);
+        assert_eq!(
+            open("fake.plist"),
+            Viewer::Editor,
+            "a .plist that is not one is text"
+        );
     }
 
     #[test]

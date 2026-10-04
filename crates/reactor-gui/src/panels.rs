@@ -790,7 +790,23 @@ impl Panel for TranscriptPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![close_button(&self.app, cx.entity())])
+        let (app, id) = (self.app.clone(), self.session_id.clone());
+        Some(vec![
+            // The tab's own close only hides it: the session stays open and keeps working.
+            // This lets go of the session itself.
+            Button::new("close-session-tab")
+                .icon(IconName::PowerOff)
+                .ghost()
+                .small()
+                .tooltip("Close this session: its tab goes and the window lets go of it. It stays in the case and can be opened again. (Closing just the tab hides it, and the session keeps running.)")
+                .on_click(move |_, window, cx| {
+                    if let Some(app) = app.upgrade() {
+                        let id = id.clone();
+                        app.update(cx, |app, cx| app.close_session(&id, window, cx));
+                    }
+                }),
+            close_button(&self.app, cx.entity()),
+        ])
     }
 }
 
@@ -1716,18 +1732,37 @@ pub struct ToolsPanel {
     /// they cannot act on. Turning it on turns the panel into the install
     /// menu it also needs to be.
     show_uninstalled: bool,
+    /// What is typed in the search box: the list is cut to what matches.
+    query: Entity<InputState>,
+}
+
+/// A search box that redraws its panel as it is typed in.
+fn search_box<T: 'static>(
+    placeholder: &'static str,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Entity<InputState> {
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+    cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
+        if let InputEvent::Change = event {
+            cx.notify();
+        }
+    })
+    .detach();
+    input
 }
 
 impl ToolsPanel {
     pub fn new(
         app: gpui_kit::WeakEntity<ReactorApp>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             app,
             focus: cx.focus_handle(),
             show_uninstalled: false,
+            query: search_box("Search tools", window, cx),
         }
     }
 }
@@ -1810,14 +1845,28 @@ impl Render for ToolsPanel {
             .flex_1()
             .min_h_0()
             .overflow_y_scrollbar();
+        let query = self.query.read(cx).value().to_string();
+        let searching = !query.trim().is_empty();
         if let Some(payload) = &tools {
             let mut hidden = 0usize;
+            let mut found = 0usize;
             for tool in &payload.tools {
                 let installed = tool.status == "present";
-                if !installed && !self.show_uninstalled {
+                // Searching looks through everything the catalogue knows: how else would one
+                // find a tool to install. Without a search, what is not here is hidden.
+                if searching {
+                    let tags = tool.tags.join(" ");
+                    if !crate::quick_filter::matches(
+                        &query,
+                        &[&tool.id, &tool.name, &tool.desc, &tags],
+                    ) {
+                        continue;
+                    }
+                } else if !installed && !self.show_uninstalled {
                     hidden += 1;
                     continue;
                 }
+                found += 1;
                 let tool_id = tool.id.clone();
                 let tool_active = tool.active;
                 let weak_app = self.app.clone();
@@ -1869,6 +1918,13 @@ impl Render for ToolsPanel {
                         .text_color(theme.muted_foreground)
                         .child("no tools catalogued"),
                 );
+            } else if searching && found == 0 {
+                list = list.child(
+                    div()
+                        .px_2()
+                        .text_color(theme.muted_foreground)
+                        .child(format!("no tool matches `{}`", query.trim())),
+                );
             } else if hidden > 0 {
                 list = list.child(
                     div()
@@ -1897,6 +1953,7 @@ impl Render for ToolsPanel {
         v_flex()
             .size_full()
             .child(scope_header(&self.app, scope.as_deref(), &theme))
+            .child(div().px_2().pt_2().child(Input::new(&self.query).small()))
             .child(list)
     }
 }
@@ -1940,17 +1997,20 @@ fn scope_header(
 pub struct ToolsetsPanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
     focus: FocusHandle,
+    /// What is typed in the search box: the list is cut to what matches.
+    query: Entity<InputState>,
 }
 
 impl ToolsetsPanel {
     pub fn new(
         app: gpui_kit::WeakEntity<ReactorApp>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             app,
             focus: cx.focus_handle(),
+            query: search_box("Search toolsets", window, cx),
         }
     }
 }
@@ -2014,8 +2074,17 @@ impl Render for ToolsetsPanel {
             .flex_1()
             .min_h_0()
             .overflow_y_scrollbar();
+        let query = self.query.read(cx).value().to_string();
+        let searching = !query.trim().is_empty();
         if let Some(payload) = &toolsets {
+            let mut found = 0usize;
             for row in &payload.toolsets {
+                // By name, description, or any tool in it.
+                let members = row.tools.join(" ");
+                if !crate::quick_filter::matches(&query, &[&row.id, &row.desc, &members]) {
+                    continue;
+                }
+                found += 1;
                 let toolset_id = row.id.clone();
                 let toolset_active = row.active;
                 let weak_app = self.app.clone();
@@ -2046,6 +2115,13 @@ impl Render for ToolsetsPanel {
                         .text_color(theme.muted_foreground)
                         .child("no toolsets catalogued"),
                 );
+            } else if searching && found == 0 {
+                list = list.child(
+                    div()
+                        .px_2()
+                        .text_color(theme.muted_foreground)
+                        .child(format!("no toolset matches `{}`", query.trim())),
+                );
             }
         } else if loading {
             list = list.child(loading_row("loading toolsets…", &theme));
@@ -2065,6 +2141,7 @@ impl Render for ToolsetsPanel {
         v_flex()
             .size_full()
             .child(scope_header(&self.app, scope.as_deref(), &theme))
+            .child(div().px_2().pt_2().child(Input::new(&self.query).small()))
             .child(list)
     }
 }

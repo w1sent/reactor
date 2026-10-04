@@ -6422,6 +6422,7 @@ dependencies = [
  "reactor-fs",
  "reactor-ingest",
  "regex",
+ "roxmltree 0.21.1",
  "rusqlite",
  "serde",
  "serde_json",

@@ -342,3 +342,175 @@ fn what_a_person_stated_has_the_session_entry_as_its_source() {
     // An entity states nothing and so has no source of its own.
     assert!(query::sources_of(db, &a).unwrap().is_empty());
 }
+
+#[test]
+fn each_kind_of_annotation_can_be_added_by_hand_with_what_it_needs() {
+    use reactor_db::graph::edit::{Annotate, AnnotationKind::*};
+    let (_d, case) = case();
+    let db = case.db();
+    let a = edit::add_entity(db, &at(), "host.name", "ws-042").unwrap();
+    let b = edit::add_entity(db, &at(), "host.name", "WS042.corp").unwrap();
+    let c = edit::add_entity(db, &at(), "account.user", "jdoe").unwrap();
+    let ids = |v: &[&String]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    let none: &[String] = &[];
+
+    // A hypothesis needs only its text, and starts open.
+    assert!(edit::annotate(db, &at(), Hypothesis, &Annotate::default()).is_err());
+    let h = edit::annotate(
+        db,
+        &at(),
+        Hypothesis,
+        &Annotate {
+            text: "jdoe was phished",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let e = query::get(db, &h).unwrap().unwrap();
+    assert_eq!(
+        (e.type_.as_str(), e.kind),
+        ("analysis.hypothesis", Kind::Annotation)
+    );
+    assert_eq!(e.content.props["hypothesis_status"], "open");
+
+    // An assessment is about something, and may support a hypothesis, with a confidence.
+    let about = ids(&[&c]);
+    let supports = vec![h.clone()];
+    assert!(
+        edit::annotate(
+            db,
+            &at(),
+            Judgement,
+            &Annotate {
+                text: "x",
+                ..Default::default()
+            }
+        )
+        .is_err(),
+        "about nothing"
+    );
+    let j = edit::annotate(
+        db,
+        &at(),
+        Judgement,
+        &Annotate {
+            text: "the logon came from the phishing IP",
+            about: &about,
+            supports: &supports,
+            confidence: Some("likely"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let je = query::get(db, &j).unwrap().unwrap();
+    assert_eq!(je.content.confidence.as_deref(), Some("likely"));
+    let out = query::edges_from(db, &j).unwrap();
+    let roles: Vec<(&str, &str)> = out
+        .iter()
+        .map(|g| (g.role.as_str(), g.to_id.as_str()))
+        .collect();
+    assert!(
+        roles.contains(&("about", c.as_str())) && roles.contains(&("supports", h.as_str())),
+        "{roles:?}"
+    );
+    // About something is pinned to the version it judged.
+    assert!(
+        out.iter()
+            .find(|g| g.role == "about")
+            .unwrap()
+            .pinned_ver
+            .is_some()
+    );
+
+    // A cluster needs two members; a same-as needs exactly two entities.
+    assert!(
+        edit::annotate(
+            db,
+            &at(),
+            Cluster,
+            &Annotate {
+                members: &ids(&[&a]),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    let cl = edit::annotate(
+        db,
+        &at(),
+        Cluster,
+        &Annotate {
+            text: "the workstation",
+            members: &ids(&[&a, &b]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        query::edges_from(db, &cl)
+            .unwrap()
+            .iter()
+            .filter(|g| g.role == "member")
+            .count(),
+        2
+    );
+    assert!(
+        edit::annotate(
+            db,
+            &at(),
+            SameAs,
+            &Annotate {
+                about: &ids(&[&a, &b, &c]),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        edit::annotate(
+            db,
+            &at(),
+            SameAs,
+            &Annotate {
+                about: &ids(&[&a]),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    let same = edit::annotate(
+        db,
+        &at(),
+        SameAs,
+        &Annotate {
+            about: &ids(&[&a, &b]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        query::get(db, &same).unwrap().unwrap().type_,
+        "analysis.same_as"
+    );
+
+    // A search that found nothing says what for and where.
+    assert!(edit::annotate(db, &at(), SearchNegative, &Annotate::default()).is_err());
+    let sn = edit::annotate(
+        db,
+        &at(),
+        SearchNegative,
+        &Annotate {
+            text: "ws-042 in the proxy logs",
+            sources: &["logs/proxy.csv".to_string(), "  ".to_string()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let from_sn = query::edges_from(db, &sn).unwrap();
+    assert_eq!(
+        from_sn.iter().filter(|g| g.role == "source").count(),
+        1,
+        "a blank is not a place"
+    );
+    let _ = none;
+}

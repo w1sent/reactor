@@ -34,6 +34,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 portable-pty = "0.9.0"
 # Decodes the window icon (assets/icon.ico), which gpui takes as RGBA pixels.
 csv = "1"
+# Reads XML property lists in the data viewer.
+roxmltree = "0.21"
 image = { version = "0.25", default-features = false, features = ["ico", "png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 
 [build-dependencies]

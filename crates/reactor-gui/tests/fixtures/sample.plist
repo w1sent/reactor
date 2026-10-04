@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>data</key>
+	<data>
+	AAECYmluYXJ5/w==
+	</data>
+	<key>date</key>
+	<date>2020-01-02T03:04:05Z</date>
+	<key>empty_dict</key>
+	<dict/>
+	<key>empty_list</key>
+	<array/>
+	<key>int_big</key>
+	<integer>4294967296</integer>
+	<key>int_negative</key>
+	<integer>-42</integer>
+	<key>int_small</key>
+	<integer>7</integer>
+	<key>list</key>
+	<array>
+		<string>a</string>
+		<integer>1</integer>
+		<array>
+			<real>2.5</real>
+			<false/>
+		</array>
+		<dict>
+			<key>k</key>
+			<string>v</string>
+		</dict>
+	</array>
+	<key>name</key>
+	<string>REactor</string>
+	<key>no</key>
+	<false/>
+	<key>real</key>
+	<real>3.5</real>
+	<key>unicode</key>
+	<string>héllo ✓ 日本</string>
+	<key>yes</key>
+	<true/>
+</dict>
+</plist>

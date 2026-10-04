@@ -20,6 +20,7 @@ pub mod notifications;
 pub mod palette;
 pub mod panels;
 pub mod prompt_history;
+pub mod quick_filter;
 pub mod session;
 pub mod session_list;
 pub mod settings;

@@ -28,7 +28,7 @@ use gpui_kit::{
     App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla, MouseButton,
     PathBuilder, Pixels, Point, ScrollDelta, SharedString, Window, canvas, div, point, px,
 };
-use reactor_db::graph::edit::{self, At, TypeChoice};
+use reactor_db::graph::edit::{self, Annotate, AnnotationKind, At, TypeChoice};
 use reactor_db::graph::layout;
 use reactor_db::graph::{self, query};
 use serde::Deserialize;
@@ -83,7 +83,20 @@ enum Spot {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AddMode {
     Entity,
+    /// A free note, put where it was thought of.
     Note,
+    /// Any other kind of annotation: what it is about is what is selected.
+    Annotation(AnnotationKind),
+}
+
+/// What an assessment does to a hypothesis that is selected with it.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Stance {
+    /// Only comments on what it is about.
+    #[default]
+    Plain,
+    Supports,
+    Refutes,
 }
 
 /// A form over the drawing: adding an entity or a note, or stating a relation.
@@ -150,6 +163,8 @@ pub struct GraphPanel {
     layout_kind: LayoutKind,
     /// How much is drawn, if picked; else it follows the zoom.
     detail_pick: Option<model::Detail>,
+    /// What the assessment being added does to a hypothesis selected with it.
+    stance: Stance,
     /// The form that is open, and its fields.
     form: Option<Form>,
     entity_type: Entity<InputState>,
@@ -328,6 +343,7 @@ impl GraphPanel {
             show_groups: false,
             layout_kind: LayoutKind::default(),
             detail_pick: None,
+            stance: Stance::default(),
             form: None,
             entity_type,
             entity_value,
@@ -681,7 +697,9 @@ impl GraphPanel {
     fn focus_add(&mut self, mode: AddMode, window: &mut Window, cx: &mut Context<Self>) {
         match mode {
             AddMode::Entity => self.entity_type.update(cx, |s, cx| s.focus(window, cx)),
-            AddMode::Note => self.entity_value.update(cx, |s, cx| s.focus(window, cx)),
+            AddMode::Note | AddMode::Annotation(_) => {
+                self.entity_value.update(cx, |s, cx| s.focus(window, cx))
+            }
         }
     }
 
@@ -731,6 +749,67 @@ impl GraphPanel {
                         self.edit(cx, |db, at| edit::add_entity(db, at, &ty, &value))
                     }
                     AddMode::Note => self.edit(cx, |db, at| edit::note(db, at, &[], &value)),
+                    AddMode::Annotation(kind) => {
+                        // What it is about is what is selected; a hypothesis among them
+                        // is what an assessment supports or refutes.
+                        let selected = self.selected_nodes();
+                        let is_hypothesis = |id: &String| {
+                            self.model
+                                .nodes
+                                .iter()
+                                .any(|n| n.id == *id && n.type_ == "analysis.hypothesis")
+                        };
+                        let (hypotheses, others): (Vec<String>, Vec<String>) =
+                            selected.iter().cloned().partition(|id| is_hypothesis(id));
+                        let stance = if hypotheses.is_empty() || others.is_empty() {
+                            Stance::Plain
+                        } else {
+                            self.stance
+                        };
+                        let (about, supports, refutes): (Vec<String>, Vec<String>, Vec<String>) =
+                            match (kind, stance) {
+                                (AnnotationKind::Judgement, Stance::Supports) => {
+                                    (others, hypotheses, Vec::new())
+                                }
+                                (AnnotationKind::Judgement, Stance::Refutes) => {
+                                    (others, Vec::new(), hypotheses)
+                                }
+                                (AnnotationKind::Judgement | AnnotationKind::SameAs, _) => {
+                                    (selected.clone(), Vec::new(), Vec::new())
+                                }
+                                _ => (Vec::new(), Vec::new(), Vec::new()),
+                            };
+                        let members = if kind == AnnotationKind::Cluster {
+                            selected.clone()
+                        } else {
+                            Vec::new()
+                        };
+                        // Where a search looked: words, as typed.
+                        let sources: Vec<String> = if kind == AnnotationKind::SearchNegative {
+                            text(&self.entity_type, cx)
+                                .split_whitespace()
+                                .map(str::to_string)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        self.edit(cx, |db, at| {
+                            edit::annotate(
+                                db,
+                                at,
+                                kind,
+                                &Annotate {
+                                    text: &value,
+                                    about: &about,
+                                    supports: &supports,
+                                    refutes: &refutes,
+                                    members: &members,
+                                    sources: &sources,
+                                    confidence: None,
+                                },
+                            )
+                        })
+                    }
                 };
                 match made {
                     Some(id) => {
@@ -1025,7 +1104,7 @@ impl Panel for GraphPanel {
                 .icon(IconName::Plus)
                 .ghost()
                 .small()
-                .tooltip("Add an entity or a note by hand — or right-click the plane to add one right there")
+                .tooltip("Add an entity, a note, a hypothesis or another annotation by hand — or right-click the plane to add one right there")
                 .on_click(cx.listener(|this, _, window, cx| {
                     let spot = Spot::Near(this.to_world(this.centre()));
                     this.open_add_form(AddMode::Entity, spot, None, window, cx)
@@ -1624,11 +1703,38 @@ impl Render for GraphPanel {
                             h_flex()
                                 .gap_1()
                                 .items_center()
+                                .flex_wrap()
+                                .max_w(px(404.))
                                 .child(mode_button("graph-add-entity", "Entity", AddMode::Entity))
                                 .child(mode_button("graph-add-note", "Note", AddMode::Note))
+                                .child(mode_button(
+                                    "graph-add-hypothesis",
+                                    "Hypothesis",
+                                    AddMode::Annotation(AnnotationKind::Hypothesis),
+                                ))
+                                .child(mode_button(
+                                    "graph-add-judgement",
+                                    "Assessment",
+                                    AddMode::Annotation(AnnotationKind::Judgement),
+                                ))
+                                .child(mode_button(
+                                    "graph-add-cluster",
+                                    "Cluster",
+                                    AddMode::Annotation(AnnotationKind::Cluster),
+                                ))
+                                .child(mode_button(
+                                    "graph-add-same",
+                                    "Same as",
+                                    AddMode::Annotation(AnnotationKind::SameAs),
+                                ))
+                                .child(mode_button(
+                                    "graph-add-search",
+                                    "Searched",
+                                    AddMode::Annotation(AnnotationKind::SearchNegative),
+                                ))
                                 .child(hints::info_button(
                                     "graph-form-info",
-                                    "An entity is a thing that can show up in many places: the same value is always the same node. A note is free text, put where it was thought of, and can be connected to nodes later.",
+                                    "An entity is a thing that can show up in many places: the same value is always the same node. A note is free text, put where it was thought of. A hypothesis is a candidate explanation, open until supported or rejected. An assessment is about what is selected, and with a hypothesis selected too it supports or refutes it. A cluster says the selected nodes belong together; same as says two selected entities are one thing; searched records a search that found nothing, and where it looked.",
                                 )),
                         )
                         .when(mode == AddMode::Entity, |c| {
@@ -1644,6 +1750,70 @@ impl Render for GraphPanel {
                         .when(mode == AddMode::Note, |c| {
                             c.child(field("Note", &self.entity_value))
                         })
+                        .when_some(
+                            match mode {
+                                AddMode::Annotation(k) => Some(k),
+                                _ => None,
+                            },
+                            |c, kind| {
+                                let label = match kind {
+                                    AnnotationKind::Hypothesis => "Hypothesis",
+                                    AnnotationKind::Judgement => "Assessment",
+                                    AnnotationKind::Cluster => "Name",
+                                    AnnotationKind::SameAs => "Why",
+                                    AnnotationKind::SearchNegative => "Looked for",
+                                    AnnotationKind::Note => "Note",
+                                };
+                                // What it will be about: the selection, by name.
+                                let picked = self.selected_nodes();
+                                let is_hypothesis = |id: &String| {
+                                    self.model
+                                        .nodes
+                                        .iter()
+                                        .any(|n| n.id == *id && n.type_ == "analysis.hypothesis")
+                                };
+                                let hypotheses = picked.iter().filter(|id| is_hypothesis(id)).count();
+                                let can_stance = kind == AnnotationKind::Judgement
+                                    && hypotheses > 0
+                                    && hypotheses < picked.len();
+                                let about = if picked.is_empty() {
+                                    "nothing selected".to_string()
+                                } else {
+                                    picked.iter().map(|id| name_of(id)).collect::<Vec<_>>().join(", ")
+                                };
+                                let stance_button = |id: &'static str, label: &'static str, this_stance: Stance| {
+                                    let b = Button::new(id).small().label(label);
+                                    let b = if self.stance == this_stance { b.primary() } else { b.ghost() };
+                                    b.on_click(cx.listener(move |this, _, _, cx| {
+                                        this.stance = this_stance;
+                                        cx.notify();
+                                    }))
+                                };
+                                c.child(field(label, &self.entity_value))
+                                    .when(kind == AnnotationKind::SearchNegative, |c| {
+                                        c.child(field("Where", &self.entity_type))
+                                    })
+                                    .when(kind != AnnotationKind::SearchNegative && kind != AnnotationKind::Hypothesis, |c| {
+                                        c.child(
+                                            div()
+                                                .max_w(px(404.))
+                                                .pl(px(92.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(SharedString::from(format!("About: {about}"))),
+                                        )
+                                    })
+                                    .when(can_stance, |c| {
+                                        c.child(
+                                            h_flex()
+                                                .gap_1()
+                                                .pl(px(92.))
+                                                .child(stance_button("graph-stance-plain", "Comments on", Stance::Plain))
+                                                .child(stance_button("graph-stance-supports", "Supports", Stance::Supports))
+                                                .child(stance_button("graph-stance-refutes", "Refutes", Stance::Refutes)),
+                                        )
+                                    })
+                            },
+                        )
                         .child(form_buttons("Add")),
                 )
             }

@@ -593,6 +593,8 @@ Built in three increments: storage and rules, then pulling and the agent's tools
 **Still to do in Stage 2**
 
 - The owner looks at the panel; what is wrong with it is fixed.
+- By hand, every annotation kind: hypothesis, assessment (supporting or refuting a selected hypothesis), cluster, same as, and a negative search, as well as a note (`edit::annotate`, tested).
+- Any open session can be closed, the first included (another becomes the one the layouts show); the transcript toolbar has a *Close session* button besides the tab's hide; Tools and Toolsets have search boxes.
 - Layouts to choose from (force-directed as the default, hierarchical, circular/radial, orthogonal with right-angled connectors; `graph/arrange.rs`, tested: every layout gives each node a place without overlap and the same every time) and layout of connected groups packed close together; the choice is not stored.
 - Done since (built blind, the pure parts tested): positions stored with the case (`graph::layout`, schema 4), a filter box (`parse_filter`: words, `type:`, `tag:`, `by:`, `kind:`, `status:`, `-` to negate), boxes around nodes sharing a tag (`tag_groups`), and *Source* on a claim (`query::sources_of`, `source_target`). Progressive disclosure is built: Basic, Analysis and Full, picked or following the zoom (`model::disclose`, tested), with a discussed binary claim standing in as a line at the lower two. Tag outlines are convex hulls round the nodes' boxes, rounded (`model::padded_hull`, tested). Still to do in the view: bubble sets, sources as icons.
 - A real session against a model: nothing here has been exercised by an actual agent yet.

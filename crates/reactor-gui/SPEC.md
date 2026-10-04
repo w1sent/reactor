@@ -122,9 +122,11 @@ session per window; branching moves the head within it, and a case holds many se
   *active*, *open* here or *open elsewhere* (greyed). Sessions in which nothing was said are
   left out (opening a case starts one), except those open here. A click picks one; a **double
   click**, or *Open*, shows its transcript; *Close* lets go of the picked one (its tab goes, its
-  lock is released; it stays in the case; the window's first session stays, and one that is
-  working is left alone); **+** starts a new session in a tab of its own. Closing a tab only
-  hides it: the session stays open, and keeps working. The refresh icon reads the list again;
+  lock is released; it stays in the case); any session can be closed, the window's first too
+  (another then takes its place as the one the layouts show), except the last one and one that
+  is working; **+** starts a new session in a tab of its own. Closing a tab only hides it: the
+  session stays open, and keeps working. The transcript's toolbar has a second button, *Close
+  session*, next to the tab's close: it does what *Close* does for that session. The refresh icon reads the list again;
   it is also read at start and after every turn. The row's details are tooltips.
 - Each open session has its own events: its pump, its transcript model, its prompt box
   and tree/context state; they share the case's database handle and the embedding model.
@@ -200,7 +202,10 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
   here* switches the head to a final assistant reply, disabled while the agent
   works.
 - **Right** (collapsible, tabs): **Tools**, **Toolsets** (each its own tab, with
-  enable/disable actions and the session-scope header, §3) and **Context** (§3);
+  enable/disable actions and the session-scope header, §3; each with a search box above its
+  list — every word typed must be in an entry's name, description or tags (a toolset's tools),
+  and a search looks through the not-installed tools too, so one to install can be found) and
+  **Context** (§3);
   a bottom slot for **Services** (live rows, polled on a TTL-respecting timer).
   Every side panel shows a loading indicator while its refresh is in flight,
   never a bare "no data" before the first answer arrives.
@@ -606,7 +611,13 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   which version. The box has a fixed width, never more than the panel, and scrolls.
 - **Editing.** All of it goes through the write path the agent uses and is recorded as
   the analyst's (`reactor_db::graph::edit`, tested without a window). Toolbar: **+** adds
-  an entity or a note (the same value is always the same node). **Type fields offer the
+  an entity, a note or another annotation (the same value is always the same node). The add
+  form's buttons choose: *Entity*; *Note* (free text); *Hypothesis* (open until supported or
+  rejected); *Assessment* (about what is selected, pinned to the version it judged; with a
+  hypothesis selected too, it *supports* or *refutes* it); *Cluster* (the selected nodes
+  belong together); *Same as* (the two selected entities are one thing); *Searched* (a search that
+  found nothing: what for and where). These are the agent's annotation kinds, written
+  through the same path (`edit::annotate`). **Type fields offer the
   known types as they are typed** — those it begins, then a part of a dotted name
   (`ipv4` finds `net.ipv4`), then containing it, then by alias; most-used first — as
   chips under the field; a click takes one, its tooltip says how much it is used. In the detail box, for what is
@@ -758,9 +769,30 @@ ADR-0044. `crates/reactor-fs` is the seam (no gpui); `reactor-gui/src/files/` th
   semicolon and pipe, and can be chosen. Sorting by header click (numbers as numbers), a
   filter box over every cell, and a user-chosen number of header rows (their cells, joined,
   name the columns).
-- **Data viewer** (`data.rs`, `data_model.rs`): images (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO,
-  SVG) with fit and zoom. One view, hosted as a panel or in a popup (`/look <path>`, or
-  *Preview in popup*).
+- **Data viewer** (`data.rs`, `data_model.rs`, `plist.rs`): files with a better form than their
+  bytes or their text, chosen by what is in them. **Images** (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO,
+  SVG) with fit and zoom. **Markdown** (`.md`, `.markdown`, `.mdown`, `.mkd`; known by its name,
+  since it is plain text), *Rendered* (headings, lists, code, tables, links — a web link opens in
+  the browser) or *Source*. **Property lists**, known by content: Apple's binary `bplist00`, and XML
+  `<plist>` documents, as a **tree** (two levels open at first; click a row to pick it, the chevron
+  or a double click opens and closes a container; *Open all* / *Close all*; strings, integers,
+  reals, booleans, dates as UTC times, data as its size and first bytes, UIDs, sets, dictionaries
+  in file order) or as **XML** text; *Copy* puts what is picked, or the whole list, on the clipboard
+  as XML. Picking a field shows where it is (`list › 3 › name`) and what can be taken out of it:
+  *Copy value* (a string as it is, a number or date as written, data as hex, a structure as JSON),
+  *Copy key*, *JSON* (data as `{"$data": base64}`, a UID as `{"$uid": n}`), *XML*, and for data
+  *Hex*, *Base64* and *Save…* (the bytes to a file you name). **Data that is itself a property
+  list** — binary or XML, up to six levels down — is read and is a child of the data
+  (`↳ property list`), with its size and what it holds on the data's row. **Keyed archives**
+  (`NSKeyedArchiver`) are recognised by their `$archiver`, `$top` and `$objects`, and shown as the
+  objects they hold, with the UIDs followed: arrays, sets, dictionaries, strings, data, dates, URLs and
+  UUIDs of Foundation put back as themselves; any other class as a dictionary with its `$class`
+  and fields; `$null` as null; an object met again inside itself as a pointer, not for ever. *Objects* and *Raw* switch between that and the table as written. A
+  keyed archive inside data in a list is shown as its objects. The reader is bounded (depth, objects, every offset checked against the file), so a
+  damaged or hostile list is an error message, not a hang. The file explorer opens `.md` files,
+  binary property lists and `.plist` XML in this viewer by default; the text editor and the hex
+  viewer are one choice away in the context menu. One view, hosted as a panel or in a popup
+  (`/look <path>`, or *Preview in popup*).
 - **Hex viewer** (`hex.rs`): offset, bytes and text, scrolled lazily with a page cache, so
   size does not matter. Select by dragging in either column (Shift-click extends, Ctrl/Cmd+A
   selects all); the other column highlights the same bytes. Ctrl/Cmd+C, or the *Copy hex* /

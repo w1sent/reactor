@@ -263,6 +263,123 @@ pub fn note(db: &Db, at: &At, about: &[String], text: &str) -> Result<String> {
     )?)
 }
 
+/// What kind of annotation a person can add by hand: the vocabulary's `analysis.*` types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationKind {
+    /// A candidate explanation; starts open.
+    Hypothesis,
+    /// An assessment of something, which may support or refute a hypothesis.
+    Judgement,
+    /// Commentary, a question, a to-do.
+    Note,
+    /// These belong together.
+    Cluster,
+    /// These two entities are one thing.
+    SameAs,
+    /// A search that found nothing, and where it looked.
+    SearchNegative,
+}
+
+impl AnnotationKind {
+    pub const ALL: [AnnotationKind; 6] = [
+        AnnotationKind::Hypothesis,
+        AnnotationKind::Judgement,
+        AnnotationKind::Note,
+        AnnotationKind::Cluster,
+        AnnotationKind::SameAs,
+        AnnotationKind::SearchNegative,
+    ];
+
+    pub fn type_name(self) -> &'static str {
+        match self {
+            AnnotationKind::Hypothesis => "analysis.hypothesis",
+            AnnotationKind::Judgement => "analysis.judgement",
+            AnnotationKind::Note => "analysis.note",
+            AnnotationKind::Cluster => "analysis.cluster",
+            AnnotationKind::SameAs => "analysis.same_as",
+            AnnotationKind::SearchNegative => "analysis.search_negative",
+        }
+    }
+}
+
+/// An annotation to add: what it says, and what it is about. Which parts are needed depends
+/// on the kind (see [`annotate`]).
+#[derive(Debug, Clone, Default)]
+pub struct Annotate<'a> {
+    pub text: &'a str,
+    /// What it comments on, or — for `same_as` — the two entities that are one.
+    pub about: &'a [String],
+    /// Hypotheses a judgement supports, and hypotheses it refutes.
+    pub supports: &'a [String],
+    pub refutes: &'a [String],
+    /// The members of a cluster.
+    pub members: &'a [String],
+    /// Where a search looked (`search_negative`): URIs or names.
+    pub sources: &'a [String],
+    pub confidence: Option<&'a str>,
+}
+
+/// Add an annotation in the analyst's name, the same way the agent's `graph_annotate` does.
+///
+/// * **hypothesis**: needs text; starts `open`; about anything or nothing.
+/// * **judgement**: needs text and something it is *about* (pinned to that version of it, so
+///   it is flagged when it moves on); may `supports` or `refutes` hypotheses and carry a
+///   confidence.
+/// * **note**: needs text; about anything or nothing.
+/// * **cluster**: needs two or more `members`; the text, if any, names it.
+/// * **same_as**: needs exactly two entities in `about`; the text, if any, says why.
+/// * **search_negative**: needs text (what was looked for); `sources` say where.
+pub fn annotate(db: &Db, at: &At, kind: AnnotationKind, a: &Annotate) -> Result<String> {
+    let text = a.text.trim();
+    let invalid = |m: &str| Err(Error::Invalid(m.to_string()));
+    let distinct = |ids: &[String]| ids.iter().collect::<std::collections::BTreeSet<_>>().len();
+    match kind {
+        AnnotationKind::Hypothesis | AnnotationKind::Note | AnnotationKind::SearchNegative
+            if text.is_empty() =>
+        {
+            return invalid("it needs text: what it says");
+        }
+        AnnotationKind::Judgement if text.is_empty() => {
+            return invalid("an assessment needs text: what you conclude");
+        }
+        AnnotationKind::Judgement if a.about.is_empty() => {
+            return invalid("an assessment is about something: select what it is about first");
+        }
+        AnnotationKind::Cluster if distinct(a.members) < 2 => {
+            return invalid("a cluster needs two or more members: select them first");
+        }
+        AnnotationKind::SameAs if distinct(a.about) != 2 => {
+            return invalid("\"same as\" is said of exactly two entities: select the two");
+        }
+        _ => {}
+    }
+    let mut put = Put::new(Kind::Annotation, kind.type_name());
+    put.content = Content {
+        value: (!text.is_empty()).then(|| text.to_string()),
+        confidence: a.confidence.map(str::to_string),
+        ..Content::default()
+    };
+    if kind == AnnotationKind::Hypothesis {
+        put.content
+            .props
+            .insert("hypothesis_status".into(), json!("open"));
+    }
+    let mut link = |role: &str, ids: &[String], pin: bool| {
+        for id in ids {
+            let l = Link::new(role, Target::Id(id.clone()));
+            put.links.push(if pin { l.pinned() } else { l });
+        }
+    };
+    link("about", a.about, kind == AnnotationKind::Judgement);
+    link("supports", a.supports, false);
+    link("refutes", a.refutes, false);
+    link("member", a.members, false);
+    for uri in a.sources.iter().filter(|u| !u.trim().is_empty()) {
+        put.links.push(Link::source(uri.trim()));
+    }
+    one(apply(db, at.batch().put(put))?)
+}
+
 /// The value as JSON text, for showing a property.
 pub fn show(v: &Value) -> String {
     match v {

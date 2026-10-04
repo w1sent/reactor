@@ -1,0 +1,11 @@
+value,label
+10,ten
+9,nine
+100,hundred
+-5,negative
+3.14,pi
+1e3,scientific
+,empty
+abc,text
+0,zero
+2,two

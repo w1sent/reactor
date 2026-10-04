@@ -1,0 +1,12 @@
+id	name	department	salary	start date	notes
+1	Ada Lovelace	Engineering	125000	2019-03-04	Wrote the first program
+2	Grace Hopper	Engineering	118500.5	2018-11-19	"Said ""it's easier to ask forgiveness"""
+3	Linus, Jr.	Support	64000	2021-07-01	Comma in the name
+4	Zoë Müller	Sales	71000	2020-01-13	Non-ASCII: ü ö ñ 日本語 🙂
+5	alan turing	research	99999	2017-05-23	Lowercase, to test case-insensitive sort
+6	Margaret Hamilton	Engineering	130000	2016-09-09	"Line one
+line two inside one cell"
+7	Empty Salary	Support		2022-02-02	
+8	Dennis Ritchie	Engineering	9	2015-06-15	Salary 9 sorts after 100000 as text, before as a number
+9	Ken Thompson	Engineering	100000	2015-06-15	
+10	  Padded  	Sales	52000	2023-10-30	Leading and trailing spaces

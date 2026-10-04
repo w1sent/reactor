@@ -1,0 +1,5 @@
+{
+  "name": "reactor",
+  "tags": ["forensics", "reverse"],
+  "nested": {"n": 1, "ok": true, "none": null}
+}

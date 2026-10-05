@@ -2476,15 +2476,25 @@ fn tokens_short(n: u64) -> String {
     }
 }
 
-/// A section of the Plan tab: a bordered box with a header row and its content.
-fn group_box(content: impl IntoElement, theme: &Theme) -> Div {
+/// A section of either tab, drawn the same way everywhere: a bordered card whose header row
+/// (a title, what it is about, its switch or button) is set off from its content by a line.
+fn group_box(header: impl IntoElement, content: impl IntoElement, theme: &Theme) -> Div {
     v_flex()
-        .p_2()
-        .gap_2()
         .rounded_md()
         .border_1()
         .border_color(theme.border)
-        .child(content)
+        .overflow_hidden()
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(header),
+        )
+        .child(div().p_3().child(content))
 }
 
 /// The usage bar, and under it the totals per part of the request; opened, a legend of every
@@ -2687,6 +2697,7 @@ fn goal_section(
     let muted = theme.muted_foreground;
     let (a_switch, a_edit, a_frame) = (app.clone(), app.clone(), app.clone());
     let header = h_flex()
+        .w_full()
         .justify_between()
         .items_center()
         .child(
@@ -2794,7 +2805,7 @@ fn goal_section(
         }
         content = content.child(steps);
     }
-    group_box(v_flex().gap_2().child(header).child(content), theme)
+    group_box(header, content, theme)
 }
 
 /// The Reporting section of the Plan tab: the switch and the level. The folder, thresholds and
@@ -2808,6 +2819,7 @@ fn reporting_section(
     let (a_switch, a_level) = (app.clone(), app.clone());
     let on = plan.report_on;
     let header = h_flex()
+        .w_full()
         .justify_between()
         .items_center()
         .child(
@@ -2845,9 +2857,9 @@ fn reporting_section(
             }
         });
     group_box(
+        header,
         v_flex()
             .gap_2()
-            .child(header)
             .child(div().when(!on, |d| d.opacity(0.5)).child(level))
             .child(
                 div()
@@ -2879,7 +2891,7 @@ fn scenario_section(
     tools: Option<&reactor_client::ToolsPayload>,
     idle: bool,
     theme: &Theme,
-) -> impl IntoElement {
+) -> (AnyElement, AnyElement) {
     use crate::scenario_ui::Outcome;
     use gpui_kit::component::stepper::{Stepper, StepperItem};
 
@@ -2891,8 +2903,6 @@ fn scenario_section(
             "scenario-info",
             "A scenario is a series of phases, each with a briefing for the agent: it is added to the system prompt while the phase is current, and the agent moves to the next phase with a tool call that carries a summary. Click a phase to go there yourself, forwards or back — only between turns; the briefing is then in effect for the next prompt, which starts the phase. After moving on by hand, say in that prompt what the phase you left concluded: it is recorded as its summary. A phase asks for a toolset; tools of it that are not installed are not offered to the agent. /reactor-scenario list | start <id> | status | next | goto <n> | stop does the same.",
         ));
-    let mut section = v_flex().gap_2();
-
     let Some(run) = &view.run else {
         let chosen = pick
             .filter(|p| view.available.contains(p))
@@ -2916,8 +2926,12 @@ fn scenario_section(
             );
         }
         let a = app.clone();
-        return section
-            .child(h_flex().justify_between().items_center().child(title).child(
+        let header = h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .child(title)
+            .child(
                 Button::new("scenario-start")
                     .label("Start")
                     .small()
@@ -2929,41 +2943,46 @@ fn scenario_section(
                             app.update(cx, |app, cx| app.scenario_start(cx));
                         }
                     }),
-            ))
-            .child(if view.available.is_empty() {
-                div()
-                    .text_color(theme.muted_foreground)
-                    .child("no scenarios found in prompts/scenarios")
-                    .into_any_element()
-            } else {
-                choices.into_any_element()
-            });
+            );
+        let content = if view.available.is_empty() {
+            div()
+                .text_color(theme.muted_foreground)
+                .child("no scenarios found in prompts/scenarios")
+                .into_any_element()
+        } else {
+            choices.into_any_element()
+        };
+        return (header.into_any_element(), content);
     };
 
     let a = app.clone();
-    section = section.child(
-        h_flex()
-            .justify_between()
-            .items_center()
-            .child(title)
-            .child(
-                Label::new(format!("{} · phase {}/{}", run.id, run.current + 1, run.phases.len()))
-                    .text_color(theme.muted_foreground)
-                    .text_size(theme.font_size * 0.85),
-            )
-            .child(
-                Button::new("scenario-abort")
-                    .label("Abort")
-                    .small()
-                    .ghost()
-                    .tooltip("Stop the scenario: the agent is no longer briefed and phase_complete goes away. What it did stays")
-                    .on_click(move |_, _w, cx| {
-                        if let Some(app) = a.upgrade() {
-                            app.update(cx, |app, cx| app.scenario_abort(cx));
-                        }
-                    }),
-            ),
-    );
+    let header = h_flex()
+        .w_full()
+        .justify_between()
+        .items_center()
+        .child(title)
+        .child(
+            Label::new(format!(
+                "{} · phase {}/{}",
+                run.id,
+                run.current + 1,
+                run.phases.len()
+            ))
+            .text_color(theme.muted_foreground)
+            .text_size(theme.font_size * 0.85),
+        )
+        .child(
+            Button::new("scenario-abort")
+                .label("Abort")
+                .small()
+                .ghost()
+                .tooltip("Stop the scenario: the agent is no longer briefed and phase_complete goes away. What it did stays")
+                .on_click(move |_, _w, cx| {
+                    if let Some(app) = a.upgrade() {
+                        app.update(cx, |app, cx| app.scenario_abort(cx));
+                    }
+                }),
+        );
 
     let small = theme.font_size * 0.8;
     let items = run.phases.iter().enumerate().map(|(i, phase)| {
@@ -3029,20 +3048,19 @@ fn scenario_section(
         )
     });
     let a = app.clone();
-    section.child(
-        Stepper::new("scenario-steps")
-            .vertical()
-            .small()
-            .selected_index(run.current)
-            .disabled(!idle)
-            .items(items)
-            .on_click(move |ix, _w, cx| {
-                if let Some(app) = a.upgrade() {
-                    let n = *ix + 1;
-                    app.update(cx, |app, cx| app.scenario_goto(n, cx));
-                }
-            }),
-    )
+    let content = Stepper::new("scenario-steps")
+        .vertical()
+        .small()
+        .selected_index(run.current)
+        .disabled(!idle)
+        .items(items)
+        .on_click(move |ix, _w, cx| {
+            if let Some(app) = a.upgrade() {
+                let n = *ix + 1;
+                app.update(cx, |app, cx| app.scenario_goto(n, cx));
+            }
+        });
+    (header.into_any_element(), content.into_any_element())
 }
 
 /// The two tabs of the Context panel: the plan (goal, scenario, reporting) and the budget
@@ -3171,18 +3189,16 @@ impl Render for ContextPanel {
         // -- the plan: goal, scenario, reporting --
         plan_body = plan_body.child(goal_section(&self.app, &plan, &theme));
         if let Some((scenario, pick, toolsets, tools)) = scenario {
-            plan_body = plan_body.child(group_box(
-                scenario_section(
-                    &self.app,
-                    &scenario,
-                    pick,
-                    toolsets.as_ref(),
-                    tools.as_ref(),
-                    idle,
-                    &theme,
-                ),
+            let (header, content) = scenario_section(
+                &self.app,
+                &scenario,
+                pick,
+                toolsets.as_ref(),
+                tools.as_ref(),
+                idle,
                 &theme,
-            ));
+            );
+            plan_body = plan_body.child(group_box(header, content, &theme));
         }
         plan_body = plan_body.child(reporting_section(&self.app, &plan, &theme));
 
@@ -3207,73 +3223,101 @@ impl Render for ContextPanel {
                         .child(origin_badge(origin_of(key), &theme)),
                 )
         };
-        let mode_button = |label: &'static str, mode: &'static str| {
-            let active = view.mode == mode;
+        let set_mode = {
             let app = self.app.clone();
-            Button::new(SharedString::from(format!("mode-{mode}")))
-                .label(label)
-                .small()
-                .when(active, |b| b.primary())
-                .on_click(move |_, _window, cx| {
-                    if let Some(app) = app.upgrade() {
-                        app.update(cx, |app, cx| {
-                            app.set_context(
-                                ContextSettings {
-                                    mode: Some(mode.to_string()),
-                                    ..Default::default()
-                                },
-                                cx,
-                            )
-                        });
-                    }
-                })
+            move |mode: &'static str, cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |app, cx| {
+                        app.set_context(
+                            ContextSettings {
+                                mode: Some(mode.to_string()),
+                                ..Default::default()
+                            },
+                            cx,
+                        )
+                    });
+                }
+            }
         };
-        body = body.child(
-            v_flex()
-                .gap_2()
-                .child(
-                    h_flex().gap_1().items_center().child(Label::new("Settings")).child(crate::hints::info_button(
-                        "context-settings-info",
-                        "Change one with /context <mode|window|reserve|pct|keep|summarizer> <value>, or use the mode buttons. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
-                    )),
-                )
-                .child(h_flex().gap_1().child(mode_button("auto", "auto")).child(mode_button("fade", "fade")).child(mode_button("compact", "compact")))
-                .child(setting("mode", view.mode.clone(), "mode"))
-                .child(setting("window", view.window.to_string(), "window"))
-                .child(setting("reserve", view.reserve.to_string(), "reserve"))
-                .child(setting("reduce at", format!("{:.0}%", view.pct * 100.0), "pct"))
-                .child(setting("keep", format!("{:.0}%", view.keep * 100.0), "keep"))
-                .child(setting("summarizer", view.summarizer.clone().unwrap_or_else(|| "the session's model".into()), "summarizer"))
-                .child({
-                    let (app_a, app_b) = (self.app.clone(), self.app.clone());
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("context-default")
-                                .label("Make this the default")
-                                .small()
-                                .tooltip("Every new session starts with these settings")
-                                .on_click(move |_, _window, cx| {
-                                    if let Some(app) = app_a.upgrade() {
-                                        app.update(cx, |app, cx| app.make_context_default(cx));
-                                    }
-                                }),
-                        )
-                        .child(
-                            Button::new("context-inherit")
-                                .label("Inherit the default")
-                                .small()
-                                .tooltip("Drop this session's own values")
-                                .on_click(move |_, _window, cx| {
-                                    if let Some(app) = app_b.upgrade() {
-                                        app.update(cx, |app, cx| app.inherit_context(cx));
-                                    }
-                                }),
-                        )
-                }),
-        );
+        let modes = ["auto", "fade", "compact"];
+        let mode_tabs = TabBar::new("context-mode")
+            .segmented()
+            .small()
+            .selected_index(modes.iter().position(|m| *m == view.mode).unwrap_or(0))
+            .children(modes.iter().map(|m| Tab::new().label(*m)))
+            .on_click(move |ix: &usize, _w, cx| {
+                if let Some(mode) = modes.get(*ix) {
+                    set_mode(mode, cx);
+                }
+            });
+        let settings_header = h_flex()
+            .w_full()
+            .gap_1()
+            .items_center()
+            .child(Label::new("Settings"))
+            .child(crate::hints::info_button(
+                "context-settings-info",
+                "Change one with /context <mode|window|reserve|pct|keep|summarizer> <value>, or use the mode buttons. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
+            ));
+        let (app_a, app_b) = (self.app.clone(), self.app.clone());
+        let settings_content = v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(mode_tabs))
+                    .child(origin_badge(origin_of("mode"), &theme)),
+            )
+            .child(setting("window", view.window.to_string(), "window"))
+            .child(setting("reserve", view.reserve.to_string(), "reserve"))
+            .child(setting(
+                "reduce at",
+                format!("{:.0}%", view.pct * 100.0),
+                "pct",
+            ))
+            .child(setting(
+                "keep",
+                format!("{:.0}%", view.keep * 100.0),
+                "keep",
+            ))
+            .child(setting(
+                "summarizer",
+                view.summarizer
+                    .clone()
+                    .unwrap_or_else(|| "the session's model".into()),
+                "summarizer",
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .pt_1()
+                    .child(
+                        Button::new("context-default")
+                            .label("Make this the default")
+                            .small()
+                            .tooltip("Every new session starts with these settings")
+                            .on_click(move |_, _window, cx| {
+                                if let Some(app) = app_a.upgrade() {
+                                    app.update(cx, |app, cx| app.make_context_default(cx));
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("context-inherit")
+                            .label("Inherit the default")
+                            .small()
+                            .tooltip("Drop this session's own values")
+                            .on_click(move |_, _window, cx| {
+                                if let Some(app) = app_b.upgrade() {
+                                    app.update(cx, |app, cx| app.inherit_context(cx));
+                                }
+                            }),
+                    ),
+            );
+        body = body.child(group_box(settings_header, settings_content, &theme));
 
-        // -- reduction: preview, do, undo --
+        // -- reduction: preview, do, undo, and what is in force --
         let action = |id: &'static str, label: &'static str, mode: Mode, reduce: bool| {
             let app = self.app.clone();
             Button::new(id)
@@ -3292,28 +3336,47 @@ impl Render for ContextPanel {
                     }
                 })
         };
-        let mut reduction = v_flex()
-            .gap_2()
-            .child(
-                h_flex().justify_between().items_center().child(Label::new("Reduce")).child({
-                    let app = self.app.clone();
-                    Button::new("context-inspect").label("Show the context window").small().tooltip("Everything the model would be sent next, and where each piece comes from").on_click(move |_, window, cx| {
+        let reduce_header = h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .child(Label::new("Reduce"))
+            .child({
+                let app = self.app.clone();
+                Button::new("context-inspect")
+                    .label("Show the context window")
+                    .small()
+                    .tooltip(
+                        "Everything the model would be sent next, and where each piece comes from",
+                    )
+                    .on_click(move |_, window, cx| {
                         if let Some(app) = app.upgrade() {
                             app.update(cx, |app, cx| app.toggle_inspect(window, cx));
                         }
                     })
-                }),
-            )
+            });
+        let mut reduction = v_flex()
+            .gap_2()
             .child(
                 h_flex()
                     .gap_1()
-                    .child(action("preview-compact", "Preview: summarize", Mode::Compact, false))
+                    .child(action(
+                        "preview-compact",
+                        "Preview: summarize",
+                        Mode::Compact,
+                        false,
+                    ))
                     .child(action("preview-fade", "Preview: fade", Mode::Fade, false)),
             )
             .child(
                 h_flex()
                     .gap_1()
-                    .child(action("reduce-compact", "Summarize now", Mode::Compact, true))
+                    .child(action(
+                        "reduce-compact",
+                        "Summarize now",
+                        Mode::Compact,
+                        true,
+                    ))
                     .child(action("reduce-fade", "Fade now", Mode::Fade, true)),
             );
         if busy {
@@ -3352,10 +3415,18 @@ impl Render for ContextPanel {
                     ),
             );
         }
-        body = body.child(reduction);
 
-        // -- reductions in force --
-        let mut in_force = v_flex().gap_1().child(Label::new("In force"));
+        // What is in force, under the buttons that make and undo it.
+        let mut in_force = v_flex()
+            .gap_1()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                Label::new("In force")
+                    .text_color(theme.muted_foreground)
+                    .text_size(theme.font_size * 0.85),
+            );
         if view.reductions.is_empty() {
             in_force = in_force.child(
                 Label::new("none")
@@ -3393,7 +3464,7 @@ impl Render for ContextPanel {
                     ),
             );
         }
-        body = body.child(in_force);
+        body = body.child(group_box(reduce_header, reduction.child(in_force), &theme));
 
         let tabs = TabBar::new("context-tabs")
             .selected_index(match self.tab {

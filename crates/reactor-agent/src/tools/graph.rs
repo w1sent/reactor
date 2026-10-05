@@ -439,7 +439,7 @@ impl Tool for GraphAnnotate {
                 "type": "object",
                 "properties": {
                     "type": { "type": "string", "enum": ANNOTATIONS },
-                    "text": { "type": "string", "description": "The hypothesis, assessment or note itself." },
+                    "text": { "type": "string", "description": "The hypothesis, assessment or note itself. Plain text when it is a sentence or two. Only a long one -- several paragraphs -- is written as Markdown (a short heading, lists, code in backticks), because the graph shows it rendered; a short one with markup in it just looks cluttered." },
                     "confidence": { "type": "string", "description": "almost no chance | very unlikely | unlikely | roughly even | likely | very likely | almost certain" },
                     "about": { "type": "array", "description": "Element ids, or {type, value} entities.", "items": {} },
                     "supports": { "type": "array", "items": {} },

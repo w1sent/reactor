@@ -164,6 +164,37 @@ pub fn set_status(db: &Db, at: &At, ids: &[String], status: &str) -> Result<Appl
     })
 }
 
+/// Change the text of an element, as a person: a new version, and the old one is kept. What
+/// can be written is a note, a hypothesis or any annotation's text, a claim's value -- not an
+/// entity's, whose value is what identifies it (a different value is a different entity).
+/// Empty text is refused: to remove an element, soft-delete it.
+pub fn set_text(db: &Db, at: &At, id: &str, text: &str) -> Result<Applied> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(Error::Invalid(
+            "the text cannot be empty; to remove the element, soft-delete it".into(),
+        ));
+    }
+    let e = query::get(db, id)?.ok_or_else(|| Error::Invalid(format!("no element {id}")))?;
+    if e.kind == Kind::Entity {
+        return Err(Error::Invalid(
+            "an entity's value is what identifies it: a different value is a different entity"
+                .into(),
+        ));
+    }
+    if e.content.value.as_deref() == Some(text) {
+        return Ok(Applied::default());
+    }
+    apply(
+        db,
+        at.batch().change(Change {
+            id: id.to_string(),
+            value: Some(Some(text.to_string())),
+            ..Change::default()
+        }),
+    )
+}
+
 /// Add and remove tags on each.
 pub fn tag(db: &Db, at: &At, ids: &[String], add: &[String], remove: &[String]) -> Result<Applied> {
     changes(db, at, ids, |id| Change {

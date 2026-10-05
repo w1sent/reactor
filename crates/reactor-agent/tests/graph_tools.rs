@@ -401,3 +401,14 @@ async fn a_detached_session_has_no_graph_tools_and_a_stale_call_is_told_why() {
         "only what was written while attached: {all}"
     );
 }
+
+#[test]
+fn the_agent_is_told_to_write_markdown_only_for_a_long_text() {
+    let tools = Tools::standard(std::path::PathBuf::from("."));
+    let spec = tools.find("graph_annotate").unwrap().spec();
+    let said = spec.parameters["properties"]["text"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(said.contains("Markdown") && said.contains("long"), "{said}");
+    assert!(said.contains("Plain text"), "{said}");
+}

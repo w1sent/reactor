@@ -514,3 +514,58 @@ fn each_kind_of_annotation_can_be_added_by_hand_with_what_it_needs() {
     );
     let _ = none;
 }
+
+#[test]
+fn the_text_of_a_hypothesis_can_be_rewritten_and_the_old_text_is_kept() {
+    let (_d, case) = case();
+    let db = case.db();
+    let h = hypothesis(&case);
+
+    let done = edit::set_text(
+        db,
+        &at(),
+        &h,
+        "  jdoe is compromised, and since March\n\nSee the logon events.  ",
+    )
+    .unwrap();
+    assert_eq!(done.versioned, 1);
+    let now = query::get(db, &h).unwrap().unwrap();
+    assert_eq!(now.ver, 2);
+    assert_eq!(
+        now.content.value.as_deref(),
+        Some("jdoe is compromised, and since March\n\nSee the logon events.")
+    );
+    let history = query::history(db, &h).unwrap();
+    assert_eq!(
+        history[0].content.value.as_deref(),
+        Some("jdoe is compromised")
+    );
+
+    // The same text again changes nothing.
+    let again = edit::set_text(
+        db,
+        &at(),
+        &h,
+        "jdoe is compromised, and since March\n\nSee the logon events.",
+    )
+    .unwrap();
+    assert!(again.event_seq.is_none());
+    assert_eq!(query::get(db, &h).unwrap().unwrap().ver, 2);
+}
+
+#[test]
+fn an_empty_text_and_an_entitys_value_are_refused() {
+    let (_d, case) = case();
+    let db = case.db();
+    let h = hypothesis(&case);
+    assert!(matches!(
+        edit::set_text(db, &at(), &h, "   "),
+        Err(Error::Invalid(m)) if m.contains("soft-delete")
+    ));
+    let ip = edit::add_entity(db, &at(), "net.ipv4", "198.51.100.7").unwrap();
+    assert!(matches!(
+        edit::set_text(db, &at(), &ip, "198.51.100.8"),
+        Err(Error::Invalid(m)) if m.contains("identifies")
+    ));
+    assert!(edit::set_text(db, &at(), "nope", "x").is_err());
+}

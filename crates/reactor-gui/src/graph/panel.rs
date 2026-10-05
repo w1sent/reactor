@@ -16,11 +16,10 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -34,6 +33,7 @@ use reactor_db::graph::{self, query};
 use serde::Deserialize;
 
 use super::arrange::{self, LayoutKind};
+use super::inspector::{self, Inspected};
 use super::model::{self, Line, LineKind, Model, NodeKind, SourceTarget};
 use crate::app::ReactorApp;
 use crate::backend::Backend;
@@ -148,6 +148,14 @@ pub struct GraphPanel {
     selected: Option<Selected>,
     /// The selection in full: one list of label and value rows per element.
     detail: Vec<Vec<(String, String)>>,
+    /// The selected element as the inspector shows it, when the selection is exactly one.
+    inspected: Option<Inspected>,
+    /// How wide the inspector was drawn, in pixels: what a value wraps in.
+    dock_width: Rc<Cell<f32>>,
+    /// Which tab of the inspector is open (an index into the tabs it has for this element).
+    inspector_tab: usize,
+    /// The reader and editor popup, while it is open.
+    reader: Option<Reader>,
     show_deleted: bool,
     error: Option<String>,
     /// Where the drawing area is in the window, as of the last paint: pointer events
@@ -188,11 +196,8 @@ pub struct GraphPanel {
     spot: Option<Spot>,
 }
 
-/// The detail box: its width, the label column, and what is left for a value once the
-/// box's padding, the gap between the columns and the scrollbar are taken off.
-const DETAIL_WIDTH: f32 = 560.;
-const DETAIL_LABEL: f32 = 112.;
-const DETAIL_VALUE: f32 = DETAIL_WIDTH - DETAIL_LABEL - 48.;
+mod inspector_ui;
+use inspector_ui::Reader;
 
 /// How far the view zooms: out far enough that a large graph is one picture, because
 /// everything on it shrinks with it.
@@ -334,6 +339,10 @@ impl GraphPanel {
             drag: None,
             selected: None,
             detail: Vec::new(),
+            inspected: None,
+            inspector_tab: 0,
+            dock_width: Rc::new(Cell::new(inspector_ui::DOCK_WIDTH)),
+            reader: None,
             show_deleted: false,
             error: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
@@ -359,6 +368,33 @@ impl GraphPanel {
             relation_suggest: Vec::new(),
             spot: None,
         }
+    }
+
+    /// Select two nodes and fill the inspector, without a case: for the tests that drive the
+    /// real panel in a headless window (`tests/graph_click.rs`).
+    #[doc(hidden)]
+    pub fn select_for_test(&mut self, cx: &mut Context<Self>) {
+        self.selected = Some(Selected::Nodes(vec!["a".into(), "b".into()]));
+        self.detail = vec![vec![("Selected".into(), "2 nodes".into())]];
+        cx.notify();
+    }
+
+    /// Select one element by id, as a click on its node does.
+    #[doc(hidden)]
+    pub fn select_id_for_test(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.select(Some(Selected::Nodes(vec![id.to_string()])), cx);
+    }
+
+    /// Whether the inspector has an element to show.
+    #[doc(hidden)]
+    pub fn has_inspected(&self) -> bool {
+        self.inspected.is_some()
+    }
+
+    /// Whether something is selected, so the inspector is up.
+    #[doc(hidden)]
+    pub fn has_selection(&self) -> bool {
+        self.selected.is_some()
     }
 
     /// The panel reads the case through the backend. It is handed over rather than
@@ -463,20 +499,31 @@ impl GraphPanel {
                     rows.push(("…".to_string(), format!("and {} more", ids.len() - 12)));
                 }
                 self.detail = vec![rows];
+                self.inspected = None;
                 return;
             }
             Some(Selected::Nodes(ids)) => ids.clone(),
             Some(Selected::Line(claims)) => claims.clone(),
             None => {
                 self.detail.clear();
+                self.inspected = None;
                 return;
             }
         };
-        self.detail = ids
+        let elements: Vec<query::Element> = ids
             .iter()
             .filter_map(|id| query::get(db, id).ok().flatten())
-            .map(|e| rows(db, &e))
             .collect();
+        self.detail = elements.iter().map(|e| rows(db, e)).collect();
+        let before = self.inspected.as_ref().map(|i| i.id.clone());
+        self.inspected = match elements.as_slice() {
+            [one] => Some(inspector::inspect(db, one, &self.scale)),
+            _ => None,
+        };
+        // Another element starts at its first tab; the same one, changed, stays where it was.
+        if self.inspected.as_ref().map(|i| &i.id) != before.as_ref() {
+            self.inspector_tab = 0;
+        }
         if self.detail.is_empty() {
             self.selected = None;
         }
@@ -586,6 +633,11 @@ impl GraphPanel {
     fn set_confidence(&mut self, value: &str, cx: &mut Context<Self>) {
         let ids = self.selected_ids();
         self.edit(cx, |db, at| edit::set_confidence(db, at, &ids, Some(value)));
+    }
+
+    fn clear_confidence(&mut self, cx: &mut Context<Self>) {
+        let ids = self.selected_ids();
+        self.edit(cx, |db, at| edit::set_confidence(db, at, &ids, None));
     }
 
     fn set_hypothesis(&mut self, status: &str, cx: &mut Context<Self>) {
@@ -1903,68 +1955,40 @@ impl Render for GraphPanel {
         let picked = self.selected_nodes();
         let is_node = picked.len() == 1;
         let several = picked.len() >= 2;
-        let is_hypothesis = match picked.as_slice() {
-            [id] => self
-                .model
-                .nodes
-                .iter()
-                .any(|n| n.id == *id && n.type_ == "analysis.hypothesis"),
-            _ => false,
-        };
         let detail = (self.selected.is_some() && !self.detail.is_empty()).then(|| {
-            // A two-column list: the labels in a fixed column, the values wrapping in
-            // the rest, so nothing runs out of the box.
-            let mut list = DescriptionList::new()
-                .columns(1)
-                .bordered(false)
-                .label_width(px(DETAIL_LABEL))
-                .small();
-            for (i, element) in self.detail.iter().enumerate() {
-                if i > 0 {
-                    list = list.separator();
-                }
-                for (label, value) in element {
-                    list = list.item(
-                        SharedString::from(label.clone()),
-                        // A width in pixels, not "the rest": text is measured before
-                        // the row is laid out, and with no width to wrap in it reports
-                        // one line's height and then paints over what is below it.
-                        div()
-                            .w(px(DETAIL_VALUE))
-                            .flex_none()
-                            .child(SharedString::from(value.clone()))
-                            .into_any_element(),
-                        1,
-                    );
-                }
-            }
-            v_flex()
-                .id("graph-detail")
-                .absolute()
-                .left_2()
-                .bottom_2()
-                .w(px(DETAIL_WIDTH))
-                .p_2()
+            // Docked at the left, beside the graph rather than over it: what is selected, in
+            // one structure whatever it is (`inspector_ui`), and what can be done with it.
+            let (head, body) = match &self.inspected {
+                Some(i) => (
+                    self.inspector_head(i, &theme, cx),
+                    self.inspector_body(i, &theme, cx),
+                ),
+                None => (
+                    h_flex()
+                        .p_3()
+                        .justify_between()
+                        .items_center()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(format!("{} selected", self.selected_ids().len()))
+                        .child(
+                            Button::new("graph-deselect")
+                                .small()
+                                .ghost()
+                                .icon(IconName::X)
+                                .tooltip("Close")
+                                .on_click(cx.listener(|this, _, _, cx| this.select(None, cx))),
+                        )
+                        .into_any_element(),
+                    self.multi_body(&theme),
+                ),
+            };
+            let footer = v_flex()
+                .flex_none()
+                .p_3()
                 .gap_2()
-                .rounded_md()
-                .border_1()
+                .border_t_1()
                 .border_color(theme.border)
-                .bg(theme.popover)
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                .child(
-                    // Its own height, up to a limit, then it scrolls. Not `flex_1`: in a
-                    // box whose height comes from its content that share is nothing, and
-                    // the list would be drawn zero pixels tall.
-                    div()
-                        .w_full()
-                        .max_h(px(340.))
-                        .pb_1()
-                        .text_size(small)
-                        .overflow_y_scrollbar()
-                        .child(list),
-                )
                 .children(self.pending_undo.as_ref().map(|(_, text)| {
                     v_flex()
                         .gap_1()
@@ -1975,7 +1999,7 @@ impl Render for GraphPanel {
                         .text_size(small)
                         .child(
                             div()
-                                .w(px(DETAIL_WIDTH - 40.))
+                                .w(px(inspector_ui::DOCK_WIDTH - 60.))
                                 .child(SharedString::from(text.clone())),
                         )
                         .child(
@@ -2021,6 +2045,13 @@ impl Render for GraphPanel {
                                             }),
                                         );
                                     }
+                                    // An empty value takes the confidence away.
+                                    menu = menu.separator().menu(
+                                        "Clear",
+                                        Box::new(GraphSetConfidence {
+                                            value: String::new(),
+                                        }),
+                                    );
                                     menu
                                 })
                         })
@@ -2040,27 +2071,6 @@ impl Render for GraphPanel {
                                 .tooltip("Mark it active again, whatever it was")
                                 .on_click(cx.listener(|this, _, _, cx| this.set_status("active", cx))),
                         )
-                        .when(is_hypothesis, |row| {
-                            let focus = self.focus.clone();
-                            row.child(
-                                Button::new("graph-hypothesis")
-                                    .small()
-                                    .label("Hypothesis")
-                                    .tooltip("Open, supported or rejected")
-                                    .dropdown_menu(move |mut menu, _, _| {
-                                        menu = menu.action_context(focus.clone());
-                                        for status in edit::HYPOTHESIS_STATUSES {
-                                            menu = menu.menu(
-                                                status,
-                                                Box::new(GraphSetHypothesis {
-                                                    status: status.to_string(),
-                                                }),
-                                            );
-                                        }
-                                        menu
-                                    }),
-                            )
-                        })
                         .when(is_node, |row| {
                             row.child(
                                 Button::new("graph-relate")
@@ -2147,14 +2157,24 @@ impl Render for GraphPanel {
                                 .tooltip("Hide it. Nothing is lost: it is a new version, and the eye in the toolbar shows it again")
                                 .on_click(cx.listener(|this, _, _, cx| this.soft_delete(cx))),
                         )
-                        .child(
-                            Button::new("graph-deselect")
-                                .small()
-                                .ghost()
-                                .icon(IconName::X)
-                                .on_click(cx.listener(|this, _, _, cx| this.select(None, cx))),
-                        ),
+                );
+            let measured = self.dock_width.clone();
+            v_flex()
+                .id("graph-detail")
+                .size_full()
+                .relative()
+                .bg(theme.popover)
+                // Its width as drawn, for what has to wrap in a width of pixels.
+                .child(
+                    canvas(move |bounds, _, _| measured.set(f32::from(bounds.size.width)), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
                 )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .child(head)
+                .child(body)
+                .child(footer)
         });
 
         let marquee = match self.drag {
@@ -2172,7 +2192,7 @@ impl Render for GraphPanel {
             _ => None,
         };
 
-        div()
+        let graph = div()
             .id("graph-area")
             .track_focus(&self.focus)
             .size_full()
@@ -2192,7 +2212,9 @@ impl Render for GraphPanel {
                             pan: this.pan,
                         }
                     });
-                    this.select(None, cx);
+                    // The selection stays: the inspector is closed with its X, not by a click
+                    // that was meant to pan the plane or to start a sweep.
+                    cx.notify();
                 }),
             )
             .on_mouse_down(
@@ -2435,7 +2457,29 @@ impl Render for GraphPanel {
                         .text_color(theme.danger)
                         .child(error),
                 )
-            })
-            .children(detail)
+            });
+
+        // The inspector docked at the left, and the graph in the rest; the divider between
+        // them is dragged, and the width is kept while the window is open.
+        match detail {
+            Some(inspector) => div()
+                .size_full()
+                .child(
+                    h_resizable("graph-split")
+                        .child(
+                            resizable_panel()
+                                .size(px(inspector_ui::DOCK_WIDTH))
+                                .size_range(px(300.)..px(900.))
+                                .child(inspector),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(240.)..px(4000.))
+                                .child(graph),
+                        ),
+                )
+                .into_any_element(),
+            None => graph.into_any_element(),
+        }
     }
 }

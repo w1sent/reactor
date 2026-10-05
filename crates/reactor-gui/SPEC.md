@@ -646,11 +646,24 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   buttons below act on all of them: *Tag*/*Untag*, *Add note* (one note about all of
   them), *Confidence*, *Dispute*, *Restore*, *Soft-delete*, and **Connect…**: two nodes
   get a relation with a role each; more are the members of one claim (a node in the
-  middle, a line to each). With one selected, the detail box shows the element in
-  full as a description list — a fixed label column and values that wrap — with its
-  type, value, time as written, properties, everything it links to (`→ role`, its source
-  and locator among them), everything that points at it (`← role`), and who recorded
-  which version. The box has a fixed width, never more than the panel, and scrolls.
+  middle, a line to each). With one selected, the **inspector** is docked at the panel's left,
+  beside the graph rather than over it (the divider is dragged, 300 to 900 px, kept while the
+  window is open; it stays open while the plane is clicked or dragged, and only its X, or
+  selecting nothing by a sweep, closes it), and shows the element in one structure whatever its kind
+  (`graph/inspector.rs` is the data, `graph/panel/inspector_ui.rs` draws it). The header says
+  what it is (a coloured tag), its title, who wrote which version and when, how sure it is (a
+  row of bars over the confidence scale, filled up to its step; a click on a bar sets that step
+  and a click on the step it is at clears it) and, for a hypothesis, where it stands as a
+  segmented *Open / Supported / Rejected*. Tabs: **Text** (only for a long text, rendered as
+  Markdown, with *Copy*, *Read* and *Edit*), **Evidence** (*Relations* for other kinds): what it
+  is related to, grouped by what it says — supports and refutes first, then about, mentioned by,
+  other roles — a click selects that element; **History**: every version and what it changed;
+  **Details**: its type, when it happened or held, properties, id. The actions stay pinned below.
+  A text is the title when it is one short line; a long or multi-line one has a title of its own
+  (its first line) and is the Text tab. *Read* and *Edit* open a popup with the text large, an
+  outline of its headings and the evidence at its side; saving writes a new version and the old
+  text stays in the history. An entity's value is its identity and is not edited. The agent is
+  told to write Markdown only for a long text; a person may write either.
 - **Editing.** All of it goes through the write path the agent uses and is recorded as
   the analyst's (`reactor_db::graph::edit`, tested without a window). Toolbar: **+** adds
   an entity, a note or another annotation (the same value is always the same node). The add

@@ -48,6 +48,8 @@ identifier = "io.github.w1sent.reactor"
 icon = ["../../assets/icon.icns"]
 
 [dev-dependencies]
+# Drives the real views in a headless window (clicks, hit testing), for the ones whose bugs are about the pointer.
+gpui-kit = { version = "=0.7.0", features = ["tree-sitter-languages", "test-support"] }
 tempfile = "3"
 # The same single SQLite binding reactor-db brings in; here only to make a database to open.
 rusqlite = { version = "0.40", features = ["bundled"] }

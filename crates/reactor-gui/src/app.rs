@@ -2617,6 +2617,13 @@ impl ReactorApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A click outside the popup closes it without telling us: what is left of it is no
+        // popup. Starting from that, the click would filter a window that is not there, and
+        // every other row of the legend would seem dead.
+        if self.inspect.is_some() && !gpui_kit::component::WindowExt::has_active_dialog(window, cx)
+        {
+            self.inspect = None;
+        }
         if self.inspect.is_none() {
             self.toggle_inspect(window, cx);
         }

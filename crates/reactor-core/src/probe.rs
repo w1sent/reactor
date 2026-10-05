@@ -242,8 +242,30 @@ pub fn probe(
         cache.clear();
     }
 
-    let tools: Vec<&Tool> = ids.iter().filter_map(|i| cat.get(i)).collect();
     let mut results: HashMap<String, ProbeResult> = HashMap::new();
+    // An MCP tool is not looked for on the machine: whether it is there is whether its server
+    // answered the last time the agent tried (ADR-0048).
+    let mut tools: Vec<&Tool> = Vec::new();
+    for t in ids.iter().filter_map(|i| cat.get(i)) {
+        match &t.mcp {
+            Some(m) => {
+                results.insert(
+                    t.id.clone(),
+                    ProbeResult {
+                        status: if m.up {
+                            Status::Present
+                        } else {
+                            Status::Absent
+                        },
+                        path: None,
+                        version: None,
+                        service: None,
+                    },
+                );
+            }
+            None => tools.push(t),
+        }
+    }
     let mut detect_todo: Vec<&Tool> = Vec::new();
 
     for t in &tools {
@@ -379,6 +401,7 @@ fn probe_detect(
                     service: None,
                 }
             }
+            DetectKind::Mcp => ProbeResult::unknown(),
             DetectKind::PythonModule => {
                 if module_probe_failed {
                     ProbeResult::unknown()

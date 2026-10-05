@@ -61,7 +61,10 @@ toolbox.
 A CLI composes: its stdout can be filtered by `jq`, `rg` or a shell script
 *before* it becomes a tool result, so the unfiltered data never reaches the
 model's context. An MCP tool call has no shell stage between return value and
-context. REactor takes that position for its own surfaces too: `reactor` is a
+context. (REactor is nonetheless an MCP *client*, because the tooling a user needs is
+sometimes only reachable that way: such tools are shown, switched and tagged with their
+cost like any other, [ADR-0048](adr/0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md).)
+REactor takes that position for its own surfaces too: `reactor` is a
 CLI first, and the agent and the GUI use the same library the binary is built on
 ([ADR-0034](adr/0034-reactor-cli-becomes-a-rust-library-with-a-binary.md)).
 
@@ -85,6 +88,7 @@ history (last at commit `014a9b8`).
       │    tools.toml      ← live catalogue, user-editable           │
       │    toolsets.toml   ← live toolsets, user-editable            │
       │    state.json      ← which tools/toolsets are active         │
+      │    mcp.json        ← MCP servers (and mcp-cache.json)        │
       │    settings.json   ← models, context budget, identity        │
       │    skills/<tool>/  ← upstream skills, fetched at install     │
       │    sessions/<id>/  ← session store (+ per-session overrides) │

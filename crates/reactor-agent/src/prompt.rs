@@ -50,6 +50,9 @@ pub struct RegistryView {
     pub skill_dirs: Vec<String>,
     /// Ids of tools that are present and active.
     pub usable: std::collections::HashSet<String>,
+    /// Ids of MCP tools that are active and whose server is up: the ones whose definitions
+    /// go to the model (ADR-0048).
+    pub mcp: std::collections::BTreeSet<String>,
 }
 
 pub struct Inputs<'a> {

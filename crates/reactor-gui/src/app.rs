@@ -230,6 +230,12 @@ pub struct ReactorApp {
     pub reembed_armed: bool,
     /// An identity's Remove was pressed once and waits for its confirmation.
     pub identity_remove_armed: Option<String>,
+    /// An MCP server's Remove was pressed once and waits for its confirmation.
+    pub mcp_remove_armed: Option<String>,
+    /// The Context panel's Scenario section: what can be started, or what is running.
+    pub scenario: crate::scenario_ui::View,
+    /// The scenario chosen to start (the first one until another is picked).
+    pub scenario_pick: Option<String>,
     /// Which layer of the context budget the settings window edits.
     pub context_scope: crate::settings_window::ContextScope,
     /// The settings window, while it is open.
@@ -253,6 +259,17 @@ pub struct IdentityRow {
     pub default: bool,
     /// This session uses it now.
     pub active: bool,
+}
+
+/// One MCP server, as the settings page lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpServerRow {
+    pub server: reactor_core::mcp::Server,
+    /// `None` when there is no agent, or the host has not heard of it yet.
+    pub standing: Option<reactor_agent::mcp::Standing>,
+    pub tools: usize,
+    /// What all its tools would cost every request if every one were active (an estimate).
+    pub tokens: u64,
 }
 
 /// The open command palette.
@@ -824,6 +841,7 @@ impl ReactorApp {
                 app.push_note("error", note);
             }
             app.start_pump(cx);
+            app.start_mcp_watch(cx);
             app.start_notice_clock(cx);
             app.refresh_catalogue(cx);
             app.refresh_services(false, cx);
@@ -1063,6 +1081,9 @@ impl ReactorApp {
             model_draft: Default::default(),
             reembed_armed: false,
             identity_remove_armed: None,
+            mcp_remove_armed: None,
+            scenario: Default::default(),
+            scenario_pick: None,
             embedding_draft: crate::settings_window::ModelDraft {
                 // The one that needs no key and keeps the text on this machine.
                 provider: "ollama".into(),
@@ -1073,6 +1094,38 @@ impl ReactorApp {
             closing: false,
             interrupted: false,
         }
+    }
+
+    /// Look for a change in the MCP servers' standing and refresh what shows tools. A server
+    /// connects in the background, so the panels learn of it by asking, not by being told.
+    fn start_mcp_watch(&mut self, cx: &mut Context<Self>) {
+        let Some(host) = self.mcp_host() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let mut seen = 0;
+            loop {
+                cx.background_executor().timer(PUMP_TICK * 4).await;
+                let now = host.generation();
+                if now == seen {
+                    continue;
+                }
+                seen = now;
+                let ok = this
+                    .update(cx, |app, cx| {
+                        app.refresh_catalogue(cx);
+                        if let Some(b) = &app.backend {
+                            b.refresh_context();
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// The event pump (SPEC.md §2): drain the backend's channel every tick and ingest.
@@ -1718,6 +1771,42 @@ impl ReactorApp {
         let (state, settings) = (b.session_state(), Settings::load(&b.paths));
         let items = status_items(&state, &settings, &self.scenarios_dir);
         self.session.update(cx, |s, _| s.statuses = items);
+        self.scenario = crate::scenario_ui::view_of(state.scenario.as_ref(), &self.scenarios_dir);
+        cx.notify();
+    }
+
+    // -- scenarios (the Context panel's Scenario section) ---------------------------------
+
+    /// Start the chosen scenario: the same as `/reactor-scenario start <id>`, which opens with
+    /// the first phase's briefing as a turn.
+    pub fn scenario_start(&mut self, cx: &mut Context<Self>) {
+        let id = self
+            .scenario_pick
+            .clone()
+            .filter(|p| self.scenario.available.contains(p))
+            .or_else(|| self.scenario.available.first().cloned());
+        match id {
+            Some(id) => self.backend_command("reactor-scenario", &format!("start {id}"), cx),
+            None => self.push_note("warning", "scenario: there are no scenarios to start"),
+        }
+    }
+
+    /// Make phase `n` (1-based) the current one, forwards or back. Only between turns: it
+    /// would cut across what the agent is doing, and the next prompt is what starts the phase.
+    pub fn scenario_goto(&mut self, n: usize, cx: &mut Context<Self>) {
+        if self.session.read(cx).phase != AgentPhase::Idle {
+            self.push_note(
+                "info",
+                "scenario: wait until the agent has finished, or interrupt it, to choose a phase",
+            );
+            return;
+        }
+        self.backend_command("reactor-scenario", &format!("goto {n}"), cx);
+    }
+
+    /// End the running scenario. Allowed at any time, a turn in progress included.
+    pub fn scenario_abort(&mut self, cx: &mut Context<Self>) {
+        self.backend_command("reactor-scenario", "stop", cx);
     }
 
     pub fn refresh_catalogue(&mut self, cx: &mut Context<Self>) {
@@ -3087,6 +3176,175 @@ impl ReactorApp {
             None => {}
         }
         cx.notify();
+    }
+
+    // -- MCP servers (ADR-0048) ----------------------------------------------------------
+
+    pub fn mcp_host(&self) -> Option<Arc<reactor_agent::mcp::McpHost>> {
+        self.backend.as_ref().map(|b| b.mcp.clone())
+    }
+
+    /// The servers in `mcp.json` with where each stands. An unreadable file is the `Err`: the
+    /// page says so rather than showing an empty list that a save would then write.
+    pub fn mcp_rows(&self) -> Result<Vec<McpServerRow>, String> {
+        let paths = self.backend.as_ref().map(|b| b.paths.clone());
+        let Some(paths) = paths else {
+            return Ok(Vec::new());
+        };
+        let config = reactor_core::mcp::Config::load(&paths).map_err(|e| e.to_string())?;
+        let status = self.mcp_host().map(|h| h.status()).unwrap_or_default();
+        let cache = reactor_core::mcp::Cache::load(&paths);
+        Ok(config
+            .servers
+            .into_iter()
+            .map(|server| {
+                let live = status.iter().find(|s| s.name == server.name);
+                let cached = cache.servers.get(&server.name);
+                McpServerRow {
+                    standing: live.map(|l| l.standing.clone()),
+                    tools: live
+                        .map(|l| l.tools)
+                        .filter(|n| *n > 0)
+                        .or(cached.map(|c| c.tools.len()))
+                        .unwrap_or(0),
+                    tokens: cached
+                        .map(|c| c.tools.iter().map(|t| t.tokens).sum())
+                        .unwrap_or(0),
+                    server,
+                }
+            })
+            .collect())
+    }
+
+    /// Change `mcp.json` with `edit`, then let the host and the panels follow. The reason a
+    /// change was refused is the `Err`.
+    fn mcp_edit(
+        &mut self,
+        edit: impl FnOnce(&mut reactor_core::mcp::Config) -> Result<(), String>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let backend = self.backend.clone().ok_or("the agent is not running")?;
+        let mut config =
+            reactor_core::mcp::Config::load(&backend.paths).map_err(|e| e.to_string())?;
+        edit(&mut config)?;
+        config.save(&backend.paths).map_err(|e| e.to_string())?;
+        backend.mcp.sync();
+        self.refresh_catalogue(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Whether MCP tools are named `mcp__<server>__<tool>` (off: by their own names).
+    pub fn mcp_prefix(&self) -> bool {
+        self.backend
+            .as_ref()
+            .and_then(|b| reactor_core::mcp::Config::load(&b.paths).ok())
+            .is_some_and(|c| c.prefix)
+    }
+
+    pub fn mcp_set_prefix(&mut self, on: bool, cx: &mut Context<Self>) {
+        let result = self.mcp_edit(
+            |config| {
+                config.prefix = on;
+                Ok(())
+            },
+            cx,
+        );
+        match result {
+            // Every id changed: what was switched on one tool at a time is by the old name.
+            Ok(()) => self.push_note(
+                "info",
+                "mcp: tool names changed — tools you switched on one by one need switching on again; toolsets are unaffected",
+            ),
+            Err(e) => self.push_note("warning", format!("mcp: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Add a server, or change one (`old` is the name it has now; it may be renamed).
+    pub fn mcp_save(
+        &mut self,
+        old: Option<&str>,
+        server: reactor_core::mcp::Server,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let name = server.name.clone();
+        self.mcp_edit(
+            |config| {
+                if old != Some(name.as_str()) && config.get(&name).is_some() {
+                    return Err(format!("there is already a server named `{name}`"));
+                }
+                if let Some(old) = old {
+                    config.remove(old);
+                }
+                config.put(server);
+                Ok(())
+            },
+            cx,
+        )?;
+        self.push_note("info", format!("mcp: saved server \"{name}\""));
+        Ok(())
+    }
+
+    /// Remove a server — after a second press, since the editor is the only copy of its
+    /// settings.
+    pub fn mcp_remove(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.mcp_remove_armed.as_deref() != Some(name) {
+            self.mcp_remove_armed = Some(name.to_string());
+            cx.notify();
+            return;
+        }
+        self.mcp_remove_armed = None;
+        let result = self.mcp_edit(
+            |config| {
+                config.remove(name);
+                Ok(())
+            },
+            cx,
+        );
+        match result {
+            Ok(()) => self.push_note("info", format!("mcp: removed server \"{name}\"")),
+            Err(e) => self.push_note("warning", format!("mcp: {e}")),
+        }
+        cx.notify();
+    }
+
+    pub fn mcp_remove_cancel(&mut self, cx: &mut Context<Self>) {
+        self.mcp_remove_armed = None;
+        cx.notify();
+    }
+
+    /// Switch a server on or off: a server that is off is not connected to, and lists no tools.
+    pub fn mcp_set_enabled(&mut self, name: &str, enabled: bool, cx: &mut Context<Self>) {
+        let result = self.mcp_edit(
+            |config| {
+                let mut server = config
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("no server named `{name}`"))?;
+                server.enabled = enabled;
+                config.put(server);
+                Ok(())
+            },
+            cx,
+        );
+        if let Err(e) = result {
+            self.push_note("warning", format!("mcp: {e}"));
+        }
+    }
+
+    /// Connect to a server again, for one that failed or was changed outside REactor.
+    pub fn mcp_reconnect(&mut self, name: &str, cx: &mut Context<Self>) {
+        if let Some(host) = self.mcp_host() {
+            host.reconnect(name);
+        }
+        cx.notify();
+    }
+
+    /// Open the editor window on an MCP server: a new one, or a saved one to change.
+    pub fn open_mcp_editor(&mut self, start: crate::mcp_editor::Start, cx: &mut Context<Self>) {
+        let app = cx.entity();
+        cx.defer(move |cx| crate::mcp_editor::open(cx, app, start));
     }
 
     /// Open the editor window on an identity: a new one, a saved one to change, or a built-in

@@ -211,9 +211,16 @@ fn active(fx: &Fx, toolsets: &[&str], enabled: &[&str], disabled: &[&str]) -> Ve
 }
 
 #[test]
-fn no_toolsets_means_everything() {
+fn no_toolsets_means_nothing() {
+    // Nothing is advertised because nobody asked: `all` is how to ask for everything
+    // (ADR-0048).
+    assert!(active(&Fx::new(), &[], &[], &[]).is_empty());
+}
+
+#[test]
+fn the_all_toolset_means_everything() {
     assert_eq!(
-        active(&Fx::new(), &[], &[], &[]),
+        active(&Fx::new(), &["all"], &[], &[]),
         ["alpha", "beta", "gamma"]
     );
 }
@@ -320,6 +327,7 @@ fn toggle_tools(
 #[test]
 fn enabling_what_the_base_already_gives_writes_nothing() {
     let fx = Fx::new();
+    fx.state(&["all"], &[], &[]).save().unwrap();
     let state = toggle_tools(&fx, "enable", &["beta"]).unwrap();
     assert!(state.enabled.is_empty());
 }
@@ -336,6 +344,7 @@ fn disabling_what_the_base_does_not_give_writes_nothing() {
 #[test]
 fn off_then_on_is_a_round_trip() {
     let fx = Fx::new();
+    fx.state(&["all"], &[], &[]).save().unwrap();
     let before = fx.read_state_file();
     toggle_tools(&fx, "disable", &["alpha"]).unwrap();
     assert_eq!(

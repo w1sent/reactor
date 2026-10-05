@@ -102,6 +102,9 @@ pub struct AgentConfig {
     pub registry: Arc<dyn Fn() -> RegistryView + Send + Sync>,
     /// The user's embedding model, if they chose one: it lets `docs_search` ask by meaning.
     pub embedder: crate::embed::EmbedderSlot,
+    /// The MCP servers' tools, when there is a host for them (shared by every session of a
+    /// process). Without one the model is offered no MCP tools.
+    pub mcp: Option<Arc<crate::mcp::McpHost>>,
 }
 
 impl AgentConfig {
@@ -119,6 +122,7 @@ impl AgentConfig {
             max_tokens: None,
             registry,
             embedder: Default::default(),
+            mcp: None,
         }
     }
 }
@@ -135,6 +139,13 @@ pub fn registry_from_core(paths: Paths) -> Arc<dyn Fn() -> RegistryView + Send +
                     .tools
                     .iter()
                     .filter(|t| t.active && t.status == Status::Present)
+                    .map(|t| t.id.clone())
+                    .collect(),
+                mcp: done
+                    .report
+                    .tools
+                    .iter()
+                    .filter(|t| t.mcp.is_some() && t.active && t.status == Status::Present)
                     .map(|t| t.id.clone())
                     .collect(),
             },
@@ -302,6 +313,15 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         })
     }
 
+    /// The tool definitions of this request: ours, then those of the MCP tools that are active.
+    fn advertised(&self, g: &Gathered) -> Vec<crate::llm::ToolSpec> {
+        let mut specs = self.tools.specs(&g.state);
+        if let Some(host) = &self.cfg.mcp {
+            specs.extend(host.specs(&g.view.mcp));
+        }
+        specs
+    }
+
     fn system_parts(&self, g: &Gathered) -> Vec<(prompt::Part, String)> {
         prompt::system_parts(&prompt::Inputs {
             base: &self.cfg.base_prompt,
@@ -317,13 +337,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     async fn build(&self) -> Result<(LlmRequest, u64, Vec<Item>)> {
         let g = self.gather().await?;
         let system = prompt::join_parts(&self.system_parts(&g));
+        let tools = self.advertised(&g);
         let Gathered {
             settings,
             state,
             items,
             ..
         } = g;
-        let tools = self.tools.specs(&state);
         let fixed = estimate_tokens(&system)
             + tools
                 .iter()
@@ -389,7 +409,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             });
         }
 
-        for t in self.tools.specs(&g.state) {
+        for t in self.advertised(&g) {
             let text = format!(
                 "{}\n\n{}",
                 t.description,
@@ -661,6 +681,17 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         let mut in_a_row = 0usize;
         let mut next: String = text.to_string();
 
+        // A scenario moved on by hand is waiting to hear what the phase it left concluded:
+        // this prompt is that (the person was asked to say it in their next prompt).
+        {
+            let mut store = self.store.lock().unwrap();
+            if let Some(mut sc) = SessionState::load(&store).scenario
+                && scenario::record_summary(&mut sc, text)
+            {
+                save_state(&mut store, KEY_SCENARIO, serde_json::to_value(&sc).unwrap())?;
+            }
+        }
+
         'turn: loop {
             let settings = self.settings();
             {
@@ -816,9 +847,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 model: self.llm.name(),
                 embedder: self.cfg.embedder.get(),
             };
-            let out = match self.tools.find(name) {
-                Some(tool) => tool.call(args.clone(), &ctx).await,
-                None => ToolOutput::err(format!("unknown tool `{name}`")),
+            let out = match (self.tools.find(name), &self.cfg.mcp) {
+                (Some(tool), _) => tool.call(args.clone(), &ctx).await,
+                // Active or not: deactivating only stops a tool being advertised (ADR-0007).
+                (None, Some(host)) if host.knows(name) => {
+                    host.call(name, args.clone(), cancel).await
+                }
+                _ => ToolOutput::err(format!("unknown tool `{name}`")),
             };
             let is_error = out.is_error;
             let kind = self.finalize(id, name, out)?;

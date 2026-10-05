@@ -188,7 +188,7 @@ fn install_tools(
     // second id to narrow, so `install all jq` is rejected as an unknown tool
     // rather than silently doing what `install all` alone already does.
     let ids = if opts.ids == ["all"] {
-        cat.order()
+        cat.local_ids()
     } else {
         select(&cat, &opts.ids)?
     };

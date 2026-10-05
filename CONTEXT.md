@@ -32,8 +32,18 @@ _Avoid_: integration, plugin, backend.
 A named group of tools the user can activate or deactivate as a unit — `triage`,
 `android`, `firmware`. Predefined ones ship in `toolsets.toml`; the user edits
 their own copy at `~/.reactor/toolsets.toml`. Activation is purely about what
-gets advertised to the agent; it never blocks anything.
+gets advertised to the agent; it never blocks anything. Nothing is active until a
+toolset (or `all`) or a single tool is activated.
 _Avoid_: profile, preset, bundle, workspace.
+
+**MCP server** / **MCP tool**:
+A server REactor connects to as an MCP client — a local command or a remote URL, listed in
+`~/.reactor/mcp.json` — and the tools it offers. Not part of the concept, but often
+unavoidable. An MCP tool is a catalogue entry (activated, tagged and put into toolsets like
+any other) that is *not* in the registry: the model is given its definition as a tool, which
+costs its whole schema in every request while it is active, so the Tools panel tags it with
+that cost ([ADR-0048](docs/adr/0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md)).
+_Avoid_: plugin, extension, integration.
 
 **Registry**:
 The compact block REactor injects into the system prompt each turn: one line per
@@ -83,7 +93,7 @@ triage, analysis, timeline, detection and reporting to lessons learned and
 analysis-derived tooling. The agent advances by calling
 `reactor_phase_complete`, whose *return value is the next phase's briefing*.
 Scenarios steer the agent's sequencing; like everything else in REactor they
-persuade rather than enforce. A scenario's stages are *phases* — distinct from
+persuade rather than enforce. The person can go to any phase from the Context panel, between turns; that starts no turn, and their next prompt is recorded as the summary of the phase they left ([ADR-0049](docs/adr/0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md)). A scenario's stages are *phases* — distinct from
 the manifest's *steps* (see goal-setting).
 _Avoid_: workflow, pipeline, playbook, state machine.
 

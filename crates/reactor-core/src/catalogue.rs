@@ -23,6 +23,8 @@ pub const DEFAULT_PYTHON: &str = "python3";
 pub enum DetectKind {
     Binary,
     PythonModule,
+    /// A tool of an MCP server (ADR-0048); the detect value is the server's name.
+    Mcp,
 }
 
 impl DetectKind {
@@ -30,6 +32,7 @@ impl DetectKind {
         match self {
             DetectKind::Binary => "binary",
             DetectKind::PythonModule => "python_module",
+            DetectKind::Mcp => "mcp",
         }
     }
 }
@@ -83,6 +86,18 @@ impl<V: Serialize> Serialize for OrderedMap<V> {
     }
 }
 
+/// Where an MCP tool comes from, and what it costs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRef {
+    pub server: String,
+    /// The name the server knows it by (the id is `mcp__<server>__<name>`).
+    pub tool: String,
+    /// The estimated tokens its definition adds to every request while it is active.
+    pub tokens: u64,
+    /// Whether the server was reachable the last time it was tried.
+    pub up: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Tool {
     pub id: String,
@@ -99,6 +114,8 @@ pub struct Tool {
     pub service_count: Option<ServiceCount>,
     pub skill: Option<SkillSpec>,
     pub install: OrderedMap<String>,
+    /// Set for a tool of an MCP server, which is not detected, probed or installed.
+    pub mcp: Option<McpRef>,
 }
 
 impl Tool {
@@ -119,6 +136,7 @@ impl Tool {
             service_count: None,
             skill: None,
             install: OrderedMap::default(),
+            mcp: None,
         }
     }
 }
@@ -174,6 +192,16 @@ impl Catalogue {
     /// Declaration order. Fixed, so the registry never reorders (ADR-0006).
     pub fn order(&self) -> Vec<String> {
         self.ids()
+    }
+
+    /// The entries that are programs on this machine: what can be probed, diagnosed and
+    /// installed. An MCP tool is neither (ADR-0048).
+    pub fn local_ids(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .filter(|t| t.mcp.is_none())
+            .map(|t| t.id.clone())
+            .collect()
     }
 
     pub fn position(&self, id: &str) -> Option<usize> {
@@ -399,8 +427,19 @@ pub fn load_catalogue(paths: &Paths) -> Result<Catalogue> {
                     git_ref: s.get("ref").and_then(Value::as_str).map(str::to_string),
                 }),
                 install,
+                mcp: None,
             });
         }
+    }
+    // MCP tools come after every catalogue tool, so adding a server never reorders the
+    // registry (ADR-0006). A config that cannot be read adds none; Settings says why.
+    if let Ok(config) = crate::mcp::Config::load(paths) {
+        let taken = tools.iter().map(|t| t.id.clone()).collect();
+        tools.extend(crate::mcp::entries(
+            &config,
+            &crate::mcp::Cache::load(paths),
+            &taken,
+        ));
     }
 
     Ok(Catalogue {
@@ -447,6 +486,15 @@ pub fn load_toolsets(paths: &Paths) -> Result<Vec<Toolset>> {
                 tags: str_list(spec.get("tags"), &format!("{whence}.tags"))?,
                 everything: spec.get("all").and_then(Value::as_bool).unwrap_or(false),
             });
+        }
+    }
+    // One toolset per MCP server, for its tools all at once (ADR-0048). The user's own
+    // toolset of the same id wins.
+    if let Ok(config) = crate::mcp::Config::load(paths) {
+        for ts in crate::mcp::toolsets(&config, &crate::mcp::Cache::load(paths)) {
+            if !out.iter().any(|o| o.id == ts.id) {
+                out.push(ts);
+            }
         }
     }
     Ok(out)

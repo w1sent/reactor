@@ -272,6 +272,8 @@ fn format_is_accepted_before_or_after_the_subcommand() {
 #[test]
 fn enable_and_disable_round_trip_through_state_json() {
     let env = Env::shipped();
+    // Nothing is active until something is asked for (ADR-0048).
+    env.json(&["toolsets", "enable", "all"]);
     let before = std::fs::read_to_string(env.cfg.join("state.json")).ok();
     let out = env.json(&["tools", "disable", "jq"]);
     assert_eq!(out.code, 0);
@@ -306,7 +308,7 @@ fn a_project_state_file_is_used_and_written_in_place() {
     std::fs::create_dir_all(project.join(".reactor")).unwrap();
     std::fs::write(
         project.join(".reactor/state.json"),
-        r#"{"version":1,"toolsets":[],"tools":{}}"#,
+        r#"{"version":1,"toolsets":["all"],"tools":{}}"#,
     )
     .unwrap();
     let nested = project.join("deep/er");
@@ -316,7 +318,7 @@ fn a_project_state_file_is_used_and_written_in_place() {
     let o = cmd.current_dir(&nested).output().unwrap();
     let p: Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(p["scope"], "project");
-    assert_eq!(p["state"]["toolsets"], serde_json::json!([]));
+    assert_eq!(p["state"]["toolsets"], serde_json::json!(["all"]));
 
     let mut cmd = env.command(&["tools", "disable", "jq", "--format", "json"]);
     cmd.current_dir(&nested).output().unwrap();
@@ -592,6 +594,11 @@ fn json_and_text_outputs_are_byte_identical_to_the_python_clis() {
     env.write(
         "toolsets.toml",
         &std::fs::read_to_string(golden.join("toolsets.toml")).unwrap(),
+    );
+    // Everything active: the outputs below are about what is listed, not about activation.
+    env.write(
+        "state.json",
+        r#"{"version":1,"toolsets":["all"],"tools":{"enabled":[],"disabled":[]}}"#,
     );
     let cfg = env.cfg.display().to_string();
 

@@ -2,13 +2,15 @@
   "schema": 1,
   "state": {
     "version": 1,
-    "toolsets": [],
+    "toolsets": [
+      "all"
+    ],
     "tools": {
       "enabled": [],
       "disabled": []
     }
   },
-  "scope": "default",
+  "scope": "machine",
   "path": "<CFG>/state.json",
   "active": [
     "alpha",

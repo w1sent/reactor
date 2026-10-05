@@ -149,6 +149,7 @@ pub fn entry(tid: &str) -> ToolEntry {
         service: None,
         skill: None,
         install: None,
+        mcp: None,
     }
 }
 

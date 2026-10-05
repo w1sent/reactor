@@ -188,7 +188,7 @@ pub struct DoctorFlags {
 
 pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
     let l = load(paths)?;
-    let ids = l.cat.order();
+    let ids = l.cat.local_ids();
     let results = probe(
         paths,
         &l.cat,
@@ -297,7 +297,7 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
             shipped_fallback: l.cat.shipped,
             state_scope: l.state.scope,
             active_toolsets: if l.state.toolsets.is_empty() {
-                vec!["(all)".into()]
+                vec!["(none)".into()]
             } else {
                 l.state.toolsets.clone()
             },
@@ -693,7 +693,7 @@ impl Report for StateReport {
             "scope      {} ({})\ntoolsets   {}\nenabled    {}\ndisabled   {}\nactive     {} tool(s)",
             self.scope.as_str(),
             self.path,
-            join(&self.raw.toolsets, "(none -- everything is active)"),
+            join(&self.raw.toolsets, "(none -- nothing is active)"),
             join(&self.raw.enabled, "-"),
             join(&self.raw.disabled, "-"),
             self.active.len()
@@ -995,7 +995,7 @@ pub fn refresh(paths: &Paths) -> Result<Done<RefreshReport>> {
     let mut cache = crate::probe::Cache::load(paths, &cat);
     cache.clear();
     cache.save();
-    let ids = cat.order();
+    let ids = cat.local_ids();
     let results: HashMap<String, ProbeResult> = probe(
         paths,
         &cat,

@@ -34,13 +34,15 @@ pub fn service_glyph(state: ServiceState) -> &'static str {
 pub fn render_registry(entries: &[ToolEntry]) -> String {
     let listed: Vec<&ToolEntry> = entries
         .iter()
-        .filter(|e| e.active && e.status == Status::Present)
+        // An MCP tool is not run from the shell: the model is given its definition, not a
+        // line here (ADR-0048).
+        .filter(|e| e.active && e.status == Status::Present && e.mcp.is_none())
         .collect();
     if listed.is_empty() {
         return format!(
             "{REGISTRY_HEADING}\n\n\
-             None. No catalogued RE tool was detected on this machine -- run \
-             `reactor doctor` to see what is missing and how to install it."
+             None. No RE tool is active and installed on this machine -- activate a toolset, \
+             or run `reactor doctor` to see what is missing and how to install it."
         );
     }
 
@@ -158,7 +160,13 @@ pub fn render_tool_show(e: &ToolEntry) -> String {
             .map(|p| format!(" ({p})"))
             .unwrap_or_default()
     ));
-    out.push(format!("  invoke    {}", e.invoke));
+    match &e.mcp {
+        Some(m) => out.push(format!(
+            "  mcp       server {} -- about {} tokens of every request while active",
+            m.server, m.tokens
+        )),
+        None => out.push(format!("  invoke    {}", e.invoke)),
+    }
     if let Some(v) = e.version.as_deref().filter(|v| !v.is_empty()) {
         out.push(format!("  version   {v}"));
     }

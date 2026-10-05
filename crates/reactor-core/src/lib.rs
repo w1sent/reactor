@@ -14,6 +14,7 @@ pub mod error;
 pub mod host;
 pub mod install;
 pub mod json;
+pub mod mcp;
 pub mod model;
 pub mod paths;
 pub mod probe;

@@ -537,3 +537,156 @@ mod context_settings {
         assert!(!text.contains("\"pct\""), "{text}");
     }
 }
+
+// -- scenario: moving by hand ---------------------------------------------------
+
+fn scenario_dir(phases: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().join("s");
+    std::fs::create_dir_all(&d).unwrap();
+    for i in 1..=phases {
+        std::fs::write(
+            d.join(format!("{i:02}.md")),
+            format!("---\ntitle: Phase {i}\ntoolset: ts{i}\n---\nbody {i}\n"),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// A runner on scenario `s`, started and standing at phase `at` (0-based) with `summaries`.
+fn running<'a>(dir: &'a Path, at: usize, summaries: &[&str]) -> scenario::Scenario<'a> {
+    scenario::Scenario {
+        dir,
+        state: Some(scenario::State {
+            scenario_id: "s".into(),
+            step_index: at,
+            summaries: summaries.iter().map(|s| s.to_string()).collect(),
+            pending_summary: None,
+        }),
+    }
+}
+
+fn stored(e: &scenario::Effects) -> scenario::State {
+    match &e.persist {
+        scenario::Persist::Set(s) => s.clone(),
+        other => panic!("expected a stored state, got {other:?}"),
+    }
+}
+
+#[test]
+fn going_forwards_skips_the_phases_between_and_waits_for_a_summary() {
+    let dir = scenario_dir(5);
+    let mut sc = running(dir.path(), 1, &["one"]);
+    let e = sc.command("goto 4");
+    let s = stored(&e);
+    assert_eq!(s.step_index, 3);
+    // Phase 2 was left (its summary comes with the next prompt), phase 3 was jumped over.
+    assert_eq!(s.summaries, ["one", scenario::MANUAL, scenario::SKIPPED]);
+    assert_eq!(s.pending_summary, Some(1));
+    // No turn: the person's next prompt starts it. The phase's toolset is still asked for.
+    assert!(e.messages.is_empty());
+    assert_eq!(e.activate_toolsets, ["ts4"]);
+    assert!(
+        e.notices[0].message.contains("next prompt"),
+        "{:?}",
+        e.notices
+    );
+}
+
+#[test]
+fn a_summary_given_with_the_jump_is_used_at_once() {
+    let dir = scenario_dir(3);
+    let mut sc = running(dir.path(), 0, &[]);
+    let s = stored(&sc.command("goto 2 found the packer"));
+    assert_eq!(s.summaries, ["found the packer"]);
+    assert_eq!(s.pending_summary, None);
+}
+
+#[test]
+fn going_back_drops_the_summaries_of_phases_to_be_done_again() {
+    let dir = scenario_dir(4);
+    let mut sc = running(dir.path(), 3, &["a", "b", "c"]);
+    let e = sc.command("goto 2");
+    let s = stored(&e);
+    assert_eq!(
+        (s.step_index, s.summaries.clone()),
+        (1, vec!["a".to_string()])
+    );
+    assert_eq!(s.pending_summary, None);
+    assert!(e.messages.is_empty());
+}
+
+#[test]
+fn goto_refuses_what_makes_no_sense_and_changes_nothing() {
+    let dir = scenario_dir(3);
+    let mut sc = running(dir.path(), 1, &["a"]);
+    for args in ["goto", "goto 0", "goto 4", "goto two", "goto -1"] {
+        let e = sc.command(args);
+        assert_eq!(e.persist, scenario::Persist::Nothing, "{args}");
+        assert!(
+            e.notices[0].message.contains("1 to 3"),
+            "{args}: {:?}",
+            e.notices
+        );
+    }
+    let e = sc.command("goto 2");
+    assert_eq!(e.persist, scenario::Persist::Nothing, "already there");
+    let none = scenario::Scenario {
+        dir: dir.path(),
+        state: None,
+    }
+    .command("goto 1");
+    assert!(none.notices[0].message.contains("no scenario active"));
+}
+
+#[test]
+fn next_by_hand_starts_no_turn_and_finishing_clears() {
+    let dir = scenario_dir(2);
+    let mut sc = running(dir.path(), 0, &[]);
+    let e = sc.command("next");
+    let s = stored(&e);
+    assert_eq!((s.step_index, s.pending_summary), (1, Some(0)));
+    assert!(e.messages.is_empty());
+
+    let e = sc.command("next all done");
+    assert_eq!(e.persist, scenario::Persist::Clear);
+    assert!(e.messages.is_empty());
+    assert!(e.notices[0].message.contains("complete"));
+}
+
+#[test]
+fn the_next_prompt_becomes_the_pending_summary_once() {
+    let mut s = scenario::State {
+        scenario_id: "s".into(),
+        step_index: 2,
+        summaries: vec!["a".into(), scenario::MANUAL.into()],
+        pending_summary: Some(1),
+    };
+    assert!(scenario::record_summary(
+        &mut s,
+        "  it was\n packed with UPX  "
+    ));
+    assert_eq!(s.summaries[1], "it was packed with UPX");
+    assert_eq!(s.pending_summary, None);
+    // Nothing is pending any more: a later prompt changes nothing.
+    assert!(!scenario::record_summary(&mut s, "another"));
+    assert_eq!(s.summaries[1], "it was packed with UPX");
+
+    // A long prompt is cut; an empty one keeps the placeholder and still ends the wait.
+    s.pending_summary = Some(0);
+    assert!(scenario::record_summary(&mut s, &"x".repeat(2000)));
+    assert_eq!(s.summaries[0].chars().count(), 601);
+    s.pending_summary = Some(1);
+    assert!(scenario::record_summary(&mut s, "   "));
+    assert_eq!(s.summaries[1], "it was packed with UPX");
+}
+
+#[test]
+fn the_agents_own_advance_never_leaves_a_summary_pending() {
+    let dir = scenario_dir(3);
+    let mut sc = running(dir.path(), 0, &[]);
+    sc.advance("did it");
+    let s = sc.state.unwrap();
+    assert_eq!((s.step_index, s.pending_summary), (1, None));
+}

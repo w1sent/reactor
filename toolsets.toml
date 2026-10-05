@@ -20,6 +20,12 @@
 #          the catalogue is what defines this group, not any property its
 #          members share, so an untagged tool still belongs to it.
 #
+# MCP tools (docs/adr/0048-...) are catalogue entries too: each carries the tag `mcp`,
+# its server's name, and the tags the user gave the server, so `tags = ["mcp"]` is every
+# MCP tool and `tags = ["<server>"]` is one server's. They have no ids to list here; they
+# exist only while their server has been reached. Each server also gets a toolset of its
+# own, `mcp-<server>`, made for it; one of that id written here replaces it.
+#
 # For "either of these", activate two toolsets: activation unions them, which is
 # why the tag list does not. These sets are deliberately tight for that reason —
 # they are meant to be combined, not to each be self-sufficient.

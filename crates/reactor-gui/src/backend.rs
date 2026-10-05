@@ -55,6 +55,8 @@ pub enum UiEvent {
 pub struct Shared {
     pub case: Case,
     pub embedder: reactor_agent::embed::EmbedderSlot,
+    /// The MCP servers, connected to once for the window rather than once per session.
+    pub mcp: Arc<reactor_agent::mcp::McpHost>,
 }
 
 /// How to start a session.
@@ -80,6 +82,8 @@ pub struct Backend {
     pub paths: Paths,
     /// The user's embedding model, shared with the agent so that choosing one applies at once.
     pub embedder: reactor_agent::embed::EmbedderSlot,
+    /// The MCP servers' connections (ADR-0048), shared with the window's other sessions.
+    pub mcp: Arc<reactor_agent::mcp::McpHost>,
     embed_cancel: Mutex<Option<CancellationToken>>,
     /// The cwd's case, or the unsaved state it has until it is saved as one (ADR-0045).
     pub case: Case,
@@ -179,8 +183,18 @@ impl Backend {
                 Err(e) => embed_problem = Some(format!("embedding model: {e}")),
             }
         }
+        // The servers are connected to once for the window: a later session shares them.
+        let mcp = match &opts.shared {
+            Some(shared) => shared.mcp.clone(),
+            None => {
+                let host = reactor_agent::mcp::McpHost::new(paths.clone());
+                host.sync();
+                host
+            }
+        };
         let mut cfg = AgentConfig::new(opts.cwd.clone(), paths.clone(), window);
         cfg.embedder = embedder.clone();
+        cfg.mcp = Some(mcp.clone());
         if let Some(d) = find_bundled("prompts/scenarios") {
             cfg.scenarios_dir = d;
         }
@@ -222,6 +236,7 @@ impl Backend {
             running: Mutex::new(None),
             paths,
             embedder,
+            mcp,
             embed_cancel: Mutex::new(None),
             case,
             session_id,
@@ -544,6 +559,7 @@ impl Backend {
         Shared {
             case: self.case.clone(),
             embedder: self.embedder.clone(),
+            mcp: self.mcp.clone(),
         }
     }
 

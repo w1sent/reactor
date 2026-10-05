@@ -136,7 +136,7 @@ pub fn commands() -> Vec<Entry> {
             "Session",
             Optional,
             "Scenarios",
-            "/reactor-scenario list | start <id> | status | next | stop",
+            "/reactor-scenario list | start <id> | status | next | goto <n> | stop",
         ),
         Entry::fixed(
             "model",
@@ -680,6 +680,7 @@ fn candidates(command: &str, done: &[&str], snapshot: &Snapshot) -> Vec<Param> {
             Param::last("next", ""),
             Param::last("stop", ""),
             Param::more("start", "then a scenario"),
+            Param::more("goto", "then a phase number"),
         ],
         ("reactor-scenario", 1) if first == Some("start") => snapshot
             .scenarios

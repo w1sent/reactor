@@ -26,6 +26,14 @@ pub struct InstallInfo {
     pub notes: OrderedMap<String>,
 }
 
+/// What an MCP tool adds to a [`ToolEntry`].
+#[derive(Debug, Clone, Serialize)]
+pub struct McpInfo {
+    pub server: String,
+    /// The estimated tokens its definition adds to every request while it is active.
+    pub tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolEntry {
     pub id: String,
@@ -48,6 +56,9 @@ pub struct ToolEntry {
     pub skill: Option<SkillStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<InstallInfo>,
+    /// Set for a tool of an MCP server (ADR-0048).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpInfo>,
 }
 
 pub fn describe(
@@ -107,6 +118,10 @@ pub fn describe_using(
                 service: r.service.clone(),
                 skill: skill_status(paths, t),
                 install,
+                mcp: t.mcp.as_ref().map(|m| McpInfo {
+                    server: m.server.clone(),
+                    tokens: m.tokens,
+                }),
             }
         })
         .collect()

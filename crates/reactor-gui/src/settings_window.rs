@@ -68,6 +68,7 @@ pub enum Page {
     Documents,
     Context,
     Tools,
+    Mcp,
 }
 
 impl Page {
@@ -80,6 +81,7 @@ impl Page {
             Page::Documents => 4,
             Page::Context => 5,
             Page::Tools => 6,
+            Page::Mcp => 7,
         }
     }
 }
@@ -160,6 +162,7 @@ impl Render for SettingsWindow {
                             documents_page(&app, cx),
                             context_page(&app),
                             tools_page(&app),
+                            mcp_page(&app, cx),
                         ]),
                 ),
             )
@@ -1132,6 +1135,204 @@ fn context_page(app: &Entity<ReactorApp>) -> SettingPage {
 // ---------------------------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// MCP servers
+// ---------------------------------------------------------------------------------------------
+
+fn mcp_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
+    use reactor_agent::mcp::Standing;
+    let rows = app.read(cx).mcp_rows();
+    let armed = app.read(cx).mcp_remove_armed.clone();
+    let list_app = app.clone();
+    let (p_get, p_set) = (app.clone(), app.clone());
+
+    let names = SettingGroup::new().title("Names").item(SettingItem::new(
+        "Prefix tool names with mcp__<server>__",
+        SettingField::<bool>::switch(
+            move |cx| p_get.read(cx).mcp_prefix(),
+            move |v, cx| {
+                p_set.update(cx, |app, cx| app.mcp_set_prefix(v, cx));
+            },
+        )
+        .default_value(false),
+    ));
+
+    let list = SettingGroup::new()
+        .title("Servers")
+        .item(actions(
+            "Add",
+            vec![(
+                "New server…",
+                "Add an MCP server in the editor window",
+                |app, cx| app.open_mcp_editor(crate::mcp_editor::Start::New, cx),
+            )],
+            app,
+        ))
+        .item(SettingItem::render(move |_, _w, cx| {
+            let theme = cx.theme().clone();
+            let rows = match &rows {
+                Ok(rows) => rows.clone(),
+                Err(e) => {
+                    return div()
+                        .text_color(theme.danger)
+                        .child(shared(format!(
+                            "mcp.json cannot be read, so nothing here can be saved over it: {e}"
+                        )))
+                        .into_any_element();
+                }
+            };
+            if rows.is_empty() {
+                return div()
+                    .text_color(theme.muted_foreground)
+                    .child("No MCP servers yet.")
+                    .into_any_element();
+            }
+            let mut column = v_flex().gap_1().w_full();
+            for row in &rows {
+                let name = row.server.name.clone();
+                let pending = armed.as_deref() == Some(name.as_str());
+                let (status, colour, why) = match &row.standing {
+                    _ if !row.server.enabled => ("off".to_string(), theme.muted_foreground, None),
+                    Some(Standing::Connecting) => {
+                        ("connecting…".to_string(), theme.muted_foreground, None)
+                    }
+                    Some(Standing::Connected) => (
+                        format!("{} tool{} · ~{} tok if all active", row.tools, if row.tools == 1 { "" } else { "s" }, row.tokens),
+                        theme.success,
+                        None,
+                    ),
+                    Some(Standing::Failed(why)) => (
+                        format!("failed: {}", why.lines().next().unwrap_or("")),
+                        theme.danger,
+                        Some(why.clone()),
+                    ),
+                    Some(Standing::Off) | None => ("not connected".to_string(), theme.muted_foreground, None),
+                };
+                let button = |id: String, label: &'static str, tip: &'static str| {
+                    Button::new(SharedString::from(id)).label(label).small().tooltip(tip)
+                };
+                let target = row.server.target();
+                let mut line = h_flex()
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .flex_none()
+                            .text_color(theme.foreground)
+                            .child(shared(name.clone())),
+                    )
+                    .child(
+                        div()
+                            .w(px(50.))
+                            .flex_none()
+                            .text_size(theme.font_size * 0.8)
+                            .text_color(theme.muted_foreground)
+                            .child(if row.server.is_http() { "remote" } else { "local" }),
+                    )
+                    .child(crate::hints::tip(
+                        div()
+                            .id(SharedString::from(format!("mcp-target-{name}")))
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(theme.muted_foreground)
+                            .child(shared(format!(
+                                "{target}{}",
+                                if row.server.tags.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("   [{}]", row.server.tags.join(", "))
+                                }
+                            ))),
+                        shared(format!(
+                            "{target}\ntags: {}",
+                            if row.server.tags.is_empty() { "none".to_string() } else { row.server.tags.join(", ") }
+                        )),
+                    ))
+                    .child(crate::hints::tip(
+                        div()
+                            .id(SharedString::from(format!("mcp-status-{name}")))
+                            .w(px(230.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(theme.font_size * 0.85)
+                            .text_color(colour)
+                            .child(shared(status)),
+                        shared(why.unwrap_or_else(|| {
+                            "Whether REactor could start or reach the server, and what its tools would cost.".to_string()
+                        })),
+                    ));
+                let (a, n) = (list_app.clone(), name.clone());
+                line = line.child(button(format!("mcp-edit-{name}"), "Edit", "Change it in the editor window").on_click(
+                    move |_, _w, cx| {
+                        a.update(cx, |app, cx| {
+                            app.open_mcp_editor(crate::mcp_editor::Start::Edit(n.clone()), cx)
+                        });
+                    },
+                ));
+                if row.server.enabled {
+                    let (a, n) = (list_app.clone(), name.clone());
+                    line = line.child(
+                        button(format!("mcp-retry-{name}"), "Reconnect", "Start or reach it again").on_click(
+                            move |_, _w, cx| {
+                                a.update(cx, |app, cx| app.mcp_reconnect(&n, cx));
+                            },
+                        ),
+                    );
+                }
+                let (a, n, on) = (list_app.clone(), name.clone(), row.server.enabled);
+                line = line.child(
+                    button(
+                        format!("mcp-toggle-{name}"),
+                        if on { "Turn off" } else { "Turn on" },
+                        "A server that is off is not connected to, and lists no tools",
+                    )
+                    .on_click(move |_, _w, cx| {
+                        a.update(cx, |app, cx| app.mcp_set_enabled(&n, !on, cx));
+                    }),
+                );
+                let (a, n) = (list_app.clone(), name.clone());
+                let remove = button(
+                    format!("mcp-remove-{name}"),
+                    if pending { "Yes, remove" } else { "Remove" },
+                    "Take it out of mcp.json. It asks once more",
+                );
+                let remove = if pending { remove.danger() } else { remove.ghost() };
+                line = line.child(remove.on_click(move |_, _w, cx| {
+                    a.update(cx, |app, cx| app.mcp_remove(&n, cx));
+                }));
+                if pending {
+                    let a = list_app.clone();
+                    line = line.child(
+                        button(format!("mcp-keep-{name}"), "Keep", "Do not remove it")
+                            .ghost()
+                            .on_click(move |_, _w, cx| {
+                                a.update(cx, |app, cx| app.mcp_remove_cancel(cx));
+                            }),
+                    );
+                }
+                column = column.child(line);
+            }
+            column.into_any_element()
+        }));
+
+    info(
+        SettingPage::new("MCP servers")
+            .icon(IconName::Wrench)
+            .groups([names, list]),
+        "mcp-info",
+        "An MCP server gives the agent tools of its own. Add a local one (a command REactor starts and talks to) or a remote one (a URL). Each of its tools is listed in the Tools panel, off until you activate it, and tagged with what it costs: an active MCP tool puts its whole definition into every request, where an ordinary tool costs a line in the system prompt. By default a tool is called by the name its server gives it; with the prefix on it is `mcp__<server>__<tool>`, which keeps servers apart. A name that another tool already has keeps the prefix either way, so nothing is shadowed, and changing the setting renames every tool, so tools switched on one by one need switching on again. A tag you give a server is on all its tools, so a toolset with that tag includes them; every MCP tool also has the tag `mcp`. Servers are kept in ~/.reactor/mcp.json (the `mcpServers` form other clients use) and are connected to once for the window. A tool list is read when the server connects: use Reconnect after a server changes. REactor does not sandbox a local server — it runs as you.",
+    )
+}
 
 fn tools_page(app: &Entity<ReactorApp>) -> SettingPage {
     let group = SettingGroup::new().item(actions(

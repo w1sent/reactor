@@ -109,6 +109,13 @@ it is the way to update. On Linux it also installs the GUI's desktop launcher
 and icon. The GUI links a native windowing stack (fontconfig,
 xkbcommon, Vulkan/Wayland/X11); see `crates/reactor-gui/README.md`.
 
+Nothing is active until you activate it: pick a toolset (`all` is everything) in the
+Tools panel or with `reactor toolsets enable`. MCP servers, which are not part of the
+idea but often unavoidable, are added in Settings › MCP servers (or in
+`~/.reactor/mcp.json`); their tools are listed and switched like the others, tagged with
+what they cost the context
+([ADR-0048](docs/adr/0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md)).
+
 Point the GUI at a model with `settings.models` in `~/.reactor/settings.json`
 or `/model provider/name` (anthropic, openai, gemini, openrouter, ollama).
 

@@ -80,6 +80,17 @@ pub struct ToolRow {
     pub service: Value,
     #[serde(default)]
     pub skill: Option<Value>,
+    /// Set for a tool of an MCP server: which one, and what its definition costs.
+    #[serde(default)]
+    pub mcp: Option<McpRow>,
+}
+
+/// What an MCP tool adds to a [`ToolRow`] (ADR-0048).
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpRow {
+    pub server: String,
+    /// The estimated tokens its definition adds to every request while it is active.
+    pub tokens: u64,
 }
 
 /// `reactor toolsets list --format json`.

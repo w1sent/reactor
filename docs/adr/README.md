@@ -65,3 +65,5 @@ supersedes the store choice of 0036, which is marked † for that reason.
 | [0045](0045-a-case-is-the-working-directory.md) | A case is the working directory, and it is created by saving |
 | [0046](0046-the-analysis-database-is-sqlite-inside-the-case.md) | The analysis database is SQLite inside the case, and the session log lives in it |
 | [0047](0047-the-analysis-graph-is-the-case-s-model.md) | The analysis graph is the case's model: claims are nodes, and history is never overwritten |
+| [0048](0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md) | MCP tools are catalogue entries that the model gets as definitions, and nothing is active until asked for |
+| [0049](0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md) | A scenario moved by hand waits for the next prompt, and that prompt is the summary |

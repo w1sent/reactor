@@ -816,7 +816,12 @@
         "op": "command",
         "args": "next   handled   by   hand ",
         "out": {
-          "notify": [],
+          "notify": [
+            {
+              "message": "reactor: phase 3/3: step 3",
+              "level": "info"
+            }
+          ],
           "entries": [
             {
               "scenarioId": "alpha",
@@ -827,12 +832,7 @@
               ]
             }
           ],
-          "messages": [
-            {
-              "content": "## Phase 3/3: step 3\n\nCRLF body.",
-              "display": true
-            }
-          ],
+          "messages": [],
           "reactorCalls": [
             "toolsets enable native --format json"
           ],
@@ -928,22 +928,23 @@
         "op": "command",
         "args": "next",
         "out": {
-          "notify": [],
+          "notify": [
+            {
+              "message": "reactor: phase 2/2: step 2 -- say in your next prompt, in a line or two, what phase 1 concluded: it is recorded as its summary",
+              "level": "info"
+            }
+          ],
           "entries": [
             {
               "scenarioId": "beta",
               "stepIndex": 1,
               "summaries": [
                 "(advanced manually)"
-              ]
+              ],
+              "pendingSummary": 0
             }
           ],
-          "messages": [
-            {
-              "content": "## Phase 2/2: step 2\n\nempty fields",
-              "display": true
-            }
-          ],
+          "messages": [],
           "reactorCalls": [],
           "advertised": true
         }
@@ -1031,16 +1032,16 @@
         "op": "command",
         "args": "next",
         "out": {
-          "notify": [],
+          "notify": [
+            {
+              "message": "reactor: scenario \"gamma\" complete -- 1 phase(s) done.",
+              "level": "info"
+            }
+          ],
           "entries": [
             null
           ],
-          "messages": [
-            {
-              "content": "reactor: scenario \"gamma\" complete -- 1 phase(s) done.",
-              "display": true
-            }
-          ],
+          "messages": [],
           "reactorCalls": [],
           "advertised": false
         }
@@ -1051,7 +1052,7 @@
         "out": {
           "notify": [
             {
-              "message": "reactor-scenario: unknown subcommand \"bogus\" -- try list, start <id>, status, next, or stop",
+              "message": "reactor-scenario: unknown subcommand \"bogus\" -- try list, start <id>, status, next, goto <n>, or stop",
               "level": "error"
             }
           ],

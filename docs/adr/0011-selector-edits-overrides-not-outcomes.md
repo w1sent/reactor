@@ -1,5 +1,10 @@
 # The selector edits overrides, not outcomes
 
+> **Amended by [ADR-0048](0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md):**
+> with no toolset active the base set is now *empty*, not everything; `all` is the toolset
+> for everything. Read "while no toolset is selected — base is everything" below with
+> that in mind: such an override is now stored, and survives activating a toolset.
+
 Activation is not stored. It is *derived*: a base set (everything, or the union
 of the active toolsets) minus `tools.disabled` plus `tools.enabled`. A tool that
 is on can be on for two unrelated reasons, and the file records only the second.

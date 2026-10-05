@@ -49,6 +49,7 @@ fn activation_row(
     active: bool,
     label: impl Into<SharedString>,
     detail: Option<SharedString>,
+    badge: Option<AnyElement>,
     theme: &Theme,
     on_toggle: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -95,7 +96,8 @@ fn activation_row(
                             .text_color(theme.muted_foreground)
                             .text_size(theme.font_size * 0.8),
                     )
-                }),
+                })
+                .children(badge),
         )
         .child(
             Button::new(SharedString::from(format!("toggle-{id}")))
@@ -103,6 +105,111 @@ fn activation_row(
                 .small()
                 .on_click(move |_, window, cx| on_toggle(window, cx)),
         )
+}
+
+/// The tag on an MCP tool or on a server's toolset: what it is and what it costs. A
+/// catalogue tool costs one line of the system prompt; an MCP tool puts its whole definition
+/// into every request while it is active, so the cost is on the row, where the choice to
+/// activate it is made (ADR-0048). `every` says the tag is of a toolset: all its tools.
+fn mcp_tag(
+    id: &str,
+    server: &str,
+    tokens: u64,
+    up: bool,
+    every: bool,
+    theme: &Theme,
+) -> AnyElement {
+    let label = if up {
+        format!("MCP · ~{tokens} tok")
+    } else {
+        "MCP · server down".to_string()
+    };
+    let tip = if up {
+        format!(
+            "{} the MCP server `{server}`. While {} active, {} definition — about {tokens} tokens{} — is part of every request. A catalogue tool costs a line in the system prompt; this costs its whole schema, so activate only what the work needs.",
+            if every { "Every tool of" } else { "A tool of" },
+            if every { "they are" } else { "it is" },
+            if every { "their" } else { "its" },
+            if every { " together" } else { "" },
+        )
+    } else {
+        format!(
+            "{} the MCP server `{server}`, which could not be reached the last time it was tried. {} not advertised until the server is back; see Settings › MCP servers.",
+            if every { "Every tool of" } else { "A tool of" },
+            if every { "They are" } else { "It is" },
+        )
+    };
+    crate::hints::tip(
+        div()
+            .id(SharedString::from(format!("mcp-badge-{id}")))
+            .px_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(if up {
+                theme.info
+            } else {
+                theme.muted_foreground
+            })
+            .text_size(theme.font_size * 0.75)
+            .text_color(if up {
+                theme.info
+            } else {
+                theme.muted_foreground
+            })
+            .child(SharedString::from(label)),
+        SharedString::from(tip),
+    )
+    .into_any_element()
+}
+
+fn mcp_badge(tool: &reactor_client::ToolRow, theme: &Theme) -> Option<AnyElement> {
+    let mcp = tool.mcp.as_ref()?;
+    Some(mcp_tag(
+        &tool.id,
+        &mcp.server,
+        mcp.tokens,
+        tool.status == "present",
+        false,
+        theme,
+    ))
+}
+
+/// The same tag on a toolset whose members are all MCP tools of one server (the one made for
+/// each server, or a user's own made of nothing else): the cost is of all of them.
+fn mcp_toolset_badge(
+    toolset: &reactor_client::ToolsetRow,
+    tools: Option<&reactor_client::ToolsPayload>,
+    theme: &Theme,
+) -> Option<AnyElement> {
+    let members: Vec<&reactor_client::ToolRow> = toolset
+        .tools
+        .iter()
+        .filter_map(|id| tools?.tools.iter().find(|t| &t.id == id))
+        .collect();
+    if members.is_empty() || members.len() != toolset.tools.len() {
+        return None;
+    }
+    let servers: std::collections::BTreeSet<&str> = members
+        .iter()
+        .filter_map(|t| t.mcp.as_ref().map(|m| m.server.as_str()))
+        .collect();
+    if servers.len() != 1 || members.iter().any(|t| t.mcp.is_none()) {
+        return None;
+    }
+    let tokens = members
+        .iter()
+        .filter_map(|t| t.mcp.as_ref())
+        .map(|m| m.tokens)
+        .sum();
+    let up = members.iter().all(|t| t.status == "present");
+    Some(mcp_tag(
+        &toolset.id,
+        servers.first().copied().unwrap_or_default(),
+        tokens,
+        up,
+        true,
+        theme,
+    ))
 }
 
 /// A catalogued tool that is not on this machine: same row anatomy as
@@ -1862,7 +1969,7 @@ impl Render for ToolsPanel {
                     ) {
                         continue;
                     }
-                } else if !installed && !self.show_uninstalled {
+                } else if !installed && tool.mcp.is_none() && !self.show_uninstalled {
                     hidden += 1;
                     continue;
                 }
@@ -1870,12 +1977,15 @@ impl Render for ToolsPanel {
                 let tool_id = tool.id.clone();
                 let tool_active = tool.active;
                 let weak_app = self.app.clone();
-                if installed {
+                // An MCP tool is not installed or not: its server answers or does not, and
+                // it is listed either way, tagged with what it costs.
+                if installed || tool.mcp.is_some() {
                     list = list.child(activation_row(
                         format!("tool-{tool_id}"),
                         tool_active,
                         tool.id.clone(),
                         None,
+                        mcp_badge(tool, &theme),
                         &theme,
                         move |_window, cx| {
                             if let Some(app) = weak_app.upgrade() {
@@ -1946,6 +2056,17 @@ impl Render for ToolsPanel {
             );
         }
 
+        // What the active MCP tools cost every request, in one line above the list.
+        let (mcp_active, mcp_tokens) = tools
+            .as_ref()
+            .map(|p| {
+                p.tools
+                    .iter()
+                    .filter(|t| t.active && t.status == "present")
+                    .filter_map(|t| t.mcp.as_ref())
+                    .fold((0usize, 0u64), |(n, tok), m| (n + 1, tok + m.tokens))
+            })
+            .unwrap_or_default();
         let scope = self
             .app
             .upgrade()
@@ -1954,6 +2075,19 @@ impl Render for ToolsPanel {
             .size_full()
             .child(scope_header(&self.app, scope.as_deref(), &theme))
             .child(div().px_2().pt_2().child(Input::new(&self.query).small()))
+            .when(mcp_active > 0, |el| {
+                el.child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .text_color(theme.muted_foreground)
+                        .text_size(theme.font_size * 0.8)
+                        .child(format!(
+                            "{mcp_active} MCP tool{} active — about {mcp_tokens} tokens in every request",
+                            if mcp_active == 1 { "" } else { "s" }
+                        )),
+                )
+            })
             .child(list)
     }
 }
@@ -2059,12 +2193,16 @@ impl Panel for ToolsetsPanel {
 impl Render for ToolsetsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let (toolsets, loading) = match self.app.upgrade() {
+        let (toolsets, tools, loading) = match self.app.upgrade() {
             Some(app) => {
                 let read = app.read(cx);
-                (read.toolsets.clone(), read.catalogue_loading)
+                (
+                    read.toolsets.clone(),
+                    read.catalogue.clone(),
+                    read.catalogue_loading,
+                )
             }
-            None => (None, false),
+            None => (None, None, false),
         };
 
         let mut list = v_flex()
@@ -2098,6 +2236,7 @@ impl Render for ToolsetsPanel {
                     toolset_active,
                     row.id.clone(),
                     detail,
+                    mcp_toolset_badge(row, tools.as_ref(), &theme),
                     &theme,
                     move |_window, cx| {
                         if let Some(app) = weak_app.upgrade() {
@@ -2327,6 +2466,185 @@ fn origin_badge(origin: reactor_context::settings::Origin, theme: &Theme) -> imp
         .child(text)
 }
 
+/// The Scenario section of the Context panel: the scenarios to choose from and a Start button,
+/// or, while one runs, its phases as a vertical stepper -- the current one marked, a click on
+/// any other moving to it -- and an Abort button. Moving by hand is for between turns, so the
+/// stepper is disabled while the agent works; the agent moves on by itself with
+/// `reactor_phase_complete`, and the stepper follows.
+fn scenario_section(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    view: &crate::scenario_ui::View,
+    pick: Option<String>,
+    toolsets: Option<&reactor_client::ToolsetsPayload>,
+    tools: Option<&reactor_client::ToolsPayload>,
+    idle: bool,
+    theme: &Theme,
+) -> impl IntoElement {
+    use crate::scenario_ui::Outcome;
+    use gpui_kit::component::stepper::{Stepper, StepperItem};
+
+    let title = h_flex()
+        .gap_1()
+        .items_center()
+        .child(Label::new("Scenario"))
+        .child(crate::hints::info_button(
+            "scenario-info",
+            "A scenario is a series of phases, each with a briefing for the agent: it is added to the system prompt while the phase is current, and the agent moves to the next phase with a tool call that carries a summary. Click a phase to go there yourself, forwards or back — only between turns; the briefing is then in effect for the next prompt, which starts the phase. After moving on by hand, say in that prompt what the phase you left concluded: it is recorded as its summary. A phase asks for a toolset; tools of it that are not installed are not offered to the agent. /reactor-scenario list | start <id> | status | next | goto <n> | stop does the same.",
+        ));
+    let mut section = v_flex().gap_2();
+
+    let Some(run) = &view.run else {
+        let chosen = pick
+            .filter(|p| view.available.contains(p))
+            .or_else(|| view.available.first().cloned());
+        let mut choices = h_flex().gap_1().flex_wrap();
+        for id in &view.available {
+            let (a, pid) = (app.clone(), id.clone());
+            choices = choices.child(
+                Button::new(SharedString::from(format!("scenario-pick-{id}")))
+                    .label(id.clone())
+                    .small()
+                    .when(chosen.as_deref() == Some(id.as_str()), |b| b.primary())
+                    .on_click(move |_, _w, cx| {
+                        if let Some(app) = a.upgrade() {
+                            app.update(cx, |app, cx| {
+                                app.scenario_pick = Some(pid.clone());
+                                cx.notify();
+                            });
+                        }
+                    }),
+            );
+        }
+        let a = app.clone();
+        return section
+            .child(h_flex().justify_between().items_center().child(title).child(
+                Button::new("scenario-start")
+                    .label("Start")
+                    .small()
+                    .primary()
+                    .disabled(!idle || view.available.is_empty())
+                    .tooltip("Start the chosen scenario: its first phase is briefed and the agent begins")
+                    .on_click(move |_, _w, cx| {
+                        if let Some(app) = a.upgrade() {
+                            app.update(cx, |app, cx| app.scenario_start(cx));
+                        }
+                    }),
+            ))
+            .child(if view.available.is_empty() {
+                div()
+                    .text_color(theme.muted_foreground)
+                    .child("no scenarios found in prompts/scenarios")
+                    .into_any_element()
+            } else {
+                choices.into_any_element()
+            });
+    };
+
+    let a = app.clone();
+    section = section.child(
+        h_flex()
+            .justify_between()
+            .items_center()
+            .child(title)
+            .child(
+                Label::new(format!("{} · phase {}/{}", run.id, run.current + 1, run.phases.len()))
+                    .text_color(theme.muted_foreground)
+                    .text_size(theme.font_size * 0.85),
+            )
+            .child(
+                Button::new("scenario-abort")
+                    .label("Abort")
+                    .small()
+                    .ghost()
+                    .tooltip("Stop the scenario: the agent is no longer briefed and phase_complete goes away. What it did stays")
+                    .on_click(move |_, _w, cx| {
+                        if let Some(app) = a.upgrade() {
+                            app.update(cx, |app, cx| app.scenario_abort(cx));
+                        }
+                    }),
+            ),
+    );
+
+    let small = theme.font_size * 0.8;
+    let items = run.phases.iter().enumerate().map(|(i, phase)| {
+        let missing = phase
+            .toolset
+            .as_deref()
+            .map(|t| crate::scenario_ui::missing_tools(t, toolsets, tools))
+            .unwrap_or_default();
+        // A line under the title: what a finished phase concluded, else the toolset it asks for.
+        let (line, line_colour) = match &phase.outcome {
+            Outcome::Summary(t) => (t.clone(), theme.muted_foreground),
+            Outcome::Skipped => ("skipped".to_string(), theme.muted_foreground),
+            Outcome::Awaiting => (
+                "say what it concluded in your next prompt".to_string(),
+                theme.warning,
+            ),
+            Outcome::None => (
+                match (&phase.toolset, missing.len()) {
+                    (Some(t), 0) => format!("toolset {t}"),
+                    (Some(t), n) => format!("toolset {t} · {n} not available"),
+                    (None, _) => String::new(),
+                },
+                if missing.is_empty() {
+                    theme.muted_foreground
+                } else {
+                    theme.warning
+                },
+            ),
+        };
+        let tip = if missing.is_empty() {
+            line.clone()
+        } else {
+            format!(
+                "{line}\nThe phase starts anyway; the agent is not told about: {}",
+                missing.join(", ")
+            )
+        };
+        StepperItem::new().child(
+            v_flex()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_color(if i == run.current {
+                            theme.foreground
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(SharedString::from(phase.title.clone())),
+                )
+                .when(!line.is_empty(), |c| {
+                    c.child(crate::hints::tip(
+                        div()
+                            .id(SharedString::from(format!("scenario-phase-{i}")))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(small)
+                            .text_color(line_colour)
+                            .child(SharedString::from(line)),
+                        SharedString::from(tip),
+                    ))
+                }),
+        )
+    });
+    let a = app.clone();
+    section.child(
+        Stepper::new("scenario-steps")
+            .vertical()
+            .small()
+            .selected_index(run.current)
+            .disabled(!idle)
+            .items(items)
+            .on_click(move |ix, _w, cx| {
+                if let Some(app) = a.upgrade() {
+                    let n = *ix + 1;
+                    app.update(cx, |app, cx| app.scenario_goto(n, cx));
+                }
+            }),
+    )
+}
+
 pub struct ContextPanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
     focus: FocusHandle,
@@ -2389,7 +2707,7 @@ impl Render for ContextPanel {
         use reactor_context::settings::{ContextSettings, Origin};
 
         let theme = cx.theme().clone();
-        let (view, preview, busy, idle) = match self.app.upgrade() {
+        let (view, preview, busy, idle, scenario) = match self.app.upgrade() {
             Some(app) => {
                 let a = app.read(cx);
                 (
@@ -2397,9 +2715,15 @@ impl Render for ContextPanel {
                     a.preview.clone(),
                     a.context_busy,
                     a.session.read(cx).phase == AgentPhase::Idle,
+                    Some((
+                        a.scenario.clone(),
+                        a.scenario_pick.clone(),
+                        a.toolsets.clone(),
+                        a.catalogue.clone(),
+                    )),
                 )
             }
-            None => (None, None, false, false),
+            None => (None, None, false, false, None),
         };
         let mut body = v_flex()
             .id("context-body")
@@ -2454,6 +2778,19 @@ impl Render for ContextPanel {
                     ),
                 )),
         );
+
+        // -- scenario --
+        if let Some((scenario, pick, toolsets, tools)) = scenario {
+            body = body.child(scenario_section(
+                &self.app,
+                &scenario,
+                pick,
+                toolsets.as_ref(),
+                tools.as_ref(),
+                idle,
+                &theme,
+            ));
+        }
 
         // -- settings --
         let origin_of = |key: &str| {

@@ -37,6 +37,38 @@ pub struct State {
     pub step_index: usize,
     /// One per completed phase, parallel to `steps[0..step_index]`.
     pub summaries: Vec<String>,
+    /// The summary of this completed phase is still to be written: the person moved the
+    /// scenario on by hand, and the next prompt they send says what the phase concluded
+    /// ([`record_summary`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_summary: Option<usize>,
+}
+
+/// The summary of a phase that was jumped over.
+pub const SKIPPED: &str = "(skipped)";
+/// The summary of a phase the person advanced past without saying what it concluded.
+pub const MANUAL: &str = "(advanced manually)";
+/// The longest a summary taken from a prompt is kept.
+const SUMMARY_CHARS: usize = 600;
+
+/// A person moved the scenario on by hand and then wrote a prompt: that prompt is what the
+/// phase they left concluded. Returns whether `state` changed (and so must be stored).
+pub fn record_summary(state: &mut State, prompt: &str) -> bool {
+    let Some(at) = state.pending_summary.take() else {
+        return false;
+    };
+    let text = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(slot) = state.summaries.get_mut(at)
+        && !text.is_empty()
+    {
+        *slot = if text.chars().count() > SUMMARY_CHARS {
+            let cut: String = text.chars().take(SUMMARY_CHARS).collect();
+            format!("{cut}…")
+        } else {
+            text
+        };
+    }
+    true
 }
 
 // -- reading scenarios ----------------------------------------------------------
@@ -224,6 +256,7 @@ impl Scenario<'_> {
             scenario_id: state.scenario_id,
             step_index: next,
             summaries,
+            pending_summary: None,
         };
         self.state = Some(new.clone());
         Advance {
@@ -233,7 +266,75 @@ impl Scenario<'_> {
         }
     }
 
-    /// `/reactor-scenario [list|start <id>|status|next [summary]|stop]`.
+    /// Move to phase `target` (0-based) by hand, forwards or backwards, without a turn: the
+    /// briefing reaches the model through the system prompt, and the person's next prompt
+    /// starts the phase. The phases jumped over are marked [`SKIPPED`]. Going forwards leaves
+    /// the phase being left without a summary until that prompt arrives, unless `summary` says
+    /// it now; going back drops the summaries of the phases that will be done again.
+    fn go_to(
+        &mut self,
+        state: State,
+        steps: &[Step],
+        target: usize,
+        summary: Option<String>,
+    ) -> Effects {
+        let at = state.step_index;
+        if target == at {
+            return Effects::notice(Notice::info(format!(
+                "reactor: already at phase {}/{}",
+                at + 1,
+                steps.len()
+            )));
+        }
+        let mut summaries = state.summaries.clone();
+        let mut pending = None;
+        let title = steps
+            .get(target)
+            .map(|s| s.title.as_str())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("step {}", target + 1));
+        let note = if target > at {
+            summaries.truncate(at);
+            if summary.is_none() {
+                pending = Some(at);
+            }
+            summaries.push(summary.unwrap_or_else(|| MANUAL.to_string()));
+            summaries.extend((at + 1..target).map(|_| SKIPPED.to_string()));
+            if pending.is_some() {
+                format!(
+                    "reactor: phase {}/{}: {title} -- say in your next prompt, in a line or two, what phase {} concluded: it is recorded as its summary",
+                    target + 1,
+                    steps.len(),
+                    at + 1
+                )
+            } else {
+                format!("reactor: phase {}/{}: {title}", target + 1, steps.len())
+            }
+        } else {
+            summaries.truncate(target);
+            format!(
+                "reactor: back at phase {}/{}: {title} -- your next prompt starts it",
+                target + 1,
+                steps.len()
+            )
+        };
+        let new = State {
+            scenario_id: state.scenario_id,
+            step_index: target,
+            summaries,
+            pending_summary: pending,
+        };
+        self.state = Some(new.clone());
+        Effects {
+            notices: vec![Notice::info(note)],
+            persist: Persist::Set(new),
+            activate_toolsets: steps[target].toolset.clone().into_iter().collect(),
+            ..Effects::none()
+        }
+    }
+
+    /// `/reactor-scenario [list|start <id>|status|next [summary]|goto <n> [summary]|stop]`.
     pub fn command(&mut self, args: &str) -> Effects {
         let mut words = args.split(crate::text::js_space).filter(|w| !w.is_empty());
         let sub = words.next();
@@ -271,6 +372,7 @@ impl Scenario<'_> {
                     scenario_id: id.clone(),
                     step_index: 0,
                     summaries: vec![],
+                    pending_summary: None,
                 };
                 self.state = Some(new.clone());
                 Effects {
@@ -305,28 +407,51 @@ impl Scenario<'_> {
                 }
             },
             "next" => {
-                if self.state.is_none() {
+                let Some(state) = self.state.clone() else {
                     return Effects::notice(Notice::error(
                         "reactor: no scenario active -- `start` one first",
                     ));
-                }
-                // The human is the better judge of whether a phase is genuinely
-                // finished (ADR-0009); this bypasses the model entirely.
-                let summary = if rest.is_empty() {
-                    "(advanced manually)".to_string()
-                } else {
-                    rest.join(" ")
                 };
-                let adv = self.advance(&summary);
-                Effects {
-                    notices: vec![],
-                    messages: vec![Message {
-                        content: adv.text,
-                        trigger_turn: true,
-                    }],
-                    persist: adv.persist,
-                    activate_toolsets: adv.activate_toolset.into_iter().collect(),
+                // The human is the better judge of whether a phase is genuinely finished
+                // (ADR-0009). Moving on by hand does not start a turn: what the agent was
+                // doing is over, and the person's next prompt starts the phase.
+                let steps = load_steps(self.dir, &state.scenario_id);
+                if state.step_index + 1 >= steps.len() {
+                    let summary = if rest.is_empty() {
+                        MANUAL.to_string()
+                    } else {
+                        rest.join(" ")
+                    };
+                    let adv = self.advance(&summary);
+                    return Effects {
+                        notices: vec![Notice::info(adv.text)],
+                        persist: adv.persist,
+                        ..Effects::none()
+                    };
                 }
+                let summary = (!rest.is_empty()).then(|| rest.join(" "));
+                let target = state.step_index + 1;
+                self.go_to(state, &steps, target, summary)
+            }
+            "goto" => {
+                let Some(state) = self.state.clone() else {
+                    return Effects::notice(Notice::error(
+                        "reactor: no scenario active -- `start` one first",
+                    ));
+                };
+                let steps = load_steps(self.dir, &state.scenario_id);
+                let target = rest
+                    .first()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .filter(|n| (1..=steps.len()).contains(n));
+                let Some(target) = target else {
+                    return Effects::notice(Notice::error(format!(
+                        "reactor-scenario: goto needs a phase number from 1 to {}",
+                        steps.len()
+                    )));
+                };
+                let summary = (rest.len() > 1).then(|| rest[1..].join(" "));
+                self.go_to(state, &steps, target - 1, summary)
             }
             "stop" => match self.state.take() {
                 None => Effects::notice(Notice::info("reactor: no scenario active")),
@@ -340,7 +465,7 @@ impl Scenario<'_> {
                 },
             },
             other => Effects::notice(Notice::error(format!(
-                "reactor-scenario: unknown subcommand \"{other}\" -- try list, start <id>, status, next, or stop"
+                "reactor-scenario: unknown subcommand \"{other}\" -- try list, start <id>, status, next, goto <n>, or stop"
             ))),
         }
     }

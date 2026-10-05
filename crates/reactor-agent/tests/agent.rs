@@ -63,6 +63,7 @@ fn registry(block: &str, usable: &[&str]) -> Arc<dyn Fn() -> RegistryView + Send
         block: block.to_string(),
         skill_dirs: vec![],
         usable: usable.iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
+        ..Default::default()
     };
     Arc::new(move || view.clone())
 }
@@ -706,6 +707,48 @@ async fn a_scenarios_phase_is_a_block_rebuilt_every_request_and_advances_by_tool
 }
 
 #[tokio::test]
+async fn a_phase_chosen_by_hand_waits_for_the_next_prompt_and_that_prompt_is_the_summary() {
+    let r = rig(
+        vec![ScriptedLlm::say("one"), ScriptedLlm::say("two")],
+        Sum::says("-"),
+        100_000,
+    );
+    write_scenario(&r.root);
+    r.agent.command("reactor-scenario", "start inv").unwrap();
+    run(&r, "begin").await.unwrap();
+
+    // Jumping on starts no turn, and says what to do.
+    let moved = r.agent.command("reactor-scenario", "goto 2").unwrap();
+    assert!(moved.trigger_turn.is_none());
+    assert!(
+        moved.notices[0].message.contains("next prompt"),
+        "{:?}",
+        moved.notices
+    );
+    let state = r.agent.session_state().scenario.unwrap();
+    assert_eq!((state.step_index, state.pending_summary), (1, Some(0)));
+
+    // The next prompt is the summary of the phase that was left, and the new phase's
+    // briefing is already in the system prompt it is sent with.
+    run(&r, "scope is one binary,\n nothing else")
+        .await
+        .unwrap();
+    let sys = &r.llm.requests()[1].system;
+    assert!(sys.contains("## Phase 2/2: Triage"), "{sys}");
+    assert!(
+        sys.contains("1. Scoping -- scope is one binary, nothing else"),
+        "{sys}"
+    );
+    let state = r.agent.session_state().scenario.unwrap();
+    assert_eq!(state.pending_summary, None);
+
+    // Going back drops that summary; and the prompt after it is just a prompt.
+    r.agent.command("reactor-scenario", "goto 1").unwrap();
+    let state = r.agent.session_state().scenario.unwrap();
+    assert_eq!((state.step_index, state.summaries.len()), (0, 0));
+}
+
+#[tokio::test]
 async fn skills_are_offered_by_their_requirements_and_upstream_skills_by_the_registry() {
     let dir = tempfile::tempdir().unwrap();
     let skills = dir.path().join("skills");
@@ -733,6 +776,7 @@ async fn skills_are_offered_by_their_requirements_and_upstream_skills_by_the_reg
                 block: "## Available RE tools (this machine)".into(),
                 skill_dirs: vec![up],
                 usable: ["sh".to_string()].into(),
+                ..Default::default()
             };
             cfg.registry = Arc::new(move || view.clone());
         },
@@ -1261,7 +1305,7 @@ detect = { binary = "ls" }
 tags = ["two"]
 "#;
 
-const SCOPE_TOOLSETS: &str = "version = 1\n[toolset.only-alpha]\ndesc = \"alpha only\"\ntags = [\"one\"]\n[toolset.only-beta]\ndesc = \"beta only\"\ntags = [\"two\"]\n";
+const SCOPE_TOOLSETS: &str = "version = 1\n[toolset.only-alpha]\ndesc = \"alpha only\"\ntags = [\"one\"]\n[toolset.only-beta]\ndesc = \"beta only\"\ntags = [\"two\"]\n[toolset.everything]\ndesc = \"all\"\nall = true\n";
 
 #[tokio::test]
 async fn activation_in_one_session_changes_its_registry_block_and_no_other_sessions() {
@@ -1272,6 +1316,9 @@ async fn activation_in_one_session_changes_its_registry_block_and_no_other_sessi
     std::fs::write(cfg_dir.join("tools.toml"), SCOPE_TOOLS).unwrap();
     std::fs::write(cfg_dir.join("toolsets.toml"), SCOPE_TOOLSETS).unwrap();
     let machine = Paths::new(&cfg_dir, Shipped::Embedded);
+    // The machine default: everything asked for. (Nothing is active until something is.)
+    set_activation(&machine, &["everything".to_string()], false, Some(true)).unwrap();
+    let machine_state = std::fs::read_to_string(cfg_dir.join("state.json")).unwrap();
     let session_a = machine
         .clone()
         .with_session_state(dir.path().join("a-activation.json"));
@@ -1308,11 +1355,12 @@ async fn activation_in_one_session_changes_its_registry_block_and_no_other_sessi
         let sys = &llm.requests()[0].system;
         assert!(
             sys.contains("the alpha tool") && sys.contains("the beta tool"),
-            "everything is active by default:\n{sys}"
+            "the machine default is everything:\n{sys}"
         );
     }
 
     // Session A narrows to alpha. Only A's next request changes.
+    set_activation(&session_a, &["everything".to_string()], false, Some(false)).unwrap();
     set_activation(&session_a, &["only-alpha".to_string()], false, Some(true)).unwrap();
     a.prompt("again", CancellationToken::new()).await.unwrap();
     b.prompt("again", CancellationToken::new()).await.unwrap();
@@ -1325,9 +1373,10 @@ async fn activation_in_one_session_changes_its_registry_block_and_no_other_sessi
         sys_b.contains("the alpha tool") && sys_b.contains("the beta tool"),
         "{sys_b}"
     );
-    assert!(
-        !cfg_dir.join("state.json").exists(),
-        "the machine state was never written"
+    assert_eq!(
+        std::fs::read_to_string(cfg_dir.join("state.json")).unwrap(),
+        machine_state,
+        "the machine state was never written by a session"
     );
 }
 

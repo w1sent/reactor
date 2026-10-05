@@ -178,11 +178,10 @@ pub fn toolset_members(ts: &Toolset, cat: &Catalogue) -> Vec<String> {
     members.into_iter().collect()
 }
 
-/// What the active toolsets alone say, before any per-tool override.
+/// What the active toolsets alone say, before any per-tool override. With no toolset active
+/// that is nothing: a tool is advertised because it was asked for, never because nobody
+/// asked (ADR-0048) -- `all` is the toolset for everything.
 pub fn base_ids(cat: &Catalogue, toolsets: &[Toolset], state: &State) -> BTreeSet<String> {
-    if state.toolsets.is_empty() {
-        return cat.ids().into_iter().collect();
-    }
     let mut base = BTreeSet::new();
     for sid in &state.toolsets {
         if let Some(ts) = toolsets.iter().find(|t| &t.id == sid) {

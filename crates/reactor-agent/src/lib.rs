@@ -15,6 +15,7 @@ pub mod eval;
 pub mod history;
 pub mod inspect;
 pub mod llm;
+pub mod mcp;
 pub mod prompt;
 pub mod provider;
 pub mod skills;

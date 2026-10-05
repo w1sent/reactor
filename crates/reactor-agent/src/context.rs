@@ -225,6 +225,21 @@ pub fn msg_tokens(msg: &Msg) -> u64 {
     }
 }
 
+/// What an assistant message is made of, in the same estimate [`msg_tokens`] uses.
+pub fn assistant_parts(blocks: &[Block]) -> crate::inspect::AssistantParts {
+    let mut p = crate::inspect::AssistantParts::default();
+    for b in blocks {
+        match b {
+            Block::Text { text } => p.reply += estimate_tokens(text),
+            Block::Thinking { text, .. } => p.thinking += estimate_tokens(text),
+            Block::ToolCall {
+                name, arguments, ..
+            } => p.calls += estimate_tokens(name) + estimate_tokens(&arguments.to_string()),
+        }
+    }
+    p
+}
+
 // -- session state ------------------------------------------------------------------
 
 /// The state modules of `reactor-context`, as this session's log holds them: the

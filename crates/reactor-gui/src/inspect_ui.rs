@@ -13,7 +13,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Them
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Hsla, SharedString, div, px, relative};
 
-use reactor_agent::inspect::{ContextPreview, Origin, Section};
+use reactor_agent::inspect::{ContextPreview, Kind, Origin, Section};
 
 use crate::app::ReactorApp;
 
@@ -24,12 +24,51 @@ pub struct InspectUi {
     pub error: Option<String>,
     /// Index into `data.segments` of the piece shown on the right.
     pub selected: usize,
-    /// Only pieces from this source, when set.
-    pub filter: Option<Origin>,
+    /// Only pieces from these sources, when set.
+    pub filter: Option<Vec<Origin>>,
+}
+
+impl InspectUi {
+    /// With a filter set, the piece shown is one of those it lets through.
+    pub fn select_in_filter(&mut self) {
+        let (Some(filter), Some(data)) = (&self.filter, &self.data) else {
+            return;
+        };
+        let shown = data
+            .segments
+            .get(self.selected)
+            .is_some_and(|s| filter.contains(&s.origin));
+        if !shown
+            && let Some(first) = data
+                .segments
+                .iter()
+                .position(|s| filter.contains(&s.origin))
+        {
+            self.selected = first;
+        }
+    }
 }
 
 /// How much of one piece the text pane draws; Copy always takes all of it.
 const SHOW_CHARS: usize = 40_000;
+
+/// The colour of a kind in the usage bar and its legend (the Context panel): the theme's
+/// chart colours first, then its named ones. One mapping, so bar and legend cannot disagree.
+pub fn kind_colour(kind: Kind, theme: &Theme) -> Hsla {
+    match kind {
+        Kind::System => theme.chart_1,
+        Kind::Tools => theme.chart_2,
+        Kind::Mcp => theme.chart_3,
+        Kind::Manifest => theme.chart_4,
+        Kind::Thinking => theme.chart_5,
+        Kind::Scenario => theme.info,
+        Kind::You => theme.accent,
+        Kind::Reply => theme.foreground,
+        Kind::ToolCalls => theme.primary,
+        Kind::ToolResults => theme.warning,
+        Kind::Reductions => theme.success,
+    }
+}
 
 fn colour(origin: Origin, theme: &Theme) -> Hsla {
     match origin {
@@ -42,6 +81,7 @@ fn colour(origin: Origin, theme: &Theme) -> Hsla {
         Origin::Reporting => theme.chart_5,
         Origin::Scenario => theme.info,
         Origin::ToolDefinition => theme.muted_foreground,
+        Origin::McpDefinition => theme.chart_5,
         Origin::User => theme.accent,
         Origin::Assistant => theme.foreground,
         Origin::ToolResult => theme.warning,
@@ -126,7 +166,7 @@ pub fn view(
                     .child(format!("~{} tokens", data.total_tokens)),
             );
             for (origin, tokens) in data.by_origin() {
-                let active = state.filter == Some(origin);
+                let active = state.filter.as_deref() == Some(&[origin][..]);
                 let weak = weak.clone();
                 chips = chips.child(
                     h_flex()
@@ -176,7 +216,11 @@ pub fn view(
                 .pr_1();
             let mut last_section: Option<Section> = None;
             for (index, seg) in data.segments.iter().enumerate() {
-                if state.filter.is_some_and(|f| f != seg.origin) {
+                if state
+                    .filter
+                    .as_ref()
+                    .is_some_and(|f| !f.contains(&seg.origin))
+                {
                     continue;
                 }
                 if last_section != Some(seg.section) {

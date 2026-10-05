@@ -406,10 +406,23 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 tokens: estimate_tokens(&text),
                 text,
                 entry: None,
+                parts: None,
             });
         }
 
-        for t in self.advertised(&g) {
+        // Ours, then the MCP tools' (the order of the request itself).
+        let mcp_specs = self
+            .cfg
+            .mcp
+            .as_ref()
+            .map(|h| h.specs(&g.view.mcp))
+            .unwrap_or_default();
+        let ours = self.tools.specs(&g.state);
+        let defs = ours
+            .into_iter()
+            .map(|t| (Origin::ToolDefinition, t))
+            .chain(mcp_specs.into_iter().map(|t| (Origin::McpDefinition, t)));
+        for (origin, t) in defs {
             let text = format!(
                 "{}\n\n{}",
                 t.description,
@@ -420,11 +433,12 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 + estimate_tokens(&t.parameters.to_string());
             segments.push(Segment {
                 section: Section::Tools,
-                origin: Origin::ToolDefinition,
+                origin,
                 label: t.name,
                 text,
                 tokens,
                 entry: None,
+                parts: None,
             });
         }
 
@@ -480,6 +494,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 Source::Entry(id) => Some(id),
                 Source::Reduction(_) => None,
             };
+            let parts = match &item.msg {
+                Msg::Assistant { blocks } => Some(crate::context::assistant_parts(blocks)),
+                _ => None,
+            };
             segments.push(Segment {
                 section: Section::Messages,
                 origin,
@@ -487,6 +505,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 tokens: msg_tokens(&item.msg),
                 text,
                 entry,
+                parts,
             });
         }
 
@@ -503,6 +522,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 tokens: estimate_tokens(&nag) + 8,
                 text: nag,
                 entry: None,
+                parts: None,
             });
         }
         let total_tokens = system_tokens

@@ -99,6 +99,16 @@ session per window; branching moves the head within it, and a case holds many se
   → the session. The Context panel shows each value's origin, previews a reduction, runs
   one now, lists reductions in force with *undo*, and can make the session's values the
   default. Dimmed transcript rows are hidden from the model by a reduction.
+- **The Context panel** has the usage bar pinned above two tabs. The bar is the next request
+  split by *kind* (system prompt, manifest frame, scenario and reporting, REactor and MCP tool
+  definitions, you, agent replies, thinking, tool calls, tool results, reductions), drawn in the
+  theme's chart colours; *Details* opens a legend whose rows open that kind in the context
+  window. **Plan**: the goal, guidelines and steps (*Edit…* opens the editor, *Frame…* the frame,
+  the Manifest switch pauses it), the scenario stepper, and the Reporting switch and level.
+  **Budget**: the context settings and reduction. The frame has two tabs, *As sent* (the manifest
+  block, verbatim, with its cost) and *State* (what `/frame` prints). `/frame` opens it, and
+  `/goal` or `/guidelines` without a text open the editor. The manifest's and reporting's
+  remaining settings are Settings › Manifest and › Reporting.
 - **Session ids.** A session is numbered within its case: `1`, `2`, `3` … (the number after the
   highest in the case; a gap is not filled; if another process takes it first the next is
   asked). Inside the case `#3` is enough — that is how titles, the status bar and the list

@@ -479,3 +479,84 @@ fn the_names_an_mcp_tool_may_not_take_are_the_agents_own() {
         );
     }
 }
+
+// -- what the request is made of ---------------------------------------------------------
+
+#[tokio::test]
+async fn the_usage_by_kind_tells_mcp_tools_apart_and_splits_what_the_agent_said() {
+    use reactor_agent::entry::Block;
+    use reactor_agent::inspect::Kind;
+    use reactor_agent::llm::Reply;
+
+    let fx = fx(vec![server("fx", &[], &[])]);
+    let host = McpHost::new(fx.paths.clone());
+    host.sync();
+    settled(&host).await;
+
+    let work = fx._dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let case = reactor_db::Case::create(&work, None).unwrap();
+    let store = Store::create(&case, "s").unwrap();
+    let mut cfg = AgentConfig::new(work.clone(), fx.paths.clone(), 100_000);
+    let view = RegistryView {
+        block: "## Available RE tools (this machine)".into(),
+        mcp: ids(&["mcp__fx__echo", "mcp__fx__fail"]),
+        ..Default::default()
+    };
+    cfg.registry = Arc::new(move || view.clone());
+    cfg.mcp = Some(host.clone());
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        Ok(Reply {
+            blocks: vec![
+                Block::Thinking {
+                    text: "t".repeat(400),
+                    signature: None,
+                },
+                Block::Text {
+                    text: "r".repeat(40),
+                },
+                Block::ToolCall {
+                    id: "c1".into(),
+                    name: "mcp__fx__echo".into(),
+                    arguments: json!({"text": "ping"}),
+                },
+            ],
+            usage: None,
+            stop: Some("tool_use".into()),
+        }),
+        ScriptedLlm::say("done"),
+    ]));
+    let (agent, _events) = Agent::new(
+        llm.clone(),
+        Arc::new(Quiet),
+        store,
+        Tools::standard(work),
+        cfg,
+    );
+    agent.prompt("go", CancellationToken::new()).await.unwrap();
+
+    let preview = agent.context_preview().await.unwrap();
+    let kinds: std::collections::HashMap<Kind, u64> = preview.by_kind().into_iter().collect();
+    assert!(
+        kinds[&Kind::Mcp] > 0 && kinds[&Kind::Tools] > 0,
+        "{kinds:?}"
+    );
+    // The two MCP tools are the ones in that kind, and only they.
+    let mcp_segments: Vec<_> = preview
+        .segments
+        .iter()
+        .filter(|s| s.origin == reactor_agent::inspect::Origin::McpDefinition)
+        .map(|s| s.label.as_str())
+        .collect();
+    assert_eq!(mcp_segments, ["mcp__fx__echo", "mcp__fx__fail"]);
+    // The assistant's message is split, thinking apart from the reply and the call.
+    assert!(kinds[&Kind::Thinking] >= 100, "{kinds:?}");
+    assert!(kinds[&Kind::ToolCalls] > 0 && kinds[&Kind::Reply] > 0);
+    // The kinds add up to the request, to within the rounding of each system part.
+    let sum: u64 = kinds.values().sum();
+    assert!(
+        sum.abs_diff(preview.total_tokens) <= 8,
+        "{kinds:?} vs {}",
+        preview.total_tokens
+    );
+}

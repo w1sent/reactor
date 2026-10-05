@@ -284,3 +284,80 @@ fn windows_default_per_provider_and_ollama_is_conservative() {
     assert_eq!(default_window("ollama"), 32_000);
     assert_eq!(default_window("anything-else"), 128_000);
 }
+
+// -- usage by kind ---------------------------------------------------------------------------
+
+mod usage {
+    use reactor_agent::inspect::{AssistantParts, ContextPreview, Kind, Origin, Section, Segment};
+
+    fn seg(origin: Origin, tokens: u64, parts: Option<AssistantParts>) -> Segment {
+        Segment {
+            section: Section::Messages,
+            origin,
+            label: String::new(),
+            text: String::new(),
+            tokens,
+            entry: None,
+            parts,
+        }
+    }
+
+    #[test]
+    fn every_origin_belongs_to_a_kind_and_every_kind_has_somewhere_to_look() {
+        for origin in Origin::ALL {
+            assert!(
+                Kind::ALL.iter().any(|k| k.origins().contains(&origin)),
+                "{origin:?} is in no kind"
+            );
+        }
+        for kind in Kind::ALL {
+            assert!(!kind.origins().is_empty(), "{kind:?} shows nothing");
+        }
+    }
+
+    #[test]
+    fn kinds_come_in_the_bars_order_without_the_empty_ones() {
+        let p = ContextPreview {
+            segments: vec![
+                seg(Origin::ToolResult, 50, None),
+                seg(Origin::Base, 10, None),
+                seg(Origin::McpDefinition, 7, None),
+                seg(Origin::Identity, 5, None),
+            ],
+            total_tokens: 72,
+            calibration: 1.0,
+        };
+        assert_eq!(
+            p.by_kind(),
+            [(Kind::System, 15), (Kind::Mcp, 7), (Kind::ToolResults, 50)]
+        );
+    }
+
+    #[test]
+    fn an_assistant_message_is_split_and_its_overhead_is_the_replys() {
+        let parts = AssistantParts {
+            reply: 10,
+            thinking: 30,
+            calls: 20,
+        };
+        // 8 tokens are the message's own: they are counted as reply, so the kinds add up.
+        let p = ContextPreview {
+            segments: vec![
+                seg(Origin::Assistant, 68, Some(parts)),
+                seg(Origin::Assistant, 9, None),
+            ],
+            total_tokens: 77,
+            calibration: 1.0,
+        };
+        let kinds = p.by_kind();
+        assert_eq!(
+            kinds,
+            [
+                (Kind::Reply, 10 + 8 + 9),
+                (Kind::Thinking, 30),
+                (Kind::ToolCalls, 20)
+            ]
+        );
+        assert_eq!(kinds.iter().map(|k| k.1).sum::<u64>(), 77);
+    }
+}

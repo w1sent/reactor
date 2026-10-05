@@ -67,6 +67,8 @@ pub enum Page {
     Identities,
     Documents,
     Context,
+    Manifest,
+    Reporting,
     Tools,
     Mcp,
 }
@@ -80,8 +82,10 @@ impl Page {
             Page::Identities => 3,
             Page::Documents => 4,
             Page::Context => 5,
-            Page::Tools => 6,
-            Page::Mcp => 7,
+            Page::Manifest => 6,
+            Page::Reporting => 7,
+            Page::Tools => 8,
+            Page::Mcp => 9,
         }
     }
 }
@@ -161,6 +165,8 @@ impl Render for SettingsWindow {
                             identities_page(&app, cx),
                             documents_page(&app, cx),
                             context_page(&app),
+                            manifest_page(&app),
+                            reporting_page(&app),
                             tools_page(&app),
                             mcp_page(&app, cx),
                         ]),
@@ -1135,6 +1141,231 @@ fn context_page(app: &Entity<ReactorApp>) -> SettingPage {
 // ---------------------------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// Manifest and reporting
+// ---------------------------------------------------------------------------------------------
+
+/// A whole-number setting: a number field that reads and writes one field of the global
+/// settings, with the built-in value as the reset.
+fn count_field(
+    app: &Entity<ReactorApp>,
+    title: &'static str,
+    keywords: &'static [&'static str],
+    range: (f64, f64),
+    get: fn(&reactor_context::settings::Settings) -> usize,
+    set: fn(&mut reactor_context::settings::Settings, usize),
+) -> SettingItem {
+    let default = get(&reactor_context::settings::Settings::default()) as f64;
+    let (g, s, d, r) = (app.clone(), app.clone(), app.clone(), app.clone());
+    SettingItem::new(
+        title,
+        SettingField::<f64>::number_input(
+            sized(range.0, range.1, 1.0),
+            move |cx| get(&g.read(cx).global_settings()) as f64,
+            move |v, cx| {
+                s.update(cx, |app, cx| {
+                    app.edit_settings(|st| set(st, v.max(0.0) as usize), cx)
+                });
+            },
+        )
+        .default_value(default)
+        .on_reset(
+            move |cx| get(&d.read(cx).global_settings()) as f64 != default,
+            move |_, cx| {
+                r.update(cx, |app, cx| {
+                    app.edit_settings(|st| set(st, default as usize), cx)
+                });
+            },
+        ),
+    )
+    .keywords(keywords.iter().copied())
+}
+
+fn manifest_page(app: &Entity<ReactorApp>) -> SettingPage {
+    let group = SettingGroup::new()
+        .item(count_field(
+            app,
+            "Soft step limit",
+            &["steps"],
+            (1.0, 200.0),
+            |s| s.manifest.soft_step_limit,
+            |s, n| s.manifest.soft_step_limit = n.max(1),
+        ))
+        .item(count_field(
+            app,
+            "Longest step description (characters)",
+            &["steps"],
+            (20.0, 500.0),
+            |s| s.manifest.max_description,
+            |s, n| s.manifest.max_description = n.max(1),
+        ))
+        .item(count_field(
+            app,
+            "Words in a step's status",
+            &["steps"],
+            (1.0, 10.0),
+            |s| s.manifest.status_words,
+            |s, n| s.manifest.status_words = n.max(1),
+        ))
+        .item(count_field(
+            app,
+            "Session text a derived goal reads (characters)",
+            &["derive"],
+            (1_000.0, 200_000.0),
+            |s| s.manifest.derive_context_chars,
+            |s, n| s.manifest.derive_context_chars = n.max(1),
+        ));
+    info(
+        SettingPage::new("Manifest")
+            .icon(IconName::Target)
+            .group(group),
+        "manifest-info",
+        "The manifest is the goal, the guidelines and the steps the agent keeps against the goal with update_steps. The goal and guidelines are written in the Context panel (Plan tab). The soft step limit is the number of steps past which the agent is asked to consolidate them; a step's description and status are cut to the lengths here. Saved in ~/.reactor/settings.json; they apply to the next request.",
+    )
+}
+
+fn reporting_page(app: &Entity<ReactorApp>) -> SettingPage {
+    let (l_get, l_set) = (app.clone(), app.clone());
+    let (f_get, f_set, f_dirty, f_reset) = (app.clone(), app.clone(), app.clone(), app.clone());
+    let (t_get, t_set, t_dirty, t_reset) = (app.clone(), app.clone(), app.clone(), app.clone());
+    let levels: Vec<(SharedString, SharedString)> = [
+        ("0", "0 — the instructions in the prompt only"),
+        ("1", "1 — and a reminder while the folder is unchanged"),
+        ("2", "2 — and a turn that left it undocumented is reverted"),
+    ]
+    .iter()
+    .map(|(v, l)| (shared(*v), shared(*l)))
+    .collect();
+    let default_folder = reactor_context::settings::ReportingSettings::default().folder;
+    let group = SettingGroup::new()
+        .item(
+            SettingItem::new(
+                "Level when reporting is switched on",
+                SettingField::<SharedString>::dropdown(
+                    levels,
+                    move |cx| {
+                        shared(
+                            l_get
+                                .read(cx)
+                                .global_settings()
+                                .reporting
+                                .level
+                                .get()
+                                .to_string(),
+                        )
+                    },
+                    move |v, cx| {
+                        if let Some(level) = v
+                            .parse::<u8>()
+                            .ok()
+                            .and_then(reactor_context::settings::Enforcement::new)
+                        {
+                            l_set.update(cx, |app, cx| {
+                                app.edit_settings(|s| s.reporting.level = level, cx)
+                            });
+                        }
+                    },
+                )
+                .default_value(shared("0")),
+            )
+            .keywords(["enforcement"]),
+        )
+        .item(
+            SettingItem::new(
+                "Folder (in the case)",
+                SettingField::<SharedString>::input(
+                    move |cx| shared(f_get.read(cx).global_settings().reporting.folder),
+                    move |v, cx| {
+                        let v = v.trim().to_string();
+                        if !v.is_empty() {
+                            f_set.update(cx, |app, cx| {
+                                app.edit_settings(|s| s.reporting.folder = v, cx)
+                            });
+                        }
+                    },
+                )
+                .on_reset(
+                    {
+                        let default = default_folder.clone();
+                        move |cx| f_dirty.read(cx).global_settings().reporting.folder != default
+                    },
+                    move |_, cx| {
+                        let default = default_folder.clone();
+                        f_reset.update(cx, |app, cx| {
+                            app.edit_settings(|s| s.reporting.folder = default, cx)
+                        });
+                    },
+                ),
+            )
+            .keywords(["report", "directory"]),
+        )
+        .item(count_field(
+            app,
+            "Steps without a change before a reminder",
+            &["nag", "threshold"],
+            (1.0, 100.0),
+            |s| s.reporting.step_threshold,
+            |s, n| s.reporting.step_threshold = n.max(1),
+        ))
+        .item(count_field(
+            app,
+            "Reverts in a row before giving up (level 2)",
+            &["strict", "revert"],
+            (0.0, 20.0),
+            |s| s.reporting.max_reverts,
+            |s, n| s.reporting.max_reverts = n,
+        ))
+        .item(
+            SettingItem::new(
+                "Report template (a file; empty for the built-in)",
+                SettingField::<SharedString>::input(
+                    move |cx| {
+                        shared(
+                            t_get
+                                .read(cx)
+                                .global_settings()
+                                .reporting
+                                .template_path
+                                .unwrap_or_default(),
+                        )
+                    },
+                    move |v, cx| {
+                        let v = v.trim().to_string();
+                        t_set.update(cx, |app, cx| {
+                            app.edit_settings(
+                                |s| s.reporting.template_path = (!v.is_empty()).then_some(v),
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .on_reset(
+                    move |cx| {
+                        t_dirty
+                            .read(cx)
+                            .global_settings()
+                            .reporting
+                            .template_path
+                            .is_some()
+                    },
+                    move |_, cx| {
+                        t_reset.update(cx, |app, cx| {
+                            app.edit_settings(|s| s.reporting.template_path = None, cx)
+                        });
+                    },
+                ),
+            )
+            .keywords(["template"]),
+        );
+    info(
+        SettingPage::new("Reporting")
+            .icon(IconName::File)
+            .group(group),
+        "reporting-settings-info",
+        "Reporting makes the agent write its findings up as it works. It is switched on and its level chosen per session in the Context panel (Plan tab) or with /report; what is here is what a session starts from, and the folder, thresholds and template. The folder is a path in the case: the agent is checked against whether anything in it changed. Saved in ~/.reactor/settings.json.",
+    )
+}
 
 // ---------------------------------------------------------------------------------------------
 // MCP servers

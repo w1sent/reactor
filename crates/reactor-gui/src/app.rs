@@ -236,6 +236,11 @@ pub struct ReactorApp {
     pub scenario: crate::scenario_ui::View,
     /// The scenario chosen to start (the first one until another is picked).
     pub scenario_pick: Option<String>,
+    /// The Plan tab's goal, guidelines, steps and reporting switches.
+    pub plan: crate::plan_ui::PlanView,
+    /// The goal editor and the Frame popup, while they are open.
+    pub goal_editor: Option<crate::manifest_ui::GoalEditor>,
+    pub frame_popup: Option<crate::manifest_ui::FramePopup>,
     /// Which layer of the context budget the settings window edits.
     pub context_scope: crate::settings_window::ContextScope,
     /// The settings window, while it is open.
@@ -1084,6 +1089,9 @@ impl ReactorApp {
             mcp_remove_armed: None,
             scenario: Default::default(),
             scenario_pick: None,
+            plan: Default::default(),
+            goal_editor: None,
+            frame_popup: None,
             embedding_draft: crate::settings_window::ModelDraft {
                 // The one that needs no key and keeps the text on this machine.
                 provider: "ollama".into(),
@@ -1282,6 +1290,7 @@ impl ReactorApp {
                                 i.selected = 0;
                             }
                             i.data = Some(p);
+                            i.select_in_filter();
                         }
                         Err(e) => i.error = Some(e),
                     }
@@ -1772,7 +1781,261 @@ impl ReactorApp {
         let items = status_items(&state, &settings, &self.scenarios_dir);
         self.session.update(cx, |s, _| s.statuses = items);
         self.scenario = crate::scenario_ui::view_of(state.scenario.as_ref(), &self.scenarios_dir);
+        self.plan = crate::plan_ui::plan_of(&state, &settings);
         cx.notify();
+    }
+
+    // -- the manifest and reporting settings (Settings window) ----------------------------
+
+    /// The global settings, for the Manifest and Reporting pages.
+    pub fn global_settings(&self) -> Settings {
+        self.backend
+            .as_ref()
+            .map(|b| Settings::load(&b.paths))
+            .unwrap_or_default()
+    }
+
+    /// Change a global setting and bring what shows it up to date.
+    pub fn edit_settings(&mut self, edit: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        match backend.edit_settings(edit) {
+            Ok(()) => {
+                self.refresh_statuses(cx);
+                backend.refresh_context();
+            }
+            Err(e) => self.push_note("error", format!("settings: {e}")),
+        }
+        cx.notify();
+    }
+
+    // -- the manifest and reporting (the Context panel's Plan tab) -------------------------
+
+    /// Run a command of the agent's side quietly: what it says is not a notification, because
+    /// the panel shows the result. The reason it failed is the `Err`.
+    fn quiet_command(
+        &mut self,
+        name: &str,
+        args: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let backend = self.backend.clone().ok_or("the agent is not running")?;
+        let result = backend.command(name, args)?;
+        if let Some(bad) = result.notices.iter().find(|n| {
+            matches!(
+                n.level,
+                reactor_context::Level::Error | reactor_context::Level::Warning
+            )
+        }) {
+            return Err(bad.message.clone());
+        }
+        self.refresh_statuses(cx);
+        backend.refresh_context();
+        Ok(())
+    }
+
+    /// The manifest on or off: the block and `update_steps` both go quiet when it is off.
+    pub fn manifest_set(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Err(e) = self.quiet_command("manifest", if on { "on" } else { "off" }, cx) {
+            self.push_note("warning", format!("manifest: {e}"));
+        }
+    }
+
+    pub fn report_set(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Err(e) = self.quiet_command("report", if on { "on" } else { "off" }, cx) {
+            self.push_note("warning", format!("reporting: {e}"));
+        }
+    }
+
+    pub fn report_level(&mut self, level: u8, cx: &mut Context<Self>) {
+        if let Err(e) = self.quiet_command("report", &format!("level {level}"), cx) {
+            self.push_note("warning", format!("reporting: {e}"));
+        }
+    }
+
+    /// Open the goal-and-guidelines editor.
+    pub fn open_goal_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let make =
+            |text: &str, placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
+                let text = text.to_string();
+                cx.new(|cx| {
+                    let mut s = TextareaState::new(window, cx).placeholder(placeholder);
+                    s.set_value(&text, window, cx);
+                    s
+                })
+            };
+        let goal = make(
+            self.plan.goal.as_deref().unwrap_or(""),
+            "Find out …",
+            window,
+            cx,
+        );
+        let guidelines = make(
+            self.plan.guidelines.as_deref().unwrap_or(""),
+            "Read-only analysis. Label every inference.",
+            window,
+            cx,
+        );
+        let focus = goal.clone();
+        self.goal_editor = Some(crate::manifest_ui::GoalEditor {
+            goal,
+            guidelines,
+            error: None,
+        });
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let (w_content, w_clear, w_save) = (weak.clone(), weak.clone(), weak.clone());
+            dialog
+                .w(px(640.))
+                .title("Goal and guidelines")
+                .on_close({
+                    let weak = weak.clone();
+                    move |_, _w, cx| {
+                        let _ = weak.update(cx, |app, _| app.goal_editor = None);
+                    }
+                })
+                .content(move |content, _w, cx| {
+                    content.child(crate::manifest_ui::editor_view(&w_content, cx))
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            Button::new("goal-clear")
+                                .label("Clear both")
+                                .tooltip("Remove the goal and the guidelines")
+                                .on_click(move |_, window, cx| {
+                                    let _ = w_clear
+                                        .update(cx, |app, cx| app.save_goal("", "", window, cx));
+                                }),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("goal-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("goal-save").label("Save").primary().on_click(
+                            move |_, window, cx| {
+                                let _ =
+                                    w_save.update(cx, |app, cx| app.read_and_save_goal(window, cx));
+                            },
+                        )),
+                )
+        });
+        window.defer(cx, move |window, cx| {
+            focus.update(cx, |s, cx| s.focus(window, cx));
+        });
+        cx.notify();
+    }
+
+    fn read_and_save_goal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ed) = &self.goal_editor else {
+            return;
+        };
+        let (goal, guidelines) = (
+            ed.goal.read(cx).value().to_string(),
+            ed.guidelines.read(cx).value().to_string(),
+        );
+        self.save_goal(&goal, &guidelines, window, cx);
+    }
+
+    /// Store the goal and the guidelines (empty clears), and close the editor.
+    pub fn save_goal(
+        &mut self,
+        goal: &str,
+        guidelines: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt as _;
+        let arg = |t: &str| {
+            let t = t.trim();
+            if t.is_empty() {
+                "clear".to_string()
+            } else {
+                t.to_string()
+            }
+        };
+        let mut result = Ok(());
+        if goal.trim() != self.plan.goal.as_deref().unwrap_or("") {
+            result = self.quiet_command("goal", &arg(goal), cx);
+        }
+        if result.is_ok() && guidelines.trim() != self.plan.guidelines.as_deref().unwrap_or("") {
+            result = self.quiet_command("guidelines", &arg(guidelines), cx);
+        }
+        match result {
+            Ok(()) => {
+                self.goal_editor = None;
+                window.close_dialog(cx);
+                self.push_note("info", "manifest: saved");
+            }
+            Err(e) => {
+                if let Some(ed) = &mut self.goal_editor {
+                    ed.error = Some(e);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Open the Frame popup: what the model is told about the goal, and what is kept.
+    pub fn open_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let (state, settings) = (backend.session_state(), Settings::load(&backend.paths));
+        let frame = crate::plan_ui::frame_of(&state.manifest, &settings.manifest);
+        let tokens = frame
+            .sent
+            .as_deref()
+            .map(reactor_agent::context::estimate_tokens)
+            .unwrap_or(0);
+        self.frame_popup = Some(crate::manifest_ui::FramePopup {
+            tab: 0,
+            frame,
+            tokens,
+        });
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            let (w_content, w_footer, w_close) = (weak.clone(), weak.clone(), weak.clone());
+            let height = window.viewport_size().height * 0.5;
+            dialog
+                .w(px(720.))
+                .title("The frame")
+                .on_close(move |_, _w, cx| {
+                    let _ = w_close.update(cx, |app, _| app.frame_popup = None);
+                })
+                .content(move |content, _w, cx| {
+                    content.child(crate::manifest_ui::frame_view(&w_content, height, cx))
+                })
+                .footer(crate::manifest_ui::frame_footer(w_footer))
+        });
+        cx.notify();
+    }
+
+    pub fn close_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        if window.has_active_dialog(cx) {
+            window.close_dialog(cx);
+        }
+        self.frame_popup = None;
+        cx.notify();
+    }
+
+    /// The text of the open Frame tab, to the clipboard.
+    pub fn copy_frame(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = &self.frame_popup {
+            let text = match p.tab {
+                0 => p.frame.sent.clone().unwrap_or_default(),
+                _ => p.frame.state.clone(),
+            };
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        }
     }
 
     // -- scenarios (the Context panel's Scenario section) ---------------------------------
@@ -2335,18 +2598,31 @@ impl ReactorApp {
         cx: &mut Context<Self>,
     ) {
         if let Some(i) = &mut self.inspect {
-            i.filter = if i.filter == Some(origin) {
+            let only = vec![origin];
+            i.filter = if i.filter.as_ref() == Some(&only) {
                 None
             } else {
-                Some(origin)
+                Some(only)
             };
-            if let Some(d) = &i.data
-                && i.filter
-                    .is_some_and(|f| d.segments.get(i.selected).is_none_or(|s| s.origin != f))
-                && let Some(first) = d.segments.iter().position(|s| Some(s.origin) == i.filter)
-            {
-                i.selected = first;
-            }
+            i.select_in_filter();
+            cx.notify();
+        }
+    }
+
+    /// Show one kind of what the request is made of in the context window, opening it if need
+    /// be: a row of the usage legend was clicked.
+    pub fn show_kind(
+        &mut self,
+        kind: reactor_agent::inspect::Kind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.inspect.is_none() {
+            self.toggle_inspect(window, cx);
+        }
+        if let Some(i) = &mut self.inspect {
+            i.filter = Some(kind.origins().to_vec());
+            i.select_in_filter();
             cx.notify();
         }
     }
@@ -2836,6 +3112,10 @@ impl ReactorApp {
                 }
             }
             "interrupt" => self.interrupt(window, cx),
+            // The popups of the Plan tab: `/frame` shows the frame, `/goal` and `/guidelines`
+            // without a text open the editor. With a text they are the commands as before.
+            "frame" => self.open_frame(window, cx),
+            "goal" | "guidelines" if args.is_empty() => self.open_goal_editor(window, cx),
             "layout" => match crate::layout::LayoutPreset::ALL
                 .iter()
                 .find(|p| p.label().eq_ignore_ascii_case(args))

@@ -682,8 +682,15 @@ impl Backend {
         let (model, window) = (self.model(), *self.default_window.lock().unwrap());
         self.runtime.spawn(async move {
             if let Ok(m) = agent.measure().await {
+                // What the request is made of, for the usage bar. If it cannot be taken
+                // apart the bar is simply not drawn; the numbers above it still are.
+                let usage = agent
+                    .context_preview()
+                    .await
+                    .map(|p| p.by_kind())
+                    .unwrap_or_default();
                 let _ = tx.send(UiEvent::Context(context_view(
-                    &agent, model, window, m.total,
+                    &agent, model, window, m.total, usage,
                 )));
             }
         });
@@ -807,6 +814,19 @@ impl Backend {
 
     pub fn session_state(&self) -> SessionState {
         self.agent.session_state()
+    }
+
+    // -- manifest and reporting settings -------------------------------------------------------
+
+    /// Change the global manifest or reporting settings: read, edited, saved. The agent reads
+    /// them afresh on every request, so the change is in force at once.
+    pub fn edit_settings(
+        &self,
+        edit: impl FnOnce(&mut Settings),
+    ) -> std::result::Result<(), String> {
+        let mut settings = Settings::load(&self.paths);
+        edit(&mut settings);
+        settings.save(&self.paths).map_err(|e| e.to_string())
     }
 
     // -- identities ------------------------------------------------------------------------------
@@ -949,6 +969,8 @@ pub struct ContextView {
     /// Where each setting comes from: this session, or the default.
     pub origins: Vec<(String, Origin)>,
     pub reductions: Vec<reactor_agent::agent::ReductionInfo>,
+    /// Estimated tokens by kind, in the usage bar's order.
+    pub usage: Vec<(reactor_agent::inspect::Kind, u64)>,
 }
 
 impl ContextView {
@@ -964,6 +986,7 @@ pub fn context_view(
     model: String,
     _default_window: u64,
     used: u64,
+    usage: Vec<(reactor_agent::inspect::Kind, u64)>,
 ) -> ContextView {
     let b = agent.effective_budget();
     let (global, session) = agent.context_layers();
@@ -989,6 +1012,7 @@ pub fn context_view(
             .map(|(k, o)| (k.to_string(), o))
             .collect(),
         reductions: agent.reductions(),
+        usage,
     }
 }
 

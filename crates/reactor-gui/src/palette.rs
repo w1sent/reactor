@@ -92,16 +92,16 @@ pub fn commands() -> Vec<Entry> {
         Entry::fixed(
             "goal",
             "Session",
-            Required,
-            "Set the session goal",
-            "/goal <text> — or /goal clear",
+            Optional,
+            "Set the case goal",
+            "/goal [text] — no text opens the editor — or /goal clear",
         ),
         Entry::fixed(
             "guidelines",
             "Session",
-            Required,
-            "Set the session guidelines",
-            "/guidelines <text> — or /guidelines clear",
+            Optional,
+            "Set the case guidelines",
+            "/guidelines [text] — no text opens the editor — or /guidelines clear",
         ),
         Entry::fixed(
             "manifest",
@@ -114,8 +114,8 @@ pub fn commands() -> Vec<Entry> {
             "frame",
             "Session",
             None,
-            "Show the manifest",
-            "what the model is told about goal, steps and guidelines",
+            "Show the frame",
+            "what the model is told about goal, steps and guidelines, and what is kept",
         ),
         Entry::fixed(
             "identity",

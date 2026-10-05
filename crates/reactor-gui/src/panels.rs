@@ -20,6 +20,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, Theme};
 use gpui_kit::prelude::*;
@@ -2466,6 +2467,405 @@ fn origin_badge(origin: reactor_context::settings::Origin, theme: &Theme) -> imp
         .child(text)
 }
 
+/// 12 400 as `12k`, 1 240 as `1.2k`: sizes in the usage bar are estimates.
+fn tokens_short(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=9_999 => format!("{:.1}k", n as f64 / 1000.0),
+        _ => format!("{}k", n / 1000),
+    }
+}
+
+/// A section of the Plan tab: a bordered box with a header row and its content.
+fn group_box(content: impl IntoElement, theme: &Theme) -> Div {
+    v_flex()
+        .p_2()
+        .gap_2()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.border)
+        .child(content)
+}
+
+/// The usage bar, and under it the totals per part of the request; opened, a legend of every
+/// kind. Colours are the theme's chart colours first ([`crate::inspect_ui::kind_colour`]); a
+/// row of the legend shows that kind in the context window.
+fn usage_block(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    view: &crate::backend::ContextView,
+    open: bool,
+    on_details: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+    theme: &Theme,
+) -> impl IntoElement {
+    use reactor_agent::inspect::{Group, Kind};
+    let hard = view.hard.max(1) as f32;
+    let counted: u64 = view.usage.iter().map(|(_, t)| *t).sum();
+    // The kinds are estimates of the same request `used` measures: if they come to more than
+    // the window, they are drawn to scale rather than past the end of the bar.
+    let scale = if counted as f32 > hard {
+        hard / counted as f32
+    } else {
+        1.0
+    };
+    let trigger_at = (view.trigger as f32 / hard).min(1.0);
+    let mut bar = h_flex()
+        .id("context-bar")
+        .relative()
+        .h(px(12.))
+        .gap(px(1.))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(theme.secondary);
+    if view.usage.is_empty() {
+        // Nothing to take apart (yet): the whole, as before.
+        let fraction = (view.used as f32 / hard).min(1.0);
+        bar = bar.child(
+            div()
+                .h_full()
+                .w(relative(fraction))
+                .bg(if view.used > view.trigger {
+                    theme.warning
+                } else {
+                    theme.accent
+                }),
+        );
+    }
+    for (kind, tokens) in &view.usage {
+        let share = (*tokens as f32 / hard * scale).max(0.0);
+        bar = bar.child(crate::hints::tip(
+            div()
+                .id(SharedString::from(format!("usage-{kind:?}")))
+                .h_full()
+                .w(relative(share))
+                .flex_none()
+                .bg(crate::inspect_ui::kind_colour(*kind, theme)),
+            format!("{}: ~{} tokens", kind.label(), tokens),
+        ));
+    }
+    let bar = div().relative().child(bar).child(
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(2.))
+            .left(relative(trigger_at))
+            .bg(theme.foreground.opacity(0.6)),
+    );
+
+    let group_total = |group: Group| -> u64 {
+        view.usage
+            .iter()
+            .filter(|(k, _)| k.group() == group)
+            .map(|(_, t)| *t)
+            .sum()
+    };
+    let mut totals = h_flex()
+        .justify_between()
+        .items_center()
+        .text_size(theme.font_size * 0.85);
+    for group in [Group::System, Group::Tools, Group::Messages] {
+        totals = totals.child(
+            h_flex()
+                .gap_1()
+                .child(div().child(match group {
+                    Group::System => "System",
+                    Group::Tools => "Tools",
+                    Group::Messages => "Messages",
+                }))
+                .child(
+                    div()
+                        .text_color(theme.muted_foreground)
+                        .child(tokens_short(group_total(group))),
+                ),
+        );
+    }
+    totals = totals.child(
+        Button::new("usage-details")
+            .label("Details")
+            .icon(if open {
+                IconName::ChevronUp
+            } else {
+                IconName::ChevronDown
+            })
+            .ghost()
+            .small()
+            .tooltip("What the request is made of, kind by kind")
+            .on_click(on_details),
+    );
+
+    let mut block = v_flex()
+        .gap_2()
+        .child(
+            h_flex()
+                .justify_between()
+                .items_baseline()
+                .child(Label::new("In the next request"))
+                .child(
+                    Label::new(format!(
+                        "~{} of {} · {}%",
+                        tokens_short(view.used),
+                        tokens_short(view.hard),
+                        view.percent()
+                    ))
+                    .text_color(theme.muted_foreground)
+                    .text_size(theme.font_size * 0.85),
+                ),
+        )
+        .child(bar)
+        .child(totals);
+    if open {
+        let mut legend = v_flex().gap_2();
+        for group in [Group::System, Group::Tools, Group::Messages] {
+            let mut rows = v_flex().gap_0p5().child(
+                h_flex()
+                    .justify_between()
+                    .text_color(theme.muted_foreground)
+                    .text_size(theme.font_size * 0.75)
+                    .child(group.label().to_uppercase())
+                    .child(tokens_short(group_total(group))),
+            );
+            let mut any = false;
+            for (kind, tokens) in view.usage.iter().filter(|(k, _)| k.group() == group) {
+                any = true;
+                let (kind, weak) = (*kind, app.clone());
+                rows = rows.child(
+                    h_flex()
+                        .id(SharedString::from(format!("usage-row-{kind:?}")))
+                        .gap_2()
+                        .items_center()
+                        .px_1()
+                        .h(px(22.))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.list_hover))
+                        .on_click(move |_, window, cx| {
+                            let _ = weak.update(cx, |app, cx| app.show_kind(kind, window, cx));
+                        })
+                        .child(
+                            div()
+                                .size(px(10.))
+                                .rounded_sm()
+                                .flex_none()
+                                .bg(crate::inspect_ui::kind_colour(kind, theme)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(theme.font_size * 0.9)
+                                .child(kind.label()),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .text_size(theme.font_size * 0.85)
+                                .child(tokens_short(*tokens)),
+                        ),
+                );
+            }
+            if any {
+                legend = legend.child(rows);
+            }
+        }
+        block = block.child(legend).child(
+            div()
+                .text_color(theme.muted_foreground)
+                .text_size(theme.font_size * 0.75)
+                .child("A row opens that kind in the context window."),
+        );
+    }
+    let _ = Kind::ALL;
+    block
+}
+
+/// The Goal section of the Plan tab: the goal, the guidelines, the steps the agent keeps, the
+/// manifest switch, and the buttons for the editor and the Frame.
+fn goal_section(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    plan: &crate::plan_ui::PlanView,
+    theme: &Theme,
+) -> impl IntoElement {
+    let muted = theme.muted_foreground;
+    let (a_switch, a_edit, a_frame) = (app.clone(), app.clone(), app.clone());
+    let header = h_flex()
+        .justify_between()
+        .items_center()
+        .child(
+            h_flex().gap_1().items_center().child(Label::new("Goal")).child(
+                crate::hints::info_button(
+                    "goal-info",
+                    "The goal and the guidelines belong to the case: every session of it is told them. The agent keeps its steps against the goal with update_steps, and they are this session's. The Manifest switch pauses all of it: nothing is sent and update_steps goes quiet, and what is set is kept. Frame shows what is sent. /goal, /guidelines, /manifest and /frame do the same.",
+                ),
+            ),
+        )
+        .child(
+            Switch::new("manifest-switch")
+                .small()
+                .checked(plan.manifest_on)
+                .label("Manifest")
+                .tooltip("Send the goal, guidelines and steps to the model, and let it keep steps")
+                .on_click(move |next, _w, cx| {
+                    let next = *next;
+                    let _ = a_switch.update(cx, |app, cx| app.manifest_set(next, cx));
+                }),
+        );
+    let mut content = v_flex().gap_2();
+    content = content.child(match &plan.goal {
+        Some(g) => div()
+            .child(SharedString::from(g.clone()))
+            .into_any_element(),
+        None => div()
+            .text_color(muted)
+            .child("No goal yet. The agent keeps no steps until there is one.")
+            .into_any_element(),
+    });
+    if let Some(g) = &plan.guidelines {
+        content = content.child(
+            div()
+                .id("guidelines-line")
+                .max_h(px(34.))
+                .overflow_hidden()
+                .text_color(muted)
+                .text_size(theme.font_size * 0.85)
+                .child(SharedString::from(format!("Guidelines: {g}"))),
+        );
+    }
+    content = content.child(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                Button::new("goal-edit")
+                    .label("Edit…")
+                    .small()
+                    .tooltip("Write the goal and the guidelines")
+                    .on_click(move |_, window, cx| {
+                        let _ = a_edit.update(cx, |app, cx| app.open_goal_editor(window, cx));
+                    }),
+            )
+            .child(
+                Button::new("goal-frame")
+                    .label("Frame…")
+                    .small()
+                    .tooltip("What the model is told, and what is kept")
+                    .on_click(move |_, window, cx| {
+                        let _ = a_frame.update(cx, |app, cx| app.open_frame(window, cx));
+                    }),
+            ),
+    );
+    if !plan.steps.is_empty() {
+        let mut steps = v_flex().gap_0p5().child(
+            div()
+                .text_color(muted)
+                .text_size(theme.font_size * 0.8)
+                .child(format!("Steps {}/{}", plan.steps.len(), plan.soft_limit)),
+        );
+        for (status, summary) in &plan.steps {
+            let lower = status.to_lowercase();
+            let (glyph, colour) = if lower.contains("done") || lower.contains("complete") {
+                ("●", theme.success)
+            } else if lower.contains("progress")
+                || lower.contains("working")
+                || lower.contains("active")
+            {
+                ("◐", theme.warning)
+            } else {
+                ("○", muted)
+            };
+            steps = steps.child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .text_size(theme.font_size * 0.9)
+                    .child(div().flex_none().text_color(colour).child(glyph))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(SharedString::from(summary.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(muted)
+                            .text_size(theme.font_size * 0.8)
+                            .child(SharedString::from(status.clone())),
+                    ),
+            );
+        }
+        content = content.child(steps);
+    }
+    group_box(v_flex().gap_2().child(header).child(content), theme)
+}
+
+/// The Reporting section of the Plan tab: the switch and the level. The folder, thresholds and
+/// template are in Settings.
+fn reporting_section(
+    app: &gpui_kit::WeakEntity<ReactorApp>,
+    plan: &crate::plan_ui::PlanView,
+    theme: &Theme,
+) -> impl IntoElement {
+    let muted = theme.muted_foreground;
+    let (a_switch, a_level) = (app.clone(), app.clone());
+    let on = plan.report_on;
+    let header = h_flex()
+        .justify_between()
+        .items_center()
+        .child(
+            h_flex().gap_1().items_center().child(Label::new("Reporting")).child(
+                crate::hints::info_button(
+                    "reporting-info",
+                    "Reporting makes the agent write its findings up as it goes, in a folder of the case. Level 0 adds only the instructions to the prompt; 1 also reminds the agent whenever the folder has not changed for a while; 2 reverts a turn that left it undocumented. Folder, thresholds and template are in Settings › Reporting. /report does the same.",
+                ),
+            ),
+        )
+        .child(
+            Switch::new("reporting-switch")
+                .small()
+                .checked(on)
+                .tooltip("Make the agent document its findings in the reporting folder")
+                .on_click(move |next, _w, cx| {
+                    let next = *next;
+                    let _ = a_switch.update(cx, |app, cx| app.report_set(next, cx));
+                }),
+        );
+    let level = TabBar::new("reporting-level")
+        .segmented()
+        .small()
+        .selected_index(plan.report_level.min(2) as usize)
+        .children([
+            Tab::new().label("0 prompt"),
+            Tab::new().label("1 nag"),
+            Tab::new().label("2 strict"),
+        ])
+        .on_click(move |ix: &usize, _w, cx| {
+            // A level is only meant while reporting is on: setting one would switch it on.
+            if on {
+                let ix = *ix as u8;
+                let _ = a_level.update(cx, |app, cx| app.report_level(ix, cx));
+            }
+        });
+    group_box(
+        v_flex()
+            .gap_2()
+            .child(header)
+            .child(div().when(!on, |d| d.opacity(0.5)).child(level))
+            .child(
+                div()
+                    .text_color(muted)
+                    .text_size(theme.font_size * 0.8)
+                    .child(if on {
+                        format!(
+                            "folder {} · level {}",
+                            plan.report_folder, plan.report_level
+                        )
+                    } else {
+                        "off".to_string()
+                    }),
+            ),
+        theme,
+    )
+}
+
 /// The Scenario section of the Context panel: the scenarios to choose from and a Start button,
 /// or, while one runs, its phases as a vertical stepper -- the current one marked, a click on
 /// any other moving to it -- and an Abort button. Moving by hand is for between turns, so the
@@ -2645,9 +3045,21 @@ fn scenario_section(
     )
 }
 
+/// The two tabs of the Context panel: the plan (goal, scenario, reporting) and the budget
+/// (settings and reduction). The usage bar above them belongs to both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ContextTab {
+    #[default]
+    Plan,
+    Budget,
+}
+
 pub struct ContextPanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
     focus: FocusHandle,
+    tab: ContextTab,
+    /// The usage legend is open.
+    details: bool,
 }
 
 impl ContextPanel {
@@ -2659,6 +3071,8 @@ impl ContextPanel {
         Self {
             app,
             focus: cx.focus_handle(),
+            tab: ContextTab::default(),
+            details: false,
         }
     }
 }
@@ -2725,72 +3139,52 @@ impl Render for ContextPanel {
             }
             None => (None, None, false, false, None),
         };
-        let mut body = v_flex()
-            .id("context-body")
-            .p_2()
-            .gap_3()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scrollbar();
+        let plan = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).plan.clone())
+            .unwrap_or_default();
+        // The Plan tab and the Budget tab: what is in each is built below, one is shown.
+        let mut plan_body = v_flex().gap_3();
+        let mut body = v_flex().gap_3();
         let Some(view) = view else {
-            return v_flex()
-                .size_full()
-                .child(body.child(loading_row("measuring the context…", &theme)));
+            return v_flex().size_full().child(
+                v_flex()
+                    .p_2()
+                    .child(loading_row("measuring the context…", &theme)),
+            );
         };
 
-        // -- usage --
-        let fraction = if view.hard == 0 {
-            0.0
-        } else {
-            (view.used as f32 / view.hard as f32).min(1.0)
-        };
-        let trigger_at = if view.hard == 0 {
-            1.0
-        } else {
-            (view.trigger as f32 / view.hard as f32).min(1.0)
-        };
-        let bar_colour = if view.used > view.trigger {
-            theme.warning
-        } else {
-            theme.accent
-        };
-        body = body.child(
-            v_flex()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(Label::new("In the next request"))
-                        .child(Label::new(format!("{}%", view.percent())).text_color(theme.muted_foreground)),
-                )
-                .child(crate::hints::tip(
-                    div()
-                        .id("context-bar")
-                        .relative()
-                        .h(px(8.))
-                        .rounded_full()
-                        .bg(theme.secondary)
-                        .child(div().h_full().rounded_full().bg(bar_colour).w(relative(fraction)))
-                        .child(div().absolute().top_0().bottom_0().w(px(2.)).left(relative(trigger_at)).bg(theme.foreground.opacity(0.6))),
-                    format!(
-                        "~{} of {} usable tokens ({} window − {} reserved). The mark is where reduction starts.",
-                        view.used, view.hard, view.window, view.reserve
-                    ),
-                )),
+        // -- usage: one bar by kind, above the tabs --
+        let details = self.details;
+        let usage = usage_block(
+            &self.app,
+            &view,
+            details,
+            cx.listener(|this, _, _w, cx| {
+                this.details = !this.details;
+                cx.notify();
+            }),
+            &theme,
         );
 
-        // -- scenario --
+        // -- the plan: goal, scenario, reporting --
+        plan_body = plan_body.child(goal_section(&self.app, &plan, &theme));
         if let Some((scenario, pick, toolsets, tools)) = scenario {
-            body = body.child(scenario_section(
-                &self.app,
-                &scenario,
-                pick,
-                toolsets.as_ref(),
-                tools.as_ref(),
-                idle,
+            plan_body = plan_body.child(group_box(
+                scenario_section(
+                    &self.app,
+                    &scenario,
+                    pick,
+                    toolsets.as_ref(),
+                    tools.as_ref(),
+                    idle,
+                    &theme,
+                ),
                 &theme,
             ));
         }
+        plan_body = plan_body.child(reporting_section(&self.app, &plan, &theme));
 
         // -- settings --
         let origin_of = |key: &str| {
@@ -3001,7 +3395,36 @@ impl Render for ContextPanel {
         }
         body = body.child(in_force);
 
-        v_flex().size_full().child(body)
+        let tabs = TabBar::new("context-tabs")
+            .selected_index(match self.tab {
+                ContextTab::Plan => 0,
+                ContextTab::Budget => 1,
+            })
+            .children([Tab::new().label("Plan"), Tab::new().label("Budget")])
+            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                this.tab = if *ix == 0 {
+                    ContextTab::Plan
+                } else {
+                    ContextTab::Budget
+                };
+                cx.notify();
+            }));
+        v_flex()
+            .size_full()
+            .child(div().flex_none().px_2().pt_2().child(usage))
+            .child(div().flex_none().px_2().child(tabs))
+            .child(
+                div()
+                    .id("context-body")
+                    .p_2()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(match self.tab {
+                        ContextTab::Plan => plan_body,
+                        ContextTab::Budget => body,
+                    }),
+            )
     }
 }
 

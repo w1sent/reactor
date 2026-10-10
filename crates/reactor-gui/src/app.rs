@@ -60,6 +60,8 @@ actions!(
         RefreshReactor,
         /// Ctrl+P / Cmd+P, or the Commands menu: open the command palette.
         OpenPalette,
+        /// Ctrl+W / Cmd+W: close the tab in front (the one with the focus).
+        CloseTab,
         /// While the `/` completion popup is open: move the highlight.
         SlashUp,
         SlashDown,
@@ -313,6 +315,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(vec![
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-p", OpenPalette, None),
+        KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("escape", CloseNotices, Some("ReactorNotices")),
         // The prompt: up on its top line and down on its bottom line walk through the messages
@@ -2160,6 +2163,63 @@ impl ReactorApp {
     ) {
         crate::layout::toggle_dock(side, &self.dock_area, window, cx);
         cx.notify();
+    }
+
+    /// Ctrl+W / Cmd+W: close the tab in front — what its own close button does. "In front" is
+    /// the displayed tab of the group the keyboard focus is in; with the focus nowhere in the
+    /// dock, the front tab of the centre.
+    pub fn close_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The palette is a dialog over the window: Ctrl+W there closes the dialog, not what is
+        // behind it.
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        let area = self.dock_area.clone();
+        let target = {
+            let area = area.read(cx);
+            let mut fronts: Vec<(DockPlacement, Arc<dyn PanelView>)> = Vec::new();
+            for placement in [
+                DockPlacement::Center,
+                DockPlacement::Left,
+                DockPlacement::Right,
+                DockPlacement::Bottom,
+            ] {
+                let Some(tree) = area.layout(placement) else {
+                    continue;
+                };
+                tree.root().walk(&mut |node| {
+                    if let gpui_kit::base::dock::PaneRef::Tabs { panels, active_ix } = node.kind()
+                        && let Some(front) = panels
+                            .get(active_ix)
+                            .and_then(|id| area.panel(*id))
+                    {
+                        fronts.push((placement, front.clone()));
+                    }
+                });
+            }
+            let focused = fronts
+                .iter()
+                .find(|(_, panel)| panel.focus_handle(cx).contains_focused(window, cx))
+                .cloned();
+            focused.or_else(|| {
+                fronts
+                    .iter()
+                    .find(|(placement, _)| *placement == DockPlacement::Center)
+                    .cloned()
+            })
+        };
+        let Some((_, panel)) = target else {
+            return;
+        };
+        if !panel.closable(cx) {
+            return;
+        }
+        let view = panel.view();
+        let closed = area.update(cx, |area, cx| remove_any_panel(area, view, window, cx));
+        if closed {
+            cx.notify();
+        }
     }
 
     /// Take one panel out of the dock — what a panel's own close button does.
@@ -4093,6 +4153,41 @@ impl ReactorApp {
     }
 }
 
+/// Take a panel out of the dock knowing it only as a view: the dock removes by typed entity, so
+/// this tries every kind of panel the window has.
+fn remove_any_panel(
+    area: &mut DockArea,
+    view: gpui_kit::AnyView,
+    window: &mut Window,
+    cx: &mut Context<DockArea>,
+) -> bool {
+    macro_rules! try_kinds {
+        ($($kind:ty),+ $(,)?) => {$(
+            if let Ok(entity) = view.clone().downcast::<$kind>() {
+                area.remove_panel(entity, window, cx);
+                return true;
+            }
+        )+};
+    }
+    try_kinds!(
+        TranscriptPanel,
+        crate::files::editor::EditorPanel,
+        crate::files::table::TablePanel,
+        crate::files::data::DataPanel,
+        crate::files::hex::HexPanel,
+        crate::files::explorer::FilesPanel,
+        crate::graph::panel::GraphPanel,
+        crate::docs_panel::DocsPanel,
+        TreePanel,
+        ToolsPanel,
+        ToolsetsPanel,
+        ServicesPanel,
+        ContextPanel,
+        ConsolePanel,
+    );
+    false
+}
+
 /// The palette's contents, for its dialog: the library's command list over the entries ranked for
 /// what is typed. The list does the typing and keyboard navigation; ranking is ours
 /// (`crate::palette`), so its own filtering is off. The dialog builds this again on every frame,
@@ -4216,6 +4311,7 @@ impl Render for ReactorApp {
             .on_action(
                 cx.listener(|this, _: &ClosePalette, window, cx| this.close_palette(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &CloseTab, window, cx| this.close_tab(window, cx)))
             .on_action(
                 cx.listener(|this, _: &CloseNotices, window, cx| this.close_notices(window, cx)),
             )

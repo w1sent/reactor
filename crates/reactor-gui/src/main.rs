@@ -21,6 +21,10 @@ use reactor_gui::start::{GuiConfig, LaunchArgs, ResolvedLaunch, parse_args};
 use reactor_gui::theme;
 
 fn main() {
+    // The endpoints and keys saved from Settings > Model, exported before any thread exists
+    // to read the environment; a variable the environment already has wins.
+    reactor_agent::connection::EnvFile::load(&reactor_core::Paths::from_env().config_dir)
+        .export_missing();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Headless commands run before gpui exists, so they work with no display (ADR-0045).
     if let Some(code) =

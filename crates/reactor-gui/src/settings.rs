@@ -88,6 +88,9 @@ pub struct UiSettings {
     pub animations: bool,
     /// Whether to draw lightly, for a machine whose graphics are done on the CPU.
     pub rendering: Rendering,
+    /// Write the endpoints and keys typed on the Model page to `~/.reactor/env`, so they are
+    /// there next time. Off, they last until the window closes.
+    pub keep_keys: bool,
 }
 
 /// How the window is drawn. The light mode drops what costs fill rate and repaint rate on a
@@ -173,6 +176,7 @@ impl Default for UiSettings {
             notice_seconds: 6,
             animations: false,
             rendering: Rendering::Auto,
+            keep_keys: true,
         }
     }
 }
@@ -372,7 +376,7 @@ mod tests {
         assert!(s.fonts.is_empty());
         assert_eq!(
             serde_json::to_string(&s).unwrap(),
-            r#"{"fonts":{},"tool_output_chars":2000,"expand_thinking":false,"dim_reduced":true,"start_layout":"default","notice_seconds":6,"animations":false,"rendering":"auto"}"#
+            r#"{"fonts":{},"tool_output_chars":2000,"expand_thinking":false,"dim_reduced":true,"start_layout":"default","notice_seconds":6,"animations":false,"rendering":"auto","keep_keys":true}"#
         );
     }
 

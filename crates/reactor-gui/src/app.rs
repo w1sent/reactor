@@ -2892,6 +2892,19 @@ impl ReactorApp {
         );
     }
 
+    /// Offer a model in the picker.
+    pub fn list_model(&mut self, spec: &str, cx: &mut Context<Self>) {
+        let spec = spec.to_string();
+        self.change_model_settings(
+            |s| {
+                if !s.models.contains(&spec) {
+                    s.models.push(spec)
+                }
+            },
+            cx,
+        );
+    }
+
     pub fn unlist_model(&mut self, spec: &str, cx: &mut Context<Self>) {
         self.change_model_settings(
             |s| {

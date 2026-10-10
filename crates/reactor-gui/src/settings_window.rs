@@ -13,7 +13,6 @@ use gpui_kit::component::progress::Progress;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, SharedString, Window, div, px, size};
@@ -112,7 +111,7 @@ pub fn open_at(cx: &mut App, app: Entity<ReactorApp>, page: Page) {
     let for_window = app.clone();
     let opened = cx.open_window(crate::chrome::window_options(bounds), move |window, cx| {
         crate::theme::install_ayu_dark(cx);
-        let view = cx.new(|cx| SettingsWindow::new(for_window, page, cx));
+        let view = cx.new(|cx| SettingsWindow::new(for_window, page, window, cx));
         let root: gpui_kit::AnyView = view.into();
         cx.new(|cx| Root::new(root, window, cx))
     });
@@ -124,17 +123,40 @@ pub fn open_at(cx: &mut App, app: Entity<ReactorApp>, page: Page) {
 
 struct SettingsWindow {
     app: Entity<ReactorApp>,
+    /// The Model page: its fields and what each provider's endpoint offered live here, so they
+    /// outlast a redraw of the page.
+    cards: Entity<crate::model_cards::ModelCards>,
+    embedding_cards: Entity<crate::model_cards::EmbeddingCards>,
     /// The page it opened on.
     page: Page,
     _watch: gpui_kit::Subscription,
 }
 
 impl SettingsWindow {
-    fn new(app: Entity<ReactorApp>, page: Page, cx: &mut Context<Self>) -> Self {
+    fn new(
+        app: Entity<ReactorApp>,
+        page: Page,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let cards = {
+            let app = app.clone();
+            cx.new(|cx| crate::model_cards::ModelCards::new(app, window, cx))
+        };
+        let embedding_cards = {
+            let cards = cards.clone();
+            cx.new(|_| crate::model_cards::EmbeddingCards::new(cards))
+        };
         // The fields show the app's state, so they follow it when it changes (a notification, a
         // model switch made in the main window).
         let _watch = cx.observe(&app, |_, _, cx| cx.notify());
-        Self { app, page, _watch }
+        Self {
+            app,
+            page,
+            cards,
+            embedding_cards,
+            _watch,
+        }
     }
 }
 
@@ -161,9 +183,9 @@ impl Render for SettingsWindow {
                         .pages(vec![
                             fonts_page(&app, cx),
                             behaviour_page(&app),
-                            model_page(&app, cx),
+                            model_page(&self.cards),
                             identities_page(&app, cx),
-                            documents_page(&app, cx),
+                            documents_page(&app, &self.embedding_cards, cx),
                             context_page(&app),
                             manifest_page(&app),
                             reporting_page(&app),
@@ -218,53 +240,6 @@ fn actions(title: &'static str, buttons: Vec<Action>, app: &Entity<ReactorApp>) 
             );
         }
         row
-    })
-}
-
-/// A row of tabs, one per provider, with the current one selected: every choice is in sight,
-/// and a click makes it. (`set` stores the choice in the app's draft.)
-fn provider_tabs(
-    id: &'static str,
-    providers: &'static [&'static str],
-    current: String,
-    app: &Entity<ReactorApp>,
-    set: fn(&mut ReactorApp, &str),
-) -> SettingItem {
-    let app = app.clone();
-    SettingItem::render(move |_, _w, _cx| {
-        let app = app.clone();
-        h_flex()
-            .gap_2()
-            .items_center()
-            .child(div().w(px(160.)).child("Provider"))
-            .child(
-                TabBar::new(id)
-                    .segmented()
-                    .selected_index(providers.iter().position(|p| *p == current).unwrap_or(0))
-                    .children(providers.iter().map(|p| Tab::new().label(*p)))
-                    .on_click(move |ix, _w, cx| {
-                        let Some(provider) = providers.get(*ix) else {
-                            return;
-                        };
-                        app.update(cx, |app, cx| {
-                            set(app, provider);
-                            cx.notify();
-                        });
-                    }),
-            )
-    })
-}
-
-/// A line across the group: what comes above it is about the provider, below it about the
-/// model.
-fn divider() -> SettingItem {
-    SettingItem::render(|_, _w, cx| {
-        div()
-            .w_full()
-            .h(px(1.))
-            .my_1()
-            .bg(cx.theme().border)
-            .into_any_element()
     })
 }
 
@@ -472,185 +447,14 @@ fn behaviour_page(app: &Entity<ReactorApp>) -> SettingPage {
 // Model
 // ---------------------------------------------------------------------------------------------
 
-fn key_variable(provider: &str) -> &'static str {
-    match provider {
-        "anthropic" => "ANTHROPIC_API_KEY",
-        "openai" => "OPENAI_API_KEY",
-        "gemini" => "GEMINI_API_KEY",
-        "openrouter" => "OPENROUTER_API_KEY",
-        _ => "OLLAMA_API_BASE_URL",
-    }
-}
-
-fn model_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
-    let (default_model, models) = app.read(cx).model_settings();
-    let mut options: Vec<(SharedString, SharedString)> = vec![(shared(""), shared("none"))];
-    options.extend(
-        models
-            .iter()
-            .map(|m| (shared(m.clone()), shared(m.clone()))),
-    );
-    if let Some(d) = &default_model
-        && !models.contains(d)
-    {
-        options.push((shared(d.clone()), shared(d.clone())));
-    }
-    let (d_get, d_set) = (app.clone(), app.clone());
-    let (n_get, n_set) = (app.clone(), app.clone());
-
-    let provider = app.read(cx).model_draft.provider.clone();
-    let variable = key_variable(&provider);
-    let key_ok = provider == "ollama" || std::env::var_os(variable).is_some();
-    let key_text = if provider == "ollama" {
-        "local".to_string()
-    } else if key_ok {
-        format!("{variable} set")
-    } else {
-        format!("{variable} not set")
-    };
-    let key_help = if provider == "ollama" {
-        format!("Ollama runs on this machine and needs no key. {variable} overrides its address.")
-    } else {
-        format!(
-            "REactor reads the key from {variable} in the environment and never stores it. Set it before starting the GUI."
-        )
-    };
-
-    let list_app = app.clone();
-    let listed = models.clone();
-    let group = SettingGroup::new()
-        .title("Default model")
-        .item(SettingItem::new(
-            "Default model",
-            SettingField::<SharedString>::dropdown(
-                options,
-                move |cx| shared(d_get.read(cx).model_settings().0.unwrap_or_default()),
-                move |v, cx| {
-                    d_set.update(cx, |app, cx| {
-                        app.set_default_model((!v.is_empty()).then(|| v.to_string()), cx)
-                    });
-                },
-            )
-            .default_value(shared("")),
-        ))
-        .item(actions(
-            "This session",
-            vec![(
-                "Make its model the default",
-                "The model this session is using becomes the default for new sessions",
-                |app, cx| app.promote_model(cx),
-            )],
-            app,
-        ));
-    let add = SettingGroup::new()
-        .title("Add a model")
-        .item(provider_tabs(
-            "model-provider",
-            &reactor_agent::provider::PROVIDERS,
-            provider.clone(),
-            app,
-            |app, p| app.model_draft.provider = p.to_string(),
-        ))
-        .item(SettingItem::render(move |_, _w, cx| {
-            h_flex()
-                .gap_2()
-                .child(div().w(px(160.)).child("API key"))
-                .child(crate::hints::tip(
-                    div()
-                        .id("key-status")
-                        .text_color(if key_ok {
-                            cx.theme().muted_foreground
-                        } else {
-                            cx.theme().warning
-                        })
-                        .child(key_text.clone()),
-                    key_help.clone(),
-                ))
-        }))
-        .item(divider())
-        .item(SettingItem::new(
-            "Model name",
-            SettingField::<SharedString>::input(
-                move |cx| shared(n_get.read(cx).model_draft.name.clone()),
-                move |v, cx| {
-                    n_set.update(cx, |app, cx| {
-                        app.model_draft.name = v.to_string();
-                        cx.notify();
-                    });
-                },
-            ),
-        ))
-        .item(actions(
-            "Use it",
-            vec![
-                (
-                    "Set as default",
-                    "provider/name becomes the default for new sessions",
-                    |app, cx| app.set_typed_model(ModelUse::Default, cx),
-                ),
-                (
-                    "Use in this session",
-                    "Switch this session to it now",
-                    |app, cx| app.set_typed_model(ModelUse::Now, cx),
-                ),
-                (
-                    "Add to picker list",
-                    "Offer it in the status bar's model picker",
-                    |app, cx| app.set_typed_model(ModelUse::List, cx),
-                ),
-            ],
-            app,
-        ));
-    let picker = SettingGroup::new()
-        .title("Models in the picker")
-        .item(SettingItem::render(move |_, _w, cx| {
-            let mut rows = v_flex().gap_1();
-            if listed.is_empty() {
-                rows = rows.child(div().text_color(cx.theme().muted_foreground).child("none"));
-            }
-            for spec in &listed {
-                let (app, name) = (list_app.clone(), spec.clone());
-                let (app_use, name_use) = (list_app.clone(), spec.clone());
-                rows = rows.child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_size(cx.theme().mono_font_size)
-                                .child(spec.clone()),
-                        )
-                        .child(
-                            Button::new(shared(format!("use-{spec}")))
-                                .label("use now")
-                                .small()
-                                .on_click(move |_, _w, cx| {
-                                    let spec = name_use.clone();
-                                    app_use.update(cx, |app, cx| app.set_model(&spec, cx));
-                                }),
-                        )
-                        .child(
-                            Button::new(shared(format!("remove-{spec}")))
-                                .label("remove")
-                                .small()
-                                .ghost()
-                                .on_click(move |_, _w, cx| {
-                                    let spec = name.clone();
-                                    app.update(cx, |app, cx| app.unlist_model(&spec, cx));
-                                }),
-                        ),
-                );
-            }
-            rows
-        }));
+fn model_page(cards: &Entity<crate::model_cards::ModelCards>) -> SettingPage {
+    let cards = cards.clone();
     info(
         SettingPage::new("Model")
             .icon(IconName::Server)
-            .groups([group, add, picker]),
+            .group(SettingGroup::new().item(SettingItem::render(move |_, _w, _cx| cards.clone()))),
         "model-info",
-        "Saved in ~/.reactor/settings.json, which the agent reads too. The context budget is on the Context page.",
+        "One card per provider. The endpoint and key are environment variables (the card's tooltips name them); typed values can also be kept in ~/.reactor/env. Models are listed by the endpoint itself; a click puts one in the picker, which is saved in ~/.reactor/settings.json with the default model. The context budget is on the Context page.",
     )
 }
 
@@ -852,30 +656,14 @@ fn identities_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
     )
 }
 
-fn documents_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
+fn documents_page(
+    app: &Entity<ReactorApp>,
+    chooser: &Entity<crate::model_cards::EmbeddingCards>,
+    cx: &App,
+) -> SettingPage {
+    let chooser = chooser.clone();
     let chosen = app.read(cx).embedding_model();
     let status = app.read(cx).corpus_status();
-    let provider = app.read(cx).embedding_draft.provider.clone();
-    let variable = key_variable(&provider);
-    let local = provider == "ollama";
-    let key_ok = local || std::env::var_os(variable).is_some();
-    let key_text = if local {
-        "local".to_string()
-    } else if key_ok {
-        format!("{variable} set")
-    } else {
-        format!("{variable} not set")
-    };
-    let key_help = if local {
-        format!(
-            "Ollama runs on this machine: the text of your documents does not leave it. {variable} overrides its address."
-        )
-    } else {
-        format!(
-            "REactor reads the key from {variable} in the environment and never stores it. Set it before starting the GUI."
-        )
-    };
-    let (n_get, n_set) = (app.clone(), app.clone());
     let running = app.read(cx).embedding_progress();
     let armed = app.read(cx).reembed_armed;
 
@@ -987,57 +775,13 @@ fn documents_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
     ));
     let choose = SettingGroup::new()
         .title("Choose the model")
-        .item(provider_tabs(
-            "embedding-provider",
-            &reactor_agent::embed::EMBEDDING_PROVIDERS,
-            provider.clone(),
-            app,
-            |app, p| app.embedding_draft.provider = p.to_string(),
-        ))
-        .item(SettingItem::render(move |_, _w, cx| {
-            h_flex()
-                .gap_2()
-                .child(div().w(px(160.)).child("Key / address"))
-                .child(crate::hints::tip(
-                    div()
-                        .id("embed-key-status")
-                        .text_color(if key_ok {
-                            cx.theme().muted_foreground
-                        } else {
-                            cx.theme().warning
-                        })
-                        .child(key_text.clone()),
-                    key_help.clone(),
-                ))
-        }))
-        .item(divider())
-        .item(SettingItem::new(
-            "Model name",
-            SettingField::<SharedString>::input(
-                move |cx| shared(n_get.read(cx).embedding_draft.name.clone()),
-                move |v, cx| {
-                    n_set.update(cx, |app, cx| {
-                        app.embedding_draft.name = v.to_string();
-                        cx.notify();
-                    });
-                },
-            ),
-        ))
-        .item(actions(
-            "Use it",
-            vec![(
-                "Use this model",
-                "Remember it as the embedding model and start making the vectors. Until it has finished, search keeps using the earlier vectors, or keywords",
-                |app, cx| app.set_typed_embedding(cx),
-            )],
-            app,
-        ));
+        .item(SettingItem::render(move |_, _w, _cx| chooser.clone()));
     info(
         SettingPage::new("Documents")
             .icon(IconName::BookOpen)
             .groups([state, matching, choose]),
         "documents-info",
-        "The model that lets the agent search imported documents by meaning. There is no default. With OpenAI or Gemini the text of your documents is sent to that provider; with Ollama it stays on this machine. Changing the model re-embeds in the background. The meaning threshold is how close in meaning (cosine similarity, 0 to 1, larger is closer) a passage must be to a question to count as a match; 0 means none, and a good value depends on the model: look at the similarity shown for a result in the Documents panel and set it just under what the results you wanted had. Saved in ~/.reactor/settings.json. Import documents with /import or Case > Import Documents.",
+        "The model that lets the agent search imported documents by meaning. There is no default. The cards are the Model page's: OpenAI, Gemini and Ollama, each with its endpoint and key, and the embedding models the endpoint lists (every model, with the eye button); a click chooses one and Use, at the top, starts making the vectors, because that sends every passage of the documents to the endpoint shown. With Ollama at its own address the text stays on this machine; with another endpoint it does not. Changing the model re-embeds in the background. The meaning threshold is how close in meaning (cosine similarity, 0 to 1, larger is closer) a passage must be to a question to count as a match; 0 means none, and a good value depends on the model: look at the similarity shown for a result in the Documents panel and set it just under what the results you wanted had. Saved in ~/.reactor/settings.json. Import documents with /import or Case > Import Documents.",
     )
 }
 

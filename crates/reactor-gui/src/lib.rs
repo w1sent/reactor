@@ -18,6 +18,7 @@ pub mod import;
 pub mod inspect_ui;
 pub mod layout;
 pub mod manifest_ui;
+pub mod model_cards;
 pub mod mcp_editor;
 pub mod notices_ui;
 pub mod notifications;

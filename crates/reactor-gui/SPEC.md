@@ -410,13 +410,17 @@ the main window's state, follows it when it changes, and shows the same notifica
   the editor*; a notification is for a line, not a page. The editor's text box has a height of its
   own (what the window leaves) and scrolls inside it, so a long identity never pushes the buttons
   out of reach. Saved identities are in `settings.json`.
-- **Model** — the model new sessions start on (`defaultModel` in `settings.json`), chosen from the
-  picker's list; a provider (anthropic, openai, gemini, openrouter, ollama; the page says whether its
-  key variable is set), a model name, and *Set as default* / *Use in this session* / *Add to picker
-  list*; the picker's list itself; *Make its model the default* for the session's model. API keys are
-  read from the environment, never stored.
-- Where a page chooses a provider (Model, Documents) the providers are a row of **tabs**, the
-  current one selected, not a dropdown: every choice is in sight and a click makes it.
+- **Model** — one wide card per provider (anthropic, openai, gemini, openrouter, ollama), edited
+  in place with no separate "configure" step. A card shows the **endpoint** in effect and where
+  it came from (default, environment, saved, this run), the **key** masked to its last four
+  characters, and the **models the endpoint lists** (rig's `list_models`; embedding models left
+  out) as chips: a click puts one in the picker, a star makes it the default, play switches the
+  session to it. A **+** button adds a model by name, for an endpoint that does not list.
+  Endpoint and key save when the field is left; they are the environment variables rig reads
+  (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `OLLAMA_API_BASE_URL`, `*_API_KEY`; Gemini's and
+  OpenRouter's endpoints are fixed), exported in the process, and with *Keep typed values on this
+  machine* also written to `~/.reactor/env` (owner-only, plain text; a variable already in the
+  environment wins). Explanations are tooltips.
 - **Documents** (ADR-0046) — the embedding model that lets the agent search imported documents by
   meaning (`embedding.model` in `settings.json`; none by default, and until one is chosen search is by
   keyword). The page shows the current model, how many documents and passages the case has, and each
@@ -427,10 +431,85 @@ the main window's state, follows it when it changes, and shows the same notifica
   for a second press first, because every passage goes to the provider again and the documents
   cannot be searched by meaning until it has finished; it stops a run that is going and starts
   afresh. *Turn off* returns to keyword search.
-  Choosing: a provider (openai, gemini, ollama; the page says whether its key variable is set, and that
-  with Ollama the text stays on this machine and with the others it is sent to the provider), a model
-  name, *Use this model*. Changing the model re-embeds in the background and search keeps the earlier
-  vectors until the new set is complete. Importing is `/import` or *Case › Import Documents…*.
+  Choosing: the same cards as the Model page (openai, gemini, ollama; one state, so an endpoint or
+  key set on one page is set on the other), each with its endpoint and where it came from, its key
+  masked, and the embedding models the endpoint lists (judged by name; an eye button lists every
+  model, and `+` adds one by name for an endpoint that lists none). A click on a model chooses it;
+  the strip above the cards then shows it with the endpoint it will be sent to and **Use**, which
+  starts making the vectors — a step of its own, because it sends every passage of the documents to
+  that endpoint. Changing the model re-embeds in the background and search keeps the earlier vectors
+  until the new set is complete. Importing is `/import` or *Case › Import Documents…*.
+- **Context** — the agent's context budget: reduction mode, the window in tokens (REactor does not ask
+  the provider for it: set it for your model), the reserve for the reply, when a reduction starts and
+  how far it goes (percentages of the usable window), and the summarizer model. A dropdown chooses
+  the layer edited: the **default** (`settings.json`, for new sessions) or **this session only**. A
+  field that is not set there shows what the session uses now; *reset* clears it, so a session falls
+  back to the default and the default to the built-in value.
+- **Tools** — *Make session's the default* and *Use the default* for the session's tool activation.
+
+Fonts and behaviour are not per session: they are saved for every session as they change. The pages
+that can differ per session (Model, Context, Tools) have their own *make the session's … the default*.
+
+### 6.0b The context window
+
+*Show the context window* — the Context panel's button, `/inspect`, or the palette — opens a popup
+with the request the model would be sent next, taken apart. It is `reactor-agent`'s own
+`context_preview`, the pieces the loop sends, so it shows what the model gets. Each piece carries
+its **source**: the base prompt, identity, tool registry, skills, manifest, reporting, the current
+scenario phase, the tool definitions, then the messages — yours, the model's, tool results,
+reduction stand-ins and any reporting reminder. The chips above the list total the estimated tokens
+per source and filter by it; the (i) beside a piece says where it comes from and how to change it.
+*Copy all* puts the whole request on the clipboard.
+
+### 6.0 Commands: the palette and the `/` popup
+
+Every user-facing feature is a **slash command** — `ReactorApp::run_command` is the one
+place that executes them — and two views list them (`src/palette.rs`):
+
+- **The command palette** — `Ctrl+P` / `Cmd+P`, or *Commands → Command Palette…* in the
+  app menu. It lists the commands *and* what the session's state makes possible: a line per
+  model (`Model: switch to …`), per tool (`Tool: enable adb`, `Tool: install frida`), toolset,
+  scenario, identity and reduction in force, plus layouts, docks, context settings and so on.
+  Choosing an entry runs it; one that needs arguments (`/goal`, `/tool`, …) puts `/name ` in
+  the composer instead.
+- **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
+  input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
+  more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
+  **Once a command's name and a space are typed, the popup offers that command's parameters**
+  (`/identity ` the identities and the words it takes; `/model ` the models; `/layout `, `/dock `,
+  `/panel `, `/preview `, `/reduce `, `/undo `, `/report `, `/manifest `, `/reactor-scenario `,
+  `/context `, `/activation `, `/embedding `, `/tool `, `/toolset `, `/install `): typing narrows them
+  (typos forgiven, the ones used most first among equals); a parameter that ends the command
+  runs it, one that is followed by another argument (`/tool <id>` takes `on` or `off`) completes
+  the text and offers the next. The palette does the same when its query is a command's name
+  and a space. Taking a completion puts **the cursor at the beginning of what was completed**:
+  the start of the command, or of the parameter.
+
+**Ranking** is the same for both. An entry's score is the number of characters of the query it
+matches — the longest common subsequence of what was typed and the entry's text, inside a
+window no wider than twice the query — so a missing, extra, wrong or swapped letter costs one
+match rather than the whole entry (`raduce` finds `reduce`). The query may lose one character in
+four and still match. Entries are ordered by score; equal scores by how often the person has
+run them (`command_usage` in `~/.reactor/gui.json`); equal frequency by the shorter text, then
+alphabetically. With nothing typed, frequency alone orders the list.
+
+### 6.0a Settings
+
+*Commands → Settings…*, `Ctrl+,` / `Cmd+,` or `/settings` opens a popup (`src/settings_ui.rs`).
+Changes apply at once and are saved to `ui` in `~/.reactor/gui.json`; unset means the theme's own,
+so a fresh install looks as it always did and *reset* clears a field.
+
+- **Fonts** — a family (an installed font's name, checked when you press Enter or leave the
+  field) and a size in pixels, for: *Interface* and *Monospace* (the theme's base fonts, which
+  every component reads), *Transcript*, *Tool calls and output*, *Prompt input* and *Console*.
+  Tool and toolset names and the `/` popup use the monospace font at its own size.
+- **Behaviour** — open thinking blocks by default; dim what a reduction took out of the model's
+  view; how much tool output the transcript shows (the session keeps it all); the layout a window
+  opens with.
+
+- **Model** — see above: the provider cards, the picker's list (`models`) and the default
+  (`defaultModel`) in `settings.json`; endpoints and keys in the environment and `~/.reactor/env`.
+
 - **Context** — the agent's context budget: reduction mode, the window in tokens (REactor does not ask
   the provider for it: set it for your model), the reserve for the reply, when a reduction starts and
   how far it goes (percentages of the usable window), and the summarizer model. A dropdown chooses

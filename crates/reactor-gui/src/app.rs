@@ -41,6 +41,8 @@ use crate::session::{AgentPhase, ChatItem, Session, status_items};
 
 /// How often the event pump drains the backend's channel (SPEC.md §2).
 const PUMP_TICK: Duration = Duration::from_millis(50);
+/// In the light rendering mode the working indicators redraw every this many 100 ms clock ticks.
+const LIGHT_INDICATOR_TICKS: u32 = 4;
 /// How much of a tool card's output the transcript renders before it sheds the tail
 /// (the whole of it is in the session and `history_read` reaches it).
 pub const TOOL_OUTPUT_MAX_CHARS: usize = 2000;
@@ -823,6 +825,8 @@ impl ReactorApp {
         let _handle = cx.open_window(crate::chrome::window_options(bounds), |window, cx| {
             crate::theme::install_ayu_dark(cx);
             let app: Entity<ReactorApp> = cx.new(|cx| ReactorApp::new(window, cx, args));
+            // Only a window knows its renderer: a software one switches the light mode on (Auto).
+            crate::settings::detect_adapter(window, &crate::start::GuiConfig::load_ui(), cx);
             app_entity = Some(app.clone());
             cx.set_global(MainWindow {
                 handle: window.window_handle(),
@@ -1402,8 +1406,18 @@ impl ReactorApp {
                         if let Some(app) = main.app.upgrade() {
                             app.update(cx, |app, cx| {
                                 app.flush_toasts(window, cx);
-                                // The running prompt's clock: redrawn twice a second.
-                                if ticks.is_multiple_of(5) && app.session.read(cx).run.is_some() {
+                                // The working indicators (a shimmer, a pulse) and the running
+                                // prompt's clock are drawn from the wall clock, so a redraw is
+                                // all they need: ten a second normally, fewer where drawing is
+                                // done by the CPU. Nothing redraws while nothing works.
+                                let busy = app.session.read(cx).run.is_some()
+                                    || !app.working_ids().is_empty();
+                                let every = if crate::settings::LightRendering::on(cx) {
+                                    LIGHT_INDICATOR_TICKS
+                                } else {
+                                    1
+                                };
+                                if busy && ticks.is_multiple_of(every) {
                                     cx.notify();
                                 }
                             });
@@ -2922,10 +2936,21 @@ impl ReactorApp {
         let weak = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let weak = weak.clone();
+            let closed = weak.clone();
             dialog
                 .w(px(640.))
                 .margin_top(px(72.))
                 .close_button(false)
+                // However it was closed, the prompt has the keyboard at once rather than when
+                // the library's close timer fires.
+                .on_close(move |_, window, cx| {
+                    let _ = closed.update(cx, |app, cx| {
+                        if app.palette.take().is_some() {
+                            app.composer.update(cx, |state, cx| state.focus(window, cx));
+                            cx.notify();
+                        }
+                    });
+                })
                 .content(move |content, _window, cx| content.child(palette_list(&weak, cx)))
         });
         // After this frame renders: a view that is not in the tree yet cannot take focus.

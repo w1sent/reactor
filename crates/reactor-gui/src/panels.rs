@@ -14,10 +14,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::label::Label;
-use gpui_kit::component::marker::{Marker, MarkerContent, MarkerIcon, MarkerLoadingStyle};
+use gpui_kit::component::marker::{Marker, MarkerContent, MarkerIcon};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::shimmer::ShimmerStyle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -547,14 +546,10 @@ fn render_item(
                                     .text_color(theme.muted_foreground),
                             )
                             .child(if *streaming {
-                                // Still thinking: the library's shimmer sweeps over the word.
+                                // Still thinking: a shimmer sweeps over the word.
                                 div()
                                     .text_color(theme.muted_foreground)
-                                    .child(
-                                        gpui_kit::component::shimmer::ShimmerText::new("thinking…")
-                                            .id(("thinking-shimmer", index))
-                                            .highlight_color(theme.foreground),
-                                    )
+                                    .child(crate::indicator::shimmer("thinking…", theme.foreground))
                                     .into_any_element()
                             } else {
                                 Label::new("thinking")
@@ -1097,18 +1092,16 @@ impl Render for TranscriptPanel {
             AgentPhase::Working => Some("working"),
             AgentPhase::Compacting => Some("reducing the context"),
         };
-        // gpui-kit's marker in its shimmering loading state, at the foot of the transcript: the
-        // agent is working on a prompt. Nothing at all when it is not.
+        // A shimmering line at the foot of the transcript: the agent is working on a prompt.
+        // Nothing at all when it is not.
         let running = phase_label.map(|label| {
-            div().px_3().py_1().child(
-                Marker::new()
-                    .id("agent-running")
-                    .role(gpui_kit::Role::Status)
-                    .loading(true)
-                    .with_loading_style(MarkerLoadingStyle::Shimmer)
-                    .with_shimmer_style(ShimmerStyle::new().highlight_color(theme.foreground))
-                    .text_color(theme.muted_foreground)
-                    .content(MarkerContent::new().text(match run {
+            div()
+                .id("agent-running")
+                .px_3()
+                .py_1()
+                .text_color(theme.muted_foreground)
+                .child(crate::indicator::shimmer(
+                    match run {
                         // How long this prompt has run and what it has streamed so far.
                         Some((elapsed, tokens)) if tokens > 0 => format!(
                             "{label} · {} · {tokens} tokens",
@@ -1119,8 +1112,9 @@ impl Render for TranscriptPanel {
                             crate::session::format_duration(elapsed.as_millis() as u64)
                         ),
                         None => label.to_string(),
-                    })),
-            )
+                    },
+                    theme.foreground,
+                ))
         });
         // Messages scheduled to run right after this prompt, each a marker: what they say, and
         // (on hover) how to bring them back into the input.
@@ -1485,7 +1479,7 @@ impl Render for TreePanel {
             .upgrade()
             .map(|a| a.read(cx).case_id())
             .unwrap_or_default();
-        for (sidx, s) in sessions.iter().enumerate() {
+        for s in sessions.iter() {
             let id = s.id.clone();
             let is_working = working.contains(&s.id);
             let selected = self.session_selection.as_deref() == Some(s.id.as_str());
@@ -1515,7 +1509,6 @@ impl Render for TreePanel {
                     // The whole row breathes while the session works: a wash of the accent
                     // colour, behind the text, that swells and fades.
                     .when(is_working, |el| {
-                        let accent = theme.accent;
                         el.child(
                             div()
                                 .absolute()
@@ -1523,15 +1516,7 @@ impl Render for TreePanel {
                                 .left_0()
                                 .size_full()
                                 .rounded_md()
-                                .with_animation(
-                                    ("session-pulse", sidx),
-                                    Animation::new(std::time::Duration::from_millis(1600)).repeat(),
-                                    move |wash, delta| {
-                                        let swell =
-                                            0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
-                                        wash.bg(accent.opacity(0.05 + 0.2 * swell))
-                                    },
-                                ),
+                                .bg(theme.accent.opacity(0.05 + 0.2 * crate::indicator::pulse())),
                         )
                     })
                     .when(!(s.current || selected), |el| {
@@ -1574,11 +1559,7 @@ impl Render for TreePanel {
                                 .overflow_hidden()
                                 .text_size(theme.font_size * 0.9)
                                 .text_color(theme.muted_foreground)
-                                .child(
-                                    gpui_kit::component::shimmer::ShimmerText::new(text)
-                                        .id(("session-working", sidx))
-                                        .highlight_color(theme.accent),
-                                )
+                                .child(crate::indicator::shimmer(text, theme.accent))
                         } else {
                             div()
                                 .truncate()
@@ -1619,11 +1600,7 @@ impl Render for TreePanel {
                             });
                         // The line under it shimmers too, in the same sweep.
                         if is_working {
-                            base.child(
-                                gpui_kit::component::shimmer::ShimmerText::new(line)
-                                    .id(("session-working-detail", sidx))
-                                    .highlight_color(theme.foreground),
-                            )
+                            base.child(crate::indicator::shimmer(line, theme.foreground))
                         } else {
                             base.child(SharedString::from(line))
                         }

@@ -354,7 +354,13 @@ fn behaviour_page(app: &Entity<ReactorApp>) -> SettingPage {
     let (o_get, o_set) = (app.clone(), app.clone());
     let (n_get, n_set) = (app.clone(), app.clone());
     let (l_get, l_set) = (app.clone(), app.clone());
+    let (a_get, a_set) = (app.clone(), app.clone());
+    let (r_get, r_set) = (app.clone(), app.clone());
     let standard = crate::settings::UiSettings::default();
+    let renderings: Vec<(SharedString, SharedString)> = crate::settings::Rendering::ALL
+        .iter()
+        .map(|r| (shared(r.key()), shared(r.label())))
+        .collect();
     let layouts: Vec<(SharedString, SharedString)> = LayoutPreset::ALL
         .iter()
         .map(|p| (shared(p.label().to_ascii_lowercase()), shared(p.label())))
@@ -415,6 +421,32 @@ fn behaviour_page(app: &Entity<ReactorApp>) -> SettingPage {
             .default_value(f64::from(standard.notice_seconds)),
         ))
         .item(SettingItem::new(
+            "Animate dialogs, menus and popups",
+            SettingField::<bool>::switch(
+                move |cx| a_get.read(cx).ui.animations,
+                move |v, cx| {
+                    a_set.update(cx, |app, cx| app.update_ui(|ui| ui.animations = v, cx));
+                },
+            )
+            .default_value(standard.animations),
+        ))
+        .item(SettingItem::new(
+            "Rendering",
+            SettingField::<SharedString>::dropdown(
+                renderings,
+                move |cx| shared(r_get.read(cx).ui.rendering.key()),
+                move |v, cx| {
+                    r_set.update(cx, |app, cx| {
+                        app.update_ui(
+                            |ui| ui.rendering = crate::settings::Rendering::from_key(&v),
+                            cx,
+                        )
+                    });
+                },
+            )
+            .default_value(shared(standard.rendering.key())),
+        ))
+        .item(SettingItem::new(
             "Layout a window opens with",
             SettingField::<SharedString>::dropdown(
                 layouts,
@@ -432,7 +464,7 @@ fn behaviour_page(app: &Entity<ReactorApp>) -> SettingPage {
             .icon(IconName::LayoutDashboard)
             .group(group.title("Behaviour")),
         "behaviour-info",
-        "Only the transcript is cut to the tool output length; the session log keeps all of it. Every notification is also kept behind the bell in the title bar. Saved in ~/.reactor/gui.json for every session.",
+        "Only the transcript is cut to the tool output length; the session log keeps all of it. Every notification is also kept behind the bell in the title bar. Animations are off by default so the next key press never waits for a transition; the working indicators keep moving either way. Rendering: Light drops shadows and redraws the working indicators less often, which is what a machine without graphics acceleration (a VM, mostly) wants; Automatic turns it on when the renderer is a software one. Saved in ~/.reactor/gui.json for every session.",
     )
 }
 

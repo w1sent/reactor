@@ -91,6 +91,20 @@ repositories with their own release cycles, referenced by the catalogue. See
 
 ## Install
 
+One command checks for the build dependencies, installs what is missing (system
+packages, Rust), builds, installs and runs `reactor setup`:
+
+```bash
+# macOS, Linux (Debian/Ubuntu, Fedora/RHEL/Rocky/Alma, Arch, openSUSE, Alpine, Void)
+curl -fsSL https://raw.githubusercontent.com/w1sent/reactor/main/scripts/install.sh | bash
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/w1sent/reactor/main/scripts/install.ps1 | iex
+```
+
+Options go after `bash -s --` (`--yes`, `--dry-run`, `--no-gui`, `--ref`, `--src`,
+`--skip-deps`; `-Yes`, `-DryRun`, … for the PowerShell one). `--dry-run` shows every
+step without changing anything. The rest of this section is the same thing by hand:
+
 ```bash
 cargo install --git https://github.com/w1sent/reactor reactor-cli   # the `reactor` binary
 cargo install --git https://github.com/w1sent/reactor reactor-gui   # the GUI

@@ -82,6 +82,84 @@ pub struct UiSettings {
     pub start_layout: String,
     /// How long a notification popup stays, in seconds.
     pub notice_seconds: u32,
+    /// Let dialogs, menus, popups and tooltips slide and fade in. Off, they simply appear, so
+    /// the next keystroke never waits for a transition. Indicators of a state (the shimmer of
+    /// a working session) are not transitions and are unaffected.
+    pub animations: bool,
+    /// Whether to draw lightly, for a machine whose graphics are done on the CPU.
+    pub rendering: Rendering,
+}
+
+/// How the window is drawn. The light mode drops what costs fill rate and repaint rate on a
+/// software rasteriser (shadows; the working indicators redraw less often) and costs nothing
+/// worth having on a GPU, so `Auto` turns it on only when the renderer says it is emulated.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rendering {
+    /// Light when the graphics adapter is a software one (a VM without acceleration).
+    #[default]
+    Auto,
+    /// Always light.
+    Light,
+    /// Always full.
+    Full,
+}
+
+impl Rendering {
+    pub const ALL: [Rendering; 3] = [Rendering::Auto, Rendering::Light, Rendering::Full];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Rendering::Auto => "Automatic",
+            Rendering::Light => "Light (for software rendering)",
+            Rendering::Full => "Full",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Rendering::Auto => "auto",
+            Rendering::Light => "light",
+            Rendering::Full => "full",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Rendering {
+        Rendering::ALL
+            .into_iter()
+            .find(|r| r.key() == key)
+            .unwrap_or_default()
+    }
+
+    /// Whether the light mode is in force, given whether the adapter is a software one.
+    pub fn is_light(self, software_adapter: bool) -> bool {
+        match self {
+            Rendering::Auto => software_adapter,
+            Rendering::Light => true,
+            Rendering::Full => false,
+        }
+    }
+}
+
+/// What the window's graphics adapter turned out to be, found once the window exists.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Adapter {
+    /// The renderer is the CPU (llvmpipe, lavapipe, WARP …).
+    pub software: bool,
+}
+
+impl Global for Adapter {}
+
+/// Whether the light rendering mode is in force right now.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LightRendering(pub bool);
+
+impl Global for LightRendering {}
+
+impl LightRendering {
+    pub fn on(cx: &App) -> bool {
+        cx.try_global::<LightRendering>().is_some_and(|l| l.0)
+    }
 }
 
 impl Default for UiSettings {
@@ -93,6 +171,8 @@ impl Default for UiSettings {
             dim_reduced: true,
             start_layout: "default".into(),
             notice_seconds: 6,
+            animations: false,
+            rendering: Rendering::Auto,
         }
     }
 }
@@ -198,6 +278,8 @@ pub struct ThemeFonts {
     size: Pixels,
     mono_family: SharedString,
     mono_size: Pixels,
+    /// Whether the theme draws shadows, for putting them back after the light mode.
+    shadow: bool,
 }
 
 impl Global for ThemeFonts {}
@@ -210,6 +292,7 @@ pub fn capture_theme_fonts(cx: &mut App) {
         size: t.font_size,
         mono_family: t.mono_font_family.clone(),
         mono_size: t.mono_font_size,
+        shadow: t.shadow,
     };
     cx.set_global(fonts);
 }
@@ -249,7 +332,26 @@ pub fn apply(settings: &UiSettings, cx: &mut App) {
         .map(|f| SharedString::from(f.to_string()))
         .unwrap_or(base.mono_family);
     theme.mono_font_size = settings.size(Slot::Mono).map(px).unwrap_or(base.mono_size);
+
+    // Motion and weight of the drawing. `set_reduce_motion` is what makes every library
+    // transition render its end state in the first frame; it is a no-op when unchanged.
+    let light = settings
+        .rendering
+        .is_light(cx.try_global::<Adapter>().is_some_and(|a| a.software));
+    Theme::global_mut(cx).shadow = base.shadow && !light;
+    cx.set_global(LightRendering(light));
+    cx.set_reduce_motion(!settings.animations);
     cx.refresh_windows();
+}
+
+/// Record what the window's adapter is, and apply the rendering mode accordingly. Called once
+/// the main window exists: only a window knows its renderer.
+pub fn detect_adapter(window: &gpui_kit::Window, settings: &UiSettings, cx: &mut App) {
+    let software = window
+        .gpu_specs()
+        .is_some_and(|specs| specs.is_software_emulated);
+    cx.set_global(Adapter { software });
+    apply(settings, cx);
 }
 
 /// Whether the system has a font with this name.
@@ -270,8 +372,20 @@ mod tests {
         assert!(s.fonts.is_empty());
         assert_eq!(
             serde_json::to_string(&s).unwrap(),
-            r#"{"fonts":{},"tool_output_chars":2000,"expand_thinking":false,"dim_reduced":true,"start_layout":"default","notice_seconds":6}"#
+            r#"{"fonts":{},"tool_output_chars":2000,"expand_thinking":false,"dim_reduced":true,"start_layout":"default","notice_seconds":6,"animations":false,"rendering":"auto"}"#
         );
+    }
+
+    #[test]
+    fn automatic_rendering_is_light_only_on_a_software_adapter() {
+        assert!(Rendering::Auto.is_light(true));
+        assert!(!Rendering::Auto.is_light(false));
+        assert!(Rendering::Light.is_light(false));
+        assert!(!Rendering::Full.is_light(true));
+        for r in Rendering::ALL {
+            assert_eq!(Rendering::from_key(r.key()), r);
+        }
+        assert_eq!(Rendering::from_key("nonsense"), Rendering::Auto);
     }
 
     #[test]

@@ -6,12 +6,14 @@
 //! meaning or both is offered only where a search by meaning can be made — as for the
 //! agent — and the reason it cannot is behind an (i).
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
@@ -24,7 +26,8 @@ use gpui_kit::{
     SharedString, StyledText, Window, div, px,
 };
 use reactor_agent::embed::Mode;
-use reactor_db::corpus::{self, Hit, Passage};
+use reactor_agent::entry::Attachment;
+use reactor_db::corpus::{self, DocumentInfo, Hit, Passage};
 
 use crate::app::ReactorApp;
 use crate::backend::Backend;
@@ -147,6 +150,61 @@ impl Choice {
     }
 }
 
+/// The two views of the panel. Search is the one it opens on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Search,
+    Library,
+}
+
+/// A text for the agent from passages: each under its section, in reading order.
+fn attachment(
+    label: String,
+    source: String,
+    part: String,
+    passages: &[(String, String)],
+) -> Attachment {
+    let text = passages
+        .iter()
+        .map(|(heading, text)| {
+            if heading.is_empty() {
+                text.clone()
+            } else {
+                format!("### {heading}\n{text}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let (text, truncated) = reactor_agent::references::limit(text);
+    Attachment {
+        label,
+        source,
+        part,
+        tokens: reactor_agent::context::estimate_tokens(&text),
+        text,
+        truncated,
+        via: "panel".into(),
+    }
+}
+
+fn document_label(title: &Option<String>, source: &str) -> String {
+    title
+        .clone()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| source.to_string())
+}
+
+/// A file's name, for a short mime-like kind column.
+fn kind_of(doc: &DocumentInfo) -> String {
+    let ext = doc
+        .source_uri
+        .rsplit('.')
+        .next()
+        .filter(|e| e.len() <= 5 && !e.contains('/'))
+        .map(|e| e.to_ascii_uppercase());
+    ext.or_else(|| doc.mime.clone()).unwrap_or_else(|| "—".into())
+}
+
 pub struct DocsPanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
     focus: FocusHandle,
@@ -180,6 +238,22 @@ pub struct DocsPanel {
     /// Those sentences, with how close each is (best first), for the selected passage.
     why_marks: Vec<reactor_agent::embed::Sentence>,
     why_note: Option<String>,
+    tab: Tab,
+    /// The documents of the case, newest first.
+    docs: Vec<DocumentInfo>,
+    /// The documents searched in (their ids); none: all of them.
+    scope: Vec<String>,
+    /// The picker for the scope is open, with its filename filter.
+    scope_open: bool,
+    scope_filter: Entity<InputState>,
+    /// Results ticked to be given to the agent.
+    checked: BTreeSet<i64>,
+    /// The texts the agent already holds: a passage inside one of them is marked as given.
+    given: Vec<String>,
+    /// Library: the filename filter, the document chosen and how big it is.
+    library_filter: Entity<InputState>,
+    library_selected: Option<String>,
+    library_size: Option<(usize, u64)>,
 }
 
 impl DocsPanel {
@@ -195,8 +269,35 @@ impl DocsPanel {
             }
         })
         .detach();
+        let scope_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter by filename…"));
+        cx.subscribe_in(&scope_filter, window, |_, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        let library_filter = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter by filename, path or title")
+        });
+        cx.subscribe_in(&library_filter, window, |_, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             app,
+            tab: Tab::Search,
+            docs: Vec::new(),
+            scope: Vec::new(),
+            scope_open: false,
+            scope_filter,
+            checked: BTreeSet::new(),
+            given: Vec::new(),
+            library_filter,
+            library_selected: None,
+            library_size: None,
             focus: cx.focus_handle(),
             backend: None,
             input,
@@ -234,6 +335,9 @@ impl DocsPanel {
             return;
         };
         self.counts = corpus::counts(b.case.db()).unwrap_or((0, 0));
+        self.docs = corpus::documents(b.case.db()).unwrap_or_default();
+        self.scope.retain(|id| self.docs.iter().any(|d| &d.id == id));
+        self.given = b.attachments().into_iter().map(|(_, a)| a.text).collect();
         self.meaning = b.meaning_status();
         if self.meaning.is_err() && self.choice == Choice::Meaning {
             self.choice = Choice::Both;
@@ -255,7 +359,9 @@ impl DocsPanel {
         self.searching = true;
         self.error = None;
         self.status = "searching…".into();
-        let handle = b.search_docs(text.clone(), LIMIT, self.choice.mode());
+        // A scope is applied after the search, so it asks for more to have enough left.
+        let asked = if self.scope.is_empty() { LIMIT } else { LIMIT * 8 };
+        let handle = b.search_docs(text.clone(), asked, self.choice.mode());
         cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = handle.await;
@@ -265,7 +371,13 @@ impl DocsPanel {
                 }
                 this.searching = false;
                 match outcome {
-                    Ok(Ok(found)) => {
+                    Ok(Ok(mut found)) => {
+                        if !this.scope.is_empty() {
+                            let scope = this.scope.clone();
+                            found.hits.retain(|h| scope.contains(&h.document_id));
+                            found.hits.truncate(LIMIT);
+                        }
+                        this.checked.clear();
                         this.status = format!(
                             "{} passage{} {}",
                             found.hits.len(),
@@ -314,6 +426,177 @@ impl DocsPanel {
         self.load_context();
         self.explain(cx);
         cx.notify();
+    }
+
+    /// Re-run the search for the query as typed, after the scope changed.
+    fn rerun(&mut self, cx: &mut Context<Self>) {
+        if !self.input.read(cx).value().trim().is_empty() {
+            self.search(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn toggle_scope(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.scope.iter().position(|s| s == id) {
+            Some(i) => {
+                self.scope.remove(i);
+            }
+            None => self.scope.push(id.to_string()),
+        }
+        self.rerun(cx);
+    }
+
+    fn clear_scope(&mut self, cx: &mut Context<Self>) {
+        self.scope.clear();
+        self.rerun(cx);
+    }
+
+    /// The agent already holds this passage: some attachment contains its text.
+    fn is_given(&self, hit: &Hit) -> bool {
+        self.given.iter().any(|g| g.contains(hit.text.as_str()))
+    }
+
+    fn toggle_checked(&mut self, chunk: i64, cx: &mut Context<Self>) {
+        if !self.checked.remove(&chunk) {
+            self.checked.insert(chunk);
+        }
+        cx.notify();
+    }
+
+    /// Tick every result not already given, or none if they all are ticked.
+    fn check_all(&mut self, cx: &mut Context<Self>) {
+        let all: BTreeSet<i64> = self
+            .hits
+            .iter()
+            .filter(|h| !self.is_given(h))
+            .map(|h| h.chunk_id)
+            .collect();
+        self.checked = if self.checked == all { BTreeSet::new() } else { all };
+        cx.notify();
+    }
+
+    /// The ticked results, one attachment per document, in the documents' order and each in
+    /// reading order.
+    fn checked_attachments(&self) -> Vec<Attachment> {
+        let mut by_doc: Vec<(String, Vec<&Hit>)> = Vec::new();
+        for hit in self.hits.iter().filter(|h| self.checked.contains(&h.chunk_id)) {
+            match by_doc.iter_mut().find(|(d, _)| *d == hit.document_id) {
+                Some((_, hits)) => hits.push(hit),
+                None => by_doc.push((hit.document_id.clone(), vec![hit])),
+            }
+        }
+        by_doc.sort_by_key(|(d, _)| self.docs.iter().position(|x| &x.id == d).unwrap_or(usize::MAX));
+        by_doc
+            .into_iter()
+            .map(|(_, mut hits)| {
+                hits.sort_by_key(|h| h.chunk_id);
+                let first = hits[0];
+                let part = match hits.as_slice() {
+                    [one] if !one.heading_path.is_empty() => one.heading_path.clone(),
+                    [_] => "1 passage".to_string(),
+                    many => format!("{} passages", many.len()),
+                };
+                let passages: Vec<(String, String)> = hits
+                    .iter()
+                    .map(|h| (h.heading_path.clone(), h.text.clone()))
+                    .collect();
+                attachment(
+                    document_label(&first.title, &first.source_uri),
+                    first.source_uri.clone(),
+                    part,
+                    &passages,
+                )
+            })
+            .collect()
+    }
+
+    fn token_estimate(&self) -> u64 {
+        self.hits
+            .iter()
+            .filter(|h| self.checked.contains(&h.chunk_id))
+            .map(|h| reactor_agent::context::estimate_tokens(&h.text))
+            .sum()
+    }
+
+    fn give(&mut self, attachments: Vec<Attachment>, cx: &mut Context<Self>) {
+        if attachments.is_empty() {
+            return;
+        }
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |app, cx| app.give_to_agent(attachments, cx));
+        }
+        self.checked.clear();
+        self.refresh(cx);
+    }
+
+    fn give_checked(&mut self, cx: &mut Context<Self>) {
+        let attachments = self.checked_attachments();
+        self.give(attachments, cx);
+    }
+
+    /// A whole document of the library.
+    fn give_document(&mut self, id: &str, cx: &mut Context<Self>) {
+        let (Some(b), Some(doc)) = (
+            self.backend.clone(),
+            self.docs.iter().find(|d| d.id == id).cloned(),
+        ) else {
+            return;
+        };
+        let passages = corpus::document_passages(b.case.db(), id).unwrap_or_default();
+        let pairs: Vec<(String, String)> = passages
+            .into_iter()
+            .map(|p| (p.heading_path, p.text))
+            .collect();
+        if pairs.is_empty() {
+            if let Some(app) = self.app.upgrade() {
+                app.update(cx, |app, _| app.push_note("warning", "that document has no text"));
+            }
+            return;
+        }
+        let a = attachment(
+            document_label(&doc.title, &doc.source_uri),
+            doc.source_uri.clone(),
+            "whole document".into(),
+            &pairs,
+        );
+        self.give(vec![a], cx);
+    }
+
+    fn select_document(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        self.library_size = None;
+        if let (Some(b), Some(id)) = (self.backend.clone(), id.as_ref()) {
+            let passages = corpus::document_passages(b.case.db(), id).unwrap_or_default();
+            let tokens = passages
+                .iter()
+                .map(|p| reactor_agent::context::estimate_tokens(&p.text))
+                .sum();
+            self.library_size = Some((passages.len(), tokens));
+        }
+        self.library_selected = id;
+        cx.notify();
+    }
+
+    /// Search inside one document: the Search tab, scoped to it.
+    fn search_inside(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.scope = vec![id];
+        self.tab = Tab::Search;
+        self.input.update(cx, |s, cx| s.focus(window, cx));
+        self.rerun(cx);
+    }
+
+    fn open_document_source(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.iter().find(|d| d.id == id) else {
+            return;
+        };
+        let uri = doc.source_uri.split('#').next().unwrap_or("").to_string();
+        if uri.starts_with("http://") || uri.starts_with("https://") {
+            cx.open_url(&uri);
+        } else if let Some(app) = self.app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.open_reference(&uri, None, Default::default(), window, cx)
+            });
+        }
     }
 
     /// List the results in the order chosen. The sort is stable: ties keep the search's order.
@@ -697,6 +980,8 @@ impl Render for DocsPanel {
             .overflow_y_scrollbar()
             .children(self.hits.iter().enumerate().map(|(i, hit)| {
                 let selected = self.selected == Some(i);
+                let chunk = hit.chunk_id;
+                let given = self.is_given(hit);
                 let title = hit
                     .title
                     .clone()
@@ -734,10 +1019,34 @@ impl Render for DocsPanel {
                             .gap_2()
                             .justify_between()
                             .child(
-                                div()
-                                    .truncate()
-                                    .text_color(theme.foreground)
-                                    .child(SharedString::from(title)),
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .min_w_0()
+                                    .child(if given {
+                                        hints::tip(
+                                            div()
+                                                .id(("docs-given", i))
+                                                .w(px(16.))
+                                                .text_color(theme.success)
+                                                .child("✓"),
+                                            "The agent already holds this passage",
+                                        )
+                                        .into_any_element()
+                                    } else {
+                                        Checkbox::new(("docs-check", i))
+                                            .checked(self.checked.contains(&chunk))
+                                            .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                                this.toggle_checked(chunk, cx)
+                                            }))
+                                            .into_any_element()
+                                    })
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_color(theme.foreground)
+                                            .child(SharedString::from(title)),
+                                    ),
                             )
                             .child(hints::tip(
                                 div()
@@ -967,12 +1276,235 @@ impl Render for DocsPanel {
                 })
         });
 
+        // Tabs: Search is where it opens.
+        let tab_button = |id: &'static str, label: &'static str, tab: Tab| {
+            let b = Button::new(id).small().label(label);
+            let b = if self.tab == tab { b.primary() } else { b.ghost() };
+            b.on_click(cx.listener(move |this, _, _, cx| {
+                this.tab = tab;
+                cx.notify();
+            }))
+        };
+        let tabs = h_flex()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(tab_button("docs-tab-search", "Search", Tab::Search))
+                    .child(tab_button("docs-tab-library", "Library", Tab::Library)),
+            )
+            .child(
+                div()
+                    .text_size(small)
+                    .text_color(theme.muted_foreground)
+                    .child(format!(
+                        "{} document{} · {} passage{}",
+                        self.counts.0,
+                        if self.counts.0 == 1 { "" } else { "s" },
+                        self.counts.1,
+                        if self.counts.1 == 1 { "" } else { "s" },
+                    )),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("docs-import-top")
+                    .small()
+                    .ghost()
+                    .icon(IconName::Plus)
+                    .tooltip("Import documents: files, folders, URLs and wiki dumps")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(crate::app::ImportDocuments), cx)
+                    })),
+            );
+
+        if self.tab == Tab::Library {
+            let library = self.render_library(&theme, cx);
+            return v_flex()
+                .id("docs-panel")
+                .track_focus(&self.focus)
+                .size_full()
+                .bg(theme.background)
+                .child(tabs)
+                .child(library)
+                .into_any_element();
+        }
+
+        // The scope: which documents the search looks in. None chosen: all of them.
+        let scope_row = {
+            let chips = self.scope.iter().filter_map(|id| {
+                let doc = self.docs.iter().find(|d| &d.id == id)?;
+                let id = id.clone();
+                let name = document_label(&doc.title, &doc.source_uri);
+                Some(
+                    Button::new(SharedString::from(format!("scope-{id}")))
+                        .small()
+                        .label(format!("{name} ×"))
+                        .tooltip("Take it out of the scope")
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_scope(&id, cx))),
+                )
+            });
+            h_flex()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .items_center()
+                .flex_wrap()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_size(small)
+                        .text_color(theme.muted_foreground)
+                        .child("Search in"),
+                )
+                .when(self.scope.is_empty(), |r| {
+                    r.child(div().text_size(small).child("all documents"))
+                })
+                .children(chips)
+                .child(
+                    Button::new("docs-scope-add")
+                        .small()
+                        .ghost()
+                        .icon(IconName::ChevronDown)
+                        .label("documents")
+                        .tooltip("Choose the documents to search in")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.scope_open = !this.scope_open;
+                            cx.notify();
+                        })),
+                )
+                .when(!self.scope.is_empty(), |r| {
+                    r.child(
+                        Button::new("docs-scope-clear")
+                            .small()
+                            .ghost()
+                            .label("all")
+                            .tooltip("Search in all documents again")
+                            .on_click(cx.listener(|this, _, _, cx| this.clear_scope(cx))),
+                    )
+                })
+        };
+        let scope_picker = self.scope_open.then(|| {
+            let filter = self.scope_filter.read(cx).value().trim().to_ascii_lowercase();
+            let shown: Vec<&DocumentInfo> = self
+                .docs
+                .iter()
+                .filter(|d| {
+                    filter.is_empty()
+                        || d.source_uri.to_ascii_lowercase().contains(&filter)
+                        || d.title
+                            .as_deref()
+                            .is_some_and(|t| t.to_ascii_lowercase().contains(&filter))
+                })
+                .collect();
+            v_flex()
+                .gap_1()
+                .p_2()
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.tokens.title_bar)
+                .child(Input::new(&self.scope_filter).small())
+                .child(
+                    v_flex()
+                        .id("docs-scope-list")
+                        .max_h(px(200.))
+                        .overflow_y_scrollbar()
+                        .children(shown.into_iter().enumerate().map(|(i, d)| {
+                            let id = d.id.clone();
+                            let on = self.scope.contains(&d.id);
+                            let name = document_label(&d.title, &d.source_uri);
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Checkbox::new(("docs-scope-check", i))
+                                        .checked(on)
+                                        .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                            this.toggle_scope(&id, cx)
+                                        })),
+                                )
+                                .child(div().flex_1().min_w_0().truncate().child(SharedString::from(name)))
+                                .child(
+                                    div()
+                                        .text_size(small)
+                                        .text_color(theme.muted_foreground)
+                                        .child(format!("{}", d.chunks)),
+                                )
+                        })),
+                )
+        });
+
+        // The selection: what is ticked, what it costs, and the one button.
+        let selection = (!self.checked.is_empty()).then(|| {
+            let n = self.checked.len();
+            let docs = self
+                .hits
+                .iter()
+                .filter(|h| self.checked.contains(&h.chunk_id))
+                .map(|h| h.document_id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len();
+            h_flex()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .items_center()
+                .border_t_1()
+                .border_color(theme.primary)
+                .child(format!("{n} passage{} selected", if n == 1 { "" } else { "s" }))
+                .child(
+                    div()
+                        .text_size(small)
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "≈ {} tokens · {docs} document{}",
+                            self.token_estimate(),
+                            if docs == 1 { "" } else { "s" }
+                        )),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("docs-check-all")
+                        .small()
+                        .ghost()
+                        .label("All")
+                        .tooltip("Tick every result the agent does not hold yet, or clear them")
+                        .on_click(cx.listener(|this, _, _, cx| this.check_all(cx))),
+                )
+                .child(
+                    Button::new("docs-check-clear")
+                        .small()
+                        .ghost()
+                        .label("Clear")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.checked.clear();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("docs-give")
+                        .small()
+                        .primary()
+                        .label(format!("Give {n} to the agent"))
+                        .tooltip("Put them in the agent's context, as the text of these passages, one block per document. Take them out again from the transcript or the context list")
+                        .on_click(cx.listener(|this, _, _, cx| this.give_checked(cx))),
+                )
+        });
+
         v_flex()
             .id("docs-panel")
             .track_focus(&self.focus)
             .size_full()
             .bg(theme.background)
+            .child(tabs)
             .child(top)
+            .child(scope_row)
+            .children(scope_picker)
             .child(status)
             .child(
                 // The list and the passage share the width; the divider between them is
@@ -998,6 +1530,204 @@ impl Render for DocsPanel {
                             )),
                     ),
             )
+            .children(selection)
+            .into_any_element()
+    }
+}
+
+impl DocsPanel {
+    /// The Library tab: every document of the case, filtered by filename, with what can be done
+    /// with the one chosen.
+    fn render_library(&mut self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> AnyElement {
+        let small = theme.font_size * 0.85;
+        let filter = self.library_filter.read(cx).value().trim().to_ascii_lowercase();
+        let shown: Vec<DocumentInfo> = self
+            .docs
+            .iter()
+            .filter(|d| {
+                filter.is_empty()
+                    || d.source_uri.to_ascii_lowercase().contains(&filter)
+                    || d.title
+                        .as_deref()
+                        .is_some_and(|t| t.to_ascii_lowercase().contains(&filter))
+            })
+            .cloned()
+            .collect();
+        let total = self.docs.len();
+        let selected = self
+            .library_selected
+            .as_ref()
+            .and_then(|id| self.docs.iter().find(|d| &d.id == id))
+            .cloned();
+
+        let top = h_flex()
+            .gap_2()
+            .p_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().flex_1().child(Input::new(&self.library_filter).small()))
+            .child(
+                div()
+                    .text_size(small)
+                    .text_color(theme.muted_foreground)
+                    .child(format!("{} of {total}", shown.len())),
+            );
+
+        let rows = v_flex()
+            .id("docs-library")
+            .size_full()
+            .overflow_y_scrollbar()
+            .children(shown.iter().enumerate().map(|(i, d)| {
+                let id = d.id.clone();
+                let on = selected.as_ref().is_some_and(|s| s.id == d.id);
+                let hollow = d.chunks == 0;
+                v_flex()
+                    .id(("docs-doc", i))
+                    .gap_0p5()
+                    .px_2()
+                    .py_1p5()
+                    .border_b_1()
+                    .border_color(theme.border.opacity(0.5))
+                    .cursor_pointer()
+                    .when(on, |r| r.bg(theme.primary.opacity(0.15)))
+                    .hover(|s| s.bg(theme.list_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_document(Some(id.clone()), cx)
+                    }))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .child(SharedString::from(document_label(&d.title, &d.source_uri))),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(small)
+                                    .text_color(if hollow { theme.danger } else { theme.muted_foreground })
+                                    .child(if hollow {
+                                        "no text found".to_string()
+                                    } else {
+                                        format!("{} · {} passages", kind_of(d), d.chunks)
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(small)
+                            .font_family(theme.mono_font_family.clone())
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(d.source_uri.clone())),
+                    )
+            }))
+            .when(shown.is_empty(), |r| {
+                r.child(
+                    div()
+                        .p_3()
+                        .text_color(theme.muted_foreground)
+                        .child(if total == 0 {
+                            "No documents in this case: import some with the + above."
+                        } else {
+                            "No document matches that filename."
+                        }),
+                )
+            });
+
+        let detail = selected.map(|d| {
+            let id = d.id.clone();
+            let (give_id, inside_id, open_id) = (id.clone(), id.clone(), id.clone());
+            let size = self.library_size;
+            v_flex()
+                .gap_2()
+                .p_3()
+                .size_full()
+                .child(
+                    div()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(SharedString::from(document_label(&d.title, &d.source_uri))),
+                )
+                .child(
+                    div()
+                        .text_size(small)
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(d.source_uri.clone())),
+                )
+                .child(
+                    div()
+                        .text_size(small)
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "Added {} · {}{}",
+                            d.added_at.split('T').next().unwrap_or(&d.added_at),
+                            kind_of(&d),
+                            match size {
+                                Some((n, t)) => format!(" · {n} passages · ≈ {t} tokens"),
+                                None => String::new(),
+                            }
+                        )),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("docs-give-document")
+                        .primary()
+                        .label("Give to the agent")
+                        .disabled(d.chunks == 0)
+                        .tooltip("Put the whole document in the agent's context. A document longer than about 20k tokens is cut: give passages from a search instead")
+                        .on_click(cx.listener(move |this, _, _, cx| this.give_document(&give_id, cx))),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("docs-search-inside")
+                                .small()
+                                .label("Search inside")
+                                .tooltip("Search only in this document")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.search_inside(inside_id.clone(), window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("docs-open-document")
+                                .small()
+                                .label("Open source")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_document_source(&open_id, window, cx)
+                                })),
+                        ),
+                )
+        });
+
+        h_flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(top)
+                    .child(div().flex_1().min_h_0().child(rows)),
+            )
+            .child(
+                div()
+                    .w(px(300.))
+                    .flex_none()
+                    .h_full()
+                    .border_l_1()
+                    .border_color(theme.border)
+                    .child(detail.map_or_else(
+                        || div().into_any_element(),
+                        |d| d.into_any_element(),
+                    )),
+            )
+            .into_any_element()
     }
 }
 

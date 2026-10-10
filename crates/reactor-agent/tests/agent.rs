@@ -1685,3 +1685,82 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
     // A ceiling, so that growing it is a decision and not an accident.
     assert!(graph < 3_000, "{graph}");
 }
+
+// -- given documents and # references ---------------------------------------------------------
+
+fn given_text(label: &str, text: &str) -> reactor_agent::entry::Attachment {
+    reactor_agent::entry::Attachment {
+        label: label.into(),
+        source: label.into(),
+        part: "whole document".into(),
+        text: text.into(),
+        tokens: 5,
+        truncated: false,
+        via: "panel".into(),
+    }
+}
+
+#[tokio::test]
+async fn a_file_named_with_a_hash_goes_along_with_the_message_and_stays_text_in_it() {
+    let r = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
+    std::fs::write(r.root.join("work").join("notes.txt"), "the alarm was silenced").unwrap();
+    run(&r, "why? see #notes.txt").await.unwrap();
+
+    assert_eq!(kinds(&r), ["session", "attachment", "user", "assistant"]);
+    let req = &r.llm.requests()[0];
+    let texts: Vec<&str> = req
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Msg::User { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].contains("the alarm was silenced"));
+    assert!(texts[0].contains("notes.txt"));
+    assert_eq!(texts[1], "why? see #notes.txt");
+}
+
+#[tokio::test]
+async fn a_reference_that_names_nothing_is_left_as_text_and_attaches_nothing() {
+    let mut r = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
+    run(&r, "look at #missing.txt and #doc:nothing.pdf").await.unwrap();
+    assert_eq!(kinds(&r), ["session", "user", "assistant"]);
+    let notices = drain(&mut r.events)
+        .into_iter()
+        .filter(|e| matches!(e, Event::Notice(_)))
+        .count();
+    assert_eq!(notices, 2);
+}
+
+#[tokio::test]
+async fn something_given_is_in_the_next_request_until_it_is_detached() {
+    let r = rig(
+        vec![ScriptedLlm::say("one"), ScriptedLlm::say("two")],
+        Sum::says("-"),
+        100_000,
+    );
+    let id = r.agent.attach(given_text("manual.pdf", "bearing limit 85")).unwrap();
+    assert_eq!(r.agent.attachments().len(), 1);
+    run(&r, "first").await.unwrap();
+    assert!(
+        r.llm.requests()[0]
+            .messages
+            .iter()
+            .any(|m| matches!(m, Msg::User { text } if text.contains("bearing limit 85")))
+    );
+
+    r.agent.detach(id).unwrap();
+    assert!(r.agent.attachments().is_empty());
+    run(&r, "second").await.unwrap();
+    assert!(
+        !r.llm.requests()[1]
+            .messages
+            .iter()
+            .any(|m| matches!(m, Msg::User { text } if text.contains("bearing limit 85")))
+    );
+    // The log keeps it.
+    assert!(kinds(&r).contains(&"attachment"));
+    assert!(kinds(&r).contains(&"detach"));
+}

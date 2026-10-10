@@ -76,6 +76,36 @@ pub enum Kind {
     Label {
         text: String,
     },
+    /// Text the person handed the agent: a document, some passages or a file. It reaches the
+    /// model as a message of the person's, and stays in the context until it is detached or
+    /// reduced away with the rest.
+    Attachment(Attachment),
+    /// Take an attachment out of the context again. It stays in the log.
+    Detach {
+        attachment: EntryId,
+    },
+}
+
+/// What was given to the agent, and how big it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// What it is called in the window: the document's title, or the file's path.
+    pub label: String,
+    /// Where it comes from: a document's source, or a path relative to the case.
+    pub source: String,
+    /// What is said about its place: `2.2 Bearings`, `3 passages`, `whole document`.
+    #[serde(default)]
+    pub part: String,
+    /// What the model reads.
+    pub text: String,
+    /// Estimated tokens of `text`.
+    pub tokens: u64,
+    /// `text` is the start of something longer.
+    #[serde(default)]
+    pub truncated: bool,
+    /// `panel` (given from the Documents panel) or `reference` (a `#` in a message).
+    #[serde(default)]
+    pub via: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,6 +203,8 @@ impl Kind {
             Kind::Reduction(_) => "reduction",
             Kind::Restore { .. } => "restore",
             Kind::Label { .. } => "label",
+            Kind::Attachment(_) => "attachment",
+            Kind::Detach { .. } => "detach",
         }
     }
 }

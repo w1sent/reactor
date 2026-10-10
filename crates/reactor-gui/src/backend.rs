@@ -729,6 +729,28 @@ impl Backend {
         self.refresh_context();
     }
 
+    /// Hand the agent a text. It is in the context from the next request on.
+    pub fn attach(
+        &self,
+        attachment: reactor_agent::entry::Attachment,
+    ) -> std::result::Result<EntryId, String> {
+        let id = self.agent.attach(attachment).map_err(|e| e.to_string())?;
+        self.refresh_context();
+        Ok(id)
+    }
+
+    /// Take an attachment out of the context again.
+    pub fn detach(&self, attachment: EntryId) -> std::result::Result<(), String> {
+        self.agent.detach(attachment).map_err(|e| e.to_string())?;
+        self.refresh_context();
+        Ok(())
+    }
+
+    /// What the agent has been given and still holds.
+    pub fn attachments(&self) -> Vec<(EntryId, reactor_agent::entry::Attachment)> {
+        self.agent.attachments()
+    }
+
     pub fn restore(&self, reduction: EntryId) -> std::result::Result<(), String> {
         self.agent.restore(reduction).map_err(|e| e.to_string())?;
         self.refresh_context();

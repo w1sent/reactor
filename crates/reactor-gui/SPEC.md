@@ -204,7 +204,7 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
   - Composer: multi-line text area. `Enter` sends (or, while the agent works,
     *schedules* the message to run right after the current prompt: each scheduled message shows as a
     marker at the foot of the transcript, and `↑` in the empty prompt brings the latest one back into
-    the input to change and send again); `Shift+Enter` newline; `Esc` interrupts; an explicit
+    the input to change and send again); `Shift+Enter` newline; **`#` references** (below); `Esc` interrupts; an explicit
     Interrupt button cancels the turn. `↑` with the cursor on the prompt's top line puts the previous message you sent into the input (the text that was there is kept), and `↓` on the bottom line moves forward again, ending on that text; anywhere else the arrows just move the cursor. So an interrupted message is one `↑` away, ready to edit and send again. `/`-commands (`COMMANDS` in `app.rs`) run
     in the app. The model picker is in the status bar; context % is measured from
     the request the agent would send next.
@@ -361,6 +361,14 @@ place that executes them — and two views list them (`src/palette.rs`):
   scenario, identity and reduction in force, plus layouts, docks, context settings and so on.
   Choosing an entry runs it; one that needs arguments (`/goal`, `/tool`, …) puts `/name ` in
   the composer instead.
+- **`#` references.** A `#` after whitespace opens the same popup with the files of the working
+  directory (hidden folders, `target` and `node_modules` left out; ≈ 20 000 files at most), ranked
+  as the commands are; `#doc:` lists the case's imported documents by title and source, and
+  `#doc:<name>#<section>` names a section. Taking one replaces what was typed of it with
+  `#path ` (quoted when the name has a space) and puts the cursor after it. The reference stays
+  in the message as written; when it is sent, what it names goes with it as attachments ahead of
+  the message (`via: reference`), cut at about 20k tokens each, the same thing named twice sent
+  once. A name that matches nothing, or several documents, is left as text and a notice says why.
 - **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
   input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
   more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
@@ -825,11 +833,27 @@ in the others). The case's reference documents, searched by hand. It runs the sa
 as the agent's `docs_search` tool (`reactor_agent::embed::search_by`), so what is seen here
 is what the agent would have been given.
 
+- **Two tabs, Search first.** The panel opens on **Search**; **Library** lists what is in the
+  case. The header says how many documents and passages there are, and **+** imports.
 - **Searching.** A box (Enter or *Search*). Where a search by meaning can be made — a model
   is chosen and has a vector for every passage — a choice of *Both* (fused, the default),
   *Keyword* (the words as written) and *Meaning*. Where it cannot there is no choice, and an
   (i) says why. The same rule decides what the agent is told: its tool has a `mode`
   parameter only then, and no word about meaning otherwise.
+- **Scope.** *Search in* shows the documents searched, as chips (none: all). *documents* opens a
+  list with a filename filter and a checkbox per document; changing it searches again. The scope
+  is applied after the search, which asks for eight times as many passages while one is set.
+  It is kept while the panel is open.
+- **Giving passages to the agent.** Each result has a checkbox; ticked ones are listed in a bar
+  at the foot (count, ≈ tokens, documents) with **Give N to the agent**, *All* and *Clear*. They
+  go as one block per document in the documents' order, each in reading order, as
+  `Kind::Attachment` entries (`via: panel`). A passage already inside something given shows ✓
+  instead of a checkbox. The transcript shows each as a card with *undo*; the context legend
+  counts them as *Given documents*. They stay until taken out or reduced away.
+- **Library.** Every document with its source, kind and passages (a document with none says
+  *no text found*), filtered by filename, path or title. The chosen one offers **Give to the
+  agent** (the whole document, cut at about 20k tokens), **Search inside** (the Search tab,
+  scoped to it) and *Open source*.
 - **Empty passages.** A passage with only headings or code-fence lines is never listed (the store joins such passages to the next one; this also covers cases stored before that).
 - **Results.** The list and the passage are side by side with a draggable divider between them (the list starts at 380 px, 160 px at least; the width is kept while the window is open, not stored). Up to 30 passages, best first: the document's title (or its source), the
   section, a snippet around the first match with the query's words marked, and the ranks

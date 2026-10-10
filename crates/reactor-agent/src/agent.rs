@@ -37,7 +37,7 @@ use crate::context::{
     self, Item, KEY_IDENTITY, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
     estimate_tokens, msg_tokens, project, save_state,
 };
-use crate::entry::{EntryId, Kind, Mode, Trigger, Usage};
+use crate::entry::{Attachment, EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
 use crate::inspect::ContextPreview;
 use crate::llm::{Delta, Llm, LlmRequest};
@@ -183,6 +183,25 @@ struct Gathered {
     state: SessionState,
     items: Vec<Item>,
     offered: Vec<Skill>,
+}
+
+/// The attachments of the current branch that are not detached.
+pub fn attachments_of(store: &Store) -> Vec<(EntryId, Attachment)> {
+    let branch = store.branch();
+    let detached: std::collections::HashSet<EntryId> = branch
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Detach { attachment } => Some(*attachment),
+            _ => None,
+        })
+        .collect();
+    branch
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Attachment(a) if !detached.contains(&e.id) => Some((e.id, a.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 fn entry_label(source: Source) -> String {
@@ -450,7 +469,14 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     text.clone(),
                 ),
                 (Msg::User { text }, Source::Entry(id)) => {
-                    (Origin::User, format!("#{id} you"), text.clone())
+                    let given = match self.store.lock().unwrap().get(id).map(|e| &e.kind) {
+                        Some(Kind::Attachment(a)) => Some(a.label.clone()),
+                        _ => None,
+                    };
+                    match given {
+                        Some(label) => (Origin::Document, format!("#{id} given: {label}"), text.clone()),
+                        None => (Origin::User, format!("#{id} you"), text.clone()),
+                    }
                 }
                 (Msg::Assistant { blocks }, source) => {
                     let text = blocks
@@ -722,6 +748,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     &next,
                 );
             }
+            // What the message names goes along with it, ahead of it, as attachments.
+            self.attach_references(&next).await?;
             self.append(Kind::User { text: next.clone() })?;
 
             loop {
@@ -816,6 +844,66 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         }
         self.emit(Event::Finished);
         Ok(outcome)
+    }
+
+    /// Attach what the `#` references in `text` name. One that names nothing is left as the
+    /// text it is, and a notice says so.
+    async fn attach_references(&self, text: &str) -> Result<()> {
+        let found = crate::references::find(text);
+        if found.is_empty() {
+            return Ok(());
+        }
+        let (cwd, case) = (
+            self.cfg.cwd.clone(),
+            self.store.lock().unwrap().case().clone(),
+        );
+        let resolved = tokio::task::spawn_blocking(move || {
+            found
+                .into_iter()
+                .map(|r| match &r.target {
+                    crate::references::Target::File(path) => {
+                        crate::references::file(&cwd, path)
+                    }
+                    crate::references::Target::Doc { name, section } => {
+                        crate::references::document(case.db(), name, section.as_deref())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|e| Error::Store(e.to_string()))?;
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for r in resolved {
+            match r {
+                Ok(a) => {
+                    // The same thing named twice is sent once.
+                    let key = (a.source.clone(), a.part.clone());
+                    if seen.contains(&key) {
+                        continue;
+                    }
+                    seen.push(key);
+                    self.append(Kind::Attachment(a))?;
+                }
+                Err(why) => self.emit(Event::Notice(why)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Hand the agent a text. It is in the context from the next request on.
+    pub fn attach(&self, attachment: Attachment) -> Result<EntryId> {
+        self.append(Kind::Attachment(attachment))
+    }
+
+    /// Take an attachment out of the context.
+    pub fn detach(&self, attachment: EntryId) -> Result<()> {
+        self.append(Kind::Detach { attachment }).map(|_| ())
+    }
+
+    /// The attachments in the context now, oldest first.
+    pub fn attachments(&self) -> Vec<(EntryId, Attachment)> {
+        let store = self.store.lock().unwrap();
+        attachments_of(&store)
     }
 
     /// Give every call in `calls` a recorded result, so the log stays replayable.

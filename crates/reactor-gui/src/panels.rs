@@ -473,6 +473,7 @@ fn render_item(
     thinking_expanded: bool,
     toggle_thinking: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
     restore: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
+    detach: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
     links: &FileLinks,
 ) -> gpui_kit::Div {
     match item {
@@ -703,6 +704,81 @@ fn render_item(
                         div().px_2().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(summary),
                     )
                 })
+        }
+        ChatItem::Attachment {
+            entry,
+            label,
+            part,
+            source,
+            tokens,
+            truncated,
+            via,
+            active,
+        } => {
+            let entry = *entry;
+            let active = *active;
+            let from_panel = via == "panel";
+            let title = if from_panel {
+                "You gave the agent a document"
+            } else {
+                "Sent with this message"
+            };
+            let place = [part.clone(), format!("≈ {tokens} tokens")]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            v_flex()
+                .px_2()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(Label::new(title).text_color(theme.accent))
+                        .child(crate::hints::tip(
+                            div()
+                                .id(("attachment-label", index))
+                                .child(Label::new(label.clone())),
+                            source.clone(),
+                        ))
+                        .child(
+                            Label::new(place)
+                                .text_color(theme.muted_foreground)
+                                .text_size(theme.font_size * 0.85),
+                        )
+                        .when(*truncated, |el| {
+                            el.child(crate::hints::tip(
+                                div()
+                                    .id(("attachment-cut", index))
+                                    .text_color(theme.warning)
+                                    .text_size(theme.font_size * 0.85)
+                                    .child("cut"),
+                                "Longer than one attachment may be: only the start was given.",
+                            ))
+                        })
+                        .child(div().flex_1())
+                        .when(active, |el| {
+                            el.child(
+                                Button::new(("detach", index))
+                                    .label(if from_panel { "undo" } else { "remove" })
+                                    .small()
+                                    .tooltip("Take it out of the model's context again. It stays in the log")
+                                    .on_click(move |_, window, cx| detach(entry, window, cx)),
+                            )
+                        })
+                        .when(!active, |el| {
+                            el.child(
+                                Label::new("removed from the context")
+                                    .text_color(theme.muted_foreground)
+                                    .text_size(theme.font_size * 0.85),
+                            )
+                        }),
+                )
         }
         ChatItem::Stats {
             date,
@@ -1045,9 +1121,15 @@ impl Render for TranscriptPanel {
                     })
                 },
             };
+            let detach_app = weak_app.clone();
             let restore = move |entry: u64, _window: &mut Window, cx: &mut App| {
                 if let Some(app) = weak_app.upgrade() {
                     app.update(cx, |app, cx| app.restore_reduction(entry, cx));
+                }
+            };
+            let detach = move |entry: u64, _window: &mut Window, cx: &mut App| {
+                if let Some(app) = detach_app.upgrade() {
+                    app.update(cx, |app, cx| app.detach_attachment(entry, cx));
                 }
             };
             MessageScroller::new(
@@ -1063,6 +1145,7 @@ impl Render for TranscriptPanel {
                         expanded_thinking.contains(&index) != open_thinking,
                         toggle_thinking.clone(),
                         restore.clone(),
+                        detach.clone(),
                         &links,
                     );
                     let row = match entry_background(&items[index], &render_theme) {
@@ -1141,9 +1224,14 @@ impl Render for TranscriptPanel {
         // typed. Keys (up/down/Enter/Tab/Esc) reach it through the `SlashPopup` key context.
         let slash = self.app.upgrade().map(|a| {
             let slash = &a.read(cx).slash;
-            (slash.is_open(), slash.items.clone(), slash.selected)
+            (
+                slash.is_open(),
+                slash.items.clone(),
+                slash.selected,
+                slash.reference.is_some(),
+            )
         });
-        let (slash_open, slash_items, slash_selected) = slash.unwrap_or_default();
+        let (slash_open, slash_items, slash_selected, reference) = slash.unwrap_or_default();
         let popup = slash_open.then(|| {
             let mut list = v_flex()
                 .id("slash-popup")
@@ -1176,7 +1264,11 @@ impl Render for TranscriptPanel {
                                 .font_family(theme.mono_font_family.clone())
                                 .text_size(theme.mono_font_size)
                                 .text_color(theme.accent)
-                                .child(format!("/{}", entry.run)),
+                                .child(format!(
+                                    "{}{}",
+                                    if reference { "#" } else { "/" },
+                                    entry.run
+                                )),
                         )
                         .child(
                             div()

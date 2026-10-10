@@ -22,6 +22,8 @@ pub enum Origin {
     /// because the user chose it and its server decides how long it is.
     McpDefinition,
     User,
+    /// A document, passages or a file the person gave the agent.
+    Document,
     Assistant,
     ToolResult,
     Reduction,
@@ -29,7 +31,7 @@ pub enum Origin {
 }
 
 impl Origin {
-    pub const ALL: [Origin; 15] = [
+    pub const ALL: [Origin; 16] = [
         Origin::Base,
         Origin::Identity,
         Origin::Registry,
@@ -41,6 +43,7 @@ impl Origin {
         Origin::ToolDefinition,
         Origin::McpDefinition,
         Origin::User,
+        Origin::Document,
         Origin::Assistant,
         Origin::ToolResult,
         Origin::Reduction,
@@ -60,6 +63,7 @@ impl Origin {
             Origin::ToolDefinition => "Tool definitions",
             Origin::McpDefinition => "MCP tool definitions",
             Origin::User => "You",
+            Origin::Document => "Given document",
             Origin::Assistant => "Assistant",
             Origin::ToolResult => "Tool results",
             Origin::Reduction => "Reductions",
@@ -95,6 +99,9 @@ impl Origin {
                 "The definitions of the active tools of MCP servers, sent with every request. Activate only what the work needs: Tools panel, `/tool`, `/toolset`."
             }
             Origin::User => "A prompt you sent.",
+            Origin::Document => {
+                "Text you gave the agent: from the Documents panel, or a # reference in a message. Remove it from the list of given documents to take it out."
+            }
             Origin::Assistant => {
                 "The model's own earlier reply: its text, thinking and tool calls."
             }
@@ -165,6 +172,8 @@ pub enum Kind {
     Tools,
     Mcp,
     You,
+    /// Documents, passages and files the person gave the agent.
+    Documents,
     Reply,
     Thinking,
     ToolCalls,
@@ -191,13 +200,14 @@ impl Group {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 12] = [
         Kind::System,
         Kind::Manifest,
         Kind::Scenario,
         Kind::Tools,
         Kind::Mcp,
         Kind::You,
+        Kind::Documents,
         Kind::Reply,
         Kind::Thinking,
         Kind::ToolCalls,
@@ -213,6 +223,7 @@ impl Kind {
             Kind::Tools => "REactor tools",
             Kind::Mcp => "MCP tools",
             Kind::You => "You",
+            Kind::Documents => "Given documents",
             Kind::Reply => "Agent replies",
             Kind::Thinking => "Thinking",
             Kind::ToolCalls => "Tool calls",
@@ -244,6 +255,7 @@ impl Kind {
             Kind::Tools => &[Origin::ToolDefinition],
             Kind::Mcp => &[Origin::McpDefinition],
             Kind::You => &[Origin::User],
+            Kind::Documents => &[Origin::Document],
             Kind::Reply | Kind::Thinking | Kind::ToolCalls => &[Origin::Assistant],
             Kind::ToolResults => &[Origin::ToolResult],
             Kind::Reductions => &[Origin::Reduction],
@@ -314,6 +326,7 @@ impl ContextPreview {
                 (Origin::ToolDefinition, _) => add(Kind::Tools, s.tokens),
                 (Origin::McpDefinition, _) => add(Kind::Mcp, s.tokens),
                 (Origin::User, _) => add(Kind::You, s.tokens),
+                (Origin::Document, _) => add(Kind::Documents, s.tokens),
                 (Origin::ToolResult, _) => add(Kind::ToolResults, s.tokens),
                 (Origin::Reduction, _) => add(Kind::Reductions, s.tokens),
             }

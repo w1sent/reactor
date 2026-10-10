@@ -357,6 +357,26 @@ pub fn surrounding(db: &Db, chunk_id: i64, before: usize, after: usize) -> Resul
     })
 }
 
+/// All the passages of a document, in reading order.
+pub fn document_passages(db: &Db, document_id: &str) -> Result<Vec<Passage>> {
+    db.read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, ord, heading_path, text FROM chunk WHERE document_id = ?1 ORDER BY ord",
+        )?;
+        let rows = stmt
+            .query_map(params![document_id], |r| {
+                Ok(Passage {
+                    chunk_id: r.get(0)?,
+                    ord: r.get::<_, i64>(1)? as usize,
+                    heading_path: r.get(2)?,
+                    text: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    })
+}
+
 /// Whether there is anything to search.
 pub fn has_documents(db: &Db) -> Result<bool> {
     db.read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM chunk)", [], |r| r.get(0))?))

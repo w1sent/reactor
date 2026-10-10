@@ -46,6 +46,18 @@ pub enum ChatItem {
         active: bool,
         summary: Option<String>,
     },
+    /// Text the person gave the agent: from the Documents panel, or with a `#` reference in
+    /// the message that follows. `active` is false once it was taken out again.
+    Attachment {
+        entry: u64,
+        label: String,
+        part: String,
+        source: String,
+        tokens: u64,
+        truncated: bool,
+        via: String,
+        active: bool,
+    },
     /// Something went wrong that the person should see.
     Error { message: String },
     /// What a finished prompt cost: when it finished, how long it took, what it streamed.
@@ -223,6 +235,14 @@ impl Session {
         self.card_at.clear();
         let hidden = hidden_by(store);
         let active = active_reductions(store);
+        let detached: std::collections::HashSet<u64> = store
+            .branch()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                Kind::Detach { attachment } => Some(*attachment),
+                _ => None,
+            })
+            .collect();
 
         for e in store.branch() {
             let first = self.items.len();
@@ -315,9 +335,20 @@ impl Session {
                         stream_ms: number("stream_ms"),
                     });
                 }
+                Kind::Attachment(a) => self.items.push(ChatItem::Attachment {
+                    entry: e.id,
+                    label: a.label.clone(),
+                    part: a.part.clone(),
+                    source: a.source.clone(),
+                    tokens: a.tokens,
+                    truncated: a.truncated,
+                    via: a.via.clone(),
+                    active: !detached.contains(&e.id),
+                }),
                 Kind::Session { .. }
                 | Kind::Custom { .. }
                 | Kind::Restore { .. }
+                | Kind::Detach { .. }
                 | Kind::Label { .. } => {}
             }
             if hidden.contains_key(&e.id) {

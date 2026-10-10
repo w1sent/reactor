@@ -36,6 +36,8 @@ pub fn text_of(kind: &Kind) -> String {
         Kind::Reduction(r) => crate::context::render_reduction(r),
         Kind::Restore { reduction } => format!("restored reduction #{reduction}"),
         Kind::Label { text } => text.clone(),
+        Kind::Attachment(a) => format!("[given] {} {}\n{}", a.label, a.part, a.text),
+        Kind::Detach { attachment } => format!("detached attachment #{attachment}"),
     }
 }
 

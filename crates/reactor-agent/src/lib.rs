@@ -19,6 +19,7 @@ pub mod llm;
 pub mod mcp;
 pub mod prompt;
 pub mod provider;
+pub mod references;
 pub mod skills;
 pub mod store;
 pub mod tools;

@@ -218,6 +218,8 @@ pub struct ReactorApp {
     usage: Usage,
     /// The `/` completion popup over the composer.
     pub slash: SlashUi,
+    /// The working directory's files, for `#` in the composer.
+    file_index: crate::ref_index::FileIndex,
     /// What the person has sent, for up/down in the prompt.
     prompt_history: crate::prompt_history::PromptHistory,
     /// Fonts and behaviour (`crate::settings`).
@@ -297,6 +299,9 @@ struct PaletteUi {
 pub struct SlashUi {
     pub items: Vec<Entry>,
     pub selected: usize,
+    /// The items complete a `#` reference: what kind it is, and the span of the composer's text
+    /// that a completion replaces. Absent: they complete a `/` command.
+    pub reference: Option<(crate::ref_index::Trigger, std::ops::Range<usize>)>,
     /// Esc closed it; it stays closed until the text changes.
     dismissed: bool,
 }
@@ -1086,6 +1091,7 @@ impl ReactorApp {
             palette: None,
             usage: crate::start::GuiConfig::load().command_usage,
             slash: SlashUi::default(),
+            file_index: Default::default(),
             prompt_history,
             ui,
             inspect: None,
@@ -3106,6 +3112,24 @@ impl ReactorApp {
             }
             None => Vec::new(),
         };
+        // Not a command: a `#` reference being typed at the cursor.
+        let mut reference = None;
+        let items = if items.is_empty() && !text.starts_with('/') {
+            let cursor = self.composer.read(cx).cursor();
+            match crate::ref_index::reference_at(&text, cursor) {
+                Some((trigger, query, span)) => {
+                    let found = self.reference_items(trigger, &query, cx);
+                    if !found.is_empty() {
+                        reference = Some((trigger, span));
+                    }
+                    found
+                }
+                None => Vec::new(),
+            }
+        } else {
+            items
+        };
+        self.slash.reference = reference;
         if items != self.slash.items {
             self.slash.selected = 0;
         }
@@ -3114,6 +3138,117 @@ impl ReactorApp {
         }
         self.slash.items = items;
         cx.notify();
+    }
+
+    /// The completions of a `#` reference: files of the working directory, or the case's
+    /// documents, ranked as the commands are.
+    fn reference_items(
+        &mut self,
+        trigger: crate::ref_index::Trigger,
+        query: &str,
+        cx: &mut Context<Self>,
+    ) -> Vec<Entry> {
+        use crate::ref_index::{Trigger, plausible, size};
+        let Some(backend) = self.backend.clone() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<Entry> = Vec::new();
+        match trigger {
+            Trigger::File => {
+                // Typing `#d` also offers `#doc:`: documents are reached through it.
+                if !query.is_empty() && "doc:".starts_with(&query.to_ascii_lowercase()) {
+                    entries.push(Entry {
+                        key: "#doc:".into(),
+                        title: "doc:".into(),
+                        name: None,
+                        detail: "Documents imported into this case".into(),
+                        group: "Reference",
+                        args: Args::None,
+                        run: "doc:".into(),
+                    });
+                }
+                if let Some(cwd) = backend.paths.cwd.clone() {
+                    self.file_index.refresh(&cwd);
+                }
+                for f in self.file_index.files.iter().filter(|f| plausible(query, &f.path)) {
+                    entries.push(Entry {
+                        key: format!("#{}", f.path),
+                        title: f.path.clone(),
+                        name: None,
+                        detail: size(f.bytes),
+                        group: "File",
+                        args: Args::None,
+                        run: f.path.clone(),
+                    });
+                    if entries.len() >= 600 {
+                        break;
+                    }
+                }
+            }
+            Trigger::Document => {
+                let docs =
+                    reactor_db::corpus::documents(backend.case.db()).unwrap_or_default();
+                for d in docs {
+                    let label = d.title.clone().filter(|t| !t.is_empty());
+                    entries.push(Entry {
+                        key: format!("#doc:{}", d.source_uri),
+                        // What the query is matched against: the title and the source.
+                        title: format!("{} {}", label.clone().unwrap_or_default(), d.source_uri),
+                        name: None,
+                        detail: format!(
+                            "{} passages{}",
+                            d.chunks,
+                            label.map(|l| format!(" · {l}")).unwrap_or_default()
+                        ),
+                        group: "Document",
+                        args: Args::None,
+                        run: format!("doc:{}", d.source_uri),
+                    });
+                }
+            }
+        }
+        let _ = cx;
+        palette::rank(query, &entries, &self.usage, false)
+            .into_iter()
+            .take(SLASH_ROWS)
+            .cloned()
+            .collect()
+    }
+
+    /// Put the highlighted reference in the composer in place of what was typed of it, and the
+    /// cursor after it.
+    fn complete_reference(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((trigger, span)) = self.slash.reference.clone() else {
+            return;
+        };
+        let text = self.composer.read(cx).value().to_string();
+        let span = span.start.min(text.len())..span.end.min(text.len());
+        let (inserted, keep_open) = if entry.group == "Reference" {
+            // `#doc:` — the kind chosen, the name still to come.
+            ("#doc:".to_string(), true)
+        } else {
+            let name = entry.run.strip_prefix("doc:").unwrap_or(&entry.run);
+            (format!("{} ", crate::ref_index::written(trigger, name)), false)
+        };
+        let mut new = String::with_capacity(text.len() + inserted.len());
+        new.push_str(&text[..span.start]);
+        new.push_str(&inserted);
+        new.push_str(&text[span.end..]);
+        let at = span.start + inserted.len();
+        let (line, column) = crate::ref_index::position(&new, at);
+        self.composer.update(cx, |state, cx| {
+            state.set_value(&new, window, cx);
+            state.set_cursor_position(
+                gpui_kit::component::input::Position::new(line, column),
+                window,
+                cx,
+            );
+        });
+        if !keep_open {
+            self.slash.items.clear();
+            self.slash.reference = None;
+        }
+        self.refresh_slash(true, cx);
     }
 
     pub fn slash_move(&mut self, by: isize, cx: &mut Context<Self>) {
@@ -3137,6 +3272,10 @@ impl ReactorApp {
             return;
         };
         self.record_use(&entry.key);
+        if self.slash.reference.is_some() {
+            self.complete_reference(&entry, window, cx);
+            return;
+        }
         if entry.args == Args::None {
             self.composer
                 .update(cx, |state, cx| state.set_value("", window, cx));
@@ -3912,6 +4051,58 @@ impl ReactorApp {
         self.session
             .update(cx, |s, _| s.phase = AgentPhase::Compacting);
         backend.reduce_now(mode);
+        cx.notify();
+    }
+
+    /// Hand the agent texts from the Documents panel. Each is one entry in the log, so each can
+    /// be taken out again on its own.
+    pub fn give_to_agent(
+        &mut self,
+        attachments: Vec<reactor_agent::entry::Attachment>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let mut tokens = 0;
+        let mut count = 0;
+        for a in attachments {
+            tokens += a.tokens;
+            match backend.attach(a) {
+                Ok(_) => count += 1,
+                Err(e) => self.push_note("error", e),
+            }
+        }
+        if count > 0 {
+            let store = backend.store();
+            self.session
+                .update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
+            self.preview = None;
+            self.push_note(
+                "info",
+                format!(
+                    "gave the agent {count} text{} (≈ {tokens} tokens)",
+                    if count == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        cx.notify();
+    }
+
+    /// Take something given to the agent out of its context again.
+    pub fn detach_attachment(&mut self, entry: EntryId, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        match backend.detach(entry) {
+            Ok(()) => {
+                let store = backend.store();
+                self.session
+                    .update(cx, |s, _| s.rebuild(&store.lock().unwrap()));
+                self.preview = None;
+            }
+            Err(e) => self.push_note("error", e),
+        }
         cx.notify();
     }
 

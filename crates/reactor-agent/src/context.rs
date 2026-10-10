@@ -122,6 +122,14 @@ pub fn project(store: &Store) -> Vec<Item> {
     }
     let placed_at: HashMap<EntryId, EntryId> = first.iter().map(|(r, e)| (*e, *r)).collect();
 
+    let detached: std::collections::HashSet<EntryId> = branch
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Detach { attachment } => Some(*attachment),
+            _ => None,
+        })
+        .collect();
+
     let mut out = Vec::new();
     for e in &branch {
         if let Some(rid) = placed_at.get(&e.id)
@@ -155,8 +163,13 @@ pub fn project(store: &Store) -> Vec<Item> {
                 content: content.clone(),
                 is_error: *is_error,
             },
+            Kind::Attachment(_) if detached.contains(&e.id) => continue,
+            Kind::Attachment(a) => Msg::User {
+                text: render_attachment(a),
+            },
             // State, markers and the reductions themselves are not messages.
-            Kind::Session { .. }
+            Kind::Detach { .. }
+            | Kind::Session { .. }
             | Kind::Custom { .. }
             | Kind::Reduction(_)
             | Kind::Restore { .. }
@@ -167,6 +180,23 @@ pub fn project(store: &Store) -> Vec<Item> {
             msg,
         });
     }
+    out
+}
+
+/// What the model reads of an attachment: where it comes from, then the text.
+pub fn render_attachment(a: &crate::entry::Attachment) -> String {
+    let mut out = format!("## Given to you by the user: {}", a.label);
+    if !a.part.is_empty() {
+        out.push_str(&format!(" ({})", a.part));
+    }
+    if a.source != a.label {
+        out.push_str(&format!("\nSource: {}", a.source));
+    }
+    if a.truncated {
+        out.push_str("\n(Only the start is shown: it was cut to fit.)");
+    }
+    out.push_str("\n\n");
+    out.push_str(&a.text);
     out
 }
 

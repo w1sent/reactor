@@ -4,13 +4,21 @@
 //! The animation element is for *transitions*, and `App::reduce_motion` (the "Interface
 //! animations" setting) turns every one of them into its end state so nothing waits to settle.
 //! A shimmer is not a transition: it says something is going on, and it should keep saying it.
-//! So it is computed here from the time, and redrawn by the app's indicator clock
-//! (`ReactorApp::start_notice_clock`) at a few frames a second instead of once per vsync —
-//! which on a software rasteriser is the difference between a live window and a busy one.
+//! So it is computed here from the time. A shimmer asks for its own frames where drawing is
+//! cheap, so it runs at the display's rate like the library's; a pulse, and every indicator in
+//! the light rendering mode, is redrawn by the app's indicator clock
+//! (`ReactorApp::start_notice_clock`) — about twelve a second there, which on a software
+//! rasteriser is the difference between a live window and a busy one.
+//!
+//! What made the earlier version clunky was not the rate but the band stepping from letter to
+//! letter. It is now placed in pixels and built of nested masks, as the library's is.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gpui_kit::{HighlightStyle, Hsla, SharedString, StyledText};
+use gpui_kit::{
+    App, Bounds, ContentMask, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Point, SharedString, StyledText, Window, point, px, size,
+};
 
 /// How far along a repeating cycle of `period` the clock is, in `0.0..1.0`. Every indicator on
 /// screen reads the same clock, so they sweep together.
@@ -22,55 +30,194 @@ pub fn phase(period: Duration) -> f32 {
     (now.as_millis() % period) as f32 / period as f32
 }
 
-/// A sweep of `highlight` over `text` once per two seconds, over whatever text colour the
-/// parent sets.
-pub fn shimmer(text: impl Into<SharedString>, highlight: Hsla) -> StyledText {
-    shimmer_at(text, highlight, phase(Duration::from_secs(2)))
-}
-
-/// [`shimmer`] at a given point of its sweep (`0.0..1.0`).
-pub fn shimmer_at(text: impl Into<SharedString>, highlight: Hsla, phase: f32) -> StyledText {
-    let text: SharedString = text.into();
-    let runs = shimmer_runs(&text, highlight, phase);
-    StyledText::new(text).with_highlights(runs)
-}
+/// How long one sweep of a shimmer takes.
+const SWEEP: Duration = Duration::from_secs(2);
 
 /// Half the width of the lit band, as a fraction of the text.
 const SPREAD: f32 = 0.3;
 
-/// The highlighted ranges: each character lit by how near the band's centre it is. Characters
-/// the band does not reach have no run, so they take the parent's colour.
-fn shimmer_runs(
-    text: &str,
+/// How many nested masks make up the band: each adds a little light, so the band is brightest
+/// in the middle and has no edge. (The same construction as the library's shimmer.)
+const LAYERS: usize = 12;
+
+/// The light at the middle of the band: what all the layers add up to.
+const PEAK: f32 = 0.7;
+
+/// A sweep of `highlight` over `text` once per two seconds, over whatever text colour the
+/// parent sets.
+///
+/// The band is placed in pixels, not in characters, so it glides rather than stepping from
+/// letter to letter. Its position is read from the clock: where drawing is cheap the element asks
+/// for a frame after each one it draws, like the library's animation element; in the light
+/// rendering mode it waits for the app's indicator clock instead.
+pub fn shimmer(text: impl Into<SharedString>, highlight: Hsla) -> Shimmer {
+    Shimmer {
+        text: StyledText::new(text.into()),
+        highlight,
+    }
+}
+
+/// The element [`shimmer`] makes.
+pub struct Shimmer {
+    text: StyledText,
     highlight: Hsla,
-    phase: f32,
-) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
-    let count = text.chars().count().max(1);
-    // The band enters from beyond the left edge and leaves beyond the right, so the text is
-    // dark for a moment between sweeps.
-    let centre = phase * (1.0 + 2.0 * SPREAD) - SPREAD;
-    text.char_indices()
-        .enumerate()
-        .filter_map(|(i, (start, ch))| {
-            let x = if count > 1 {
-                i as f32 / (count - 1) as f32
-            } else {
-                0.5
-            };
-            let distance = ((x - centre).abs() / SPREAD).min(1.0);
-            // Smooth shoulder, so the band has no hard edge.
-            let lit = 1.0 - distance * distance * (3.0 - 2.0 * distance);
-            (lit > 0.02).then(|| {
-                (
-                    start..start + ch.len_utf8(),
-                    HighlightStyle {
-                        color: Some(highlight.opacity(lit)),
-                        ..Default::default()
-                    },
-                )
+}
+
+impl IntoElement for Shimmer {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// The horizontal extent, in `0.0..=width`, of the `layer`th mask of the band at `phase`.
+/// Outer layers are the widest.
+fn band(width: f32, phase: f32, layer: usize) -> Option<(f32, f32)> {
+    if width <= 0.0 || layer >= LAYERS {
+        return None;
+    }
+    let half = width * SPREAD;
+    // The band enters from beyond the left edge and leaves beyond the right.
+    let padding = half / width + 0.05;
+    let centre = phase.mul_add(1.0 + padding * 2.0, -padding) * width;
+    let radius = half * (1.0 - layer as f32 / LAYERS as f32);
+    let left = (centre - radius).max(0.0);
+    let right = (centre + radius).min(width);
+    (right > left).then_some((left, right))
+}
+
+impl Element for Shimmer {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.text
+            .request_layout(global_id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.text
+            .prepaint(global_id, inspector_id, bounds, layout, window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.text.paint(
+            global_id,
+            inspector_id,
+            bounds,
+            layout,
+            prepaint,
+            window,
+            cx,
+        );
+        // Where drawing is cheap, keep the frames coming; otherwise the app's clock redraws.
+        if !crate::settings::LightRendering::on(cx) {
+            window.request_animation_frame();
+        }
+
+        let width = bounds.size.width.as_f32();
+        let phase = phase(SWEEP);
+        let masks: Vec<Option<ContentMask<Pixels>>> = (0..LAYERS)
+            .map(|layer| {
+                band(width, phase, layer).map(|(left, right)| ContentMask {
+                    bounds: Bounds::new(
+                        point(bounds.origin.x + px(left), bounds.origin.y),
+                        size(px(right - left), bounds.size.height),
+                    ),
+                })
             })
-        })
-        .collect()
+            .collect();
+        if masks.iter().all(Option::is_none) {
+            return;
+        }
+        let layer_opacity = 1.0 - (1.0 - PEAK).powf(1.0 / LAYERS as f32);
+        let color = self.highlight.opacity(layer_opacity);
+
+        let layout = self.text.layout();
+        let line_height = layout.line_height();
+        let mut line_origin = bounds.origin;
+        window.paint_layer(bounds, |window| {
+            for wrapped in layout.line_layouts() {
+                let line = &wrapped.unwrapped_layout;
+                let baseline = point(
+                    px(0.),
+                    (line_height - line.ascent - line.descent) / 2. + line.ascent,
+                );
+                let mut wraps = wrapped.wrap_boundaries.iter().peekable();
+                let mut glyph_origin = point(line_origin.x, line_origin.y);
+                let mut previous = Point::default();
+                for (run_index, run) in line.runs.iter().enumerate() {
+                    let glyph_size = cx
+                        .text_system()
+                        .bounding_box(run.font_id, line.font_size)
+                        .size;
+                    for (glyph_index, glyph) in run.glyphs.iter().enumerate() {
+                        glyph_origin.x += glyph.position.x - previous.x;
+                        if wraps.peek().is_some_and(|w| {
+                            w.run_ix == run_index && w.glyph_ix == glyph_index
+                        }) {
+                            wraps.next();
+                            glyph_origin.x = line_origin.x;
+                            glyph_origin.y += line_height;
+                        }
+                        previous = glyph.position;
+                        if glyph.is_emoji {
+                            continue;
+                        }
+                        let glyph_bounds = Bounds::new(glyph_origin, glyph_size);
+                        let at = glyph_origin + baseline + point(px(0.), glyph.position.y);
+                        for mask in masks.iter().flatten() {
+                            if !glyph_bounds.intersects(&mask.bounds) {
+                                continue;
+                            }
+                            window.with_content_mask(Some(*mask), |window| {
+                                let _ = window.paint_glyph(
+                                    at,
+                                    run.font_id,
+                                    glyph.id,
+                                    line.font_size,
+                                    color,
+                                );
+                            });
+                        }
+                    }
+                }
+                line_origin.y += wrapped.size(line_height).height;
+            }
+        });
+    }
 }
 
 /// The swell of a "this row is working" wash, `0.0..1.0`, once per 1.6 s.
@@ -81,39 +228,35 @@ pub fn pulse() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::hsla;
-
-    fn lit(text: &str, phase: f32) -> Vec<usize> {
-        shimmer_runs(text, hsla(0.0, 0.0, 1.0, 1.0), phase)
-            .into_iter()
-            .map(|(range, _)| range.start)
-            .collect()
-    }
 
     #[test]
     fn the_band_travels_from_the_start_to_the_end() {
-        let text = "thinking the problem over";
-        let early = lit(text, 0.2);
-        let late = lit(text, 0.8);
-        assert!(!early.is_empty() && !late.is_empty());
-        assert!(early.iter().max() < late.iter().max());
-        assert!(early.iter().min() < late.iter().min());
+        let centre = |phase: f32| band(200.0, phase, LAYERS - 1).map(|(l, r)| (l + r) / 2.0);
+        let early = centre(0.3).unwrap();
+        let late = centre(0.7).unwrap();
+        assert!(early < late);
     }
 
     #[test]
     fn between_sweeps_nothing_is_lit() {
-        assert!(lit("working", 0.0).is_empty());
-        assert!(lit("working", 1.0).is_empty());
+        assert!(band(200.0, 0.0, 0).is_none());
+        assert!(band(200.0, 1.0, 0).is_none());
     }
 
     #[test]
-    fn runs_fall_on_character_boundaries() {
-        let text = "tänk… klar";
-        for step in 0..=10 {
-            for (range, _) in shimmer_runs(text, hsla(0.0, 0.0, 1.0, 1.0), step as f32 / 10.0) {
-                assert!(text.is_char_boundary(range.start) && text.is_char_boundary(range.end));
-            }
-        }
+    fn the_band_moves_by_pixels_not_by_letters() {
+        // A tenth of a second of the sweep moves it by a fraction of a character.
+        let step = 0.05 / 2.0;
+        let (a, _) = band(100.0, 0.5, LAYERS - 1).unwrap();
+        let (b, _) = band(100.0, 0.5 + step, LAYERS - 1).unwrap();
+        assert!(b > a && (b - a) < 10.0);
+    }
+
+    #[test]
+    fn inner_layers_are_narrower() {
+        let outer = band(200.0, 0.5, 0).unwrap();
+        let inner = band(200.0, 0.5, LAYERS - 1).unwrap();
+        assert!(outer.0 < inner.0 && inner.1 < outer.1);
     }
 
     #[test]

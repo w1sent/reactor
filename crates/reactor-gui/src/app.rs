@@ -41,8 +41,14 @@ use crate::session::{AgentPhase, ChatItem, Session, status_items};
 
 /// How often the event pump drains the backend's channel (SPEC.md §2).
 const PUMP_TICK: Duration = Duration::from_millis(50);
-/// In the light rendering mode the working indicators redraw every this many 100 ms clock ticks.
-const LIGHT_INDICATOR_TICKS: u32 = 4;
+/// The indicator clock's step: a frame at about 60 a second for a pulse (a shimmer asks for its
+/// own frames).
+const INDICATOR_TICK: Duration = Duration::from_millis(16);
+/// In the light rendering mode the indicators redraw every this many clock ticks (about 12 a
+/// second): enough to look alive on a software rasteriser without keeping it busy.
+const LIGHT_INDICATOR_TICKS: u32 = 5;
+/// Popups are shown and taken down every this many clock ticks (about 100 ms).
+const TOAST_TICKS: u32 = 6;
 /// How much of a tool card's output the transcript renders before it sheds the tail
 /// (the whole of it is in the session and `history_read` reaches it).
 pub const TOOL_OUTPUT_MAX_CHARS: usize = 2000;
@@ -1401,9 +1407,7 @@ impl ReactorApp {
         cx.spawn(async move |this, cx| {
             let mut ticks = 0u32;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
+                cx.background_executor().timer(INDICATOR_TICK).await;
                 ticks = ticks.wrapping_add(1);
                 if this.upgrade().is_none() {
                     break;
@@ -1414,11 +1418,14 @@ impl ReactorApp {
                     let _ = cx.update_window(main.handle, |_, window, cx| {
                         if let Some(app) = main.app.upgrade() {
                             app.update(cx, |app, cx| {
-                                app.flush_toasts(window, cx);
+                                if ticks.is_multiple_of(TOAST_TICKS) {
+                                    app.flush_toasts(window, cx);
+                                }
                                 // The working indicators (a shimmer, a pulse) and the running
                                 // prompt's clock are drawn from the wall clock, so a redraw is
-                                // all they need: ten a second normally, fewer where drawing is
-                                // done by the CPU. Nothing redraws while nothing works.
+                                // all they need: about sixty a second normally, about twelve
+                                // where drawing is done by the CPU. Nothing redraws while
+                                // nothing works.
                                 let busy = app.session.read(cx).run.is_some()
                                     || !app.working_ids().is_empty();
                                 let every = if crate::settings::LightRendering::on(cx) {

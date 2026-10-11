@@ -568,6 +568,13 @@ impl GraphPanel {
                 row.items_center()
                     .child(icon(look.path.clone(), card::ICON * f, hue))
                     .child(words)
+                    .when(card.author, |d| {
+                        d.child(icon(
+                            look::icon_path(if node.by_agent { "sparkle" } else { "user" }),
+                            card::ICON * f * 0.9,
+                            muted,
+                        ))
+                    })
             } else if block.bullet {
                 row.child(div().flex_shrink_0().text_color(muted).child("•"))
                     .child(words)

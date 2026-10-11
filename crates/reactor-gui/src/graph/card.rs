@@ -175,7 +175,7 @@ pub struct Head {
     pub chip: Option<String>,
     /// Whether how sure it is is drawn.
     pub meter: bool,
-    /// Whether who wrote it is drawn: it matters for what was concluded.
+    /// Whether who wrote it (the agent or a person) is drawn, on any kind of node.
     pub author: bool,
 }
 
@@ -197,6 +197,8 @@ pub struct Card {
     pub foot: Option<String>,
     /// Whether it says that it is disputed.
     pub disputed: bool,
+    /// At the smallest size, which has no header: who wrote it, at the end of the row.
+    pub author: bool,
 }
 
 // -- wrapping ---------------------------------------------------------------------------------
@@ -363,6 +365,8 @@ struct Draft {
     props: Vec<(String, String)>,
     foot: Option<String>,
     disputed: bool,
+    /// No header, so who wrote it goes at the end of the one row.
+    tail_author: bool,
 }
 
 fn draft(node: &Node, size: Size, plain_picture: bool) -> Draft {
@@ -377,6 +381,7 @@ fn draft(node: &Node, size: Size, plain_picture: bool) -> Draft {
         props: Vec::new(),
         foot: None,
         disputed,
+        tail_author: false,
     };
     let with_tags = size >= Size::L;
     let with_props = size == Size::Xl;
@@ -418,26 +423,28 @@ fn draft(node: &Node, size: Size, plain_picture: bool) -> Draft {
             if size == Size::S {
                 d.blocks
                     .push(Block::new(short_name(&node.type_, value), Face::Mono));
+                d.tail_author = true;
                 return d;
             }
             d.head = Some(Head {
                 label: node.type_.clone(),
                 chip: None,
                 meter,
-                author: false,
+                author: true,
             });
             d.blocks.push(Block::new(value, Face::Mono));
         }
         NodeKind::Claim => {
             if size == Size::S {
                 d.blocks.push(Block::new(node.type_.clone(), Face::Mono));
+                d.tail_author = true;
                 return d;
             }
             d.head = Some(Head {
                 label: node.type_.clone(),
                 chip: None,
                 meter,
-                author: false,
+                author: true,
             });
             if !node.text.is_empty() && node.text != node.type_ {
                 d.blocks.push(Block::new(node.text.clone(), Face::Sans));
@@ -464,6 +471,7 @@ fn draft(node: &Node, size: Size, plain_picture: bool) -> Draft {
             };
             if size == Size::S {
                 d.blocks.push(Block::new(first_clause(text), Face::Sans));
+                d.tail_author = true;
                 return d;
             }
             d.head = Some(Head {
@@ -552,7 +560,11 @@ fn tag_rows(tags: &[String], inner: f32, m: &Metrics) -> usize {
 /// The height of a draft at a width, and how many lines of its text that leaves out.
 fn height(d: &Draft, w: f32, m: &Metrics) -> (f32, usize) {
     let f = m.font;
-    let side = if d.head.is_none() { ICON_ROOM } else { 0.0 };
+    let side = if d.head.is_none() {
+        ICON_ROOM + if d.tail_author { ICON_ROOM } else { 0.0 }
+    } else {
+        0.0
+    };
     let inner = w - (2.0 * PAD_X + side) * f;
     let mut h = PAD_TOP + PAD_BOTTOM;
     if d.head.is_some() {
@@ -598,7 +610,11 @@ fn height(d: &Draft, w: f32, m: &Metrics) -> (f32, usize) {
 /// The width a draft would need for each of its paragraphs to be one line.
 fn natural(d: &Draft, m: &Metrics) -> f32 {
     let f = m.font;
-    let side = if d.head.is_none() { ICON_ROOM } else { 0.0 };
+    let side = if d.head.is_none() {
+        ICON_ROOM + if d.tail_author { ICON_ROOM } else { 0.0 }
+    } else {
+        0.0
+    };
     let longest = d
         .blocks
         .iter()
@@ -672,6 +688,7 @@ pub fn card(node: &Node, size: Size, width: Option<f32>, plain: bool, m: &Metric
         props: d.props,
         foot: d.foot,
         disputed: d.disputed,
+        author: d.tail_author,
     }
 }
 
@@ -949,6 +966,34 @@ mod tests {
             card(&claim, Size::S, None, false, &m()).blocks[0].text,
             "process.start"
         );
+    }
+
+    #[test]
+    fn every_kind_of_node_says_who_wrote_it_in_its_header_or_at_the_smallest_size() {
+        let claim = Node::bare("c", NodeKind::Claim, "process.start", "process.start");
+        for node in [
+            entity("net.ipv4", "198.51.100.7"),
+            claim,
+            note("Looks benign."),
+        ] {
+            for size in [Size::M, Size::L, Size::Xl] {
+                let c = card(&node, size, None, false, &m());
+                assert!(
+                    c.head.as_ref().is_some_and(|h| h.author),
+                    "{:?} at {size:?}",
+                    node.kind
+                );
+                assert!(!c.author);
+            }
+            // No header at S: the author sits at the end of the row, which makes room for it.
+            let s = card(&node, Size::S, None, false, &m());
+            assert!(s.head.is_none() && s.author, "{:?}", node.kind);
+            let bare = Draft {
+                tail_author: false,
+                ..draft(&node, Size::S, false)
+            };
+            assert!(s.w > natural(&bare, &m()), "{:?}", node.kind);
+        }
     }
 
     #[test]

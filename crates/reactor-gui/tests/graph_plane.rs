@@ -182,9 +182,9 @@ impl Rig {
             .unwrap();
     }
 
-    /// Somewhere on the plane that no node or card is on: its bottom right corner.
+    /// Somewhere on the plane that no node or card is on: the bottom, left of the layers.
     fn empty(&self) -> (f32, f32) {
-        (1380., 880.)
+        (900., 880.)
     }
 }
 
@@ -371,4 +371,68 @@ async fn the_toolbars_size_buttons_do_what_the_keys_do(cx: &mut TestAppContext) 
     click(cx, "graph-size-smaller");
     click(cx, "graph-size-smaller");
     assert_eq!(r.plane(cx).size, "S");
+}
+
+#[gpui_kit::test]
+async fn a_view_keeps_the_layers_and_size_and_puts_them_back_in_a_click(cx: &mut TestAppContext) {
+    let r = rig(cx);
+    let on_panel = |cx: &mut TestAppContext,
+                    f: &dyn Fn(
+        &mut GraphPanel,
+        &mut gpui_kit::Window,
+        &mut gpui_kit::Context<GraphPanel>,
+    )| {
+        cx.update_window(r.window, |_, window, cx| {
+            r.panel.update(cx, |p, cx| f(p, window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    on_panel(cx, &|p, w, cx| {
+        p.add_layer_for_test("kind:entity", "only", w, cx);
+        p.add_layer_for_test("type:file.", "hide", w, cx);
+        p.stage_for_test("size:l", w, cx);
+    });
+    assert_eq!(r.plane(cx).drawn, 2);
+    on_panel(cx, &|p, w, cx| {
+        p.save_view_for_test("entities, no files", w, cx)
+    });
+    assert_eq!(r.plane(cx).views, ["entities, no files"]);
+    // It is kept with the case, not only in the window.
+    let kept = reactor_db::graph::views::list(r.backend.case.db()).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].size.as_deref(), Some("l"));
+    assert_eq!(kept[0].layers.len(), 2);
+
+    // Set the graph up another way, then put the view back with a click on its chip.
+    on_panel(cx, &|p, w, cx| {
+        p.stage_for_test("size:s", w, cx);
+        p.add_layer_for_test("tag:c2.", "hide", w, cx);
+    });
+    assert_eq!(r.plane(cx).size, "S");
+    cx.update_window(r.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("graph-view", 0usize), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let p = r.plane(cx);
+    assert_eq!((p.size, p.layers, p.drawn), ("L", 2, 2), "{p:?}");
+    let layers = cx
+        .update_window(r.window, |_, _, cx| r.panel.read(cx).layers_for_test(cx))
+        .unwrap();
+    assert_eq!(layers, ["kind:entity|only|true", "type:file.|hide|true"]);
+    // Taking it back leaves the graph as it is.
+    cx.update_window(r.window, |_, window, cx| {
+        window.click(("graph-view-delete", 0usize), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(r.plane(cx).views.is_empty());
+    assert!(
+        reactor_db::graph::views::list(r.backend.case.db())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(r.plane(cx).layers, 2);
 }

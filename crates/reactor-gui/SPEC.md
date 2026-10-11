@@ -832,14 +832,17 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   Right-click a node to give its *type* a Lucide icon and one of twenty named colours — orange
   and red are not offered, they mean disputed and rejected. The agent does the same with
   `define_type` of `graph_annotate`, and lists the vocabulary with `graph_query what=vocabulary`.
-- **Filter layers.** *Filters* opens a panel at the right (`src/graph/sift.rs`). Each layer is a
+- **Filter layers.** *Filters* opens a panel at the bottom right (`src/graph/sift.rs`). Each layer is a
   filter and what it does with the nodes it matches — *show only*, *hide*, *dim*, *highlight* —
   applied top to bottom, each with an eye to switch it off and a count of what it matches. A
   filter is words that must all hold: a bare word is looked for in the label, type and text;
   `type:net.`, `tag:phase.`, `by:agent|person`, `kind:entity|claim|note`,
   `status:disputed|deleted`, `conf:>=likely` (also `<`, `<=`, `>`, a place from 1, `none`),
   `hyp:open`; `a|b` is either; a leading `-` negates. Lines are drawn between nodes that are
-  shown. Layers live for the window's lifetime; they are not stored yet.
+  shown. A **view** keeps the layers (typed, mode, on or off), the size and the level of detail
+  under a name, with the case (`graph_view`, `reactor_db::graph::views`): *Save view* in the
+  panel's *Views* row names the current set-up (a name that is taken is replaced), a click on
+  a chip puts it back and the chip of the one the graph is set up as is lit, its × forgets it.
 - **Find.** Ctrl/Cmd+F rings every drawn node that has the words in its label, its text or what
   is known of it (tags, properties, status, confidence, author, id) — each scope can be switched
   off — marks the words on the cards, and steps through the matches with Enter and Shift+Enter,

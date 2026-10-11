@@ -21,6 +21,7 @@ pub mod layout;
 pub mod pull;
 pub mod query;
 pub mod revert;
+pub mod views;
 pub mod vocab;
 
 use rusqlite::{OptionalExtension, Transaction, params};

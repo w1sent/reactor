@@ -626,6 +626,17 @@ const MIGRATIONS: &[&str] = &[
       ('family', 'malware.family'), ('mutex', 'malware.mutex'),
       ('function', 'code.function'), ('string', 'code.string'), ('yara', 'detect.yara');
     "#,
+    // 6: filter views saved by name: the filter layers, the size and the level of detail the
+    // graph was left at, to be put back in one click. Presentation, like the layout.
+    r#"
+    CREATE TABLE graph_view (
+      name TEXT PRIMARY KEY COLLATE NOCASE,
+      layers TEXT NOT NULL,               -- JSON: [{filter, mode, on}]
+      size TEXT,                          -- s|m|l|xl
+      detail TEXT,                        -- basic|analysis|full; none follows the zoom
+      updated_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this binary writes.

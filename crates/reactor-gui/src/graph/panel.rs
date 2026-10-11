@@ -30,6 +30,7 @@ use gpui_kit::{
 };
 use reactor_db::graph::edit::{self, Annotate, AnnotationKind, At, TypeChoice};
 use reactor_db::graph::layout;
+use reactor_db::graph::views::{self, SavedView};
 use reactor_db::graph::vocab::{self, Vocabulary};
 use reactor_db::graph::{self, query};
 use serde::Deserialize;
@@ -118,6 +119,7 @@ pub struct PlaneForTest {
     pub drawn: usize,
     pub layers: usize,
     pub layers_open: bool,
+    pub views: Vec<String>,
     pub legend_open: bool,
     pub picking: Option<String>,
 }
@@ -251,6 +253,10 @@ pub struct GraphPanel {
     /// The filter layers, top to bottom, and whether their panel is open.
     layers: Vec<LayerRow>,
     layers_open: bool,
+    /// The views kept with the case, and the name being typed for a new one (while saving).
+    views: Vec<SavedView>,
+    view_name: Entity<InputState>,
+    saving_view: bool,
     /// Find: whether it is open, what is typed, where it looks, the matches (a node's id and
     /// where in it) in reading order, and which of them it is at.
     find_open: bool,
@@ -423,6 +429,17 @@ impl GraphPanel {
             },
         )
         .detach();
+        let view_name = cx.new(|cx| InputState::new(window, cx).placeholder("name this view"));
+        cx.subscribe_in(
+            &view_name,
+            window,
+            |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::PressEnter { .. } => this.save_view(cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            },
+        )
+        .detach();
         let picker_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("find an icon: shield, key…"));
         cx.subscribe_in(&picker_input, window, |_, _, event: &InputEvent, _, cx| {
@@ -457,6 +474,9 @@ impl GraphPanel {
             metrics: Rc::new(Cell::new(Metrics::default())),
             layers: Vec::new(),
             layers_open: false,
+            views: Vec::new(),
+            view_name,
+            saving_view: false,
             find_open: false,
             find_input,
             find_scope: sift::Scope::default(),
@@ -514,6 +534,7 @@ impl GraphPanel {
             drawn: self.shown(cx).iter().filter(|s| **s).count(),
             layers: self.layers.len(),
             layers_open: self.layers_open,
+            views: self.views.iter().map(|v| v.name.clone()).collect(),
             legend_open: self.legend_open,
             picking: self.picker.as_ref().map(|p| p.type_.clone()),
         }
@@ -536,7 +557,7 @@ impl GraphPanel {
     }
 
     /// Put the plane in a state by name, as the pointer and the keys would: `find:<words>`,
-    /// `legend`, `size:<s|m|l|xl>`, `own:<id>:<size>`, `pick:<id>`, `select:<id>`, `fit`, `goto:<id>`.
+    /// `legend`, `size:<s|m|l|xl>`, `own:<id>:<size>`, `pick:<id>`, `select:<id>`, `fit`, `goto:<id>`, `saveview:<name>`.
     #[doc(hidden)]
     pub fn stage_for_test(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (name, rest) = what.split_once(':').unwrap_or((what, ""));
@@ -575,6 +596,7 @@ impl GraphPanel {
             }
             "select" => self.select(Some(Selected::Nodes(vec![rest.to_string()])), cx),
             "fit" => self.fit(cx),
+            "saveview" => self.save_view_for_test(rest, window, cx),
             "goto" => {
                 if let Some(p) = self.positions.get(rest).copied() {
                     self.zoom = 1.;
@@ -590,6 +612,24 @@ impl GraphPanel {
     #[doc(hidden)]
     pub fn relayout_for_test(&mut self, cx: &mut Context<Self>) {
         self.relayout(cx);
+    }
+
+    /// Keep what the filter layers, size and level are now as a view, as the panel's Save does.
+    #[doc(hidden)]
+    pub fn save_view_for_test(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.view_name.update(cx, |s, cx| {
+            s.set_value(SharedString::from(name.to_string()), window, cx)
+        });
+        self.save_view(cx);
+    }
+
+    /// The layers as `filter|mode|on`, for comparing with what a view put back.
+    #[doc(hidden)]
+    pub fn layers_for_test(&self, cx: &App) -> Vec<String> {
+        self.layers
+            .iter()
+            .map(|r| format!("{}|{}|{}", r.input.read(cx).value(), r.mode.slug(), r.on))
+            .collect()
     }
 
     /// Add a filter layer as the panel's button and its menu would.
@@ -666,6 +706,7 @@ impl GraphPanel {
         let db = b.case.db();
         self.scale = edit::scale(db, "confidence").unwrap_or_default();
         self.vocabulary = vocab::load(db).unwrap_or_default();
+        self.views = views::list(db).unwrap_or_default();
         self.entity_choices = edit::type_choices(db, &[graph::Kind::Entity]).unwrap_or_default();
         self.relation_choices =
             edit::type_choices(db, &[graph::Kind::Observation, graph::Kind::Event])
@@ -2447,8 +2488,8 @@ impl Render for GraphPanel {
         let layers_panel = self
             .layers_open
             .then(|| self.layers_panel(&sifted, &shown, cx));
-        // Find sits at the right, beside the layers when they are open.
-        let find_right = if self.layers_open { 404. } else { 12. };
+        // Find sits at the top right, clear of the layers at the bottom right.
+        let find_right = 12.;
         // Under the toolbar where there is no room beside it.
         let find_top = if area_w - find_right - 452. < 860. {
             62.

@@ -1,7 +1,7 @@
 //! What sits over the plane: the toolbar, the filter layers, find, the legend, and the card a
 //! type's icon and colour are chosen on.
 //!
-//! **Filter layers** (at the right) stack: each is a filter and what it does to the nodes it
+//! **Filter layers** (at the bottom right) stack: each is a filter and what it does to the nodes it
 //! matches -- show only those, hide them, dim them, highlight them -- and each is switched
 //! off on its own ([`crate::graph::sift`]). **Find** (Ctrl/Cmd+F) hides nothing: it rings what
 //! matches for as long as it is open, marks the words, and steps from one match to the next.
@@ -19,6 +19,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Div, MouseButton, SharedString, Stateful, Window, div, px,
 };
+use reactor_db::graph::views::{self, SavedView, ViewLayer};
 use reactor_db::graph::vocab::{self, Vocabulary};
 
 use super::node_ui::{icon, meter};
@@ -90,6 +91,107 @@ impl GraphPanel {
         cx.notify();
     }
 
+    // -- saved views -------------------------------------------------------------------------
+
+    /// How the graph is set up now, as a view with the name left open: its layers that have
+    /// something typed (a blank one is nothing to keep), the view's size and its level.
+    pub(super) fn current_view(&self, cx: &App) -> SavedView {
+        SavedView {
+            name: String::new(),
+            layers: self
+                .layers
+                .iter()
+                .filter_map(|row| {
+                    let filter = row.input.read(cx).value().trim().to_string();
+                    (!filter.is_empty()).then(|| ViewLayer {
+                        filter,
+                        mode: row.mode.slug().to_string(),
+                        on: row.on,
+                    })
+                })
+                .collect(),
+            size: Some(self.size.slug().to_string()),
+            detail: self.detail_pick.map(|d| d.label().to_lowercase()),
+        }
+    }
+
+    /// Whether the graph is set up as this view says.
+    pub(super) fn is_view(&self, view: &SavedView, cx: &App) -> bool {
+        let now = self.current_view(cx);
+        now.layers == view.layers
+            && now.detail == view.detail
+            && (view.size.is_none() || now.size == view.size)
+    }
+
+    /// Keep the current set-up under the name typed.
+    pub(super) fn save_view(&mut self, cx: &mut Context<Self>) {
+        let (Some(b), name) = (
+            self.backend.clone(),
+            self.view_name.read(cx).value().trim().to_string(),
+        ) else {
+            return;
+        };
+        if name.is_empty() {
+            return;
+        }
+        let view = SavedView {
+            name,
+            ..self.current_view(cx)
+        };
+        match views::save(b.case.db(), &view) {
+            Ok(_) => {
+                self.views = views::list(b.case.db()).unwrap_or_default();
+                self.saving_view = false;
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// Put a saved view back: its layers replace the ones there, and its size and level are
+    /// the view's. A layer that cannot be read as a filter is kept as typed.
+    pub(super) fn apply_view(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.views.iter().find(|v| v.name == name).cloned() else {
+            return;
+        };
+        self.layers.clear();
+        for layer in &view.layers {
+            let mode = Mode::parse(&layer.mode).unwrap_or_default();
+            self.add_layer(&layer.filter, mode, window, cx);
+            if let Some(row) = self.layers.last_mut() {
+                row.on = layer.on;
+            }
+        }
+        self.layers_open = true;
+        if let Some(size) = view.size.as_deref().and_then(Size::parse) {
+            self.size = size;
+            self.make_room(&[]);
+        }
+        self.detail_pick = match view.detail.as_deref() {
+            Some("basic") => Some(model::Detail::Basic),
+            Some("analysis") => Some(model::Detail::Analysis),
+            Some("full") => Some(model::Detail::Full),
+            _ => None,
+        };
+        cx.notify();
+    }
+
+    /// Forget a view.
+    pub(super) fn delete_view(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
+        match views::delete(b.case.db(), name) {
+            Ok(()) => {
+                self.views = views::list(b.case.db()).unwrap_or_default();
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
     /// The layers as typed, read against the case's confidence scale.
     pub(super) fn layers(&self, cx: &App) -> Vec<sift::Layer> {
         self.layers
@@ -139,6 +241,7 @@ impl GraphPanel {
             .filter(|(d, s)| **s && d.dim)
             .count();
         let hidden = self.model.nodes.len() - drawn;
+        let views_row = self.views_row(cx);
         let rows = self.layers.iter().enumerate().map(|(i, row)| {
             let matched = sifted.matched.get(i).copied().unwrap_or(0);
             let (on, mode) = (row.on, row.mode);
@@ -209,7 +312,8 @@ impl GraphPanel {
                 )
         });
         card("graph-layers", cx)
-            .top_3()
+            // At the bottom right, growing upward as layers are added.
+            .bottom_3()
             .right_3()
             .w(px(380.))
             .child(
@@ -235,6 +339,7 @@ impl GraphPanel {
                             })),
                     ),
             )
+            .child(views_row)
             .children(rows)
             .child(
                 h_flex()
@@ -258,6 +363,128 @@ impl GraphPanel {
                         "{drawn} drawn · {dimmed} dimmed · {hidden} hidden"
                     ))),
             )
+            .into_any_element()
+    }
+
+    /// The saved views as chips -- a click puts one back, and the one the graph is set up as
+    /// is lit -- and the way to keep the current set-up as a new one.
+    fn views_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let chips = self.views.iter().enumerate().map(|(i, view)| {
+            let lit = self.is_view(view, cx);
+            let (name, gone) = (view.name.clone(), view.name.clone());
+            let what = format!(
+                "{} layer{}{}{}",
+                view.layers.len(),
+                if view.layers.len() == 1 { "" } else { "s" },
+                view.size
+                    .as_deref()
+                    .map(|s| format!(" · size {}", s.to_uppercase()))
+                    .unwrap_or_default(),
+                view.detail
+                    .as_deref()
+                    .map(|d| format!(" · {d} detail"))
+                    .unwrap_or_default(),
+            );
+            h_flex()
+                .items_center()
+                .rounded(px(12.))
+                .border_1()
+                .border_color(if lit { theme.primary } else { theme.border })
+                .when(lit, |d| d.bg(theme.primary.opacity(0.12)))
+                .child(hints::tip(
+                    div().id(("graph-view-holder", i)).child({
+                        let b = Button::new(("graph-view", i))
+                            .xsmall()
+                            .ghost()
+                            .label(SharedString::from(view.name.clone()));
+                        let b = if lit { b.primary() } else { b };
+                        b.on_click(cx.listener(move |this, _, window, cx| {
+                            this.apply_view(&name, window, cx)
+                        }))
+                    }),
+                    SharedString::from(format!("Put this view back: {what}")),
+                ))
+                .child(
+                    Button::new(("graph-view-delete", i))
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("Forget this view")
+                        .on_click(cx.listener(move |this, _, _, cx| this.delete_view(&gone, cx))),
+                )
+        });
+        let saving = self.saving_view;
+        v_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_1()
+            .border_b_1()
+            .border_color(theme.border.opacity(0.6))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .items_center()
+                    .flex_wrap()
+                    .child(div().text_color(theme.muted_foreground).child("Views"))
+                    .children(chips)
+                    .when(self.views.is_empty() && !saving, |d| {
+                        d.child(
+                            div()
+                                .text_color(theme.muted_foreground.opacity(0.7))
+                                .child("none saved"),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .when(!saving, |d| {
+                        d.child(hints::tip(
+                            div().id("graph-view-save-holder").child(
+                                Button::new("graph-view-save-open")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Save)
+                                    .label("Save view")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.saving_view = true;
+                                        this.view_name.update(cx, |s, cx| {
+                                            s.set_value("", window, cx);
+                                            s.focus(window, cx);
+                                        });
+                                        cx.notify();
+                                    })),
+                            ),
+                            "Keep the layers, the size and the level of detail as they are now under a name, to put back in one click. A name that is taken is replaced",
+                        ))
+                    }),
+            )
+            .when(saving, |d| {
+                d.child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .items_center()
+                        .child(div().flex_1().child(Input::new(&self.view_name).small()))
+                        .child(
+                            Button::new("graph-view-save")
+                                .small()
+                                .primary()
+                                .label("Save")
+                                .on_click(cx.listener(|this, _, _, cx| this.save_view(cx))),
+                        )
+                        .child(
+                            Button::new("graph-view-save-cancel")
+                                .small()
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.saving_view = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -671,10 +898,8 @@ impl GraphPanel {
             spaces.entry(root).or_insert((l.colour, 0)).1 += 1;
             disputed |= node.status == "conflicting";
             sure |= node.confidence.is_some();
-            if node.kind == model::NodeKind::Annotation {
-                by_agent |= node.by_agent;
-                by_person |= !node.by_agent;
-            }
+            by_agent |= node.by_agent;
+            by_person |= !node.by_agent;
         }
         let mut spaces: Vec<(String, (gpui_kit::Hsla, usize))> = spaces.into_iter().collect();
         spaces.sort_by(|a, b| b.1.1.cmp(&a.1.1).then(a.0.cmp(&b.0)));
@@ -1012,7 +1237,9 @@ impl GraphPanel {
 
     /// Esc: close what is open over the plane, the nearest thing first.
     pub(super) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.take().is_some() || self.form.take().is_some() {
+        if std::mem::take(&mut self.saving_view) {
+            window.focus(&self.focus, cx);
+        } else if self.picker.take().is_some() || self.form.take().is_some() {
             window.focus(&self.focus, cx);
         } else if self.find_open {
             self.close_find(window, cx);

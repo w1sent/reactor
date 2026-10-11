@@ -67,6 +67,26 @@ pub fn ink(colour: Hsla, dark: bool) -> Hsla {
     }
 }
 
+/// The colour a tag is drawn in, on its box on the plane and on its chip: the one it was
+/// given (its own, or its dotted prefix's), else one its name gives it, so that the same
+/// tag is the same colour wherever it is and whichever other tags are on.
+pub fn tag_colour(vocabulary: &Vocabulary, tag: &str, dark: bool) -> Hsla {
+    if let Some(given) = vocabulary.tag_colour(tag).and_then(colour) {
+        return ink(given, dark);
+    }
+    let hue = (tag
+        .bytes()
+        .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+        % 360) as f32
+        / 360.;
+    Hsla {
+        h: hue,
+        s: 0.55,
+        l: 0.55,
+        a: 1.,
+    }
+}
+
 /// Every icon there is, by name, in order.
 pub fn icon_names() -> &'static [String] {
     static NAMES: OnceLock<Vec<String>> = OnceLock::new();
@@ -223,6 +243,22 @@ mod tests {
     use super::*;
     use reactor_db::Case;
     use reactor_db::graph::vocab;
+
+    #[test]
+    fn a_tag_is_drawn_in_the_colour_it_was_given_else_in_the_one_its_name_gives_it() {
+        let mut v = Vocabulary::default();
+        let named = tag_colour(&v, "phase.c2", true);
+        // The name's colour is the same every time, and differs between names.
+        assert_eq!(named, tag_colour(&v, "phase.c2", true));
+        assert_ne!(named, tag_colour(&v, "phase.recon", true));
+        v.tags.insert("phase".into(), "teal".into());
+        assert_eq!(tag_colour(&v, "phase.c2", true), colour("teal").unwrap());
+        // A given colour is ink on a light ground, as a type's is.
+        assert_eq!(
+            tag_colour(&v, "phase.c2", false),
+            ink(colour("teal").unwrap(), false)
+        );
+    }
 
     #[test]
     fn every_colour_the_vocabulary_names_is_drawn_and_none_is_orange_or_red() {

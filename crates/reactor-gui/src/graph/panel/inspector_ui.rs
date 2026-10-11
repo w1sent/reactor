@@ -13,18 +13,20 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::label::Label;
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Context, Entity, Hsla, SharedString, Window, div, px};
+use gpui_kit::{AnyElement, App, Context, Entity, SharedString, Window, div, px};
 
-use super::{GraphPanel, Selected};
-use crate::graph::inspector::{self, Group, Inspected, Stand, Tone};
+use super::node_ui::icon;
+use super::{GraphPanel, GraphSetStatus, Selected};
+use crate::graph::inspector::{self, Group, Inspected, Stand};
+use crate::graph::look;
 use crate::hints;
+use reactor_db::graph::Kind;
 use reactor_db::graph::edit;
 
 /// The inspector's width to start with; it is dragged.
@@ -57,24 +59,6 @@ fn panes(i: &Inspected) -> Vec<Pane> {
     panes
 }
 
-fn tone_colour(tone: Tone, theme: &Theme) -> Hsla {
-    match tone {
-        Tone::Entity => theme.chart_1,
-        Tone::Event => theme.chart_2,
-        Tone::Observation => theme.chart_3,
-        Tone::Hypothesis => theme.chart_4,
-        Tone::Judgement => theme.primary,
-        Tone::Note => theme.info,
-        Tone::Other => theme.muted_foreground,
-    }
-}
-
-fn kind_tag(label: &str, colour: Hsla) -> Tag {
-    Tag::custom(colour.opacity(0.15), colour, colour.opacity(0.5))
-        .small()
-        .child(SharedString::from(label.to_string()))
-}
-
 /// `2026-10-05T12:04:11Z` → `2026-10-05 12:04`.
 fn short_time(rfc3339: &str) -> String {
     rfc3339.replace('T', " ").chars().take(16).collect()
@@ -85,19 +69,77 @@ impl GraphPanel {
     /// the label column and the padding. Pixels, not "the rest": text is measured before the
     /// row is laid out, and with no width it reports one line's height.
     fn dock_value(&self) -> f32 {
-        (self.dock_width.get() - 112. - 56.).max(120.)
+        (self.dock_width.get() - 88. - 12. - 40.).max(120.)
     }
 
-    /// What the inspector's header says: what the element is, its title, where a hypothesis
-    /// stands, how sure it is, who wrote it.
+    /// What an element is the kind of: the graph's word for it, else its type's.
+    fn kind_of_id(&self, id: &str, type_: &str) -> Kind {
+        self.model
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.element)
+            .unwrap_or_else(|| self.kind_of_type(type_))
+    }
+
+    /// The element's standing as one menu: active, disputed or soft-deleted. What is chosen
+    /// applies to everything selected.
+    pub(super) fn status_menu(&self, status: &str, theme: &Theme) -> impl IntoElement {
+        let focus = self.focus.clone();
+        let current = status.to_string();
+        let (label, disputed) = match status {
+            "conflicting" => ("Disputed", true),
+            "soft-deleted" => ("Deleted", false),
+            _ => ("Active", false),
+        };
+        let button = Button::new("graph-status").small().label(label);
+        let button = if disputed {
+            button.warning()
+        } else {
+            button.outline()
+        };
+        let _ = theme;
+        button
+            .tooltip("Its standing: dispute it (it stays visible, flagged — say why in a note) or hide it (nothing is lost)")
+            .dropdown_menu(move |menu, _, _| {
+                let pick = |status: &str| {
+                    Box::new(GraphSetStatus {
+                        status: status.to_string(),
+                    })
+                };
+                menu.action_context(focus.clone())
+                    .menu_with_check("Active", current == "active", pick("active"))
+                    .menu_with_check(
+                        "Disputed — stays visible, flagged",
+                        current == "conflicting",
+                        pick("conflicting"),
+                    )
+                    .separator()
+                    .menu_with_check(
+                        "Soft-delete — hidden, can come back",
+                        current == "soft-deleted",
+                        pick("soft-deleted"),
+                    )
+            })
+    }
+
+    /// What the inspector's header says: the node as it is drawn on the plane (its type's icon
+    /// and colour), what it is, who wrote it and where it came from, its standing, and -- for
+    /// what is concluded rather than found -- where a hypothesis stands and how sure it is.
     pub(super) fn inspector_head(
         &self,
         i: &Inspected,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colour = tone_colour(i.tone, theme);
+        let dark = theme.is_dark();
+        let kind = self.kind_of_id(&i.id, &i.type_);
+        let look = look::look(&self.vocabulary, &i.type_, kind);
+        let hue = look::ink(look.colour, dark);
         let muted = theme.muted_foreground;
+        let small = theme.font_size * 0.85;
+        // What is concluded has no source to rest on: how sure it is, is what it has.
+        let concluded = kind == Kind::Annotation;
         let mut head = v_flex()
             .p_3()
             .gap_2()
@@ -105,20 +147,56 @@ impl GraphPanel {
             .border_color(theme.border)
             .child(
                 h_flex()
-                    .justify_between()
-                    .items_center()
+                    .gap_3()
+                    .items_start()
                     .child(
-                        h_flex()
-                            .gap_2()
+                        div()
+                            .flex_none()
+                            .size(px(38.))
+                            .flex()
                             .items_center()
-                            .child(kind_tag(&i.label, colour))
-                            .when(i.status != "active", |row| {
-                                row.child(
-                                    Tag::warning()
-                                        .small()
-                                        .child(SharedString::from(i.status.clone())),
-                                )
-                            }),
+                            .justify_center()
+                            .rounded_lg()
+                            .bg(hue.opacity(0.14))
+                            .border_1()
+                            .border_color(hue.opacity(0.35))
+                            .child(icon(look.path.clone(), 20., hue)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .items_start()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_size(theme.font_size * 1.2)
+                                            .child(SharedString::from(i.title.clone())),
+                                    )
+                                    .child(
+                                        Clipboard::new("graph-copy-title")
+                                            .value(SharedString::from(i.title.clone()))
+                                            .tooltip("Copy its name"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(small)
+                                    .text_color(muted)
+                                    .font_family(theme.mono_font_family.clone())
+                                    .child(SharedString::from(format!(
+                                        "{} · {}",
+                                        i.type_,
+                                        kind.as_str()
+                                    ))),
+                            ),
                     )
                     .child(
                         Button::new("graph-deselect")
@@ -130,10 +208,33 @@ impl GraphPanel {
                     ),
             )
             .child(
-                div()
-                    .w_full()
-                    .text_size(theme.font_size * 1.2)
-                    .child(SharedString::from(i.title.clone())),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_size(small)
+                            .text_color(muted)
+                            .child(SharedString::from(format!(
+                                "{} · version {} · {}",
+                                inspector::who(&i.author),
+                                i.ver,
+                                short_time(&i.recorded_at)
+                            ))),
+                    )
+                    .child(
+                        Button::new("graph-source")
+                            .small()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::ExternalLink)
+                            .label("Source")
+                            .tooltip("Open where this came from: the file, the page, or the session it was said in")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_source(window, cx)
+                            })),
+                    ),
             );
         if let Some(status) = &i.hypothesis {
             let at = edit::HYPOTHESIS_STATUSES
@@ -193,31 +294,40 @@ impl GraphPanel {
             h_flex()
                 .gap_3()
                 .items_center()
-                .when(steps > 0, |row| row.child(bars))
-                .child(
-                    div()
-                        .text_size(theme.font_size * 0.85)
-                        .text_color(muted)
-                        .child(SharedString::from(
-                            i.confidence
-                                .clone()
-                                .unwrap_or_else(|| "no confidence given".to_string()),
-                        )),
-                ),
+                .justify_between()
+                .child(self.status_menu(&i.status, theme))
+                .when(concluded, |row| {
+                    row.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .when(steps > 0, |r| r.child(bars))
+                            .child(
+                                div()
+                                    .text_size(small)
+                                    .text_color(if i.confidence.is_some() {
+                                        theme.foreground
+                                    } else {
+                                        theme.primary
+                                    })
+                                    .child(SharedString::from(
+                                        i.confidence
+                                            .clone()
+                                            .unwrap_or_else(|| "How sure?".to_string()),
+                                    )),
+                            ),
+                    )
+                })
+                .when(!concluded, |row| {
+                    row.child(
+                        div()
+                            .text_size(small)
+                            .text_color(muted)
+                            .child("a source, not a judgement"),
+                    )
+                }),
         );
-        head.child(
-            div()
-                .w_full()
-                .text_size(theme.font_size * 0.8)
-                .text_color(muted)
-                .child(SharedString::from(format!(
-                    "{} · version {} · {}",
-                    inspector::who(&i.author),
-                    i.ver,
-                    short_time(&i.recorded_at)
-                ))),
-        )
-        .into_any_element()
+        head.into_any_element()
     }
 
     /// The tab bar and the open tab.
@@ -229,39 +339,70 @@ impl GraphPanel {
     ) -> AnyElement {
         let panes = panes(i);
         let at = self.inspector_tab.min(panes.len() - 1);
-        let labels: Vec<String> = panes
+        let labels: Vec<(&str, Option<usize>)> = panes
             .iter()
             .map(|p| match p {
-                Pane::Text => "Text".to_string(),
-                Pane::Relations if i.hypothesis.is_some() => format!("Evidence {}", i.related()),
-                Pane::Relations => format!("Relations {}", i.related()),
-                Pane::History => format!("History {}", i.history.len()),
-                Pane::Details => "Details".to_string(),
+                Pane::Text => ("Text", None),
+                Pane::Relations if i.hypothesis.is_some() => ("Evidence", Some(i.related())),
+                Pane::Relations => ("Relations", Some(i.related())),
+                Pane::History => ("History", Some(i.history.len())),
+                Pane::Details => ("Details", None),
             })
             .collect();
-        let tabs = TabBar::new("graph-inspector-tabs")
-            .selected_index(at)
-            .children(labels.into_iter().map(|l| Tab::new().label(l)))
-            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                this.inspector_tab = *ix;
-                cx.notify();
+        // The same pill control as the kinds in the add form and the layers' modes: the open
+        // tab is the lighter pill, and what a tab holds is counted beside its name.
+        let tabs = h_flex()
+            .gap_0p5()
+            .p_0p5()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .children(labels.into_iter().enumerate().map(|(ix, (name, count))| {
+                let on = ix == at;
+                h_flex()
+                    .id(("graph-inspector-tab", ix))
+                    .flex_1()
+                    .justify_center()
+                    .items_center()
+                    .gap_1()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(theme.secondary).text_color(theme.foreground))
+                    .when(!on, |d| {
+                        d.text_color(theme.muted_foreground)
+                            .hover(|d| d.text_color(theme.foreground))
+                    })
+                    .child(name)
+                    .children(count.map(|n| {
+                        div()
+                            .text_size(theme.font_size * 0.85)
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(n.to_string()))
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.inspector_tab = ix;
+                        cx.notify();
+                    }))
             }));
         let content = match panes[at] {
             Pane::Text => self.text_pane(i, theme, cx),
             Pane::Relations => self.relations_pane(i, theme, cx),
-            Pane::History => self.history_pane(i, theme),
+            Pane::History => self.history_pane(i, theme, cx),
             Pane::Details => self.details_pane(i, theme),
         };
         v_flex()
             .flex_1()
             .min_h_0()
-            .child(div().flex_none().px_3().child(tabs))
+            .child(div().flex_none().px_3().pt_2().pb_2().child(tabs))
             .child(
                 div()
                     .id("graph-inspector-pane")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
+                    .border_t_1()
+                    .border_color(theme.border)
                     .p_3()
                     .child(content),
             )
@@ -312,20 +453,6 @@ impl GraphPanel {
                         .on_link_click(|url, _event, _window, cx| cx.open_url(url)),
                 ),
             )
-            .child(self.tag_chips(i))
-            .into_any_element()
-    }
-
-    fn tag_chips(&self, i: &Inspected) -> AnyElement {
-        h_flex()
-            .gap_1()
-            .flex_wrap()
-            .children(i.tags.iter().map(|t| {
-                Tag::secondary()
-                    .small()
-                    .outline()
-                    .child(SharedString::from(t.clone()))
-            }))
             .into_any_element()
     }
 
@@ -345,119 +472,222 @@ impl GraphPanel {
     }
 
     fn group(&self, gi: usize, g: &Group, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let heading = match g.stand {
-            Stand::Supports => Tag::success().small(),
-            Stand::Refutes => Tag::danger().small(),
-            Stand::Neutral => Tag::secondary().small().outline(),
-        }
-        .child(SharedString::from(format!(
-            "{} · {}",
-            g.title,
-            g.items.len()
-        )));
-        let mut rows = v_flex().gap_0p5();
+        let dark = theme.is_dark();
+        let small = theme.font_size * 0.85;
+        let dot = match g.stand {
+            Stand::Supports => theme.success,
+            Stand::Refutes => theme.danger,
+            Stand::Neutral => theme.muted_foreground,
+        };
+        let heading = h_flex()
+            .gap_2()
+            .items_center()
+            .text_size(small)
+            .text_color(theme.muted_foreground)
+            .child(div().size(px(8.)).rounded_full().bg(dot))
+            .child(SharedString::from(g.title.to_uppercase()))
+            .child(SharedString::from(g.items.len().to_string()));
+        // Each element at the other end as the plane draws it: its type's icon and colour,
+        // what it says, and its type under that.
+        let mut rows = v_flex().gap_2();
         for (ri, r) in g.items.iter().enumerate() {
             let id = r.id.clone();
-            let drawn = self.model.nodes.iter().any(|n| n.id == id);
+            let node = self.model.nodes.iter().find(|n| n.id == id);
+            let drawn = node.is_some();
+            let (path, hue, type_) = match node {
+                Some(n) => {
+                    let look = look::look(&self.vocabulary, &n.type_, n.element);
+                    (
+                        look.path.clone(),
+                        look::ink(look.colour, dark),
+                        n.type_.clone(),
+                    )
+                }
+                None => {
+                    let look = look::look(&self.vocabulary, "", Kind::Entity);
+                    (
+                        look.path.clone(),
+                        look::ink(look.colour, dark),
+                        String::new(),
+                    )
+                }
+            };
             rows = rows.child(
                 h_flex()
                     .id(SharedString::from(format!("graph-related-{gi}-{ri}")))
                     .gap_2()
                     .items_center()
                     .px_2()
-                    .py_1()
-                    .rounded_md()
+                    .py_1p5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
                     .when(drawn, |row| {
                         row.cursor_pointer()
-                            .hover(|s| s.bg(theme.list_hover))
+                            .hover(|s| s.border_color(theme.muted_foreground))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select(Some(Selected::Nodes(vec![id.clone()])), cx)
                             }))
                     })
                     .when(!drawn, |row| row.opacity(0.7))
+                    .child(icon(path, f32::from(theme.font_size) * 1.15, hue))
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .min_w_0()
-                            .child(SharedString::from(r.name.clone())),
+                            .child(SharedString::from(r.name.clone()))
+                            .when(!type_.is_empty(), |c| {
+                                c.child(
+                                    div()
+                                        .text_size(small)
+                                        .text_color(theme.muted_foreground)
+                                        .child(SharedString::from(type_)),
+                                )
+                            }),
                     )
                     .children(r.locator.clone().map(|l| {
                         div()
                             .flex_none()
-                            .text_size(theme.font_size * 0.8)
+                            .text_size(small)
                             .text_color(theme.muted_foreground)
                             .child(SharedString::from(l))
                     })),
             );
         }
         v_flex()
-            .gap_1()
+            .gap_2()
             .child(heading)
             .child(rows)
             .into_any_element()
     }
 
-    /// Every version, newest first, and what each changed.
-    fn history_pane(&self, i: &Inspected, theme: &Theme) -> AnyElement {
-        let mut column = v_flex().gap_2();
+    /// Every version, newest first, and what each changed; and taking the latest back.
+    fn history_pane(&self, i: &Inspected, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let small = theme.font_size * 0.85;
+        let mut column = v_flex().gap_3().child(
+            h_flex()
+                .id("graph-undo")
+                .gap_2()
+                .items_center()
+                .px_2()
+                .py_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .hover(|s| s.border_color(theme.muted_foreground))
+                .child(icon(
+                    look::icon_path("undo-2"),
+                    f32::from(small) * 1.3,
+                    theme.foreground,
+                ))
+                .child(
+                    v_flex().child("Undo last change").child(
+                        div()
+                            .text_size(small)
+                            .text_color(theme.muted_foreground)
+                            .child("Takes back the latest version. Shows what would go first."),
+                    ),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.preview_undo(cx))),
+        );
         for v in i.history.iter().rev() {
             column = column.child(
-                v_flex()
-                    .gap_0p5()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(Label::new(format!("Version {}", v.ver)))
-                            .child(
-                                div()
-                                    .text_color(theme.muted_foreground)
-                                    .text_size(theme.font_size * 0.85)
-                                    .child(SharedString::from(short_time(&v.when))),
-                            ),
-                    )
-                    .child(div().w_full().child(SharedString::from(v.change.clone())))
+                h_flex()
+                    .gap_3()
+                    .items_start()
                     .child(
                         div()
-                            .text_color(theme.muted_foreground)
-                            .text_size(theme.font_size * 0.8)
-                            .child(SharedString::from(v.who.clone())),
+                            .flex_none()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_md()
+                            .bg(theme.secondary)
+                            .text_size(small)
+                            .child(SharedString::from(format!("v{}", v.ver))),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().w_full().child(SharedString::from(v.change.clone())))
+                            .child(
+                                div()
+                                    .text_size(small)
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(format!(
+                                        "{} · {}",
+                                        v.who,
+                                        short_time(&v.when)
+                                    ))),
+                            ),
                     ),
             );
         }
         column.into_any_element()
     }
 
-    /// The rest: when, what holds, its properties, and its id.
+    /// The rest: when, what holds, its properties, and its id -- a label and its value a line
+    /// each, every value with a button that copies it, and one that copies them all.
     fn details_pane(&self, i: &Inspected, theme: &Theme) -> AnyElement {
-        let mut list = DescriptionList::new()
-            .columns(1)
-            .bordered(false)
-            .label_width(px(112.))
-            .small();
-        let mut rows: Vec<(String, String)> = vec![("Type".into(), i.type_.clone())];
-        rows.extend(i.facts.iter().cloned());
-        rows.push(("Recorded".into(), short_time(&i.recorded_at)));
-        rows.push(("Id".into(), i.id.clone()));
-        for (label, value) in rows {
-            list = list.item(
-                SharedString::from(label),
-                div()
-                    .w(px(self.dock_value()))
-                    .flex_none()
-                    .child(SharedString::from(value))
-                    .into_any_element(),
-                1,
-            );
-        }
+        let small = theme.font_size * 0.85;
+        let mut rows: Vec<(String, String, bool)> = vec![("Type".into(), i.type_.clone(), true)];
+        rows.extend(i.facts.iter().map(|(l, v)| (l.clone(), v.clone(), false)));
+        rows.push(("Recorded".into(), short_time(&i.recorded_at), false));
+        rows.push(("Id".into(), i.id.clone(), true));
+        let all: String = rows
+            .iter()
+            .map(|(l, v, _)| format!("{l}: {v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         v_flex()
-            .gap_3()
-            .child(list)
-            .child(self.tag_chips(i))
+            .gap_2()
             .child(
-                div()
+                h_flex()
+                    .justify_end()
+                    .items_center()
+                    .gap_1()
+                    .text_size(small)
                     .text_color(theme.muted_foreground)
-                    .text_size(theme.font_size * 0.8)
-                    .child("Tags are added and taken off below."),
+                    .child("Copy all")
+                    .child(
+                        Clipboard::new("graph-copy-details")
+                            .value(SharedString::from(all))
+                            .tooltip("Copy every line below, as label: value"),
+                    ),
+            )
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(ix, (label, value, mono))| {
+                        h_flex()
+                            .gap_3()
+                            .items_start()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(88.))
+                                    .text_size(small)
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(label)),
+                            )
+                            .child(
+                                div()
+                                    .w(px((self.dock_value() - 32.).max(100.)))
+                                    .flex_none()
+                                    .when(mono, |d| {
+                                        d.font_family(theme.mono_font_family.clone())
+                                            .text_size(small)
+                                    })
+                                    .child(SharedString::from(value.clone())),
+                            )
+                            .child(
+                                Clipboard::new(("graph-copy-detail", ix))
+                                    .value(SharedString::from(value))
+                                    .tooltip("Copy this value"),
+                            )
+                    }),
             )
             .into_any_element()
     }

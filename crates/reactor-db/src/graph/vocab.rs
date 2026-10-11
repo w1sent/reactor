@@ -60,6 +60,8 @@ pub struct Look {
 pub struct Vocabulary {
     pub types: BTreeMap<String, KnownType>,
     pub namespaces: BTreeMap<String, Namespace>,
+    /// The colour a tag was given, by name (a prefix such as `phase` speaks for `phase.c2`).
+    pub tags: BTreeMap<String, String>,
 }
 
 /// The prefixes of a type, longest first: `a.b.c` gives `a.b`, then `a`.
@@ -76,6 +78,16 @@ impl Vocabulary {
     /// The outermost namespace of a type as written, known or not: `net` for `net.tls.ja3`.
     pub fn root(type_: &str) -> &str {
         type_.split('.').next().unwrap_or(type_)
+    }
+
+    /// The colour a tag was given: its own, else that of the longest dotted prefix that has
+    /// one. `None` leaves it to the drawing.
+    pub fn tag_colour(&self, tag: &str) -> Option<&str> {
+        let tag = tag.trim().to_lowercase();
+        self.tags
+            .get(&tag)
+            .or_else(|| prefixes(&tag).find_map(|p| self.tags.get(p)))
+            .map(String::as_str)
     }
 
     pub fn look(&self, type_: &str) -> Look {
@@ -132,6 +144,12 @@ pub fn load(db: &Db) -> Result<Vocabulary> {
             let ns = ns?;
             vocabulary.namespaces.insert(ns.prefix.clone(), ns);
         }
+        let mut stmt = conn.prepare("SELECT tag, colour FROM tag_look ORDER BY tag")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (tag, colour) = row?;
+            vocabulary.tags.insert(tag, colour);
+        }
         Ok(vocabulary)
     })
 }
@@ -179,6 +197,27 @@ fn check_icon(icon: Option<&str>) -> Result<Option<String>> {
             "`{i}` is not an icon's name: a Lucide icon, as in `shield-alert`"
         ))),
     }
+}
+
+/// Give a tag a colour, or (with `None`) take it back to the one its name gives it. A tag is
+/// free text, so it need not be known first; names are compared in lower case.
+pub fn set_tag_colour(db: &Db, tag: &str, colour: Option<&str>) -> Result<()> {
+    let tag = tag.trim().to_lowercase();
+    if tag.is_empty() {
+        return Err(Error::Invalid("a tag needs a name".into()));
+    }
+    let colour = check_colour(colour)?;
+    db.write(move |tx| {
+        match colour {
+            Some(colour) => tx.execute(
+                "INSERT INTO tag_look(tag, colour) VALUES (?1, ?2)
+                 ON CONFLICT(tag) DO UPDATE SET colour = ?2",
+                params![tag, colour],
+            )?,
+            None => tx.execute("DELETE FROM tag_look WHERE tag = ?1", [&tag])?,
+        };
+        Ok(())
+    })
 }
 
 /// Say how a type is drawn: its icon, its colour, or (with `None`) neither any more. A type

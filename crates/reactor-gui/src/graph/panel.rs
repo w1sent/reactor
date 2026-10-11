@@ -18,7 +18,6 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -67,6 +66,14 @@ pub struct GraphSetDetail {
     pub level: String,
 }
 
+/// A standing picked from the inspector's status menu: `active`, `conflicting` (disputed) or
+/// `soft-deleted`.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct GraphSetStatus {
+    pub status: String,
+}
+
 /// A hypothesis status picked from the detail box's menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
@@ -86,7 +93,12 @@ actions!(
         /// `0`: back to the size and width that follow from what a node says.
         GraphAutoSize,
         /// Esc: close what is open over the plane.
-        GraphDismiss
+        GraphDismiss,
+        /// Ctrl/Cmd+N: add a node of any kind by hand, from a palette.
+        GraphNewNode,
+        /// Up and down in the add palette's type field.
+        GraphAddUp,
+        GraphAddDown
     ]
 );
 
@@ -100,6 +112,10 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-f", GraphFind, Some(CONTEXT)),
         KeyBinding::new("secondary-f", GraphFind, Some(typing)),
+        KeyBinding::new("secondary-n", GraphNewNode, Some(CONTEXT)),
+        KeyBinding::new("secondary-n", GraphNewNode, Some(typing)),
+        KeyBinding::new("up", GraphAddUp, Some(typing)),
+        KeyBinding::new("down", GraphAddDown, Some(typing)),
         KeyBinding::new("escape", GraphDismiss, Some(CONTEXT)),
         KeyBinding::new("escape", GraphDismiss, Some(typing)),
         KeyBinding::new("[", GraphSmaller, Some(plane)),
@@ -151,9 +167,10 @@ enum Spot {
 }
 
 /// What the add form adds.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AddMode {
-    Entity,
+    /// A node of this kind and of the type that was chosen.
+    Node(graph::Kind),
     /// A free note, put where it was thought of.
     Note,
     /// Any other kind of annotation: what it is about is what is selected.
@@ -174,10 +191,11 @@ enum Stance {
 #[derive(Clone)]
 enum Form {
     Add {
-        mode: AddMode,
         spot: Spot,
         /// Where the card sits, in the drawing area: at the pointer for a right click.
         anchor: Option<(f32, f32)>,
+        /// The small form of a right click, rather than the palette.
+        compact: bool,
     },
     /// A relation between these, in the order they were selected: two are related
     /// by two roles, more are the members of one claim.
@@ -280,6 +298,20 @@ pub struct GraphPanel {
     form: Option<Form>,
     entity_type: Entity<InputState>,
     entity_value: Entity<InputState>,
+    /// Where a search looked, in the add form.
+    add_where: Entity<InputState>,
+    /// The tag field is open in the inspector; and the tag whose colour is being chosen.
+    tag_adding: bool,
+    tag_colouring: Option<String>,
+    /// The note field is open in the inspector.
+    note_open: bool,
+    /// What can be added, for what is typed in the add form, and which of it is picked.
+    add_rows: Vec<add_ui::AddRow>,
+    add_at: usize,
+    /// Every type there is for what a person can add, with how much it is used.
+    add_choices: Vec<TypeChoice>,
+    /// What a type that is not known yet will be a type of.
+    add_new_kind: graph::Kind,
     relation_type: Entity<InputState>,
     from_role: Entity<InputState>,
     to_role: Entity<InputState>,
@@ -299,8 +331,10 @@ pub struct GraphPanel {
     spot: Option<Spot>,
 }
 
+mod add_ui;
 mod inspector_ui;
 mod node_ui;
+mod tags_ui;
 mod tools_ui;
 use inspector_ui::Reader;
 
@@ -395,19 +429,37 @@ impl GraphPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entity_type =
-            cx.new(|cx| InputState::new(window, cx).placeholder("type, e.g. net.ipv4"));
-        let entity_value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
+        let tag = cx.new(|cx| InputState::new(window, cx).placeholder("tag, e.g. phase.recon"));
+        let entity_type = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("a type, or what to add: agent, ipv4, note…")
+        });
+        let entity_value = cx.new(|cx| InputState::new(window, cx).placeholder("name"));
+        let add_where = cx.new(|cx| InputState::new(window, cx).placeholder("where: a file, a URL…"));
         let relation_type =
             cx.new(|cx| InputState::new(window, cx).placeholder("type, e.g. net.connection"));
         for input in [&entity_type, &relation_type] {
             cx.subscribe_in(input, window, |this, _, event: &InputEvent, _, cx| {
                 if let InputEvent::Change = event {
                     this.refresh_suggestions(cx);
+                    if matches!(this.form, Some(Form::Add { .. })) {
+                        // Typing starts the list over, at its best.
+                        this.add_at = 0;
+                        this.rebuild_add_rows(cx);
+                    }
                 }
             })
             .detach();
         }
+        cx.subscribe_in(
+            &entity_type,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { secondary, .. } = event {
+                    this.add_choose(*secondary, window, cx);
+                }
+            },
+        )
+        .detach();
         cx.subscribe_in(
             &entity_value,
             window,
@@ -417,6 +469,12 @@ impl GraphPanel {
                 }
             },
         )
+        .detach();
+        cx.subscribe_in(&tag, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.add_typed_tag(window, cx),
+            InputEvent::Change => cx.notify(),
+            _ => {}
+        })
         .detach();
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("find in the graph"));
         cx.subscribe_in(
@@ -467,7 +525,7 @@ impl GraphPanel {
             error: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             note: cx.new(|cx| InputState::new(window, cx).placeholder("a note about this…")),
-            tag: cx.new(|cx| InputState::new(window, cx).placeholder("tag, e.g. phase.recon")),
+            tag,
             vocabulary: Vocabulary::default(),
             size: Size::default(),
             own_size: HashMap::new(),
@@ -492,6 +550,14 @@ impl GraphPanel {
             form: None,
             entity_type,
             entity_value,
+            add_where,
+            tag_adding: false,
+            tag_colouring: None,
+            note_open: false,
+            add_rows: Vec::new(),
+            add_at: 0,
+            add_choices: Vec::new(),
+            add_new_kind: graph::Kind::Entity,
             relation_type,
             from_role: cx.new(|cx| InputState::new(window, cx).placeholder("role of the first")),
             to_role: cx.new(|cx| InputState::new(window, cx).placeholder("role of the second")),
@@ -540,6 +606,35 @@ impl GraphPanel {
         }
     }
 
+    /// What the add form lists for what is typed, and which line it is on: `None` while it is
+    /// closed.
+    #[doc(hidden)]
+    pub fn add_for_test(&self) -> Option<(Vec<String>, usize)> {
+        matches!(self.form, Some(Form::Add { .. })).then(|| {
+            (
+                self.add_rows
+                    .iter()
+                    .map(|r| {
+                        if r.new {
+                            format!("new:{}", r.type_)
+                        } else {
+                            r.label.clone()
+                        }
+                    })
+                    .collect(),
+                self.add_at,
+            )
+        })
+    }
+
+    /// The element the inspector shows: its type and its title.
+    #[doc(hidden)]
+    pub fn inspected_for_test(&self) -> Option<(String, String)> {
+        self.inspected
+            .as_ref()
+            .map(|i| (i.type_.clone(), i.title.clone()))
+    }
+
     /// Where a node is drawn in the window, and how big: its centre, its width and height.
     #[doc(hidden)]
     #[allow(clippy::type_complexity)]
@@ -570,6 +665,23 @@ impl GraphPanel {
                 self.find_changed(cx);
             }
             "legend" => self.legend_open = true,
+            "focus" => window.focus(&self.focus, cx),
+            // `addtype:<text>` types into the add form's type field.
+            "addtype" => {
+                self.entity_type.update(cx, |s, cx| {
+                    s.set_value(SharedString::from(rest.to_string()), window, cx)
+                });
+                self.add_at = 0;
+                self.rebuild_add_rows(cx);
+            }
+            // `tag:<tag>` puts a tag on what is selected, `untag:<tag>` takes it off, and
+            // `tagcolour:<tag>:<colour>` gives it one (`default` takes it back).
+            "tag" => self.change_tags(&[rest.to_string()], &[], cx),
+            "untag" => self.change_tags(&[], &[rest.to_string()], cx),
+            "tagcolour" => {
+                let (tag, colour) = rest.split_once(':').expect("tagcolour:<tag>:<colour>");
+                self.set_tag_colour(tag, (colour != "default").then_some(colour), cx);
+            }
             "size" => {
                 self.size = Size::parse(rest).expect("a size");
                 self.make_room(&[]);
@@ -708,6 +820,16 @@ impl GraphPanel {
         self.vocabulary = vocab::load(db).unwrap_or_default();
         self.views = views::list(db).unwrap_or_default();
         self.entity_choices = edit::type_choices(db, &[graph::Kind::Entity]).unwrap_or_default();
+        self.add_choices = edit::type_choices(
+            db,
+            &[
+                graph::Kind::Entity,
+                graph::Kind::Event,
+                graph::Kind::Observation,
+                graph::Kind::Annotation,
+            ],
+        )
+        .unwrap_or_default();
         self.relation_choices =
             edit::type_choices(db, &[graph::Kind::Observation, graph::Kind::Event])
                 .unwrap_or_default();
@@ -839,6 +961,22 @@ impl GraphPanel {
         }
     }
 
+    /// The standing every selected element has, or `active` when they differ.
+    fn common_status(&self) -> String {
+        let ids = self.selected_ids();
+        let mut standings = ids.iter().filter_map(|id| {
+            self.model
+                .nodes
+                .iter()
+                .find(|n| n.id == *id)
+                .map(|n| n.status.clone())
+        });
+        match standings.next() {
+            Some(first) if standings.all(|s| s == first) => first,
+            _ => "active".to_string(),
+        }
+    }
+
     /// The ids a change to the selection applies to.
     fn selected_ids(&self) -> Vec<String> {
         match &self.selected {
@@ -897,6 +1035,7 @@ impl GraphPanel {
             .edit(cx, |db, at| edit::add_note(db, at, &ids, &text))
             .is_some()
         {
+            self.note_open = false;
             self.note
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
@@ -909,7 +1048,7 @@ impl GraphPanel {
         self.edit(cx, |db, at| edit::set_status(db, at, &ids, "soft-deleted"));
     }
 
-    fn set_status(&mut self, status: &'static str, cx: &mut Context<Self>) {
+    fn set_status(&mut self, status: &str, cx: &mut Context<Self>) {
         let ids = self.selected_ids();
         self.edit(cx, |db, at| edit::set_status(db, at, &ids, status));
     }
@@ -929,25 +1068,6 @@ impl GraphPanel {
             self.edit(cx, |db, at| {
                 edit::set_hypothesis_status(db, at, &id, status)
             });
-        }
-    }
-
-    /// Add (or take off) the tag that is typed, on everything selected.
-    fn tag_selection(&mut self, add: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let tag = self.tag.read(cx).value().trim().to_string();
-        let ids = self.selected_ids();
-        if tag.is_empty() || ids.is_empty() {
-            return;
-        }
-        let tags = [tag];
-        let done = if add {
-            self.edit(cx, |db, at| edit::tag(db, at, &ids, &tags, &[]))
-        } else {
-            self.edit(cx, |db, at| edit::tag(db, at, &ids, &[], &tags))
-        };
-        if done.is_some() {
-            self.tag
-                .update(cx, |state, cx| state.set_value("", window, cx));
         }
     }
 
@@ -1014,29 +1134,30 @@ impl GraphPanel {
         );
     }
 
-    /// Open the form for adding an entity or a note.
+    /// Open the form for adding a node: the palette, or (from a right click) its small form.
     fn open_add_form(
         &mut self,
-        mode: AddMode,
         spot: Spot,
         anchor: Option<(f32, f32)>,
+        compact: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.relating = None;
-        self.form = Some(Form::Add { mode, spot, anchor });
-        self.focus_add(mode, window, cx);
+        self.picker = None;
+        self.form = Some(Form::Add {
+            spot,
+            anchor,
+            compact,
+        });
+        for input in [&self.entity_type, &self.entity_value, &self.add_where] {
+            input.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+        self.add_at = 0;
+        self.rebuild_add_rows(cx);
+        self.entity_type.update(cx, |s, cx| s.focus(window, cx));
         self.refresh_suggestions(cx);
         cx.notify();
-    }
-
-    fn focus_add(&mut self, mode: AddMode, window: &mut Window, cx: &mut Context<Self>) {
-        match mode {
-            AddMode::Entity => self.entity_type.update(cx, |s, cx| s.focus(window, cx)),
-            AddMode::Note | AddMode::Annotation(_) => {
-                self.entity_value.update(cx, |s, cx| s.focus(window, cx))
-            }
-        }
     }
 
     /// Start a relation from the selected element: the next one clicked is the other end.
@@ -1076,13 +1197,19 @@ impl GraphPanel {
         let text = |input: &Entity<InputState>, cx: &App| input.read(cx).value().trim().to_string();
         let Some(form) = self.form.take() else { return };
         match form.clone() {
-            Form::Add { mode, spot, .. } => {
+            Form::Add { spot, .. } => {
                 let value = text(&self.entity_value, cx);
                 self.spot = Some(spot);
-                let made = match mode {
-                    AddMode::Entity => {
-                        let ty = text(&self.entity_type, cx);
-                        self.edit(cx, |db, at| edit::add_entity(db, at, &ty, &value))
+                let Some(row) = self.add_row().cloned() else {
+                    self.error = Some("Pick what to add from the list first".to_string());
+                    self.form = Some(form);
+                    cx.notify();
+                    return;
+                };
+                let made = match row.mode {
+                    AddMode::Node(kind) => {
+                        let ty = row.type_.clone();
+                        self.edit(cx, |db, at| edit::add_element(db, at, kind, &ty, &value))
                     }
                     AddMode::Note => self.edit(cx, |db, at| edit::note(db, at, &[], &value)),
                     AddMode::Annotation(kind) => {
@@ -1122,7 +1249,7 @@ impl GraphPanel {
                         };
                         // Where a search looked: words, as typed.
                         let sources: Vec<String> = if kind == AnnotationKind::SearchNegative {
-                            text(&self.entity_type, cx)
+                            text(&self.add_where, cx)
                                 .split_whitespace()
                                 .map(str::to_string)
                                 .collect()
@@ -1149,8 +1276,12 @@ impl GraphPanel {
                 };
                 match made {
                     Some(id) => {
-                        self.entity_value
-                            .update(cx, |s, cx| s.set_value("", window, cx));
+                        for input in [&self.entity_value, &self.add_where] {
+                            input.update(cx, |s, cx| s.set_value("", window, cx));
+                        }
+                        // What was added opens in the inspector, to be given its text, its
+                        // confidence and its tags there.
+                        window.focus(&self.focus, cx);
                         self.select(Some(Selected::Nodes(vec![id])), cx);
                     }
                     None => self.form = Some(form),
@@ -1451,10 +1582,10 @@ impl Panel for GraphPanel {
                 .icon(IconName::Plus)
                 .ghost()
                 .small()
-                .tooltip("Add an entity, a note, a hypothesis or another annotation by hand — or right-click the plane to add one right there")
+                .tooltip("Add a node of any kind by hand (Ctrl/Cmd+N) — or right-click the plane to add one right there")
                 .on_click(cx.listener(|this, _, window, cx| {
                     let spot = Spot::Near(this.to_world(this.centre()));
-                    this.open_add_form(AddMode::Entity, spot, None, window, cx)
+                    this.open_add_form(spot, None, false, window, cx)
                 })),
             Button::new("graph-relayout")
                 .icon(IconName::LayoutDashboard)
@@ -1756,19 +1887,9 @@ impl Render for GraphPanel {
         let mut hull_labels = Vec::new();
         if self.show_groups {
             for g in model::tag_groups(&self.model, &self.positions, &shown, 12) {
-                // The same tag is the same colour, whichever other tags are on.
-                let hue = (g
-                    .tag
-                    .bytes()
-                    .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
-                    % 360) as f32
-                    / 360.;
-                let colour = Hsla {
-                    h: hue,
-                    s: 0.55,
-                    l: 0.55,
-                    a: 1.,
-                };
+                // The same tag is the same colour, whichever other tags are on; one that
+                // was given a colour is drawn in it.
+                let colour = look::tag_colour(&self.vocabulary, &g.tag, theme.is_dark());
                 // Round the boxes of the nodes (the widest a node is drawn, so none pokes
                 // out), standing well off them.
                 let outline: Vec<(f32, f32)> = model::padded_hull(&g.points, (110., 26.), 46.)
@@ -2020,143 +2141,11 @@ impl Render for GraphPanel {
         };
         let mut anchor_at = None;
         let overlay = match &self.form {
-            Some(Form::Add { mode, anchor, .. }) => {
+            Some(Form::Add {
+                anchor, compact, ..
+            }) => {
                 anchor_at = *anchor;
-                let mode = *mode;
-                let mode_button = |id: &'static str, label: &'static str, this_mode: AddMode| {
-                    let b = Button::new(id).small().label(label);
-                    let b = if mode == this_mode {
-                        b.primary()
-                    } else {
-                        b.ghost()
-                    };
-                    b.on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(Form::Add { mode, .. }) = &mut this.form {
-                            *mode = this_mode;
-                        }
-                        this.focus_add(this_mode, window, cx);
-                        cx.notify();
-                    }))
-                };
-                Some(
-                    card()
-                        .child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .flex_wrap()
-                                .max_w(px(404.))
-                                .child(mode_button("graph-add-entity", "Entity", AddMode::Entity))
-                                .child(mode_button("graph-add-note", "Note", AddMode::Note))
-                                .child(mode_button(
-                                    "graph-add-hypothesis",
-                                    "Hypothesis",
-                                    AddMode::Annotation(AnnotationKind::Hypothesis),
-                                ))
-                                .child(mode_button(
-                                    "graph-add-judgement",
-                                    "Assessment",
-                                    AddMode::Annotation(AnnotationKind::Judgement),
-                                ))
-                                .child(mode_button(
-                                    "graph-add-cluster",
-                                    "Cluster",
-                                    AddMode::Annotation(AnnotationKind::Cluster),
-                                ))
-                                .child(mode_button(
-                                    "graph-add-same",
-                                    "Same as",
-                                    AddMode::Annotation(AnnotationKind::SameAs),
-                                ))
-                                .child(mode_button(
-                                    "graph-add-search",
-                                    "Searched",
-                                    AddMode::Annotation(AnnotationKind::SearchNegative),
-                                ))
-                                .child(hints::info_button(
-                                    "graph-form-info",
-                                    "An entity is a thing that can show up in many places: the same value is always the same node. A note is free text, put where it was thought of. A hypothesis is a candidate explanation, open until supported or rejected. An assessment is about what is selected, and with a hypothesis selected too it supports or refutes it. A cluster says the selected nodes belong together; same as says two selected entities are one thing; searched records a search that found nothing, and where it looked.",
-                                )),
-                        )
-                        .when(mode == AddMode::Entity, |c| {
-                            c.child(field("Type", &self.entity_type))
-                                .child(chips(
-                                    "graph-entity-type",
-                                    &self.entity_suggest,
-                                    &self.entity_type,
-                                    &self.entity_value,
-                                ))
-                                .child(field("Value", &self.entity_value))
-                        })
-                        .when(mode == AddMode::Note, |c| {
-                            c.child(field("Note", &self.entity_value))
-                        })
-                        .when_some(
-                            match mode {
-                                AddMode::Annotation(k) => Some(k),
-                                _ => None,
-                            },
-                            |c, kind| {
-                                let label = match kind {
-                                    AnnotationKind::Hypothesis => "Hypothesis",
-                                    AnnotationKind::Judgement => "Assessment",
-                                    AnnotationKind::Cluster => "Name",
-                                    AnnotationKind::SameAs => "Why",
-                                    AnnotationKind::SearchNegative => "Looked for",
-                                    AnnotationKind::Note => "Note",
-                                };
-                                // What it will be about: the selection, by name.
-                                let picked = self.selected_nodes();
-                                let is_hypothesis = |id: &String| {
-                                    self.model
-                                        .nodes
-                                        .iter()
-                                        .any(|n| n.id == *id && n.type_ == "analysis.hypothesis")
-                                };
-                                let hypotheses = picked.iter().filter(|id| is_hypothesis(id)).count();
-                                let can_stance = kind == AnnotationKind::Judgement
-                                    && hypotheses > 0
-                                    && hypotheses < picked.len();
-                                let about = if picked.is_empty() {
-                                    "nothing selected".to_string()
-                                } else {
-                                    picked.iter().map(|id| name_of(id)).collect::<Vec<_>>().join(", ")
-                                };
-                                let stance_button = |id: &'static str, label: &'static str, this_stance: Stance| {
-                                    let b = Button::new(id).small().label(label);
-                                    let b = if self.stance == this_stance { b.primary() } else { b.ghost() };
-                                    b.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.stance = this_stance;
-                                        cx.notify();
-                                    }))
-                                };
-                                c.child(field(label, &self.entity_value))
-                                    .when(kind == AnnotationKind::SearchNegative, |c| {
-                                        c.child(field("Where", &self.entity_type))
-                                    })
-                                    .when(kind != AnnotationKind::SearchNegative && kind != AnnotationKind::Hypothesis, |c| {
-                                        c.child(
-                                            div()
-                                                .max_w(px(404.))
-                                                .pl(px(92.))
-                                                .text_color(theme.muted_foreground)
-                                                .child(SharedString::from(format!("About: {about}"))),
-                                        )
-                                    })
-                                    .when(can_stance, |c| {
-                                        c.child(
-                                            h_flex()
-                                                .gap_1()
-                                                .pl(px(92.))
-                                                .child(stance_button("graph-stance-plain", "Comments on", Stance::Plain))
-                                                .child(stance_button("graph-stance-supports", "Supports", Stance::Supports))
-                                                .child(stance_button("graph-stance-refutes", "Refutes", Stance::Refutes)),
-                                        )
-                                    })
-                            },
-                        )
-                        .child(form_buttons("Add")),
-                )
+                Some(self.add_card(*compact, &theme, cx))
             }
             Some(Form::Relation { ids }) if ids.len() == 2 => Some(
                 card()
@@ -2215,6 +2204,11 @@ impl Render for GraphPanel {
                 x.min(f32::from(area.width) - 440.).max(8.),
                 y.min(f32::from(area.height) - 260.).max(8.),
             ),
+            // The palette sits in the middle of the plane, a little above its centre.
+            None if matches!(self.form, Some(Form::Add { .. })) => (
+                ((f32::from(area.width) - add_ui::PALETTE_WIDTH) / 2.).max(8.),
+                ((f32::from(area.height) - 420.) / 2.).max(8.),
+            ),
             // Below the header card.
             None => (8., 60.),
         };
@@ -2240,7 +2234,6 @@ impl Render for GraphPanel {
             }
         );
 
-        let is_single = self.single().is_some();
         let picked = self.selected_nodes();
         let is_node = picked.len() == 1;
         let several = picked.len() >= 2;
@@ -2260,6 +2253,7 @@ impl Render for GraphPanel {
                         .border_b_1()
                         .border_color(theme.border)
                         .child(format!("{} selected", self.selected_ids().len()))
+                        .child(self.status_menu(&self.common_status(), &theme))
                         .child(
                             Button::new("graph-deselect")
                                 .small()
@@ -2318,48 +2312,6 @@ impl Render for GraphPanel {
                         .flex_wrap()
                         .gap_2()
                         .items_center()
-                        .child({
-                            let (focus, scale) = (self.focus.clone(), self.scale.clone());
-                            Button::new("graph-confidence")
-                                .small()
-                                .label("Confidence")
-                                .tooltip("How sure: calibrated wording, kept as a new version")
-                                .dropdown_menu(move |mut menu, _, _| {
-                                    menu = menu.action_context(focus.clone());
-                                    for value in &scale {
-                                        menu = menu.menu(
-                                            value.clone(),
-                                            Box::new(GraphSetConfidence {
-                                                value: value.clone(),
-                                            }),
-                                        );
-                                    }
-                                    // An empty value takes the confidence away.
-                                    menu = menu.separator().menu(
-                                        "Clear",
-                                        Box::new(GraphSetConfidence {
-                                            value: String::new(),
-                                        }),
-                                    );
-                                    menu
-                                })
-                        })
-                        .child(
-                            Button::new("graph-dispute")
-                                .small()
-                                .label("Dispute")
-                                .tooltip("Mark it conflicting: it stays visible, flagged. Say why in a note")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_status("conflicting", cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("graph-restore")
-                                .small()
-                                .label("Restore")
-                                .tooltip("Mark it active again, whatever it was")
-                                .on_click(cx.listener(|this, _, _, cx| this.set_status("active", cx))),
-                        )
                         .when(is_node, |row| {
                             row.child(
                                 Button::new("graph-relate")
@@ -2381,72 +2333,38 @@ impl Render for GraphPanel {
                                     })),
                             )
                         })
-                        .when(is_single, |row| {
-                            row.child(
-                                Button::new("graph-undo")
-                                    .small()
-                                    .label("Undo last change")
-                                    .tooltip("Take back its latest version. Previews what would go, and is refused if something builds on it")
-                                    .on_click(cx.listener(|this, _, _, cx| this.preview_undo(cx))),
-                            )
-                            .child(
-                                Button::new("graph-source")
-                                    .small()
-                                    .icon(IconName::ExternalLink)
-                                    .label("Source")
-                                    .tooltip("Open where this came from: the file, the page, or the session it was said in")
-                                    .on_click(cx.listener(|this, _, window, cx| this.open_source(window, cx))),
-                            )
-                        }),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().w(px(300.)).child(Input::new(&self.tag).small()))
                         .child(
-                            Button::new("graph-tag")
+                            Button::new("graph-note-toggle")
                                 .small()
-                                .label("Tag")
-                                .tooltip("Add this tag to every selected node")
+                                .label("Add note")
+                                .tooltip("Attach a note about everything selected — recorded as yours")
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.tag_selection(true, window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("graph-untag")
-                                .small()
-                                .ghost()
-                                .label("Untag")
-                                .tooltip("Take this tag off every selected node")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.tag_selection(false, window, cx)
+                                    this.note_open = !this.note_open;
+                                    if this.note_open {
+                                        this.note.update(cx, |s, cx| s.focus(window, cx));
+                                    }
+                                    cx.notify();
                                 })),
                         ),
                 )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().w(px(300.)).child(Input::new(&self.note).small()))
-                        .child(
-                            Button::new("graph-note")
-                                .small()
-                                .label("Add note")
-                                .tooltip("Attach what you typed as one note about everything selected — recorded as yours")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.add_note(window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("graph-delete")
-                                .small()
-                                .danger()
-                                .label("Soft-delete")
-                                .tooltip("Hide it. Nothing is lost: it is a new version, and the eye in the toolbar shows it again")
-                                .on_click(cx.listener(|this, _, _, cx| this.soft_delete(cx))),
-                        )
-                );
+                .when(self.note_open, |c| {
+                    c.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().child(Input::new(&self.note).small()))
+                            .child(
+                                Button::new("graph-note")
+                                    .small()
+                                    .primary()
+                                    .label("Add")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_note(window, cx)
+                                    })),
+                            ),
+                    )
+                });
+            let tags = self.tags_section(&theme, cx);
             let measured = self.dock_width.clone();
             v_flex()
                 .id("graph-detail")
@@ -2462,6 +2380,7 @@ impl Render for GraphPanel {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .child(head)
+                .child(tags)
                 .child(body)
                 .child(footer)
         });
@@ -2537,7 +2456,7 @@ impl Render for GraphPanel {
                     // Add a node exactly where the pointer is.
                     let at = this.local(event.position);
                     let spot = Spot::Exact(this.to_world(at));
-                    this.open_add_form(AddMode::Entity, spot, Some(at), window, cx);
+                    this.open_add_form(spot, Some(at), true, window, cx);
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
@@ -2618,6 +2537,31 @@ impl Render for GraphPanel {
             .on_action(cx.listener(|this, _: &GraphLarger, _, cx| this.step_size(true, cx)))
             .on_action(cx.listener(|this, _: &GraphAutoSize, _, cx| this.auto_size(cx)))
             .on_action(cx.listener(|this, _: &GraphDismiss, window, cx| this.dismiss(window, cx)))
+            .on_action(cx.listener(|this, _: &GraphNewNode, window, cx| {
+                let spot = Spot::Near(this.to_world(this.centre()));
+                this.open_add_form(spot, None, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GraphAddUp, _, cx| {
+                if matches!(this.form, Some(Form::Add { .. })) {
+                    this.add_move(false, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &GraphAddDown, _, cx| {
+                if matches!(this.form, Some(Form::Add { .. })) {
+                    this.add_move(true, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, a: &GraphSetStatus, _, cx| {
+                if a.status == "soft-deleted" {
+                    this.soft_delete(cx);
+                } else {
+                    this.set_status(&a.status, cx);
+                }
+            }))
             .on_action(cx.listener(|this, a: &GraphSetConfidence, _, cx| {
                 this.set_confidence(&a.value, cx)
             }))

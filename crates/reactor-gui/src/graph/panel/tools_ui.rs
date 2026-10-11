@@ -1239,7 +1239,12 @@ impl GraphPanel {
     pub(super) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.saving_view) {
             window.focus(&self.focus, cx);
-        } else if self.picker.take().is_some() || self.form.take().is_some() {
+        } else if self.picker.take().is_some()
+            || self.form.take().is_some()
+            || std::mem::take(&mut self.tag_colouring).is_some()
+            || std::mem::take(&mut self.tag_adding)
+            || std::mem::take(&mut self.note_open)
+        {
             window.focus(&self.focus, cx);
         } else if self.find_open {
             self.close_find(window, cx);

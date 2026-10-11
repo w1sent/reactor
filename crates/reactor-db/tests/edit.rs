@@ -573,3 +573,81 @@ fn an_empty_text_and_an_entitys_value_are_refused() {
     ));
     assert!(edit::set_text(db, &at(), "nope", "x").is_err());
 }
+
+#[test]
+fn a_node_of_any_kind_can_be_added_by_hand() {
+    let (_d, case) = case();
+    let db = case.db();
+
+    let agent =
+        edit::add_element(db, &at(), Kind::Entity, "actor.agent", " Triage agent ").unwrap();
+    let e = query::get(db, &agent).unwrap().unwrap();
+    assert_eq!(
+        (e.kind, e.type_.as_str(), e.content.value.as_deref()),
+        (Kind::Entity, "actor.agent", Some("Triage agent"))
+    );
+
+    // An event and an observation are statements, so they are sourced to this entry.
+    for kind in [Kind::Event, Kind::Observation] {
+        let id = edit::add_element(db, &at(), kind, "misc.event", "Disk was imaged").unwrap();
+        let got = query::get(db, &id).unwrap().unwrap();
+        assert_eq!(got.kind, kind);
+        assert!(
+            query::edges_from(db, &id)
+                .unwrap()
+                .iter()
+                .any(|e| e.role == "source")
+        );
+    }
+
+    // An annotation of any type; a hypothesis starts open.
+    let hyp = edit::add_element(
+        db,
+        &at(),
+        Kind::Annotation,
+        "analysis.hypothesis",
+        "It was the cron job",
+    )
+    .unwrap();
+    let h = query::get(db, &hyp).unwrap().unwrap();
+    assert_eq!(
+        h.content
+            .props
+            .get("hypothesis_status")
+            .and_then(|v| v.as_str()),
+        Some("open")
+    );
+    let custom = edit::add_element(
+        db,
+        &at(),
+        Kind::Annotation,
+        "analysis.question",
+        "Who owns it?",
+    )
+    .unwrap();
+    assert_eq!(
+        query::get(db, &custom).unwrap().unwrap().type_,
+        "analysis.question"
+    );
+
+    // An external is its URI.
+    let ext = edit::add_element(
+        db,
+        &at(),
+        Kind::External,
+        "",
+        "https://example.org/report.pdf",
+    )
+    .unwrap();
+    let x = query::get(db, &ext).unwrap().unwrap();
+    assert_eq!(
+        (x.kind, x.type_.as_str()),
+        (Kind::External, "external.https")
+    );
+
+    // What is missing is said, not guessed.
+    assert!(edit::add_element(db, &at(), Kind::Entity, "actor.agent", " ").is_err());
+    assert!(edit::add_element(db, &at(), Kind::Entity, "", "x").is_err());
+    assert!(edit::add_element(db, &at(), Kind::Event, "misc.event", "").is_err());
+    assert!(edit::add_element(db, &at(), Kind::Annotation, "", "x").is_err());
+}

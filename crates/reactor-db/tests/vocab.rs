@@ -213,3 +213,27 @@ fn a_node_keeps_a_size_and_a_width_of_its_own_until_both_are_given_up() {
     layout::clear(db).unwrap();
     assert_eq!(layout::load_sizes(db).unwrap().len(), 1);
 }
+
+#[test]
+fn a_tag_has_a_colour_of_its_own_or_of_the_prefix_it_is_under() {
+    let (_d, case) = case();
+    let db = case.db();
+    assert_eq!(vocab::load(db).unwrap().tag_colour("phase.c2"), None);
+
+    vocab::set_tag_colour(db, "phase", Some("teal")).unwrap();
+    vocab::set_tag_colour(db, "Phase.C2", Some("pink")).unwrap();
+    let v = vocab::load(db).unwrap();
+    assert_eq!(v.tag_colour("phase.c2"), Some("pink"));
+    assert_eq!(v.tag_colour("PHASE.recon"), Some("teal"));
+    assert_eq!(v.tag_colour("phase.c2.beacon"), Some("pink"));
+    assert_eq!(v.tag_colour("other"), None);
+
+    // Back to the colour the name gives it; orange and red are not for tags.
+    vocab::set_tag_colour(db, "phase.c2", None).unwrap();
+    assert_eq!(
+        vocab::load(db).unwrap().tag_colour("phase.c2"),
+        Some("teal")
+    );
+    assert!(vocab::set_tag_colour(db, "x", Some("red")).is_err());
+    assert!(vocab::set_tag_colour(db, "  ", Some("blue")).is_err());
+}

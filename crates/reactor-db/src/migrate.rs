@@ -637,6 +637,15 @@ const MIGRATIONS: &[&str] = &[
       updated_at TEXT NOT NULL
     );
     "#,
+    // 7: the colour a tag is drawn in (its box on the plane, its chip in the inspector). A tag
+    // with no row is drawn in the colour its name gives it; a dotted prefix speaks for the
+    // tags under it, as a namespace does for types. Presentation, like the layout.
+    r#"
+    CREATE TABLE tag_look (
+      tag TEXT PRIMARY KEY,
+      colour TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this binary writes.

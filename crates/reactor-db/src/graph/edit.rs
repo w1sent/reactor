@@ -85,6 +85,80 @@ pub fn add_entity(db: &Db, at: &At, type_: &str, value: &str) -> Result<String> 
     one(apply(db, at.batch().put(Put::entity(type_, value)))?)
 }
 
+/// Add a node of any kind and type by hand, as the analyst. What `text` is depends on the kind:
+/// an entity's value (its identity), what an event or an observation says, what an
+/// annotation says, or an external's URI. An event or an observation is sourced to the
+/// session entry it was made in, as a relation stated by hand is. Returns its id.
+pub fn add_element(db: &Db, at: &At, kind: Kind, type_: &str, text: &str) -> Result<String> {
+    let text = text.trim();
+    let named = |what: &str| {
+        if text.is_empty() {
+            Err(Error::Invalid(format!("{what} needs a name")))
+        } else {
+            Ok(())
+        }
+    };
+    let typed = || {
+        if type_.trim().is_empty() {
+            Err(Error::Invalid("it needs a type".into()))
+        } else {
+            Ok(())
+        }
+    };
+    match kind {
+        Kind::Entity => {
+            typed()?;
+            add_entity(db, at, type_, text)
+        }
+        Kind::Event | Kind::Observation => {
+            typed()?;
+            named(if kind == Kind::Event {
+                "an event"
+            } else {
+                "an observation"
+            })?;
+            one(apply(
+                db,
+                at.batch().put(
+                    Put {
+                        content: Content::value(text),
+                        ..Put::new(kind, type_)
+                    }
+                    .link(at.source()),
+                ),
+            )?)
+        }
+        Kind::Annotation => {
+            typed()?;
+            named("an annotation")?;
+            let mut put = Put {
+                content: Content::value(text),
+                ..Put::new(Kind::Annotation, type_)
+            };
+            if type_.trim().eq_ignore_ascii_case(AnnotationKind::Hypothesis.type_name()) {
+                put.content
+                    .props
+                    .insert("hypothesis_status".into(), json!("open"));
+            }
+            one(apply(db, at.batch().put(put))?)
+        }
+        Kind::External => {
+            named("an external")?;
+            let scheme = match text.split_once(':') {
+                Some((s, _)) if s.chars().all(|c| c.is_ascii_alphanumeric()) => s,
+                _ => "file",
+            };
+            one(apply(
+                db,
+                at.batch().put(Put {
+                    content: Content::value(text),
+                    ..Put::new(Kind::External, &format!("external.{}", scheme.to_lowercase()))
+                }),
+            )?)
+        }
+    }
+}
+
 /// State a relation between two elements: an observation of `type_` that links them by
 /// the given roles, sourced to the session entry it was made in. Returns the claim's id.
 pub fn relate(
@@ -505,6 +579,14 @@ pub fn suggest_types(choices: &[TypeChoice], typed: &str, limit: usize) -> Vec<S
     if choices.iter().any(|c| c.name == typed) {
         return Vec::new();
     }
+    find_types(choices, &typed, limit)
+}
+
+/// The types that fit what is typed, best first, the one that is exactly it (if any) at the
+/// top: what a list that is chosen from shows, where [`suggest_types`] is what a field
+/// offers beside what it already holds.
+pub fn find_types(choices: &[TypeChoice], typed: &str, limit: usize) -> Vec<String> {
+    let typed = typed.trim().to_lowercase();
     let mut ranked: Vec<(u8, &TypeChoice)> = choices
         .iter()
         .filter_map(|c| {
@@ -527,7 +609,8 @@ pub fn suggest_types(choices: &[TypeChoice], typed: &str, limit: usize) -> Vec<S
         })
         .collect();
     ranked.sort_by(|a, b| {
-        (a.0, std::cmp::Reverse(a.1.uses), &a.1.name).cmp(&(
+        (a.1.name != typed, a.0, std::cmp::Reverse(a.1.uses), &a.1.name).cmp(&(
+            b.1.name != typed,
             b.0,
             std::cmp::Reverse(b.1.uses),
             &b.1.name,

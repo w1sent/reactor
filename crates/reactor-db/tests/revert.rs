@@ -229,7 +229,7 @@ fn what_may_no_longer_hold_is_flagged_not_resolved() {
     // An age limit on a type is a row; a claim older than it is flagged.
     db.write(|tx| {
         tx.execute(
-            "INSERT INTO known_type(name, kind, stale_after_days) VALUES ('net.resolution', 'observation', -1)",
+            "INSERT INTO known_type(name, kind, stale_after_days) VALUES ('net.resolution', 'observation', -1) ON CONFLICT(name) DO UPDATE SET stale_after_days = -1",
             [],
         )?;
         Ok(())

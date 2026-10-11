@@ -86,6 +86,7 @@ pub fn normalize(normalizer: Option<&str>, type_: &str, value: &str) -> (String,
     let trimmed = value.trim();
     match normalizer {
         Some("lowercase") => (type_.to_string(), trimmed.to_lowercase()),
+        Some("uppercase") => (type_.to_string(), trimmed.to_uppercase()),
         Some("domain") => (
             type_.to_string(),
             trimmed.trim_end_matches('.').to_lowercase(),

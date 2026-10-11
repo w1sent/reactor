@@ -314,10 +314,13 @@ fn types_are_offered_as_they_are_typed_most_used_first_and_found_by_alias() {
     );
 
     let s = |typed: &str| edit::suggest_types(&choices, typed, 5);
-    assert_eq!(s("net.")[..3], ["net.domain", "net.ipv4", "net.email"]);
+    // The ones in use first, then the rest by name.
+    assert_eq!(s("net.")[..3], ["net.domain", "net.ipv4", "net.asn"]);
     assert_eq!(s("ipv"), ["net.ipv4", "net.ipv6"]);
-    assert_eq!(s("mail"), ["net.email"]);
-    assert_eq!(s("hash")[0], "file.hash.md5");
+    // What begins with it, then what has a part that does.
+    assert_eq!(s("mail")[0], "mail.message");
+    assert!(s("mail").contains(&"net.email".to_string()));
+    assert!(s("hash")[0].starts_with("file.hash."));
     assert_eq!(s("ip")[0], "net.ipv4");
     assert!(s("net.ipv4").is_empty());
     assert!(s("zzzz").is_empty());
@@ -325,7 +328,8 @@ fn types_are_offered_as_they_are_typed_most_used_first_and_found_by_alias() {
     assert_eq!(edit::suggest_types(&choices, "", 3).len(), 3);
     let claims = edit::type_choices(db, &[Kind::Event, Kind::Observation]).unwrap();
     assert!(claims.iter().any(|c| c.name == "analysis.pull"));
-    assert!(claims.iter().all(|c| !c.name.starts_with("net.")));
+    assert!(claims.iter().any(|c| c.name == "net.connection"));
+    assert!(claims.iter().all(|c| c.name != "net.ipv4"));
 }
 
 #[test]

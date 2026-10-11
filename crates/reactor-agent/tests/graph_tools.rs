@@ -412,3 +412,81 @@ fn the_agent_is_told_to_write_markdown_only_for_a_long_text() {
     assert!(said.contains("Markdown") && said.contains("long"), "{said}");
     assert!(said.contains("Plain text"), "{said}");
 }
+
+#[tokio::test]
+async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined_and_drawn() {
+    let r = rig();
+    let all = r.ok("graph_query", json!({ "what": "vocabulary" })).await;
+    for line in [
+        "net -- Network: addresses, names and traffic.",
+        "  net.ipv4 (entity) An IPv4 address.",
+        "malware -- ",
+        "  code.function (entity)",
+        "  attack.technique (entity)",
+    ] {
+        assert!(all.contains(line), "no `{line}` in:\n{all}");
+    }
+    let hashes = r
+        .ok(
+            "graph_query",
+            json!({ "what": "vocabulary", "type": "file.hash" }),
+        )
+        .await;
+    assert!(
+        hashes.contains("file.hash.imphash") && !hashes.contains("file.path"),
+        "{hashes}"
+    );
+
+    // A new type needs a kind; then only what is given changes.
+    let refused = r
+        .call(
+            "graph_annotate",
+            json!({ "define_type": { "type": "ics.plc" } }),
+        )
+        .await;
+    assert!(
+        refused.is_error && refused.text.contains("kind"),
+        "{}",
+        refused.text
+    );
+    let made = r
+        .ok(
+            "graph_annotate",
+            json!({ "define_type": { "type": "ics.plc", "kind": "entity",
+                "definition": "A programmable logic controller.", "icon": "cpu", "colour": "teal" } }),
+        )
+        .await;
+    assert!(
+        made.contains("ics.plc (entity)") && made.contains("icon cpu, colour teal"),
+        "{made}"
+    );
+    let red = r
+        .call(
+            "graph_annotate",
+            json!({ "define_type": { "type": "ics.plc", "colour": "red" } }),
+        )
+        .await;
+    assert!(
+        red.is_error && red.text.contains("disputed"),
+        "{}",
+        red.text
+    );
+    // A known type's look falls back to its namespace where it says nothing itself.
+    let known = r
+        .ok(
+            "graph_annotate",
+            json!({ "define_type": { "type": "net.cidr", "definition": "A range." } }),
+        )
+        .await;
+    assert!(known.contains("icon waypoints, colour blue"), "{known}");
+    let listed = r
+        .ok(
+            "graph_query",
+            json!({ "what": "vocabulary", "type": "ics" }),
+        )
+        .await;
+    assert!(
+        listed.contains("ics.plc (entity) A programmable logic controller."),
+        "{listed}"
+    );
+}

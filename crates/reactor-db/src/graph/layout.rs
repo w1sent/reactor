@@ -61,3 +61,54 @@ pub fn clear(db: &Db) -> Result<()> {
         Ok(())
     })
 }
+
+/// How one node is drawn when it is not as the view says: a size of its own (`s`, `m`, `l`,
+/// `xl`) and a width set by hand, in world units.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NodeSize {
+    pub size: Option<String>,
+    pub width: Option<f32>,
+}
+
+/// Every node that has a size or a width of its own, by element id.
+pub fn load_sizes(db: &Db) -> Result<HashMap<String, NodeSize>> {
+    db.read(|conn| {
+        let mut stmt = conn.prepare("SELECT element_id, size, width FROM graph_node_size")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    NodeSize {
+                        size: r.get(1)?,
+                        width: r.get::<_, Option<f64>>(2)?.map(|w| w as f32),
+                    },
+                ))
+            })?
+            .collect::<std::result::Result<HashMap<_, _>, _>>()?;
+        Ok(rows)
+    })
+}
+
+/// Store how these nodes are sized. One with neither a size nor a width of its own is
+/// forgotten: it is drawn as the view says again.
+pub fn save_sizes(db: &Db, sizes: &[(String, NodeSize)]) -> Result<()> {
+    let rows: Vec<(String, NodeSize)> = sizes.to_vec();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    db.write(move |tx| {
+        for (id, s) in &rows {
+            let width = s.width.filter(|w| w.is_finite()).map(f64::from);
+            if s.size.is_none() && width.is_none() {
+                tx.execute("DELETE FROM graph_node_size WHERE element_id = ?1", [id])?;
+            } else {
+                tx.execute(
+                    "INSERT INTO graph_node_size(element_id, size, width) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(element_id) DO UPDATE SET size = ?2, width = ?3",
+                    params![id, s.size, width],
+                )?;
+            }
+        }
+        Ok(())
+    })
+}

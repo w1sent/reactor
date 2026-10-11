@@ -467,15 +467,13 @@ mod tests {
     fn graph(count: usize, links: &[(usize, usize)]) -> Model {
         Model {
             nodes: (0..count)
-                .map(|i| Node {
-                    id: format!("n{i}"),
-                    kind: NodeKind::Entity,
-                    type_: "host.name".into(),
-                    label: format!("h{i}"),
-                    status: "active".into(),
-                    confidence: None,
-                    by_agent: false,
-                    tags: Vec::new(),
+                .map(|i| {
+                    Node::bare(
+                        &format!("n{i}"),
+                        NodeKind::Entity,
+                        "host.name",
+                        &format!("h{i}"),
+                    )
                 })
                 .collect(),
             lines: links
@@ -487,6 +485,7 @@ mod tests {
                     kind: LineKind::Relation { directed: true },
                     claims: Vec::new(),
                     status: "active".into(),
+                    confidence: None,
                 })
                 .collect(),
         }

@@ -502,7 +502,7 @@ fn a_claim_with_three_participants_is_not_a_relation_and_orphans_are_found() {
         .filter(|t| !t.known)
         .map(|t| t.type_.as_str())
         .collect();
-    assert_eq!(unknown, ["process.start", "external.file"]);
+    assert_eq!(unknown, ["external.file"]);
     assert_eq!(
         types
             .iter()
@@ -549,7 +549,8 @@ fn an_external_stays_inside_the_case() {
 fn the_vocabulary_is_seeded_as_rows() {
     let (_d, case) = case();
     let db = case.db();
-    assert_eq!(count(db, "known_type"), 22);
+    assert!(count(db, "known_type") > 150);
+    assert!(count(db, "type_namespace") > 20);
     assert_eq!(count(db, "known_role"), 19);
     let scale: Vec<String> = db
         .read(|c| {
@@ -564,17 +565,14 @@ fn the_vocabulary_is_seeded_as_rows() {
     // And it can grow without a release.
     db.write(|tx| {
         tx.execute(
-            "INSERT INTO known_type(name, kind, definition, normalizer) VALUES ('cloud.bucket', 'entity', 'An object-storage bucket.', 'lowercase')",
+            "INSERT INTO known_type(name, kind, definition, normalizer) VALUES ('ot.plc', 'entity', 'A programmable logic controller.', 'lowercase')",
             [],
         )?;
         Ok(())
     })
     .unwrap();
-    let a = query::entity_id(db, "cloud.bucket", "Logs-EU", None).unwrap();
-    assert_eq!(
-        a,
-        query::entity_id(db, "cloud.bucket", "logs-eu", None).unwrap()
-    );
+    let a = query::entity_id(db, "ot.plc", "Line-3", None).unwrap();
+    assert_eq!(a, query::entity_id(db, "ot.plc", "line-3", None).unwrap());
 }
 
 #[test]

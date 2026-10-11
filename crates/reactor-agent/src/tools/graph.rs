@@ -14,6 +14,7 @@ use reactor_context::settings::Settings;
 use reactor_db::artifact;
 use reactor_db::graph::pull::{self, Request};
 use reactor_db::graph::revert::{self, What};
+use reactor_db::graph::vocab::{self, Define};
 use reactor_db::graph::{
     self, Batch, Change, Content, Element, Filter, Kind, Link, Put, Target, query,
 };
@@ -434,7 +435,7 @@ impl Tool for GraphAnnotate {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_annotate".into(),
-            description: "Record what you or the user conclude, in the case's graph. Add an annotation: a `hypothesis` (a candidate explanation), a `judgement` (your assessment of a claim, with a confidence; link it with `about`, and `supports` or `refutes` a hypothesis), a `note` (commentary, a question, a to-do), a `cluster` (these belong together: `members`), `same_as` (two entities are one: `about` both) or `search_negative` (you looked and found nothing: say where with `sources` and what for with `about`). Or `change` an element: its status (active, conflicting, soft-deleted), confidence, tags or properties -- a new version, nothing is overwritten. Or `revert` a mistake nothing builds on: one change by its number, or one element back to a version; preview first.".into(),
+            description: "Record what you or the user conclude, in the case's graph. Add an annotation: a `hypothesis` (a candidate explanation), a `judgement` (your assessment of a claim, with a confidence; link it with `about`, and `supports` or `refutes` a hypothesis), a `note` (commentary, a question, a to-do), a `cluster` (these belong together: `members`), `same_as` (two entities are one: `about` both) or `search_negative` (you looked and found nothing: say where with `sources` and what for with `about`). Or `change` an element: its status (active, conflicting, soft-deleted), confidence, tags or properties -- a new version, nothing is overwritten. Or `revert` a mistake nothing builds on: one change by its number, or one element back to a version; preview first. Or `define_type`: make a recurring type of your own known, with its kind and a one-line definition; `icon` (a Lucide name) and `colour` say how it is drawn.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -471,6 +472,17 @@ impl Tool for GraphAnnotate {
                             "force": { "type": "boolean" },
                             "preview": { "type": "boolean", "description": "Say what would go, and do nothing." }
                         }
+                    },
+                    "define_type": {
+                        "type": "object",
+                        "properties": {
+                            "type": { "type": "string" },
+                            "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
+                            "definition": { "type": "string" },
+                            "icon": { "type": "string" },
+                            "colour": { "type": "string" }
+                        },
+                        "required": ["type"]
                     }
                 }
             }),
@@ -490,6 +502,9 @@ impl Tool for GraphAnnotate {
             let db = s.case.db();
             if let Some(r) = args.get("revert").and_then(Value::as_object) {
                 return revert_call(&s, r);
+            }
+            if let Some(d) = args.get("define_type").and_then(Value::as_object) {
+                return define_type_call(&s, d);
             }
             if let Some(c) = args.get("change").and_then(Value::as_object) {
                 let Some(id) = c.get("id").and_then(Value::as_str) else {
@@ -600,6 +615,50 @@ impl Tool for GraphAnnotate {
     }
 }
 
+/// Make a type known, or say more about one that is.
+fn define_type_call(s: &Scope, d: &Map<String, Value>) -> ToolOutput {
+    let text = |key: &str| {
+        d.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    let Some(name) = text("type") else {
+        return ToolOutput::err("`define_type` needs the `type`");
+    };
+    let kind = match text("kind") {
+        Some(k) => match Kind::parse(&k) {
+            Some(kind @ (Kind::Entity | Kind::Event | Kind::Observation)) => Some(kind),
+            _ => return ToolOutput::err("`kind` is entity, event or observation"),
+        },
+        None => None,
+    };
+    let define = Define {
+        name,
+        kind,
+        definition: text("definition"),
+        icon: text("icon"),
+        colour: text("colour"),
+    };
+    match vocab::define_type(s.case.db(), define) {
+        Ok(t) => {
+            let look = vocab::load(s.case.db())
+                .map(|v| v.look(&t.name))
+                .unwrap_or_default();
+            ToolOutput::ok(format!(
+                "{} ({}) {} -- drawn with icon {}, colour {}",
+                t.name,
+                t.kind.map(Kind::as_str).unwrap_or("?"),
+                t.definition,
+                look.icon.as_deref().unwrap_or("of its kind"),
+                look.colour.as_deref().unwrap_or("neutral"),
+            ))
+        }
+        Err(e) => fail(e),
+    }
+}
+
 fn revert_call(s: &Scope, r: &Map<String, Value>) -> ToolOutput {
     let what = match (
         r.get("change").and_then(Value::as_i64),
@@ -664,11 +723,11 @@ impl Tool for GraphQuery {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_query".into(),
-            description: "Read the case's graph. `find` lists elements (filter by kind, type prefix such as `net.` or `analysis.hypothesis`, text, tag). `element` shows one in full with everything it links to and everything that points at it -- for an entity that is where else it shows up; for a hypothesis, what supports and refutes it -- optionally `as_of` a moment or with its `history`. `relations` lists claims between two things as `from --type--> to`. `stale` lists what may no longer hold, `orphans` entities nothing mentions, `types` the types in use, `files` the registered files and whether they changed. Absence here means not recorded, not that it does not exist.".into(),
+            description: "Read the case's graph. `find` lists elements (filter by kind, type prefix such as `net.` or `analysis.hypothesis`, text, tag). `element` shows one in full with everything it links to and everything that points at it -- for an entity that is where else it shows up; for a hypothesis, what supports and refutes it -- optionally `as_of` a moment or with its `history`. `relations` lists claims between two things as `from --type--> to`. `stale` lists what may no longer hold, `orphans` entities nothing mentions, `types` the types in use, `vocabulary` the known types by namespace (`type` narrows it: `net`), `files` the registered files and whether they changed. Absence here means not recorded, not that it does not exist.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "what": { "type": "string", "enum": ["find", "element", "relations", "stale", "orphans", "types", "files"] },
+                    "what": { "type": "string", "enum": ["find", "element", "relations", "stale", "orphans", "types", "vocabulary", "files"] },
                     "id": { "description": "element, relations: an element id, or {type, value} for an entity." },
                     "kind": { "type": "string", "enum": ["entity", "event", "observation", "annotation", "external"] },
                     "type": { "type": "string", "description": "find: a type or its prefix." },
@@ -840,6 +899,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
             })
             .collect::<Vec<_>>()
             .join("\n")),
+        "vocabulary" => vocab::describe(db, str_arg(args, "type")).map_err(err),
         "files" => {
             let files = artifact::verify(&s.case).map_err(err)?;
             Ok(if files.is_empty() {

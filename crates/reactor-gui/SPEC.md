@@ -705,7 +705,7 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   with more participants, or one an annotation is about, stays a node with a line per
   role — a node in the middle means "this relation is being discussed". Annotations are
   boxes with dashed lines to what they are about. Sources are not drawn; they are in the
-  detail. Disputed is the warning colour; soft-deleted is hidden unless the eye is on.
+  detail. Soft-deleted is hidden unless the eye is on.
 - **Layout.** Each connected group is laid out on its own (force-directed) and the groups are then
   packed close together in rows, wider than tall, so that a node connected to nothing, or a
   small cluster, sits beside the big one and not far off. A new node with no line goes in rows
@@ -805,11 +805,48 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   selects the claim), so that less detail never hides *that two things are related*; a note
   or hypothesis about it attaches to the end the line starts from; a claim with more than two
   participants is detail and goes with its node. Sources are not drawn at any level.
-- **Filtering.** A box in the panel's top left filters the nodes as typed: words that must all be
-  in the label or type; `type:net.` (a type that starts so, or has a dotted part that does),
-  `tag:phase.`, `by:agent` / `by:person`, `kind:entity|claim|note`, `status:conflicting`;
-  a leading `-` negates. Lines are drawn between nodes that are shown, and the count reads
-  "N of M nodes". The syntax is behind an (i).
+- **Node cards.** A node is a card that says what it is before anything else
+  (`src/graph/panel/node_ui.rs`): a header with the type's icon and name in its namespace's
+  colour and, at the right, a hypothesis's standing, how sure (a meter of the scale's steps) and
+  who wrote it; under it the value or the text. What was found sits on a darker ground than what
+  was concluded; a claim that stays a node is an outline with rounder corners. Disputed is a
+  dashed orange border that says so; selected is the primary colour; soft-deleted is faint and
+  struck through. Lines: a relation solid (with its confidence where its claims agree), a part
+  in a claim thin, what a note is about dashed, *supports* green, *refutes* red, disputed orange
+  in long and short dashes.
+- **Sizes: text wraps, nothing is cut.** A card is as big as what it says (`src/graph/card.rs`,
+  pure): its width is chosen so the box is about 2.5 times as wide as tall, and a long path or
+  hash is shown whole over as many lines as it takes. How much it says is its size — **S** the
+  name (a path's last part), **M** the whole value and a text's first three lines with a count of
+  the rest, **L** plus tags and a text's first paragraph, **XL** everything: the whole text (400
+  wide, headings and list items marked) and every property. `[` and `]` step the selected nodes,
+  or every node when none is selected; `0` puts them back; a selected node's right edge (or
+  Alt+drag) sets its width and the height follows. A node's own size and width are kept with the
+  case (`graph_node_size`). Nodes that would overlap after a change are moved apart as little as
+  that takes (`model::separate`); the layout and *fit* use the cards' real sizes.
+- **Types, namespaces, icons.** Types are grouped in namespaces — dotted prefixes (`net`,
+  `file.hash`, `malware`, `code`, `threat`, `attack`, …) kept as rows (`type_namespace`) with a
+  definition, an icon and a colour. A type is drawn with its own icon and colour, else its
+  nearest namespace's, else its kind's icon (box, bolt, eye, note) in neutral grey
+  (`reactor_db::graph::vocab`, `src/graph/look.rs`), so a type somebody made up is drawn at once.
+  Right-click a node to give its *type* a Lucide icon and one of twenty named colours — orange
+  and red are not offered, they mean disputed and rejected. The agent does the same with
+  `define_type` of `graph_annotate`, and lists the vocabulary with `graph_query what=vocabulary`.
+- **Filter layers.** *Filters* opens a panel at the right (`src/graph/sift.rs`). Each layer is a
+  filter and what it does with the nodes it matches — *show only*, *hide*, *dim*, *highlight* —
+  applied top to bottom, each with an eye to switch it off and a count of what it matches. A
+  filter is words that must all hold: a bare word is looked for in the label, type and text;
+  `type:net.`, `tag:phase.`, `by:agent|person`, `kind:entity|claim|note`,
+  `status:disputed|deleted`, `conf:>=likely` (also `<`, `<=`, `>`, a place from 1, `none`),
+  `hyp:open`; `a|b` is either; a leading `-` negates. Lines are drawn between nodes that are
+  shown. Layers live for the window's lifetime; they are not stored yet.
+- **Find.** Ctrl/Cmd+F rings every drawn node that has the words in its label, its text or what
+  is known of it (tags, properties, status, confidence, author, id) — each scope can be switched
+  off — marks the words on the cards, and steps through the matches with Enter and Shift+Enter,
+  bringing each into view. It hides nothing and is gone with Esc; *Keep as layer* turns it into
+  a highlight layer.
+- **Legend.** Behind the (i) in the toolbar: only what the picture on screen uses, and how the
+  plane is worked.
 - **Tag hulls.** The *tags* toolbar button draws an outline, in the tag's own colour, round the shown
   nodes that share a tag (two or more; the twelve most shared), under the nodes, with the tag's
   name and count above its highest point. The outline is the convex hull of the nodes' boxes

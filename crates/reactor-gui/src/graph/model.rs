@@ -36,6 +36,53 @@ pub struct Node {
     /// Written by the agent rather than a person.
     pub by_agent: bool,
     pub tags: Vec<String>,
+    /// What it holds in full: an entity's whole value, an annotation's whole text. Empty
+    /// for a claim that has no value.
+    pub text: String,
+    /// What the element is in the graph: an event and an observation are both claims here.
+    pub element: Kind,
+    /// Its properties, as written.
+    pub props: Vec<(String, String)>,
+    /// A hypothesis's standing: open, supported or rejected.
+    pub hypothesis: Option<String>,
+    /// When it happened or began to hold, as recorded.
+    pub when: Option<String>,
+    /// How many things say they support it, and refute it.
+    pub supports: usize,
+    pub refutes: usize,
+    /// How many things it points at by role (a claim's participants, what a note is about).
+    pub roles: usize,
+    /// How many lines are drawn to or from it.
+    pub links: usize,
+}
+
+impl Node {
+    /// A node with nothing known about it but what it is: for tests and for building up.
+    pub fn bare(id: &str, kind: NodeKind, type_: &str, label: &str) -> Node {
+        Node {
+            id: id.into(),
+            kind,
+            type_: type_.into(),
+            label: label.into(),
+            status: "active".into(),
+            confidence: None,
+            by_agent: false,
+            tags: Vec::new(),
+            text: label.into(),
+            element: match kind {
+                NodeKind::Entity => Kind::Entity,
+                NodeKind::Claim => Kind::Event,
+                NodeKind::Annotation => Kind::Annotation,
+            },
+            props: Vec::new(),
+            hypothesis: None,
+            when: None,
+            supports: 0,
+            refutes: 0,
+            roles: 0,
+            links: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +107,8 @@ pub struct Line {
     pub claims: Vec<String>,
     /// The worst status among them, so a disputed relation shows as one.
     pub status: String,
+    /// How sure the relation is, where its claims agree on it.
+    pub confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -96,6 +145,9 @@ fn worse(a: &str, b: &str) -> String {
 /// What makes two collapsed claims the same line: its ends, its type, and whether it
 /// has a direction.
 type BundleKey = (usize, usize, String, bool);
+
+/// What a bundle gathers: its claims, the worst status among them, and their confidences.
+type Bundle = (Vec<String>, String, Vec<Option<String>>);
 
 /// Build what is drawn from a snapshot of the graph.
 pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Model {
@@ -139,6 +191,26 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
             (None, _) => e.type_.clone(),
         };
         index.insert(e.id.as_str(), model.nodes.len());
+        let told = |role: &str| {
+            edges
+                .iter()
+                .filter(|g| g.role == role && g.to_id == e.id && drawn(&g.from_id))
+                .count()
+        };
+        let mut hypothesis = None;
+        let mut props = Vec::new();
+        for (key, value) in &e.content.props {
+            let value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            if key == "hypothesis_status" {
+                hypothesis = Some(value);
+            } else {
+                props.push((key.clone(), value));
+            }
+        }
+        let time = &e.content.time;
         model.nodes.push(Node {
             id: e.id.clone(),
             kind,
@@ -148,11 +220,20 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
             confidence: e.content.confidence.clone(),
             by_agent: e.author.starts_with("agent:"),
             tags: e.content.tags.clone(),
+            text: e.content.value.clone().unwrap_or_default(),
+            element: e.kind,
+            props,
+            hypothesis,
+            when: time.occurred_at.clone().or_else(|| time.valid_from.clone()),
+            supports: told("supports"),
+            refutes: told("refutes"),
+            roles: out.get(e.id.as_str()).map_or(0, Vec::len),
+            links: 0,
         });
     }
 
     // Collapsed claims, bundled by (from, to, type).
-    let mut bundles: BTreeMap<BundleKey, (Vec<String>, String)> = BTreeMap::new();
+    let mut bundles: BTreeMap<BundleKey, Bundle> = BTreeMap::new();
     for e in elements.iter().filter(|e| collapses(e)) {
         let parts = &out[e.id.as_str()];
         let (a, b) = (parts[0], parts[1]);
@@ -172,11 +253,17 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
         };
         let entry = bundles
             .entry((from, to, e.type_.clone(), directed))
-            .or_insert_with(|| (Vec::new(), "active".into()));
+            .or_insert_with(|| (Vec::new(), "active".into(), Vec::new()));
         entry.0.push(e.id.clone());
         entry.1 = worse(&entry.1, &e.content.status);
+        entry.2.push(e.content.confidence.clone());
     }
-    for ((from, to, type_, directed), (claims, status)) in bundles {
+    for ((from, to, type_, directed), (claims, status, sure)) in bundles {
+        // One confidence for the line only where every claim of it says the same.
+        let confidence = match sure.split_first() {
+            Some((first, rest)) if rest.iter().all(|c| c == first) => first.clone(),
+            _ => None,
+        };
         let label = if claims.len() > 1 {
             format!("{type_} ×{}", claims.len())
         } else {
@@ -189,6 +276,7 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
             kind: LineKind::Relation { directed },
             claims,
             status,
+            confidence,
         });
     }
 
@@ -216,7 +304,15 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
                 kind,
                 claims: Vec::new(),
                 status: model.nodes[node].status.clone(),
+                confidence: None,
             });
+        }
+    }
+    for i in 0..model.lines.len() {
+        let (from, to) = (model.lines[i].from, model.lines[i].to);
+        model.nodes[from].links += 1;
+        if to != from {
+            model.nodes[to].links += 1;
         }
     }
     model
@@ -536,21 +632,49 @@ pub fn free_spot(taken: &[(f32, f32)], want: (f32, f32), clear: f32) -> (f32, f3
 
 // -- filtering ---------------------------------------------------------------------------------
 
-/// What one word of a filter asks.
+/// The confidence scale as seeded, weakest first: what `conf:` is read against when the
+/// case's own scale is not at hand.
+pub const CONFIDENCE: [&str; 7] = [
+    "almost no chance",
+    "very unlikely",
+    "unlikely",
+    "roughly even",
+    "likely",
+    "very likely",
+    "almost certain",
+];
+
+/// How a confidence is compared with the one asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cmp {
+    Lt,
+    Le,
+    Eq,
+    Ge,
+    Gt,
+}
+
+/// What one word of a filter asks. Where a word gives alternatives (`tag:a|b`), any of them
+/// will do.
 #[derive(Debug, Clone, PartialEq)]
 enum Ask {
-    /// In the label or the type.
+    /// In the label, the type or the whole text.
     Text(String),
     /// `type:net.` — the type starts with it, or a part of it does (`ipv4` finds `net.ipv4`).
-    Type(String),
+    Type(Vec<String>),
     /// `tag:phase.` — a tag that is or starts with it.
-    Tag(String),
+    Tag(Vec<String>),
     /// `by:agent` or `by:person`.
     By { agent: bool },
-    /// `status:conflicting`.
-    Status(String),
+    /// `status:conflicting` (or `disputed`), `status:soft-deleted` (or `deleted`).
+    Status(Vec<String>),
     /// `kind:entity`, `kind:claim` or `kind:note`.
     Kind(NodeKind),
+    /// `conf:>=likely`, `conf:<5`, `conf:likely`; `conf:none` is what has no confidence. The
+    /// number is the place on the scale, from 1.
+    Conf(Option<(Cmp, usize)>),
+    /// `hyp:open`, `hyp:supported`, `hyp:rejected`.
+    Hypothesis(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -561,16 +685,61 @@ struct Term {
 }
 
 /// Which nodes to show, as typed: words that must all hold. A bare word is looked for in
-/// the label and the type; `type:`, `tag:`, `by:`, `status:` and `kind:` ask about those;
-/// a leading `-` negates. Case is ignored.
+/// the label, the type and the text; `type:`, `tag:`, `by:`, `status:`, `kind:`, `conf:` and
+/// `hyp:` ask about those; `a|b` after one of them is either; a leading `-` negates. Case is
+/// ignored.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Filter {
     terms: Vec<Term>,
+    /// The confidence scale `conf:` was read against, weakest first.
+    scale: Vec<String>,
+}
+
+fn alternatives(v: &str) -> Vec<String> {
+    v.split('|')
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A place on the scale, from 1: its number, or its name with `-` or `_` for the spaces.
+fn place(scale: &[String], v: &str) -> Option<usize> {
+    if let Ok(n) = v.parse::<usize>() {
+        return (1..=scale.len()).contains(&n).then_some(n);
+    }
+    let name = v.replace(['-', '_'], " ");
+    scale
+        .iter()
+        .position(|s| s.to_lowercase() == name)
+        .map(|i| i + 1)
+}
+
+fn confidence(scale: &[String], v: &str) -> Option<Ask> {
+    if v == "none" {
+        return Some(Ask::Conf(None));
+    }
+    let (cmp, rest) = [
+        (">=", Cmp::Ge),
+        ("<=", Cmp::Le),
+        (">", Cmp::Gt),
+        ("<", Cmp::Lt),
+        ("=", Cmp::Eq),
+    ]
+    .into_iter()
+    .find_map(|(op, cmp)| v.strip_prefix(op).map(|rest| (cmp, rest)))
+    .unwrap_or((Cmp::Eq, v));
+    Some(Ask::Conf(Some((cmp, place(scale, rest)?))))
 }
 
 /// Read a filter from what is typed. A word that asks about something unknown (`foo:bar`)
 /// is looked for as text, as typed.
 pub fn parse_filter(text: &str) -> Filter {
+    let scale: Vec<String> = CONFIDENCE.iter().map(|s| s.to_string()).collect();
+    parse_filter_on(text, &scale)
+}
+
+/// [`parse_filter`], reading `conf:` against the case's own scale.
+pub fn parse_filter_on(text: &str, scale: &[String]) -> Filter {
     let terms = text
         .split_whitespace()
         .filter_map(|word| {
@@ -579,14 +748,31 @@ pub fn parse_filter(text: &str) -> Filter {
                 _ => (false, word),
             };
             let lower = word.to_lowercase();
+            let status = |v: &str| {
+                alternatives(v)
+                    .into_iter()
+                    .map(|s| match s.as_str() {
+                        "disputed" => "conflicting".to_string(),
+                        "deleted" => "soft-deleted".to_string(),
+                        _ => s,
+                    })
+                    .collect()
+            };
             let ask = match lower.split_once(':') {
-                Some(("type", v)) if !v.is_empty() => Ask::Type(v.to_string()),
-                Some(("tag", v)) if !v.is_empty() => Ask::Tag(v.to_string()),
-                Some(("status", v)) if !v.is_empty() => Ask::Status(v.to_string()),
+                Some(("type", v)) if !v.is_empty() => Ask::Type(alternatives(v)),
+                Some(("tag", v)) if !v.is_empty() => Ask::Tag(alternatives(v)),
+                Some(("status", v)) if !v.is_empty() => Ask::Status(status(v)),
+                Some(("hyp" | "hypothesis", v)) if !v.is_empty() => {
+                    Ask::Hypothesis(alternatives(v))
+                }
+                Some(("conf" | "confidence", v)) if !v.is_empty() => match confidence(scale, v) {
+                    Some(ask) => ask,
+                    None => Ask::Text(lower),
+                },
                 Some(("by", "agent")) => Ask::By { agent: true },
-                Some(("by", "person" | "analyst" | "user")) => Ask::By { agent: false },
+                Some(("by", "person" | "analyst" | "user" | "me")) => Ask::By { agent: false },
                 Some(("kind", "entity")) => Ask::Kind(NodeKind::Entity),
-                Some(("kind", "claim")) => Ask::Kind(NodeKind::Claim),
+                Some(("kind", "claim" | "event" | "observation")) => Ask::Kind(NodeKind::Claim),
                 Some(("kind", "note" | "annotation")) => Ask::Kind(NodeKind::Annotation),
                 _ if lower.is_empty() => return None,
                 _ => Ask::Text(lower),
@@ -594,7 +780,10 @@ pub fn parse_filter(text: &str) -> Filter {
             Some(Term { not, ask })
         })
         .collect();
-    Filter { terms }
+    Filter {
+        terms,
+        scale: scale.to_vec(),
+    }
 }
 
 impl Filter {
@@ -607,12 +796,44 @@ impl Filter {
         let type_ = node.type_.to_lowercase();
         self.terms.iter().all(|t| {
             let hit = match &t.ask {
-                Ask::Text(w) => node.label.to_lowercase().contains(w) || type_.contains(w),
-                Ask::Type(p) => type_.starts_with(p) || type_.contains(&format!(".{p}")),
-                Ask::Tag(p) => node.tags.iter().any(|g| g.to_lowercase().starts_with(p)),
+                Ask::Text(w) => {
+                    node.label.to_lowercase().contains(w)
+                        || type_.contains(w)
+                        || node.text.to_lowercase().contains(w)
+                }
+                Ask::Type(any) => any
+                    .iter()
+                    .any(|p| type_.starts_with(p) || type_.contains(&format!(".{p}"))),
+                Ask::Tag(any) => any
+                    .iter()
+                    .any(|p| node.tags.iter().any(|g| g.to_lowercase().starts_with(p))),
                 Ask::By { agent } => node.by_agent == *agent,
-                Ask::Status(s) => node.status.to_lowercase() == *s,
+                Ask::Status(any) => any.contains(&node.status.to_lowercase()),
                 Ask::Kind(k) => node.kind == *k,
+                Ask::Hypothesis(any) => node
+                    .hypothesis
+                    .as_ref()
+                    .is_some_and(|h| any.contains(&h.to_lowercase())),
+                Ask::Conf(asked) => {
+                    let has = node.confidence.as_ref().and_then(|c| {
+                        let c = c.to_lowercase();
+                        self.scale.iter().position(|s| s.to_lowercase() == c)
+                    });
+                    match (asked, has) {
+                        (None, has) => has.is_none() && node.confidence.is_none(),
+                        (Some(_), None) => false,
+                        (Some((cmp, place)), Some(i)) => {
+                            let at = i + 1;
+                            match cmp {
+                                Cmp::Lt => at < *place,
+                                Cmp::Le => at <= *place,
+                                Cmp::Eq => at == *place,
+                                Cmp::Ge => at >= *place,
+                                Cmp::Gt => at > *place,
+                            }
+                        }
+                    }
+                }
             };
             hit != t.not
         })
@@ -623,6 +844,89 @@ impl Filter {
 /// are shown.
 pub fn visible(model: &Model, filter: &Filter) -> Vec<bool> {
     model.nodes.iter().map(|n| filter.matches(n)).collect()
+}
+
+// -- room ----------------------------------------------------------------------------------------
+
+/// Move boxes apart until none overlaps another, moving each as little as that takes: where
+/// two overlap they part along the side they overlap least on. `pos` are centres and `sizes`
+/// whole widths and heights, in the same units; `gap` is kept between any two. What is
+/// `fixed` stays where it is and the other gives way. Nodes are drawn at the size of what is
+/// written on them, which a layout that thinks of points cannot know.
+pub fn separate(pos: &mut [(f32, f32)], sizes: &[(f32, f32)], fixed: &[bool], gap: f32) {
+    let n = pos.len();
+    if n < 2 || fixed.iter().all(|f| *f) {
+        return;
+    }
+    // Boxes exactly on top of one another have no side to part along: each after the first
+    // steps a little way off, round a spiral, so that the same pile always opens the same way.
+    let mut seen: HashMap<(i64, i64), usize> = HashMap::new();
+    for i in 0..n {
+        let key = ((pos[i].0 * 10.0) as i64, (pos[i].1 * 10.0) as i64);
+        let k = seen.entry(key).or_insert(0);
+        if *k > 0 && !fixed[i] {
+            let angle = *k as f32 * 2.399_963;
+            let r = 4.0 * (*k as f32).sqrt();
+            pos[i] = (pos[i].0 + angle.cos() * r, pos[i].1 + angle.sin() * r);
+        }
+        *k += 1;
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    // A pile opens from its ends inward, so it takes rounds in proportion to how many are in it.
+    for _ in 0..(60 + 30 * n).min(1500) {
+        // Sweep from the left: only boxes whose spans across overlap can touch.
+        order.sort_by(|&a, &b| {
+            (pos[a].0 - sizes[a].0 / 2.0)
+                .total_cmp(&(pos[b].0 - sizes[b].0 / 2.0))
+                .then(a.cmp(&b))
+        });
+        let mut moved = false;
+        for i in 0..n {
+            let a = order[i];
+            let right = pos[a].0 + sizes[a].0 / 2.0 + gap;
+            for &b in &order[i + 1..] {
+                if pos[b].0 - sizes[b].0 / 2.0 >= right {
+                    break;
+                }
+                if fixed[a] && fixed[b] {
+                    continue;
+                }
+                let (dx, dy) = (pos[b].0 - pos[a].0, pos[b].1 - pos[a].1);
+                let over_x = (sizes[a].0 + sizes[b].0) / 2.0 + gap - dx.abs();
+                let over_y = (sizes[a].1 + sizes[b].1) / 2.0 + gap - dy.abs();
+                if over_x <= 0.01 || over_y <= 0.01 {
+                    continue;
+                }
+                // Along the side they overlap least on; a tie in position parts them by
+                // which two they are, so the same graph gives the same picture.
+                let (push_x, push_y) = if over_x < over_y {
+                    (if dx < 0.0 { -over_x } else { over_x }, 0.0)
+                } else {
+                    (
+                        0.0,
+                        if dy < 0.0 || (dy == 0.0 && a > b) {
+                            -over_y
+                        } else {
+                            over_y
+                        },
+                    )
+                };
+                let (share_a, share_b) = match (fixed[a], fixed[b]) {
+                    (true, _) => (0.0, 1.0),
+                    (_, true) => (1.0, 0.0),
+                    _ => (0.5, 0.5),
+                };
+                pos[a].0 -= push_x * share_a;
+                pos[a].1 -= push_y * share_a;
+                pos[b].0 += push_x * share_b;
+                pos[b].1 += push_y * share_b;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
 }
 
 // -- progressive disclosure --------------------------------------------------------------------
@@ -738,6 +1042,7 @@ pub fn disclose(model: &Model, detail: Detail) -> Disclosure {
             kind: LineKind::Relation { directed },
             claims: vec![node.id.clone()],
             status: node.status.clone(),
+            confidence: node.confidence.clone(),
         });
     }
     // A note about such a claim attaches to the thing the line starts from.
@@ -1246,14 +1551,9 @@ mod tests {
         agent: bool,
     ) -> Node {
         Node {
-            id: id.into(),
-            kind,
-            type_: type_.into(),
-            label: label.into(),
-            status: "active".into(),
-            confidence: None,
             by_agent: agent,
             tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Node::bare(id, kind, type_, label)
         }
     }
 
@@ -1334,6 +1634,75 @@ mod tests {
         // An unknown key is just text, colon and all.
         assert_eq!(shown(&m, "foo:bar"), Vec::<String>::new());
         assert!(parse_filter("   ").is_empty());
+    }
+
+    #[test]
+    fn a_filter_reads_the_whole_text_alternatives_confidence_and_a_hypothesis_standing() {
+        let mut m = sample();
+        m.nodes[2].text = "jdoe is compromised\n\nThe beacon window overlaps the logon.".into();
+        m.nodes[2].confidence = Some("likely".into());
+        m.nodes[2].hypothesis = Some("open".into());
+        m.nodes[3].confidence = Some("very unlikely".into());
+        m.nodes[3].status = "conflicting".into();
+        // A bare word is looked for in all of the text, not only its first line.
+        assert_eq!(shown(&m, "beacon"), ["c"]);
+        assert_eq!(shown(&m, "tag:c2|phase"), ["a", "b", "d"]);
+        assert_eq!(shown(&m, "type:ipv4|hypothesis"), ["a", "c"]);
+        assert_eq!(shown(&m, "conf:>=likely"), ["c"]);
+        assert_eq!(shown(&m, "conf:<likely"), ["d"]);
+        assert_eq!(shown(&m, "conf:very-unlikely"), ["d"]);
+        assert_eq!(shown(&m, "conf:<=5"), ["c", "d"]);
+        assert_eq!(shown(&m, "conf:none"), ["a", "b"]);
+        assert_eq!(shown(&m, "-conf:none -conf:>4"), ["d"]);
+        assert_eq!(shown(&m, "hyp:open|supported"), ["c"]);
+        assert_eq!(shown(&m, "hyp:rejected"), Vec::<String>::new());
+        assert_eq!(shown(&m, "status:disputed"), ["d"]);
+        assert_eq!(shown(&m, "kind:event"), ["d"]);
+        // A confidence that is not on the scale is just text.
+        assert_eq!(shown(&m, "conf:maybe"), Vec::<String>::new());
+        // The case's own scale is the one `conf:` is read against.
+        let own: Vec<String> = ["low", "high"].iter().map(|s| s.to_string()).collect();
+        m.nodes[0].confidence = Some("high".into());
+        let f = parse_filter_on("conf:>low", &own);
+        assert_eq!(visible(&m, &f), [true, false, false, false]);
+    }
+
+    #[test]
+    fn boxes_that_overlap_are_parted_as_little_as_it_takes_and_fixed_ones_stay() {
+        let overlap = |pos: &[(f32, f32)], sizes: &[(f32, f32)], gap: f32| {
+            (0..pos.len()).any(|a| {
+                (a + 1..pos.len()).any(|b| {
+                    (pos[a].0 - pos[b].0).abs() < (sizes[a].0 + sizes[b].0) / 2.0 + gap - 0.5
+                        && (pos[a].1 - pos[b].1).abs() < (sizes[a].1 + sizes[b].1) / 2.0 + gap - 0.5
+                })
+            })
+        };
+        // A tall note on top of two small nodes, and one far away.
+        let sizes = [(400.0, 300.0), (150.0, 48.0), (150.0, 48.0), (150.0, 48.0)];
+        let mut pos = [(0.0, 0.0), (60.0, 20.0), (-40.0, -160.0), (2000.0, 0.0)];
+        let before = pos;
+        assert!(overlap(&pos, &sizes, 16.0));
+        separate(&mut pos, &sizes, &[true, false, false, false], 16.0);
+        assert!(!overlap(&pos, &sizes, 16.0), "{pos:?}");
+        assert_eq!(pos[0], before[0], "what is fixed stays");
+        assert_eq!(pos[3], before[3], "what touched nothing stays");
+        assert!(pos.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+        // The same again changes nothing, and so does a set with nothing free.
+        let settled = pos;
+        separate(&mut pos, &sizes, &[true, false, false, false], 16.0);
+        assert_eq!(pos, settled);
+        let mut stuck = before;
+        separate(&mut stuck, &sizes, &[true; 4], 16.0);
+        assert_eq!(stuck, before);
+        // Many on one spot spread out and stay near it.
+        let sizes = vec![(160.0, 50.0); 30];
+        let mut pos = vec![(10.0, 10.0); 30];
+        separate(&mut pos, &sizes, &[false; 30], 12.0);
+        assert!(!overlap(&pos, &sizes, 12.0));
+        assert!(
+            pos.iter().all(|p| p.0.abs() < 2500.0 && p.1.abs() < 2500.0),
+            "{pos:?}"
+        );
     }
 
     #[test]
@@ -1420,15 +1789,13 @@ mod tests {
     fn bare(count: usize, links: &[(usize, usize)]) -> Model {
         Model {
             nodes: (0..count)
-                .map(|i| Node {
-                    id: format!("n{i}"),
-                    kind: NodeKind::Entity,
-                    type_: "host.name".into(),
-                    label: format!("host-{i}"),
-                    status: "active".into(),
-                    confidence: None,
-                    by_agent: false,
-                    tags: Vec::new(),
+                .map(|i| {
+                    Node::bare(
+                        &format!("n{i}"),
+                        NodeKind::Entity,
+                        "host.name",
+                        &format!("host-{i}"),
+                    )
                 })
                 .collect(),
             lines: links
@@ -1440,6 +1807,7 @@ mod tests {
                     kind: LineKind::Relation { directed: true },
                     claims: Vec::new(),
                     status: "active".into(),
+                    confidence: None,
                 })
                 .collect(),
         }
@@ -1531,6 +1899,7 @@ mod tests {
             kind: LineKind::Role,
             claims: Vec::new(),
             status: "active".into(),
+            confidence: None,
         }
     }
 
@@ -1539,16 +1908,7 @@ mod tests {
     fn discussed() -> Model {
         let mut m = bare(3, &[]);
         let mut push = |kind, type_: &str, label: &str, id: &str| {
-            m.nodes.push(Node {
-                id: id.into(),
-                kind,
-                type_: type_.into(),
-                label: label.into(),
-                status: "active".into(),
-                confidence: None,
-                by_agent: false,
-                tags: Vec::new(),
-            });
+            m.nodes.push(Node::bare(id, kind, type_, label));
         };
         push(NodeKind::Claim, "net.resolution", "net.resolution", "c3");
         push(NodeKind::Claim, "net.connection", "net.connection", "c4");

@@ -24,17 +24,22 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{
-    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla, MouseButton,
-    PathBuilder, Pixels, Point, ScrollDelta, SharedString, Window, canvas, div, point, px,
+    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding,
+    MouseButton, PathBuilder, Pixels, Point, ScrollDelta, SharedString, Window, actions, canvas,
+    div, point, px,
 };
 use reactor_db::graph::edit::{self, Annotate, AnnotationKind, At, TypeChoice};
 use reactor_db::graph::layout;
+use reactor_db::graph::vocab::{self, Vocabulary};
 use reactor_db::graph::{self, query};
 use serde::Deserialize;
 
 use super::arrange::{self, LayoutKind};
+use super::card::{Metrics, Size};
 use super::inspector::{self, Inspected};
-use super::model::{self, Line, LineKind, Model, NodeKind, SourceTarget};
+use super::look;
+use super::model::{self, Line, LineKind, Model, SourceTarget};
+use super::sift::{self, Found, Mode};
 use crate::app::ReactorApp;
 use crate::backend::Backend;
 use crate::hints;
@@ -66,6 +71,70 @@ pub struct GraphSetDetail {
 #[action(namespace = reactor_gui, no_json)]
 pub struct GraphSetHypothesis {
     pub status: String,
+}
+
+actions!(
+    reactor_graph,
+    [
+        /// Ctrl/Cmd+F on the plane: find nodes by what is written on them or known of them.
+        GraphFind,
+        /// `[`: the selected nodes say less (every node, when none is selected).
+        GraphSmaller,
+        /// `]`: they say more.
+        GraphLarger,
+        /// `0`: back to the size and width that follow from what a node says.
+        GraphAutoSize,
+        /// Esc: close what is open over the plane.
+        GraphDismiss
+    ]
+);
+
+const CONTEXT: &str = "ReactorGraph";
+
+/// The plane's keys. The size keys are the plane's only while nothing in it is being typed
+/// into; find and Esc are its own in its inputs too, over what an input does with them.
+pub fn bind_keys(cx: &mut App) {
+    let typing = "ReactorGraph > Input";
+    let plane = "ReactorGraph && !Input";
+    cx.bind_keys([
+        KeyBinding::new("secondary-f", GraphFind, Some(CONTEXT)),
+        KeyBinding::new("secondary-f", GraphFind, Some(typing)),
+        KeyBinding::new("escape", GraphDismiss, Some(CONTEXT)),
+        KeyBinding::new("escape", GraphDismiss, Some(typing)),
+        KeyBinding::new("[", GraphSmaller, Some(plane)),
+        KeyBinding::new("]", GraphLarger, Some(plane)),
+        KeyBinding::new("0", GraphAutoSize, Some(plane)),
+    ]);
+}
+
+/// What [`GraphPanel::plane_for_test`] reports.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaneForTest {
+    pub size: &'static str,
+    pub find_open: bool,
+    pub found: usize,
+    pub find_at: usize,
+    pub drawn: usize,
+    pub layers: usize,
+    pub layers_open: bool,
+    pub legend_open: bool,
+    pub picking: Option<String>,
+}
+
+/// A filter layer as it is kept: what is typed in it, what it does, and whether it is on.
+struct LayerRow {
+    input: Entity<InputState>,
+    mode: Mode,
+    on: bool,
+}
+
+/// The card a type's icon and colour are chosen on, while it is open.
+struct Picker {
+    type_: String,
+    kind: graph::Kind,
+    /// Where it sits, in the drawing area: at the pointer.
+    at: (f32, f32),
 }
 
 /// Where something added by hand goes.
@@ -124,6 +193,14 @@ enum Drag {
     },
     /// An area being swept out to select what is in it (drawing-area coordinates).
     Marquee { from: (f32, f32), to: (f32, f32) },
+    /// A node's width: where the pointer went down (world x), how wide the node was, and
+    /// whether moving right makes it wider (it was taken by its right half).
+    Width {
+        id: String,
+        from: f32,
+        start: f32,
+        grows: bool,
+    },
 }
 
 #[derive(Clone, PartialEq)]
@@ -163,8 +240,28 @@ pub struct GraphPanel {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     note: Entity<InputState>,
     tag: Entity<InputState>,
-    /// Which nodes to show, as typed (`crate::graph::model::parse_filter`).
-    filter: Entity<InputState>,
+    /// How the vocabulary says types are drawn: their icons and colours.
+    vocabulary: Vocabulary,
+    /// How much a node says, unless it has a size of its own.
+    size: Size,
+    /// The nodes with a size or a width of their own.
+    own_size: HashMap<String, (Option<Size>, Option<f32>)>,
+    /// How wide text runs in the fonts last drawn with: what a node's size is worked out from.
+    metrics: Rc<Cell<Metrics>>,
+    /// The filter layers, top to bottom, and whether their panel is open.
+    layers: Vec<LayerRow>,
+    layers_open: bool,
+    /// Find: whether it is open, what is typed, where it looks, the matches (a node's id and
+    /// where in it) in reading order, and which of them it is at.
+    find_open: bool,
+    find_input: Entity<InputState>,
+    find_scope: sift::Scope,
+    found: Vec<(String, Found)>,
+    find_at: usize,
+    legend_open: bool,
+    /// A type's icon and colour being chosen, and what is typed to find an icon.
+    picker: Option<Picker>,
+    picker_input: Entity<InputState>,
     /// Draw an outline round the nodes that share a tag.
     show_groups: bool,
     /// How the graph is arranged: what *auto-layout* does, and how lines are drawn.
@@ -197,20 +294,14 @@ pub struct GraphPanel {
 }
 
 mod inspector_ui;
+mod node_ui;
+mod tools_ui;
 use inspector_ui::Reader;
 
 /// How far the view zooms: out far enough that a large graph is one picture, because
 /// everything on it shrinks with it.
 const MIN_ZOOM: f32 = 0.04;
 const MAX_ZOOM: f32 = 3.;
-
-fn node_size(kind: NodeKind) -> (f32, f32) {
-    match kind {
-        NodeKind::Entity => (170., 30.),
-        NodeKind::Claim => (130., 24.),
-        NodeKind::Annotation => (220., 44.),
-    }
-}
 
 /// An element as label and value rows: what it is, when, who recorded it, what it
 /// points at (its source among them) and what points at it.
@@ -321,8 +412,20 @@ impl GraphPanel {
             },
         )
         .detach();
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter nodes"));
-        cx.subscribe_in(&filter, window, |_, _, event: &InputEvent, _, cx| {
+        let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("find in the graph"));
+        cx.subscribe_in(
+            &find_input,
+            window,
+            |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => this.find_changed(cx),
+                InputEvent::PressEnter { shift, .. } => this.find_step(!*shift, cx),
+                _ => {}
+            },
+        )
+        .detach();
+        let picker_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("find an icon: shield, key…"));
+        cx.subscribe_in(&picker_input, window, |_, _, event: &InputEvent, _, cx| {
             if let InputEvent::Change = event {
                 cx.notify();
             }
@@ -348,7 +451,20 @@ impl GraphPanel {
             bounds: Rc::new(Cell::new(Bounds::default())),
             note: cx.new(|cx| InputState::new(window, cx).placeholder("a note about this…")),
             tag: cx.new(|cx| InputState::new(window, cx).placeholder("tag, e.g. phase.recon")),
-            filter,
+            vocabulary: Vocabulary::default(),
+            size: Size::default(),
+            own_size: HashMap::new(),
+            metrics: Rc::new(Cell::new(Metrics::default())),
+            layers: Vec::new(),
+            layers_open: false,
+            find_open: false,
+            find_input,
+            find_scope: sift::Scope::default(),
+            found: Vec::new(),
+            find_at: 0,
+            legend_open: false,
+            picker: None,
+            picker_input,
             show_groups: false,
             layout_kind: LayoutKind::default(),
             detail_pick: None,
@@ -385,6 +501,110 @@ impl GraphPanel {
         self.select(Some(Selected::Nodes(vec![id.to_string()])), cx);
     }
 
+    /// What is open over the plane and what it shows, for the tests that drive it:
+    /// the view's size, whether find is open, how many it found and which it is at, how many
+    /// nodes are drawn, whether the legend is open, and the type whose look is being chosen.
+    #[doc(hidden)]
+    pub fn plane_for_test(&self, cx: &App) -> PlaneForTest {
+        PlaneForTest {
+            size: self.size.label(),
+            find_open: self.find_open,
+            found: self.found.len(),
+            find_at: self.find_at,
+            drawn: self.shown(cx).iter().filter(|s| **s).count(),
+            layers: self.layers.len(),
+            layers_open: self.layers_open,
+            legend_open: self.legend_open,
+            picking: self.picker.as_ref().map(|p| p.type_.clone()),
+        }
+    }
+
+    /// Where a node is drawn in the window, and how big: its centre, its width and height.
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn node_for_test(&self, id: &str) -> Option<((f32, f32), (f32, f32), &'static str)> {
+        let node = self.model.nodes.iter().find(|n| n.id == id)?;
+        let (size, width) = self.size_of(id);
+        let card = super::card::card(node, size, width, false, &self.metrics.get());
+        let at = self.to_view(*self.positions.get(id)?);
+        let o = self.bounds.get().origin;
+        Some((
+            (f32::from(o.x) + at.0, f32::from(o.y) + at.1),
+            (card.w * self.zoom, card.h * self.zoom),
+            size.label(),
+        ))
+    }
+
+    /// Put the plane in a state by name, as the pointer and the keys would: `find:<words>`,
+    /// `legend`, `size:<s|m|l|xl>`, `own:<id>:<size>`, `pick:<id>`, `select:<id>`, `fit`, `goto:<id>`.
+    #[doc(hidden)]
+    pub fn stage_for_test(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, rest) = what.split_once(':').unwrap_or((what, ""));
+        match name {
+            "find" => {
+                self.open_find(window, cx);
+                self.find_input.update(cx, |s, cx| {
+                    s.set_value(SharedString::from(rest.to_string()), window, cx)
+                });
+                self.find_changed(cx);
+            }
+            "legend" => self.legend_open = true,
+            "size" => {
+                self.size = Size::parse(rest).expect("a size");
+                self.make_room(&[]);
+            }
+            "own" => {
+                let (id, size) = rest.split_once(':').expect("own:<id>:<size>");
+                self.own_size
+                    .insert(id.to_string(), (Size::parse(size), None));
+                self.make_room(&[id.to_string()]);
+            }
+            "pick" => {
+                if let Some(node) = self.model.nodes.iter().find(|n| n.id == rest) {
+                    let at = self
+                        .positions
+                        .get(rest)
+                        .map(|p| self.to_view(*p))
+                        .unwrap_or((40., 40.));
+                    self.picker = Some(Picker {
+                        type_: node.type_.clone(),
+                        kind: node.element,
+                        at: (at.0 + 30., at.1 + 30.),
+                    });
+                }
+            }
+            "select" => self.select(Some(Selected::Nodes(vec![rest.to_string()])), cx),
+            "fit" => self.fit(cx),
+            "goto" => {
+                if let Some(p) = self.positions.get(rest).copied() {
+                    self.zoom = 1.;
+                    self.pan = (-p.0, -p.1);
+                }
+            }
+            other => panic!("no such stage: {other}"),
+        }
+        cx.notify();
+    }
+
+    /// Arrange the whole graph afresh, as the toolbar's auto-layout does.
+    #[doc(hidden)]
+    pub fn relayout_for_test(&mut self, cx: &mut Context<Self>) {
+        self.relayout(cx);
+    }
+
+    /// Add a filter layer as the panel's button and its menu would.
+    #[doc(hidden)]
+    pub fn add_layer_for_test(
+        &mut self,
+        text: &str,
+        mode: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mode = Mode::parse(mode).expect("a layer's mode");
+        self.add_layer(text, mode, window, cx);
+    }
+
     /// Whether the inspector has an element to show.
     #[doc(hidden)]
     pub fn has_inspected(&self) -> bool {
@@ -405,6 +625,7 @@ impl GraphPanel {
         if let Some(b) = &self.backend {
             self.positions = layout::load(b.case.db()).unwrap_or_default();
         }
+        self.load_sizes();
         self.refresh(cx);
     }
 
@@ -423,9 +644,17 @@ impl GraphPanel {
 
     /// The pointer is up: if nodes were being dragged, keep where they were left.
     fn end_drag(&mut self) {
-        if let Some(Drag::Nodes { starts, .. }) = self.drag.take() {
-            let moved: Vec<String> = starts.into_iter().map(|(id, _)| id).collect();
-            self.persist(&moved);
+        match self.drag.take() {
+            Some(Drag::Nodes { starts, .. }) => {
+                let moved: Vec<String> = starts.into_iter().map(|(id, _)| id).collect();
+                self.persist(&moved);
+            }
+            // A width set by hand is kept, and what it now overlaps gives way.
+            Some(Drag::Width { id, .. }) => {
+                self.persist_sizes(std::slice::from_ref(&id));
+                self.make_room(std::slice::from_ref(&id));
+            }
+            _ => {}
         }
     }
 
@@ -436,6 +665,7 @@ impl GraphPanel {
         };
         let db = b.case.db();
         self.scale = edit::scale(db, "confidence").unwrap_or_default();
+        self.vocabulary = vocab::load(db).unwrap_or_default();
         self.entity_choices = edit::type_choices(db, &[graph::Kind::Entity]).unwrap_or_default();
         self.relation_choices =
             edit::type_choices(db, &[graph::Kind::Observation, graph::Kind::Event])
@@ -462,7 +692,20 @@ impl GraphPanel {
                     .filter(|n| !self.positions.contains_key(&n.id))
                     .map(|n| n.id.clone())
                     .collect();
-                let placed = model::layout(&self.model, &self.positions);
+                let mut placed = model::layout(&self.model, &self.positions);
+                // The layout thinks of nodes as one size; they are as big as what they say.
+                // What is new makes room for itself among what was there, which stays.
+                if !unplaced.is_empty() {
+                    let cards = self.cards(false, &self.metrics.get());
+                    let sizes: Vec<(f32, f32)> = cards.iter().map(|c| (c.w, c.h)).collect();
+                    let fixed: Vec<bool> = self
+                        .model
+                        .nodes
+                        .iter()
+                        .map(|n| self.positions.contains_key(&n.id))
+                        .collect();
+                    model::separate(&mut placed, &sizes, &fixed, node_ui::ROOM);
+                }
                 // Positions of what is hidden are kept: it comes back where it was.
                 for (n, p) in self.model.nodes.iter().zip(placed) {
                     self.positions.insert(n.id.clone(), p);
@@ -1068,7 +1311,15 @@ impl GraphPanel {
     /// Lay the whole graph out afresh, forgetting where things were -- including where
     /// they were dragged to -- and bring it into view.
     fn relayout(&mut self, cx: &mut Context<Self>) {
-        let placed = arrange::layout_as(&self.model, self.layout_kind);
+        let mut placed = arrange::layout_as(&self.model, self.layout_kind);
+        let cards = self.cards(false, &self.metrics.get());
+        let sizes: Vec<(f32, f32)> = cards.iter().map(|c| (c.w, c.h)).collect();
+        model::separate(
+            &mut placed,
+            &sizes,
+            &vec![false; sizes.len()],
+            node_ui::ROOM,
+        );
         self.positions = self
             .model
             .nodes
@@ -1091,29 +1342,32 @@ impl GraphPanel {
         self.relayout(cx);
     }
 
-    /// Bring everything into view at a readable size.
+    /// Bring everything into view at a readable size: every node whole, clear of the toolbar.
     fn fit(&mut self, cx: &mut Context<Self>) {
         self.pan = (0., 0.);
         self.zoom = 1.;
+        let cards = self.cards(false, &self.metrics.get());
         let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
-        for p in self
-            .model
-            .nodes
-            .iter()
-            .filter_map(|n| self.positions.get(&n.id))
-        {
-            lo = (lo.0.min(p.0), lo.1.min(p.1));
-            hi = (hi.0.max(p.0), hi.1.max(p.1));
+        for (node, card) in self.model.nodes.iter().zip(&cards) {
+            let Some(p) = self.positions.get(&node.id) else {
+                continue;
+            };
+            lo = (lo.0.min(p.0 - card.w / 2.), lo.1.min(p.1 - card.h / 2.));
+            hi = (hi.0.max(p.0 + card.w / 2.), hi.1.max(p.1 + card.h / 2.));
         }
         if lo.0 <= hi.0 {
             let c = self.centre();
-            let (w, h) = (hi.0 - lo.0 + 260., hi.1 - lo.1 + 120.);
+            // Room at the edges, and at the top for the toolbar.
+            let (side, top) = (36., 64.);
+            let (w, h) = (hi.0 - lo.0, hi.1 - lo.1);
             if c.0 > 0. && c.1 > 0. {
-                self.zoom = (c.0 * 2. / w).min(c.1 * 2. / h).clamp(MIN_ZOOM, 1.);
+                self.zoom = ((c.0 * 2. - 2. * side) / w.max(1.))
+                    .min((c.1 * 2. - top - side) / h.max(1.))
+                    .clamp(MIN_ZOOM, 1.);
             }
             self.pan = (
                 -(lo.0 + hi.0) / 2. * self.zoom,
-                -(lo.1 + hi.1) / 2. * self.zoom,
+                -(lo.1 + hi.1) / 2. * self.zoom + (top - side) / 2.,
             );
         }
         cx.notify();
@@ -1226,14 +1480,15 @@ struct Stroke {
     to: (f32, f32),
     colour: Hsla,
     width: f32,
-    dashed: bool,
+    /// The lengths of dash and gap, in turn; none for a solid line.
+    dash: Vec<f32>,
     arrow: bool,
     /// The arrowhead's scale: the zoom.
     head: f32,
 }
 
 impl Render for GraphPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let small = theme.font_size * 0.85;
 
@@ -1258,12 +1513,26 @@ impl Render for GraphPanel {
         };
         // Everything drawn scales with the zoom, so zooming out brings things closer
         // together *and* makes them smaller: that is what makes a bigger picture.
-        let filter = model::parse_filter(self.filter.read(cx).value().as_ref());
-        // Shown: what the filter lets through and the level draws.
-        let shown: Vec<bool> = model::visible(&self.model, &filter)
-            .into_iter()
+        let metrics = self.measure(window, &theme);
+        // Shown: what the filter layers let through and the level draws.
+        let sifted = sift::sift(&self.model, &self.layers(cx));
+        let shown: Vec<bool> = sifted
+            .nodes
+            .iter()
             .zip(&disclosure.shown)
-            .map(|(a, b)| a && *b)
+            .map(|(d, level)| d.shown && *level)
+            .collect();
+        // What each node says at its size, and how big that makes it.
+        let cards = self.cards(plain, &metrics);
+        // What find matches, as of now: the graph and the layers may have changed under it.
+        let query = self.find_query(cx);
+        self.found = self.find_now(cx);
+        self.find_at = self.find_at.min(self.found.len().saturating_sub(1));
+        let hits: HashMap<&str, bool> = self
+            .found
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| (id.as_str(), i == self.find_at))
             .collect();
         let z = self.zoom;
         let font = |factor: f32| theme.font_size * 0.85 * factor * z;
@@ -1283,7 +1552,7 @@ impl Render for GraphPanel {
             }
             let (a, b) = (self.node_at(line.from), self.node_at(line.to));
             let half = |index: usize| {
-                let (w, h) = node_size(self.model.nodes[index].kind);
+                let (w, h) = (cards[index].w, cards[index].h);
                 ((w / 2. + 3.) * z, (h / 2. + 3.) * z)
             };
             // Straight, from edge to edge of the boxes; or, in the orthogonal layout, out of
@@ -1299,24 +1568,55 @@ impl Render for GraphPanel {
                 )
             };
             let selected = line_selected(line);
-            let base = match line.kind {
-                LineKind::Relation { .. } => theme.foreground.opacity(0.7),
-                LineKind::Role => theme.muted_foreground,
-                LineKind::Annotation => theme.info.opacity(0.8),
+            let disputed = line.status == "conflicting" && !plain;
+            // A disputed relation says so on its label; the lines of a disputed node only
+            // take its colour, since the node says it.
+            let says_disputed = disputed && matches!(line.kind, LineKind::Relation { .. });
+            // What a line is shows in how it is drawn: a relation solid, a part in a claim
+            // thin, what a note is about dashed -- green where it supports, red where it
+            // refutes -- and anything disputed orange, in long and short dashes.
+            let base = match (line.kind, line.label.as_str()) {
+                (LineKind::Relation { .. }, _) => theme.foreground.opacity(0.7),
+                (LineKind::Role, _) => theme.muted_foreground.opacity(0.75),
+                (LineKind::Annotation, "supports") => theme.success,
+                (LineKind::Annotation, "refutes") => theme.danger,
+                (LineKind::Annotation, _) => theme.muted_foreground,
             };
             let colour = if selected {
                 theme.primary
             } else {
                 status_colour(&line.status, base)
             };
+            // A line to something dimmed is dim with it.
+            let colour = if sifted.nodes[line.from].dim || sifted.nodes[line.to].dim {
+                colour.opacity(0.35)
+            } else {
+                colour
+            };
+            let thick = match line.kind {
+                _ if selected || disputed => 2.5,
+                LineKind::Role => 1.,
+                _ => 1.5,
+            };
             strokes.push(Stroke {
                 from,
                 bends: bends.clone(),
                 to,
                 colour,
-                width: (if selected { 2.5 } else { 1.5 } * z).max(if selected { 1.5 } else { 0.8 }),
+                width: (thick * z).max(if selected { 1.5 } else { 0.8 }),
                 head: z,
-                dashed: line.kind == LineKind::Annotation,
+                dash: if disputed {
+                    vec![
+                        10. * z.max(0.4),
+                        4. * z.max(0.4),
+                        2. * z.max(0.4),
+                        4. * z.max(0.4),
+                    ]
+                } else if line.kind == LineKind::Annotation {
+                    vec![5., 4.]
+                } else {
+                    Vec::new()
+                },
                 arrow: !matches!(line.kind, LineKind::Relation { directed: false }),
             });
             // The label sits in the middle of the line: of its middle stretch, if it has corners.
@@ -1330,17 +1630,47 @@ impl Render for GraphPanel {
             let text = SharedString::from(line.label.clone());
             // Zoomed far out the words would be specks: a dot on the line stands for
             // them, with the words in its tooltip.
-            let (lw, lh) = (140. * z.max(0.6), 18. * z.max(0.6));
+            let (lw, lh) = (220. * z.max(0.6), 18. * z.max(0.6));
+            // How sure a relation is, where its claims agree on it.
+            let sure = line
+                .confidence
+                .as_ref()
+                .filter(|_| !plain)
+                .and_then(|c| self.scale.iter().position(|s| s == c))
+                .map(|i| i + 1);
             let label = if labels_shown {
-                div()
+                let unit = f32::from(font(1.));
+                h_flex()
+                    .gap(px(unit * 0.35))
+                    .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(theme.background.opacity(0.85))
+                    .bg(theme.background.opacity(0.9))
+                    .when(says_disputed, |d| {
+                        d.border_1()
+                            .border_dashed()
+                            .border_color(theme.warning)
+                            .child(node_ui::icon(
+                                look::icon_path("triangle-alert"),
+                                unit,
+                                theme.warning,
+                            ))
+                    })
                     .text_size(font(1.))
                     .text_color(colour)
                     .whitespace_nowrap()
                     .when(is_relation, |d| d.cursor_pointer())
                     .child(text.clone())
+                    .when(says_disputed, |d| d.child("· disputed"))
+                    .when_some(sure, |d, n| {
+                        d.child(node_ui::meter(
+                            n,
+                            self.scale.len().max(n),
+                            colour,
+                            theme.border,
+                            unit,
+                        ))
+                    })
                     .into_any_element()
             } else {
                 div()
@@ -1470,8 +1800,9 @@ impl Render for GraphPanel {
                 }
                 for s in &strokes {
                     let mut path = PathBuilder::stroke(px(s.width));
-                    if s.dashed {
-                        path = path.dash_array(&[px(5.), px(4.)]);
+                    if !s.dash.is_empty() {
+                        let dash: Vec<Pixels> = s.dash.iter().map(|d| px(*d)).collect();
+                        path = path.dash_array(&dash);
                     }
                     path.move_to(at(s.from));
                     for corner in &s.bends {
@@ -1511,132 +1842,49 @@ impl Render for GraphPanel {
         .absolute()
         .size_full();
 
-        let nodes: Vec<_> = self
-            .model
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| shown[*i])
-            .map(|(i, node)| {
-                let (x, y) = self.node_at(i);
-                let (w, h) = node_size(node.kind);
-                let (w, h) = (w * z, h * z);
-                let selected = selected_nodes.contains(&node.id);
-                let accent = match node.kind {
-                    NodeKind::Entity => theme.border,
-                    NodeKind::Claim => theme.muted_foreground,
-                    NodeKind::Annotation => theme.info,
-                };
-                let border = if selected {
-                    theme.primary
-                } else {
-                    status_colour(&node.status, accent)
-                };
-                let text = match node.kind {
-                    NodeKind::Claim => node.type_.clone(),
-                    _ => node.label.clone(),
-                };
-                let sub = match node.kind {
-                    NodeKind::Annotation => {
-                        Some(node.type_.trim_start_matches("analysis.").to_string())
-                    }
-                    _ => None,
-                };
-                // What the box cannot say at this size, its tooltip does.
-                let full = match node.kind {
-                    NodeKind::Claim => node.type_.clone(),
-                    _ => format!("{} · {}", node.type_, node.label),
-                };
-                let id = node.id.clone();
-                let holder = div()
-                    .id(("graph-node", i))
-                    .absolute()
-                    .left(px(x - w / 2.))
-                    .top(px(y - h / 2.))
-                    .w(px(w))
-                    .h(px(h))
-                    .px(px(8. * z))
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(border)
-                    .when(selected, |d| d.border_2())
-                    .when(node.kind == NodeKind::Entity, |d| d.rounded(px(6. * z)))
-                    .when(node.kind == NodeKind::Claim, |d| d.rounded_full())
-                    .bg(match node.kind {
-                        NodeKind::Entity => theme.secondary,
-                        NodeKind::Claim => theme.background,
-                        NodeKind::Annotation => theme.popover,
-                    })
-                    .when(node.status == "soft-deleted", |d| d.opacity(0.45))
-                    .cursor_pointer()
-                    .text_size(font(1.))
-                    .when(readable, |d| {
-                        d.when_some(sub, |d, sub| {
-                            d.child(
-                                div()
-                                    .text_size(font(0.85))
-                                    .text_color(theme.info)
-                                    .whitespace_nowrap()
-                                    .child(if plain {
-                                        // No confidence, no author: the plain picture.
-                                        sub.clone()
-                                    } else {
-                                        format!(
-                                            "{sub}{}{}",
-                                            node.confidence
-                                                .as_deref()
-                                                .map(|c| format!(" · {c}"))
-                                                .unwrap_or_default(),
-                                            if node.by_agent { " · agent" } else { "" }
-                                        )
-                                    }),
-                            )
-                        })
-                        .child(
-                            div()
-                                .truncate()
-                                .text_color(status_colour(&node.status, theme.foreground))
-                                .child(SharedString::from(text)),
-                        )
-                    })
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            // Making a relation: this is its other end.
-                            if let Some(from) = this.relating.clone()
-                                && from != id
-                            {
-                                this.open_relation_form(vec![from, id.clone()], window, cx);
-                                return;
-                            }
-                            // Shift or Ctrl/Cmd picks it up or puts it down.
-                            let m = event.modifiers;
-                            if m.shift || m.secondary() {
-                                this.toggle(&id, cx);
-                                return;
-                            }
-                            // Pressing one of several that are selected drags them all;
-                            // pressing another selects just it.
-                            if !this.selected_nodes().contains(&id) {
-                                this.select(Some(Selected::Nodes(vec![id.clone()])), cx);
-                            }
-                            let from = this.to_world(this.local(event.position));
-                            let starts = this
-                                .selected_nodes()
-                                .into_iter()
-                                .filter_map(|n| this.positions.get(&n).map(|p| (n, *p)))
-                                .collect();
-                            this.drag = Some(Drag::Nodes { from, starts });
-                        }),
-                    );
-                hints::tip(holder, full)
-            })
-            .collect();
+        // Nodes: a card each, as big as what it says. What is out of sight is not built.
+        let area = self.bounds.get().size;
+        let (area_w, area_h) = (f32::from(area.width), f32::from(area.height));
+        let alone = match selected_nodes.as_slice() {
+            [one] => Some(one.clone()),
+            _ => None,
+        };
+        let mut nodes = Vec::new();
+        for (i, node) in self.model.nodes.iter().enumerate() {
+            if !shown[i] {
+                continue;
+            }
+            let at = self.node_at(i);
+            let (w, h) = (cards[i].w * z, cards[i].h * z);
+            if area_w > 0.
+                && (at.0 + w < -40.
+                    || at.0 - w > area_w + 40.
+                    || at.1 + h < -40.
+                    || at.1 - h > area_h + 40.)
+            {
+                continue;
+            }
+            let look = look::look(&self.vocabulary, &node.type_, node.element);
+            let selected = selected_nodes.contains(&node.id);
+            nodes.push(self.node_element(
+                node,
+                &look,
+                node_ui::NodeView {
+                    index: i,
+                    card: &cards[i],
+                    at,
+                    zoom: z,
+                    plain,
+                    readable,
+                    selected,
+                    alone: readable && alone.as_deref() == Some(node.id.as_str()),
+                    drawn: sifted.nodes[i],
+                    hit: hits.get(node.id.as_str()).copied(),
+                    query: query.as_deref(),
+                },
+                cx,
+            ));
+        }
 
         let name_of = |id: &str| {
             self.model
@@ -2192,8 +2440,29 @@ impl Render for GraphPanel {
             _ => None,
         };
 
+        // What sits over the plane: the toolbar, and what is open of the legend, the filter
+        // layers, find, and the card a type's icon is chosen on.
+        let toolbar = self.toolbar(counts, level, cx);
+        let legend = self.legend_open.then(|| self.legend(&shown, plain, cx));
+        let layers_panel = self
+            .layers_open
+            .then(|| self.layers_panel(&sifted, &shown, cx));
+        // Find sits at the right, beside the layers when they are open.
+        let find_right = if self.layers_open { 404. } else { 12. };
+        // Under the toolbar where there is no room beside it.
+        let find_top = if area_w - find_right - 452. < 860. {
+            62.
+        } else {
+            12.
+        };
+        let find_bar = self
+            .find_open
+            .then(|| self.find_bar(find_right, find_top, cx));
+        let picker = self.picker_card(cx);
+
         let graph = div()
             .id("graph-area")
+            .key_context(CONTEXT)
             .track_focus(&self.focus)
             .size_full()
             .relative()
@@ -2201,8 +2470,12 @@ impl Render for GraphPanel {
             .bg(theme.background)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, window, cx| {
                     let at = this.local(event.position);
+                    // The plane has the keys from here on, and what was open over it for a
+                    // moment is done with.
+                    window.focus(&this.focus, cx);
+                    this.picker = None;
                     // Shift sweeps out an area to select; otherwise the plane is dragged.
                     this.drag = Some(if event.modifiers.shift {
                         Drag::Marquee { from: at, to: at }
@@ -2244,6 +2517,16 @@ impl Render for GraphPanel {
                             .map(|(id, p)| (id.clone(), (p.0 + dx, p.1 + dy)))
                             .collect();
                         this.positions.extend(moved);
+                    }
+                    Some(Drag::Width {
+                        id,
+                        from,
+                        start,
+                        grows,
+                    }) => {
+                        let (id, from, start, grows) = (id.clone(), *from, *start, *grows);
+                        let x = this.to_world(at).0;
+                        this.drag_width(&id, from, start, grows, x);
                     }
                     Some(Drag::Marquee { from, .. }) => {
                         let from = *from;
@@ -2289,6 +2572,11 @@ impl Render for GraphPanel {
                 this.pan = (this.pan.0 + at.0 - now.0, this.pan.1 + at.1 - now.1);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &GraphFind, window, cx| this.open_find(window, cx)))
+            .on_action(cx.listener(|this, _: &GraphSmaller, _, cx| this.step_size(false, cx)))
+            .on_action(cx.listener(|this, _: &GraphLarger, _, cx| this.step_size(true, cx)))
+            .on_action(cx.listener(|this, _: &GraphAutoSize, _, cx| this.auto_size(cx)))
+            .on_action(cx.listener(|this, _: &GraphDismiss, window, cx| this.dismiss(window, cx)))
             .on_action(cx.listener(|this, a: &GraphSetConfidence, _, cx| {
                 this.set_confidence(&a.value, cx)
             }))
@@ -2321,112 +2609,11 @@ impl Render for GraphPanel {
                     .top(px(overlay_at.1))
                     .child(o)
             }))
-            .child(
-                h_flex()
-                    .id("graph-header")
-                    .absolute()
-                    // Off the edges, and a card of its own: what is drawn behind it (a tag
-                    // box's label, a node) does not show through, and a click on it is not
-                    // a click on the plane.
-                    .top_3()
-                    .left_3()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .items_center()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.popover)
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .text_size(small)
-                    .text_color(theme.muted_foreground)
-                    .child(hints::info_button(
-                        "graph-help",
-                        "Click selects; Ctrl/Cmd+click adds a node to the selection or takes it out; Shift+drag sweeps an area; dragging a selected node moves them all. Right-click the plane adds a node there. Scroll zooms (everything shrinks with it); drag the plane to pan. Relations show as lines: click the word on one to select it. Dashed lines are notes.",
-                    ))
-                    .child(counts)
-                    .child({
-                        // How the graph is arranged: a menu of the ways, the current one marked.
-                        let (focus, current) = (self.focus.clone(), self.layout_kind);
-                        hints::tip(
-                            div().id("graph-layout-holder").child(
-                                Button::new("graph-layout")
-                                    .small()
-                                    .icon(IconName::LayoutDashboard)
-                                    .label(current.label())
-                                    .dropdown_menu(move |mut menu, _, _| {
-                                        menu = menu.action_context(focus.clone());
-                                        for kind in LayoutKind::ALL {
-                                            let mark = if kind == current { "● " } else { "   " };
-                                            menu = menu.menu(
-                                                format!("{mark}{}", kind.label()),
-                                                Box::new(GraphSetLayout {
-                                                    kind: kind.slug().to_string(),
-                                                }),
-                                            );
-                                        }
-                                        menu
-                                    }),
-                            ),
-                            SharedString::from(format!(
-                                "How the graph is arranged. {}. Picking one arranges the whole graph afresh",
-                                current.tip()
-                            )),
-                        )
-                    })
-                    .child({
-                        // How much is drawn: a level, or "auto", which follows the zoom.
-                        let (focus, pick, now) = (self.focus.clone(), self.detail_pick, level);
-                        let label = match pick {
-                            Some(level) => format!("Detail: {}", level.label()),
-                            None => format!("Detail: auto · {}", now.label().to_lowercase()),
-                        };
-                        hints::tip(
-                            div().id("graph-detail-holder").child(
-                                Button::new("graph-detail")
-                                    .small()
-                                    .icon(IconName::Layers)
-                                    .label(label)
-                                    .dropdown_menu(move |mut menu, _, _| {
-                                        menu = menu.action_context(focus.clone());
-                                        let mark = |on: bool| if on { "● " } else { "   " };
-                                        menu = menu.menu(
-                                            format!("{}Auto (by zoom)", mark(pick.is_none())),
-                                            Box::new(GraphSetDetail { level: "auto".into() }),
-                                        );
-                                        for level in [
-                                            model::Detail::Basic,
-                                            model::Detail::Analysis,
-                                            model::Detail::Full,
-                                        ] {
-                                            menu = menu.menu(
-                                                format!("{}{}", mark(pick == Some(level)), level.label()),
-                                                Box::new(GraphSetDetail {
-                                                    level: level.label().to_lowercase(),
-                                                }),
-                                            );
-                                        }
-                                        menu
-                                    }),
-                            ),
-                            SharedString::from(format!(
-                                "How much is drawn. Basic: {}. Analysis: {}. Full: {}. Auto follows the zoom: zoomed out the overview, zoomed in the detail",
-                                model::Detail::Basic.tip().to_lowercase(),
-                                model::Detail::Analysis.tip().to_lowercase(),
-                                model::Detail::Full.tip().to_lowercase(),
-                            )),
-                        )
-                    })
-                    .child(div().w(px(220.)).child(Input::new(&self.filter).small()))
-                    .child(hints::info_button(
-                        "graph-filter-help",
-                        "Show only some of the nodes. Words must all be in a node's label or type. type:net. (a type that starts so, or has a dotted part that does: type:ipv4), tag:phase. (a tag that starts so), by:agent or by:person, kind:entity, kind:claim or kind:note, status:conflicting. A leading - means not: -tag:c2. Lines are drawn between nodes that are shown.",
-                    )),
-            )
+            .child(toolbar)
+            .children(legend)
+            .children(layers_panel)
+            .children(find_bar)
+            .children(picker)
             .when(empty, |d| {
                 d.child(
                     h_flex()
@@ -2447,8 +2634,8 @@ impl Render for GraphPanel {
                 d.child(
                     div()
                         .absolute()
-                        .top_2()
-                        .right_2()
+                        .bottom_2()
+                        .left_2()
                         .max_w(px(520.))
                         .p_2()
                         .rounded_md()

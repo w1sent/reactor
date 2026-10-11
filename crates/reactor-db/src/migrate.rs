@@ -370,6 +370,262 @@ const MIGRATIONS: &[&str] = &[
       updated_at TEXT NOT NULL
     );
     "#,
+    // 5: how a type is drawn, and a wider vocabulary. A type may name an icon (a Lucide
+    // icon's name) and a colour (one of `graph::vocab::COLOURS`); a *namespace* -- a dotted
+    // prefix, `net` or `file.hash` -- says what its types have in common and how they are
+    // drawn when they say nothing themselves. Presentation, like the layout: no versions.
+    // A node may also be drawn at a size of its own, or a width set by hand.
+    r#"
+    ALTER TABLE known_type ADD COLUMN icon TEXT;
+    ALTER TABLE known_type ADD COLUMN colour TEXT;
+    CREATE TABLE type_namespace (
+      prefix TEXT PRIMARY KEY,            -- `net`, `file.hash`
+      definition TEXT NOT NULL DEFAULT '',
+      icon TEXT,
+      colour TEXT
+    );
+    CREATE TABLE graph_node_size (
+      element_id TEXT PRIMARY KEY,
+      size TEXT,                          -- s|m|l|xl, when not the view's
+      width REAL                          -- world units, when set by hand
+    );
+
+    INSERT INTO type_namespace(prefix, definition, icon, colour) VALUES
+      ('net', 'Network: addresses, names and traffic.', 'network', 'blue'),
+      ('net.tls', 'TLS: certificates and fingerprints.', 'globe-lock', 'blue'),
+      ('mail', 'Email as messages.', 'mail', 'sky'),
+      ('cloud', 'Cloud accounts and resources.', 'cloud', 'cobalt'),
+      ('host', 'Machines and what is configured on them.', 'monitor', 'teal'),
+      ('device', 'Phones, tablets and peripherals.', 'smartphone', 'slate'),
+      ('app', 'Applications as installed.', 'app-window', 'mint'),
+      ('account', 'Accounts, groups and credentials.', 'user', 'lime'),
+      ('auth', 'Authentication: logons and privileges.', 'log-in', 'green'),
+      ('person', 'People.', 'contact', 'sand'),
+      ('org', 'Organisations.', 'building-2', 'sand'),
+      ('geo', 'Places.', 'map-pin', 'slate'),
+      ('doc', 'Reports and references.', 'newspaper', 'grey'),
+      ('file', 'Files: paths, names and content.', 'file', 'purple'),
+      ('file.hash', 'Digests of a file.', 'hash', 'purple'),
+      ('process', 'Processes and what they load.', 'square-terminal', 'pink'),
+      ('registry', 'The Windows registry.', 'key-round', 'brown'),
+      ('mem', 'Memory forensics.', 'memory-stick', 'cyan'),
+      ('evidence', 'Evidence and its custody.', 'hard-drive', 'brown'),
+      ('threat', 'Threat intelligence: who, with what, against whom.', 'swords', 'magenta'),
+      ('attack', 'MITRE ATT&CK.', 'crosshair', 'indigo'),
+      ('detect', 'Detection: rules and what they fired on.', 'radar', 'olive'),
+      ('vuln', 'Vulnerabilities and exploits.', 'shield-alert', 'yellow'),
+      ('malware', 'Malware analysis: families, samples, behaviour.', 'bug', 'violet'),
+      ('code', 'Reverse engineering: what is inside a binary.', 'binary', 'cyan'),
+      ('crypto', 'Cryptography: algorithms, keys, certificates.', 'lock-keyhole', 'yellow'),
+      ('software', 'Software, versions and packages.', 'package', 'mint'),
+      ('misc', 'Anything that has no better home.', 'box', 'grey'),
+      ('analysis', 'What was concluded.', 'sticky-note', 'cream');
+
+    UPDATE known_type SET icon = 'globe' WHERE name = 'net.domain';
+    UPDATE known_type SET icon = 'link' WHERE name = 'net.url';
+    UPDATE known_type SET icon = 'at-sign' WHERE name = 'net.email';
+    UPDATE known_type SET icon = 'file-text' WHERE name = 'file.name';
+    UPDATE known_type SET icon = 'cpu' WHERE name = 'process.instance';
+    UPDATE known_type SET icon = 'lightbulb' WHERE name = 'analysis.hypothesis';
+    UPDATE known_type SET icon = 'scale' WHERE name = 'analysis.judgement';
+    UPDATE known_type SET icon = 'group' WHERE name = 'analysis.cluster';
+    UPDATE known_type SET icon = 'link-2' WHERE name = 'analysis.same_as';
+    UPDATE known_type SET icon = 'search-x' WHERE name = 'analysis.search_negative';
+    UPDATE known_type SET icon = 'database' WHERE name = 'analysis.pull';
+
+    INSERT OR IGNORE INTO known_type(name, kind, definition, normalizer, icon) VALUES
+      -- net
+      ('net.cidr', 'entity', 'An address range in CIDR notation.', 'trim', 'waypoints'),
+      ('net.asn', 'entity', 'An autonomous system, as AS64500.', 'uppercase', 'route'),
+      ('net.port', 'entity', 'A port and protocol, as 443/tcp.', 'lowercase', 'ethernet-port'),
+      ('net.socket', 'entity', 'An address and port, as 198.51.100.7:443.', 'lowercase', 'ethernet-port'),
+      ('net.mac', 'entity', 'A hardware address.', 'lowercase', 'cable'),
+      ('net.user_agent', 'entity', 'A User-Agent string as sent.', 'trim', 'text-quote'),
+      ('net.tls.cert', 'entity', 'A TLS certificate, by its SHA-256 fingerprint.', 'lowercase', 'file-badge'),
+      ('net.tls.sni', 'entity', 'A server name asked for in a TLS handshake.', 'domain', NULL),
+      ('net.tls.ja3', 'entity', 'A JA3 client fingerprint.', 'lowercase', 'fingerprint-pattern'),
+      ('net.tls.ja3s', 'entity', 'A JA3S server fingerprint.', 'lowercase', 'fingerprint-pattern'),
+      ('net.tls.jarm', 'entity', 'A JARM server fingerprint.', 'lowercase', 'fingerprint-pattern'),
+      ('net.connection', 'event', 'One endpoint connected to another.', NULL, NULL),
+      ('net.flow', 'event', 'Traffic between two endpoints, summarised.', NULL, NULL),
+      ('net.dns.query', 'event', 'A name was asked for.', NULL, NULL),
+      ('net.http.request', 'event', 'An HTTP request was made.', NULL, NULL),
+      ('net.resolution', 'observation', 'A name resolved to an address.', NULL, NULL),
+      ('net.listens', 'observation', 'A host listens on a port.', NULL, NULL),
+      -- mail
+      ('mail.message', 'entity', 'An email, by its Message-ID.', 'trim', NULL),
+      ('mail.subject', 'entity', 'A subject line as written.', 'trim', 'text-quote'),
+      ('mail.delivery', 'event', 'A message went from one address to another.', NULL, NULL),
+      -- cloud
+      ('cloud.account', 'entity', 'A cloud account, subscription or project.', 'trim', NULL),
+      ('cloud.bucket', 'entity', 'An object-storage bucket.', 'lowercase', 'container'),
+      ('cloud.instance', 'entity', 'A virtual machine or container instance.', 'trim', 'server'),
+      ('cloud.role', 'entity', 'A role or service principal.', 'trim', 'id-card'),
+      ('cloud.access_key', 'entity', 'An access key, by its id -- never the secret.', 'trim', 'key-square'),
+      ('cloud.region', 'entity', 'A region or zone.', 'lowercase', 'earth'),
+      ('cloud.api_call', 'event', 'A control-plane call was made.', NULL, NULL),
+      -- host
+      ('host.id', 'entity', 'A machine identifier: a GUID, serial or asset tag.', 'lowercase', 'badge'),
+      ('host.os', 'entity', 'An operating system and version.', 'trim', 'layers'),
+      ('host.service', 'entity', 'A service or daemon.', 'trim', 'cog'),
+      ('host.task', 'entity', 'A scheduled task or cron job.', 'trim', 'timer'),
+      ('host.driver', 'entity', 'A driver or kernel module.', 'trim', 'puzzle'),
+      ('host.volume', 'entity', 'A volume or mount point.', 'trim', 'hard-drive'),
+      ('host.share', 'entity', 'A network share.', 'lowercase', 'folder-tree'),
+      ('host.pipe', 'entity', 'A named pipe.', 'trim', 'cable'),
+      ('host.boot', 'event', 'A host started.', NULL, NULL),
+      ('host.shutdown', 'event', 'A host shut down.', NULL, NULL),
+      ('host.service.install', 'event', 'A service was installed.', NULL, NULL),
+      ('host.task.create', 'event', 'A scheduled task was created.', NULL, NULL),
+      ('host.address', 'observation', 'A host had an address.', NULL, NULL),
+      -- device
+      ('device.id', 'entity', 'A device identifier: a UDID or serial.', 'trim', NULL),
+      ('device.model', 'entity', 'A device model.', 'trim', 'tablet-smartphone'),
+      ('device.imei', 'entity', 'An IMEI.', 'trim', NULL),
+      ('device.usb', 'entity', 'A USB device, by vendor, product and serial.', 'trim', 'usb'),
+      ('device.connect', 'event', 'A device was connected.', NULL, NULL),
+      -- app
+      ('app.bundle', 'entity', 'An application identifier: a bundle id or package name.', 'lowercase', NULL),
+      ('app.version', 'entity', 'An application version.', 'trim', 'tag'),
+      ('app.entitlement', 'entity', 'A permission or entitlement an application holds.', 'trim', 'shield-check'),
+      ('app.install', 'event', 'An application was installed.', NULL, NULL),
+      -- account, auth
+      ('account.sid', 'entity', 'A Windows security identifier.', 'uppercase', 'id-card'),
+      ('account.group', 'entity', 'A group of accounts.', 'trim', 'users'),
+      ('account.credential', 'entity', 'A credential that was seen, by what identifies it -- never the secret.', 'trim', 'key-round'),
+      ('account.member_of', 'observation', 'An account belongs to a group.', NULL, NULL),
+      ('auth.session', 'entity', 'A logon session, by its id.', 'trim', NULL),
+      ('auth.logon', 'event', 'An account logged on.', NULL, NULL),
+      ('auth.logoff', 'event', 'An account logged off.', NULL, NULL),
+      ('auth.failure', 'event', 'A logon was refused.', NULL, NULL),
+      ('auth.privilege', 'event', 'Privileges were gained or used.', NULL, NULL),
+      -- person, org, geo, doc
+      ('person.name', 'entity', 'A person, by name.', 'trim', NULL),
+      ('person.handle', 'entity', 'A name someone goes by online.', 'lowercase', 'at-sign'),
+      ('org.name', 'entity', 'An organisation, by name.', 'trim', NULL),
+      ('org.sector', 'entity', 'An industry or sector.', 'lowercase', 'factory'),
+      ('geo.country', 'entity', 'A country.', 'trim', 'earth'),
+      ('geo.place', 'entity', 'A city, site or address.', 'trim', NULL),
+      ('geo.coordinates', 'entity', 'A latitude and longitude.', 'trim', 'locate'),
+      ('doc.report', 'entity', 'A report or article, by its title or URL.', 'trim', NULL),
+      ('doc.reference', 'entity', 'A citation or ticket number.', 'trim', 'bookmark'),
+      -- file
+      ('file.dir', 'entity', 'A directory on some host.', 'trim', 'folder'),
+      ('file.magic', 'entity', 'A file format, as identified.', 'lowercase', 'file-question-mark'),
+      ('file.signer', 'entity', 'Who signed a file: the certificate''s subject.', 'trim', 'signature'),
+      ('file.hash.sha512', 'entity', 'A SHA-512 digest of a file, in hex.', 'lowercase', NULL),
+      ('file.hash.ssdeep', 'entity', 'An ssdeep fuzzy hash.', 'trim', NULL),
+      ('file.hash.tlsh', 'entity', 'A TLSH locality hash.', 'uppercase', NULL),
+      ('file.hash.imphash', 'entity', 'A PE import hash.', 'lowercase', NULL),
+      ('file.create', 'event', 'A file was created.', NULL, NULL),
+      ('file.write', 'event', 'A file was written.', NULL, NULL),
+      ('file.read', 'event', 'A file was read.', NULL, NULL),
+      ('file.rename', 'event', 'A file was renamed or moved.', NULL, NULL),
+      ('file.delete', 'event', 'A file was deleted.', NULL, NULL),
+      ('file.execute', 'event', 'A file was run.', NULL, NULL),
+      ('file.present', 'observation', 'A file was at a path on a host.', NULL, NULL),
+      ('file.digest', 'observation', 'A file has a digest.', NULL, NULL),
+      ('file.contains', 'observation', 'An archive or image holds a file.', NULL, NULL),
+      -- process, registry, mem
+      ('process.cmdline', 'entity', 'A command line as run.', 'trim', 'terminal'),
+      ('process.module', 'entity', 'A module loaded into a process.', 'trim', 'package'),
+      ('process.start', 'event', 'A process started.', NULL, NULL),
+      ('process.exit', 'event', 'A process ended.', NULL, NULL),
+      ('process.inject', 'event', 'One process wrote into another.', NULL, NULL),
+      ('process.access', 'event', 'One process opened another.', NULL, NULL),
+      ('process.module_load', 'event', 'A process loaded a module.', NULL, NULL),
+      ('registry.value', 'entity', 'A registry value: its key and name.', 'trim', 'braces'),
+      ('registry.set', 'event', 'A registry value was written.', NULL, NULL),
+      ('registry.delete', 'event', 'A registry key or value was removed.', NULL, NULL),
+      ('mem.image', 'entity', 'A memory image.', 'trim', 'hard-drive-download'),
+      ('mem.region', 'entity', 'A region of a process''s memory, by its base address.', 'lowercase', NULL),
+      ('mem.handle', 'entity', 'A handle a process holds.', 'trim', 'grip'),
+      ('mem.injection', 'observation', 'Memory that does not belong to what it sits in.', NULL, NULL),
+      -- evidence
+      ('evidence.item', 'entity', 'A piece of evidence, by its exhibit number.', 'trim', 'package'),
+      ('evidence.image', 'entity', 'A disk image.', 'trim', 'disc'),
+      ('evidence.log', 'entity', 'A log source.', 'trim', 'scroll-text'),
+      ('evidence.custodian', 'entity', 'Who held a piece of evidence.', 'trim', 'user-round'),
+      ('evidence.acquire', 'event', 'Evidence was acquired.', NULL, NULL),
+      ('evidence.transfer', 'event', 'Evidence changed hands.', NULL, NULL),
+      -- threat, attack
+      ('threat.actor', 'entity', 'A threat actor, by the name it is tracked under.', 'trim', 'ghost'),
+      ('threat.intrusion_set', 'entity', 'A set of activity tracked as one.', 'trim', NULL),
+      ('threat.campaign', 'entity', 'A campaign.', 'trim', 'flag'),
+      ('threat.tool', 'entity', 'A tool an actor uses that is not malware.', 'trim', 'wrench'),
+      ('threat.infrastructure', 'entity', 'Infrastructure an actor operates.', 'trim', 'server'),
+      ('threat.attribution', 'observation', 'Activity is attributed to an actor.', NULL, NULL),
+      ('threat.uses', 'observation', 'An actor or campaign uses a tool, malware or technique.', NULL, NULL),
+      ('threat.targets', 'observation', 'An actor or campaign targets a victim, sector or place.', NULL, NULL),
+      ('threat.indicates', 'observation', 'An indicator points at a threat.', NULL, NULL),
+      ('attack.tactic', 'entity', 'An ATT&CK tactic.', 'trim', 'milestone'),
+      ('attack.technique', 'entity', 'An ATT&CK technique, by its id (T1059.001).', 'uppercase', NULL),
+      ('attack.mitigation', 'entity', 'An ATT&CK mitigation.', 'trim', 'shield-check'),
+      ('attack.observed', 'observation', 'A technique was seen in use.', NULL, NULL),
+      -- detect, vuln
+      ('detect.rule', 'entity', 'A detection rule, by name.', 'trim', 'siren'),
+      ('detect.yara', 'entity', 'A YARA rule.', 'trim', 'scan-search'),
+      ('detect.sigma', 'entity', 'A Sigma rule.', 'trim', 'sigma'),
+      ('detect.snort', 'entity', 'A Snort or Suricata rule, by its sid.', 'trim', NULL),
+      ('detect.alert', 'event', 'A rule fired.', NULL, NULL),
+      ('detect.match', 'observation', 'A rule matches something.', NULL, NULL),
+      ('vuln.cve', 'entity', 'A CVE id.', 'uppercase', NULL),
+      ('vuln.cwe', 'entity', 'A CWE id.', 'uppercase', 'shield-question-mark'),
+      ('vuln.advisory', 'entity', 'A vendor or CERT advisory.', 'trim', 'megaphone'),
+      ('vuln.exploit', 'entity', 'An exploit, by name or reference.', 'trim', 'bomb'),
+      ('vuln.affects', 'observation', 'A vulnerability affects a product or host.', NULL, NULL),
+      ('vuln.exploited', 'event', 'A vulnerability was exploited.', NULL, NULL),
+      -- malware
+      ('malware.family', 'entity', 'A malware family.', 'trim', NULL),
+      ('malware.sample', 'entity', 'A specimen, by the name it is analysed under.', 'trim', 'biohazard'),
+      ('malware.config', 'entity', 'A configuration recovered from a sample.', 'trim', 'file-cog'),
+      ('malware.c2', 'entity', 'A command-and-control endpoint as configured.', 'trim', 'radio-tower'),
+      ('malware.mutex', 'entity', 'A mutex a sample creates.', 'trim', 'lock'),
+      ('malware.packer', 'entity', 'A packer or crypter.', 'trim', 'package'),
+      ('malware.capability', 'entity', 'Something a sample can do.', 'trim', 'blocks'),
+      ('malware.variant_of', 'observation', 'A sample belongs to a family, or one family derives from another.', NULL, NULL),
+      ('malware.drops', 'observation', 'A sample writes or unpacks another file.', NULL, NULL),
+      ('malware.contacts', 'observation', 'A sample talks to an endpoint.', NULL, NULL),
+      ('malware.detonation', 'event', 'A sample was run in a sandbox.', NULL, NULL),
+      -- code
+      ('code.binary', 'entity', 'A binary or module under analysis.', 'trim', NULL),
+      ('code.function', 'entity', 'A function, by name or address.', 'trim', 'square-function'),
+      ('code.symbol', 'entity', 'A symbol or global.', 'trim', 'variable'),
+      ('code.string', 'entity', 'A string found in a binary.', 'trim', 'quote'),
+      ('code.address', 'entity', 'An address in a binary.', 'lowercase', 'locate'),
+      ('code.section', 'entity', 'A section or segment.', 'trim', 'layers'),
+      ('code.import', 'entity', 'An imported function or library.', 'trim', 'package-plus'),
+      ('code.export', 'entity', 'An exported function.', 'trim', 'package-minus'),
+      ('code.type', 'entity', 'A structure, class or enum.', 'trim', 'braces'),
+      ('code.constant', 'entity', 'A constant worth a name: a magic number, a seed, a table.', 'trim', 'equal'),
+      ('code.syscall', 'entity', 'A system call or API a binary relies on.', 'trim', 'command'),
+      ('code.calls', 'observation', 'One function calls another.', NULL, NULL),
+      ('code.references', 'observation', 'Code refers to a string, symbol or address.', NULL, NULL),
+      ('code.defines', 'observation', 'A binary holds a function, symbol or string.', NULL, NULL),
+      ('code.implements', 'observation', 'A function implements an algorithm or capability.', NULL, NULL),
+      -- crypto, software, misc
+      ('crypto.algorithm', 'entity', 'A cipher, hash or protocol.', 'lowercase', NULL),
+      ('crypto.key', 'entity', 'A key, by its fingerprint or id -- never the secret.', 'trim', 'key-square'),
+      ('crypto.cert', 'entity', 'A certificate, by its SHA-256 fingerprint.', 'lowercase', 'file-badge'),
+      ('crypto.wallet', 'entity', 'A cryptocurrency address.', 'trim', 'wallet'),
+      ('software.name', 'entity', 'A product or program.', 'trim', NULL),
+      ('software.version', 'entity', 'A product and its version.', 'trim', 'tag'),
+      ('software.package', 'entity', 'A package as its ecosystem names it.', 'trim', 'boxes'),
+      ('software.installed', 'observation', 'Software is installed on a host.', NULL, NULL),
+      ('misc.thing', 'entity', 'A thing that has no better type.', 'trim', NULL),
+      ('misc.label', 'entity', 'A name or label to hang things on.', 'trim', 'tag'),
+      ('misc.event', 'event', 'Something happened that has no better type.', NULL, NULL),
+      ('misc.link', 'observation', 'Two things are related; the type says no more.', NULL, NULL);
+
+    INSERT OR IGNORE INTO type_alias(alias, name) VALUES
+      ('cidr', 'net.cidr'), ('asn', 'net.asn'), ('mac', 'net.mac'), ('ja3', 'net.tls.ja3'),
+      ('sha512', 'file.hash.sha512'), ('ssdeep', 'file.hash.ssdeep'), ('tlsh', 'file.hash.tlsh'),
+      ('imphash', 'file.hash.imphash'), ('sid', 'account.sid'),
+      ('cve', 'vuln.cve'), ('cwe', 'vuln.cwe'), ('technique', 'attack.technique'),
+      ('actor', 'threat.actor'), ('campaign', 'threat.campaign'),
+      ('family', 'malware.family'), ('mutex', 'malware.mutex'),
+      ('function', 'code.function'), ('string', 'code.string'), ('yara', 'detect.yara');
+    "#,
 ];
 
 /// The schema version this binary writes.

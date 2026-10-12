@@ -1,5 +1,5 @@
 ---
-title: Stage J — Creating a Timeline
+title: Creating a Timeline
 toolset: forensics
 ---
 **Goal:** Build an accurate, source-attributed chronology of events.
@@ -18,6 +18,6 @@ toolset: forensics
 
 **Quality checks:** Each entry cites its source; anti-forensic timestamp manipulation explicitly checked; key events corroborated by two or more independent sources.
 
-**Deliverables:** Documented timeline and ATT&CK-mapped event sequence. Feeds Stages K, L, M, N.
+**Deliverables:** Documented timeline and ATT&CK-mapped event sequence. Feeds Root cause and Reporting.
 
 Call `reactor_phase_complete` once the timeline is source-attributed and ATT&CK-mapped.

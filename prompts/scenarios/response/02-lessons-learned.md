@@ -1,5 +1,5 @@
 ---
-title: Stage P — Lessons Learned
+title: Lessons Learned
 ---
 **Goal:** Improve future response (NIST SP 800-61 Post-Incident Activity).
 
@@ -12,6 +12,6 @@ title: Stage P — Lessons Learned
 
 **Pitfalls:** Blame culture suppressing candour; lessons captured but never actioned.
 
-**Deliverables:** Lessons-learned report, updated playbooks and detections, capability gap list. Feeds back into Stage A.
+**Deliverables:** Lessons-learned report, updated playbooks and detections, capability gap list. Feeds back into `acquisition` for the next incident.
 
 Call `reactor_phase_complete` once the review is written and its actions are listed.

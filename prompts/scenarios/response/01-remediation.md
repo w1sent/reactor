@@ -1,9 +1,9 @@
 ---
-title: Stage O — Remediation & Containment Recommendations
+title: Remediation & Containment Recommendations
 ---
 **Goal:** Provide actionable containment, eradication and recovery guidance (NIST SP 800-61).
 
-**Entry criteria:** Root cause and scope reasonably established.
+**Entry criteria:** Root cause and scope reasonably established -- the output of an `investigation`.
 
 **Activities:**
 - Recommend containment (isolation or quarantine, blocking C2, disabling accounts and tokens, credential and key rotation, revoking certificates or device enrolments).
@@ -15,6 +15,6 @@ title: Stage O — Remediation & Containment Recommendations
 
 **Pitfalls:** Partial eradication leaving backdoors or firmware-level persistence; tipping off the adversary prematurely; restoring from compromised backups.
 
-**Deliverables:** Prioritised remediation and containment plan with decision thresholds. Feeds Stage P.
+**Deliverables:** Prioritised remediation and containment plan with decision thresholds. Feeds Lessons learned.
 
 Call `reactor_phase_complete` once the plan is prioritised and its decision thresholds are explicit.

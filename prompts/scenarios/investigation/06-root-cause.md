@@ -1,5 +1,5 @@
 ---
-title: Stage M — Root Cause Analysis
+title: Root Cause Analysis
 ---
 **Goal:** Determine the underlying cause and enabling conditions.
 
@@ -13,10 +13,10 @@ title: Stage M — Root Cause Analysis
 
 **Decision points:** Multiple plausible causes -> evaluate each on evidence rather than selecting the most convenient.
 
-**Iteration:** Loop back to acquisition or analysis if the vector remains unproven.
+**Iteration:** Loop back if the vector remains unproven: back to earlier phases here, or to `acquisition` when the evidence that would settle it was never collected.
 
 **Pitfalls:** Stopping at the proximate cause; assuming rather than proving the vector; single-explanation bias.
 
-**Deliverables:** Root-cause findings and an enabling-conditions list. Feeds Stages N, O.
+**Deliverables:** Root-cause findings and an enabling-conditions list. Feeds Reporting and the `response` scenario.
 
 Call `reactor_phase_complete` once the vector is proven -- or the honest answer is that it cannot yet be proven.

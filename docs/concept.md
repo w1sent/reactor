@@ -171,10 +171,28 @@ tool result and redirects it. Like the rest of REactor it persuades; it does not
 enforce — a step may activate a toolset as it advances, but never deactivates
 the one before it.
 
-The first scenario ships with the repo: `investigation` — seventeen stages
-covering the full arc from scoping and evidence acquisition through triage,
-static, dynamic and deep analysis, timeline, detection, reporting and
-remediation to analysis-derived tooling.
+Seven scenarios ship with the repo, each answering one question, so that a case
+runs only the phases it needs:
+
+| Scenario | Question | Phases |
+|---|---|---|
+| `acquisition` | What evidence exists, and can it be collected defensibly? | Scoping & collection planning, Acquisition |
+| `investigation` | What happened on this system, and how did it get in? | Triage, Memory\*, Network\*, Overview, Timeline, Root cause, Reporting |
+| `malware-analysis` | What does this specimen do? | Triage, Static, Dynamic, Detection, Attribution\*, Reporting |
+| `reverse-engineering` | How does it work internally? | Static, Deep RE / unpacking, Reporting |
+| `patching` | How do we change this program safely? | Orientation, Scoping & specification, Targeted RE, Patch & test, Package |
+| `tool-building` | Can we turn what we learned into a validated tool? | Specify & assess, Implement, Validate, Harden & package |
+| `response` | What do we contain, and what do we learn? | Remediation, Lessons learned |
+
+\* Skippable: the phase checks its precondition and completes with a `skipped:`
+summary when it does not apply.
+
+Acquisition is deliberately its own scenario and one holistic phase: it collects
+whatever is available — memory, network, persistent storage, logs — in order of
+volatility, and writes `evidence/INVENTORY.md` into the case. A scenario's state
+is cleared when it finishes, so that inventory, a file in the case, is what the
+next scenario reads. Scenarios run one at a time; moving between them is a
+finish and a `start`.
 
 ## What REactor deliberately does not do
 

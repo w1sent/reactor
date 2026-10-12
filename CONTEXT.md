@@ -87,10 +87,12 @@ tool with no upstream skill at all is normal and simply relies on `--help`.
 _Avoid_: vendored skill, external skill, third-party doc.
 
 **Scenario**:
-A multi-phase analysis workflow expressed as prompt templates — the shipped
-`investigation` scenario runs from scoping and evidence acquisition through
-triage, analysis, timeline, detection and reporting to lessons learned and
-analysis-derived tooling. The agent advances by calling
+A multi-phase analysis workflow expressed as prompt templates, one directory per
+scenario under `prompts/scenarios/`. Each scenario answers one question — the
+shipped set is `acquisition`, `investigation`, `malware-analysis`,
+`reverse-engineering`, `patching`, `tool-building` and `response` — so a case runs
+only the phases it needs. Scenarios run one at a time and do not carry state into
+the next; what carries over is the case (for example `evidence/INVENTORY.md`). The agent advances by calling
 `reactor_phase_complete`, whose *return value is the next phase's briefing*.
 Scenarios steer the agent's sequencing; like everything else in REactor they
 persuade rather than enforce. The person can go to any phase from the Context panel, between turns; that starts no turn, and their next prompt is recorded as the summary of the phase they left ([ADR-0049](docs/adr/0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md)). A scenario's stages are *phases* — distinct from

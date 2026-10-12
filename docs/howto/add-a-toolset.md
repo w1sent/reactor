@@ -53,8 +53,9 @@ others: two keystrokes to combine, no wall of duplicated tools.
 A scenario step can carry `toolset: <id>` in its frontmatter; activating it
 when the agent reaches that step is additive — the previous step's toolset is
 never deactivated ([ADR-0007](../adr/0007-deactivation-is-soft.md)). If your
-toolset exists to back a stage of `prompts/scenarios/investigation/`, wire it
-there and re-run the scenario shape test:
+toolset exists to back a phase of a scenario under `prompts/scenarios/`
+(`patching` backs the Patch & test phase of `prompts/scenarios/patching/`), wire
+it there and re-run the scenario shape test:
 
 ```bash
 cargo test -p reactor-context

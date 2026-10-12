@@ -74,6 +74,14 @@ tags = ["dynamic"]
 desc = "debuggers only — no instrumentation frameworks"
 tags = ["debugger"]
 
+[toolset.patching]
+desc  = "changing a program: assemble, disassemble, modify, verify, package"
+# lief modifies ELF/PE/Mach-O but is tagged static/native, and bindiff confirms a
+# patch touched only the functions it should. Neither is a patching tool by
+# tag; naming them is the decision, as with frida in `android`.
+tags  = ["patching"]
+tools = ["lief", "bindiff"]
+
 [toolset.android]
 desc  = "Android application analysis and device forensics"
 # frida is tagged `mobile`, not `android`: it is not an Android tool, it is a

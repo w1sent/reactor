@@ -428,6 +428,117 @@ yay  = "yay -S rr"
 
 
 # ---------------------------------------------------------------------------
+# Patching — assemble, disassemble, modify, package
+# ---------------------------------------------------------------------------
+#
+# What changing an existing program needs beyond reading it: turn mnemonics into
+# bytes, check the bytes decode back, run the patched routine in isolation, fix
+# up the container (ELF headers, signatures) and ship the result as a delta.
+# Tagged `patching` and deliberately not `static`/`native`: [toolset.native] is
+# analysis of compiled binaries, and these tools change them. lief (parse and
+# modify) and bindiff (confirm a patch touched only what it should) belong to
+# [toolset.patching] by name for the same reason frida is in `android`.
+
+[tool.keystone]
+name   = "Keystone"
+desc   = "multi-architecture assembler from python: mnemonics to patch bytes"
+source = "https://github.com/keystone-engine/keystone"
+invoke = "python3 -c 'import keystone'"
+detect = { python_module = "keystone" }
+tags   = ["patching", "assembler", "python"]
+
+[tool.keystone.install]
+uv  = "uv pip install keystone-engine"
+pip = "pip install keystone-engine"
+
+[tool.capstone]
+name   = "Capstone"
+desc   = "multi-architecture disassembler from python; check patched bytes decode"
+source = "https://github.com/capstone-engine/capstone"
+invoke = "python3 -c 'import capstone'"
+detect = { python_module = "capstone" }
+tags   = ["patching", "disassembler", "python"]
+
+[tool.capstone.install]
+uv  = "uv pip install capstone"
+pip = "pip install capstone"
+
+[tool.unicorn]
+name   = "Unicorn"
+desc   = "CPU emulator from python; run a patched routine without the program"
+source = "https://github.com/unicorn-engine/unicorn"
+invoke = "python3 -c 'import unicorn'"
+detect = { python_module = "unicorn" }
+tags   = ["patching", "emulation", "python"]
+
+[tool.unicorn.install]
+uv  = "uv pip install unicorn"
+pip = "pip install unicorn"
+
+[tool.binutils]
+name    = "GNU binutils"
+desc    = "as, objdump, objcopy, ld: assemble, disassemble, edit sections, relink"
+source  = "https://sourceware.org/binutils/"
+invoke  = "objdump"
+detect  = { binary = "objdump" }
+version = ["objdump", "--version"]
+tags    = ["patching", "assembler", "disassembler"]
+
+[tool.binutils.install]
+pacman = "pacman -S binutils"
+apt    = "apt install binutils"
+dnf    = "dnf install binutils"
+# macOS: the Xcode command line tools ship as, otool, lipo, install_name_tool
+# and codesign; brew's binutils is keg-only and not on PATH.
+manual = "macOS: xcode-select --install"
+
+[tool.patchelf]
+name    = "patchelf"
+desc    = "modify an ELF's interpreter, RPATH and needed libraries in place"
+source  = "https://github.com/NixOS/patchelf"
+invoke  = "patchelf"
+detect  = { binary = "patchelf" }
+version = ["patchelf", "--version"]
+tags    = ["patching", "elf"]
+
+[tool.patchelf.install]
+pacman = "pacman -S patchelf"
+apt    = "apt install patchelf"
+dnf    = "dnf install patchelf"
+brew   = "brew install patchelf"
+
+[tool.osslsigncode]
+name    = "osslsigncode"
+desc    = "sign and verify PE Authenticode signatures; re-sign after patching"
+source  = "https://github.com/mtrojnar/osslsigncode"
+invoke  = "osslsigncode"
+detect  = { binary = "osslsigncode" }
+version = ["osslsigncode", "--version"]
+tags    = ["patching", "signing"]
+
+[tool.osslsigncode.install]
+pacman = "pacman -S osslsigncode"
+apt    = "apt install osslsigncode"
+dnf    = "dnf install osslsigncode"
+brew   = "brew install osslsigncode"
+
+[tool.xdelta3]
+name    = "xdelta3"
+desc    = "binary delta encoder: ship a patch file instead of the patched binary"
+source  = "https://github.com/jmacd/xdelta"
+invoke  = "xdelta3"
+detect  = { binary = "xdelta3" }
+version = ["xdelta3", "-V"]
+tags    = ["patching", "delta"]
+
+[tool.xdelta3.install]
+pacman = "pacman -S xdelta3"
+apt    = "apt install xdelta3"
+dnf    = "dnf install xdelta"
+brew   = "brew install xdelta"
+
+
+# ---------------------------------------------------------------------------
 # Mobile
 # ---------------------------------------------------------------------------
 

@@ -67,3 +67,4 @@ supersedes the store choice of 0036, which is marked † for that reason.
 | [0047](0047-the-analysis-graph-is-the-case-s-model.md) | The analysis graph is the case's model: claims are nodes, and history is never overwritten |
 | [0048](0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md) | MCP tools are catalogue entries that the model gets as definitions, and nothing is active until asked for |
 | [0049](0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md) | A scenario moved by hand waits for the next prompt, and that prompt is the summary |
+| [0050](0050-the-table-viewer-is-a-grid-over-sources.md) | The table viewer is a grid over sources, and SQL is one of them |

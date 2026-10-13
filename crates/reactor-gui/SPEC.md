@@ -211,8 +211,8 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
 - **Left** (collapsible): the session tree, read from the store. *Continue from
   here* switches the head to a final assistant reply, disabled while the agent
   works.
-- **Right** (collapsible, tabs): **Tools**, **Toolsets** (each its own tab, with
-  enable/disable actions and the session-scope header, §3; each with a search box above its
+- **Right** (collapsible, tabs): **Tools**, **Toolsets** (each its own tab; a click on an
+  installed tool's or a toolset's row toggles it, and the session-scope header is §3; each with a search box above its
   list — every word typed must be in an entry's name, description or tags (a toolset's tools),
   and a search looks through the not-installed tools too, so one to install can be found) and
   **Context** (§3);

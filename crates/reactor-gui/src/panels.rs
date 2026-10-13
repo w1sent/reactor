@@ -34,8 +34,8 @@ use crate::backend::TreeRow;
 use crate::session::{AgentPhase, ChatItem, Session};
 use crate::settings::Slot;
 
-/// One activation row — a leading dot for on/off, a name, an optional muted
-/// detail note, and an enable/disable button — shared by the Tools and
+/// One activation row — a leading dot for on/off, a name, and an optional muted
+/// detail note; clicking anywhere on the row toggles it — shared by the Tools and
 /// Toolsets panels (and anything else that is simply "on or off") so the
 /// same kind of status is never drawn two different ways. Before this, Tools
 /// used a presence dot that had nothing to do with activation and Toolsets
@@ -99,12 +99,8 @@ fn activation_row(
                 })
                 .children(badge),
         )
-        .child(
-            Button::new(SharedString::from(format!("toggle-{id}")))
-                .label(if active { "disable" } else { "enable" })
-                .small()
-                .on_click(move |_, window, cx| on_toggle(window, cx)),
-        )
+        .cursor_pointer()
+        .on_click(move |_, window, cx| on_toggle(window, cx))
 }
 
 /// The tag on an MCP tool or on a server's toolset: what it is and what it costs. A

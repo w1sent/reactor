@@ -16,7 +16,9 @@ pub mod plist;
 pub mod props;
 pub mod refs;
 pub mod table;
+pub mod table_export;
 pub mod table_model;
+pub mod table_sql;
 
 use gpui_kit::assets::IconName;
 use reactor_fs::FileRef;

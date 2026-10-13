@@ -671,10 +671,49 @@ The GUI's own contribution on top of that freedom is the way back:
 **SQLite files in the table viewer.** A file that starts with SQLite's magic bytes opens in
 the table viewer whatever it is called (`files::suggest`), with its tables and views
 picked from the toolbar (`Table: …`, with row counts) and read through
-`reactor_db::browse`: opened read-only, journal mode untouched, nothing written, at most
-100,000 rows per table (the footer says when it stopped). That is how the agent's
+`reactor_db::browse` ([ADR-0050](../../docs/adr/0050-the-table-viewer-is-a-grid-over-sources.md)).
+Nothing is written, journal mode is untouched and nothing is created beside the file: a WAL
+file is opened read-only when its `-shm` is there, `immutable` when it has no frames to
+replay, and from a temporary copy of it and its `-wal` otherwise. A table is not read whole:
+the rows near the ones in view arrive a page at a time on a worker, and the filter and the
+sort are part of the SELECT, so a large table opens at once and has no row limit. A NULL
+is drawn as NULL, numbers align right and a BLOB is a hex preview. That is how the agent's
 `reactor_data.sqlite` — and the case's own `.reactor/analysis.db` — are looked at. It needs
 the file on local disk.
+
+A database has a **rail** on the left (its tables and views with their row counts; the
+chevron opens a table's columns with their declared types and `pk`; the find box matches
+table and column names) and **tabs**. A table opens in a tab of its own, once; *Open as
+query* turns the rows being looked at into a statement. Double-clicking a table's or a
+column's name puts it (quoted when it needs to be) at the cursor of the query that was shown
+last, and shows that query; while there is one, a single click on a table waits a moment for
+the second before it opens the table, so a double click leaves no table tab behind. **+** opens a query tab: an SQL
+editor, *Run* (Ctrl/Cmd+Enter), *Stop*, *Explain*, *History*, and the result in the same
+grid, with a divider between the editor and the grid that is dragged. A query runs on its
+own connection, off the UI thread, and its rows arrive in chunks, so the first appear at
+once; it ends with the statement, Stop, or a 256 MiB budget for the rows held (the bar says
+which; there is no row-count limit). Only reading is allowed — a write, `ATTACH` or
+`PRAGMA` is refused with "this view only reads" and the file is not touched. A mistake says
+what and on which line and column, and that line is shaded in the editor until the
+statement is changed or run again. Clicking a result's header runs the statement again
+ordered by that column, so the order covers every row. *Copy as…* puts the whole result on
+the clipboard as CSV, TSV, JSON or a Markdown table, and *Save as CSV…* writes it to a file.
+*Explain* shows how SQLite would run the statement in the editor — `EXPLAIN QUERY PLAN`, as
+an outline of its steps — instead of its rows, and a mistake in the statement is still marked
+on its own line; a plan is not sorted. *History* lists the statements run on this database,
+newest first (a repeat moves up, a mistake is kept so it can be fixed; fifty are kept), and
+choosing one puts it in the editor. They are kept while the app runs, so closing the viewer and
+opening the file again finds them; they are not saved between runs.
+Reading the file again keeps the tabs.
+
+A **delimited file** has *Query…* in its toolbar. Pressing it puts the rows in a table of a
+temporary SQLite file, on a worker, and the view becomes the same as a database's: a *Sheet*
+tab with the grid as it was, the rail with the table and its columns, and a query tab that
+has run `SELECT * FROM <file name> LIMIT 100`. Columns are `INTEGER` or `REAL` only when
+every non-empty cell is that exactly (`007` stays text); an empty cell is NULL in a number
+column. Changing the delimiter or the header rows, or reading the file again, loads the
+rows again and brings the query tabs back. Until it is pressed nothing is loaded, and the
+file is never written to or beside.
 
 **Context documents** (ADR-0046). *Case › Import Documents…* or `/import [files, folders or
 URLs…]` (none named: the system's file dialog, files and folders both) converts, cuts and
@@ -962,11 +1001,14 @@ ADR-0044. `crates/reactor-fs` is the seam (no gpui); `reactor-gui/src/files/` th
   bar's picker overrides it. Line numbers, folding, search (the editor's own), Ctrl/Cmd+S,
   a dirty marker in the tab and a confirmation before closing or reloading over edits.
   Read-only when the `Vfs` is. A file that is not UTF-8 offers the hex viewer instead.
-- **Table viewer** (`table.rs`, model in `table_model.rs`): delimited text in gpui-kit's data
-  table. The delimiter comes from the extension, else the most consistent of comma, tab,
-  semicolon and pipe, and can be chosen. Sorting by header click (numbers as numbers), a
-  filter box over every cell, and a user-chosen number of header rows (their cells, joined,
-  name the columns).
+- **Table viewer** (`table.rs`; text in `table_model.rs`, SQLite paging in `table_sql.rs`):
+  delimited text and SQLite tables in gpui-kit's data table. The delimiter comes from the
+  extension, else the most consistent of comma, tab, semicolon and pipe, and can be chosen.
+  Sorting by header click (numbers as numbers), a filter box over every cell, and a
+  user-chosen number of header rows (their cells, joined, name the columns) — the header
+  rows and the delimiter are shown for text only. For a SQLite file see *SQLite files in
+  the table viewer*; the sort and the filter are the database's, and the footer says how
+  many rows match.
 - **Data viewer** (`data.rs`, `data_model.rs`, `plist.rs`): files with a better form than their
   bytes or their text, chosen by what is in them. **Images** (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO,
   SVG) with fit and zoom. **Markdown** (`.md`, `.markdown`, `.mdown`, `.mkd`; known by its name,

@@ -97,7 +97,8 @@ pub struct Backend {
 }
 
 /// Where a bundled directory (`prompts/scenarios`, `skills`) is: `REACTOR_PACKAGE_ROOT`,
-/// then a checkout next to the running binary, then `~/.reactor/`.
+/// then a checkout next to the running binary, then the config directory (`~/.reactor/`),
+/// where `reactor setup` seeds the scenarios.
 pub fn find_bundled(sub: &str) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(root) = std::env::var_os("REACTOR_PACKAGE_ROOT").filter(|v| !v.is_empty()) {
@@ -107,8 +108,15 @@ pub fn find_bundled(sub: &str) -> Option<PathBuf> {
         // target/{debug,release}/reactor-gui → the checkout it was built in.
         candidates.extend(exe.ancestors().skip(1).take(4).map(|a| a.join(sub)));
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".reactor").join(sub));
+    // Where `reactor setup` seeds the scenarios: the config directory, which
+    // `REACTOR_CONFIG_DIR` moves (`Paths::from_env`).
+    match std::env::var_os("REACTOR_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        Some(dir) => candidates.push(PathBuf::from(dir).join(sub)),
+        None => {
+            if let Some(home) = std::env::var_os("HOME") {
+                candidates.push(PathBuf::from(home).join(".reactor").join(sub));
+            }
+        }
     }
     candidates.into_iter().find(|p| p.is_dir())
 }
@@ -195,8 +203,18 @@ impl Backend {
         let mut cfg = AgentConfig::new(opts.cwd.clone(), paths.clone(), window);
         cfg.embedder = embedder.clone();
         cfg.mcp = Some(mcp.clone());
-        if let Some(d) = find_bundled("prompts/scenarios") {
-            cfg.scenarios_dir = d;
+        let mut scenarios_problem = None;
+        match find_bundled("prompts/scenarios") {
+            Some(d) => cfg.scenarios_dir = d,
+            // Said once, by the window's first session: without it the scenario list is
+            // simply empty, which looks like there are none.
+            None if opts.shared.is_none() => {
+                scenarios_problem = Some(
+                    "no scenarios found: run `reactor setup` to seed them into the config directory"
+                        .to_string(),
+                );
+            }
+            None => {}
         }
         cfg.skills_dir = find_bundled("skills");
         let (agent, mut events) = Agent::new(
@@ -245,7 +263,7 @@ impl Backend {
             default_window: Mutex::new(window),
         };
         backend.sync_summarizer();
-        if let Some(text) = embed_problem {
+        for text in [embed_problem, scenarios_problem].into_iter().flatten() {
             let _ = backend.ui_tx.send(UiEvent::Notice {
                 kind: "warning",
                 text,

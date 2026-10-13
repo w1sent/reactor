@@ -21,6 +21,7 @@ pub mod probe;
 pub mod recipes;
 pub mod render;
 pub mod report;
+pub mod scenarios;
 pub mod skills;
 pub mod state;
 pub mod util;

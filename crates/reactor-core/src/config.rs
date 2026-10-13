@@ -383,6 +383,52 @@ pub fn setup(paths: &Paths, opts: SetupOpts) -> Result<Done<SetupReport>> {
         actions.push(format!("  {} (kept)", state.display()));
     }
 
+    // Scenarios are files the GUI reads from the config directory; a bare binary has no
+    // checkout to read them from. Seeded like the config: a file that is there is the
+    // user's and stays.
+    actions.push("scenarios".to_string());
+    let dir = paths.scenarios_dir();
+    let (mut seeded, mut same, mut kept) = (0usize, 0usize, Vec::new());
+    for entry in crate::scenarios::survey(paths) {
+        match entry.standing {
+            crate::scenarios::Standing::Same => same += 1,
+            crate::scenarios::Standing::Differs => kept.push(entry.rel),
+            crate::scenarios::Standing::Absent => {
+                seeded += 1;
+                if opts.dry_run {
+                    continue;
+                }
+                let dest = dir.join(&entry.rel);
+                let wrote = dest
+                    .parent()
+                    .map(std::fs::create_dir_all)
+                    .transpose()
+                    .and_then(|_| std::fs::write(&dest, &entry.bytes));
+                if let Err(e) = wrote {
+                    seeded -= 1;
+                    warnings.push(format!("{}: {}", dest.display(), io_reason(&e)));
+                }
+            }
+        }
+    }
+    if seeded > 0 {
+        actions.push(format!(
+            "  {would}seed {seeded} file(s) in {}",
+            dir.display()
+        ));
+    }
+    if same > 0 {
+        actions.push(format!("  {same} file(s) up to date"));
+    }
+    if !kept.is_empty() {
+        actions.push(format!("  {} file(s) (kept)", kept.len()));
+        warnings.push(format!(
+            "{} scenario file(s) differ from the shipped copy and were kept: {}",
+            kept.len(),
+            kept.join(", ")
+        ));
+    }
+
     actions.push("skills".to_string());
     if !opts.skills {
         actions.push("  skipped (--no-skills)".into());

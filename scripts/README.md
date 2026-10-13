@@ -12,7 +12,7 @@ removed. What it did is now two commands:
 ```bash
 cargo install --git https://github.com/w1sent/reactor reactor-cli   # the binary, onto ~/.cargo/bin
 cargo install --path crates/reactor-cli   # ...or from a checkout you already have
-reactor setup                             # seed config, skills, completions
+reactor setup                             # seed config, scenarios, skills, completions
 reactor setup --no-skills --no-completions --no-launcher --dry-run   # the switches
 ```
 
@@ -23,19 +23,23 @@ reactor setup --no-skills --no-completions --no-launcher --dry-run   # the switc
    says so and points at `reactor diff-config`
    ([ADR-0004](../docs/adr/0004-config-updates-via-plain-diff.md)).
 2. Create `~/.reactor/state.json` if absent.
-3. Fetch configured upstream skills into `~/.reactor/skills/<tool>/`, pinned to
+3. Seed the scenarios into `~/.reactor/prompts/scenarios/` from the copies compiled
+   into the binary, file by file — **only the files that are absent**. An edited
+   file is kept and named in a warning
+   ([ADR-0051](../docs/adr/0051-the-scenarios-are-compiled-in-and-seeded-by-setup.md)).
+4. Fetch configured upstream skills into `~/.reactor/skills/<tool>/`, pinned to
    the ref in the catalogue, recording source, ref, resolved commit and fetch
    time in `.reactor-skill.json`
    ([ADR-0008](../docs/adr/0008-aggregate-upstream-skills.md)).
-4. Write bash, zsh, and fish completion scripts to each shell's conventional
+5. Write bash, zsh, and fish completion scripts to each shell's conventional
    per-user completions directory
    ([ADR-0015](../docs/adr/0015-shell-completion-generated-not-hand-written.md)).
    Unlike the config files these are reactor's own output, so they are
    overwritten unconditionally. zsh needs one manual step — `~/.zfunc` on `fpath`
    before `compinit` — and setup reminds you every run.
-5. On Linux, if `reactor-gui` is installed, write its desktop entry and icon under
+6. On Linux, if `reactor-gui` is installed, write its desktop entry and icon under
    `$XDG_DATA_HOME` (`~/.local/share`) so Wayland shows the icon; `--no-launcher` skips it.
-6. Report. Warn **only** where a configured skill could not be fetched — a tool
+7. Report. Warn **only** where a configured skill could not be fetched — a tool
    with no configured skill is the normal case and gets no warning.
 
 Idempotent; re-running is the supported way to update. Building `reactor-gui`

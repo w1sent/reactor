@@ -108,7 +108,7 @@ step without changing anything. The rest of this section is the same thing by ha
 ```bash
 cargo install --git https://github.com/w1sent/reactor reactor-cli   # the `reactor` binary
 cargo install --git https://github.com/w1sent/reactor reactor-gui   # the GUI
-reactor setup                             # seed ~/.reactor/, fetch skills, completions
+reactor setup                             # seed ~/.reactor/ (config, scenarios), fetch skills, completions
 reactor doctor                            # what is missing, and how to get it
 reactor install yara                      # opt-in, does it for you
 ```
@@ -118,8 +118,8 @@ does the same from the checkout. It needs a Rust toolchain
 ([rustup.rs](https://rustup.rs)) to build, and nothing to run: the shipped
 catalogue is compiled into the binary, and no Python is involved in installing or
 running REactor ([ADR-0039](docs/adr/0039-the-executables-contain-no-python.md)).
-`reactor setup` is idempotent and never clobbers your `tools.toml`; re-running
-it is the way to update. On Linux it also installs the GUI's desktop launcher
+`reactor setup` is idempotent and never clobbers your `tools.toml` or an edited
+scenario; re-running it is the way to update. On Linux it also installs the GUI's desktop launcher
 and icon. The GUI links a native windowing stack (fontconfig,
 xkbcommon, Vulkan/Wayland/X11); see `crates/reactor-gui/README.md`.
 

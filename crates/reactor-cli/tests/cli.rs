@@ -15,6 +15,35 @@ fn repo_file(name: &str) -> String {
     std::fs::read_to_string(Path::new(REPO).join(name)).unwrap()
 }
 
+fn repo_root() -> PathBuf {
+    PathBuf::from(REPO)
+}
+
+/// Copy a directory tree.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let dest = to.join(e.file_name());
+        if e.path().is_dir() {
+            copy_tree(&e.path(), &dest);
+        } else {
+            std::fs::copy(e.path(), dest).unwrap();
+        }
+    }
+}
+
+/// The files below `root`, as paths relative to `base`, `/`-separated.
+fn list_tree(base: &Path, root: &Path, out: &mut Vec<String>) {
+    for e in std::fs::read_dir(root).unwrap().flatten() {
+        if e.path().is_dir() {
+            list_tree(base, &e.path(), out);
+        } else {
+            let rel = e.path().strip_prefix(base).unwrap().to_path_buf();
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
 struct Out {
     code: i32,
     stdout: String,
@@ -62,8 +91,18 @@ impl Env {
         }
     }
 
-    /// The shipped catalogue, copied in like `reactor setup` would.
+    /// The shipped catalogue and scenarios, copied in like `reactor setup` would.
     fn shipped() -> Self {
+        let e = Env::catalogue_only();
+        copy_tree(
+            &repo_root().join("prompts/scenarios"),
+            &e.cfg.join("prompts/scenarios"),
+        );
+        e
+    }
+
+    /// The shipped catalogue alone: a config directory `setup` has not finished with.
+    fn catalogue_only() -> Self {
         let e = Env::new();
         e.write("tools.toml", &repo_file("tools.toml"));
         e.write("toolsets.toml", &repo_file("toolsets.toml"));
@@ -669,6 +708,78 @@ fn setup_seeds_config_and_state_and_never_clobbers() {
         again.stdout
     );
     assert!(again.stdout.contains("(kept)"));
+}
+
+#[test]
+fn setup_seeds_the_scenarios_and_never_clobbers() {
+    let env = Env::new();
+    let out = env.run(&["setup", "--no-skills", "--no-completions", "--no-launcher"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let source = repo_root().join("prompts/scenarios");
+    let seeded = env.cfg.join("prompts/scenarios");
+    let names = |root: &std::path::Path| {
+        let mut v = Vec::new();
+        list_tree(root, root, &mut v);
+        v.sort();
+        v
+    };
+    assert!(!names(&source).is_empty());
+    assert_eq!(names(&seeded), names(&source));
+    for rel in names(&source) {
+        assert_eq!(
+            std::fs::read(seeded.join(&rel)).unwrap(),
+            std::fs::read(source.join(&rel)).unwrap(),
+            "{rel}"
+        );
+    }
+
+    // An edited file, and one the user deleted: the edit stays and is said, the other
+    // comes back, and nothing else is touched.
+    let first = names(&source).remove(0);
+    let second = names(&source).remove(1);
+    std::fs::write(seeded.join(&first), "mine\n").unwrap();
+    std::fs::remove_file(seeded.join(&second)).unwrap();
+    let again = env.run(&["setup", "--no-skills", "--no-completions", "--no-launcher"]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert_eq!(
+        std::fs::read_to_string(seeded.join(&first)).unwrap(),
+        "mine\n"
+    );
+    assert!(seeded.join(&second).is_file());
+    assert!(
+        again.stdout.contains("scenario file(s) differ") && again.stdout.contains(&first),
+        "{}",
+        again.stdout
+    );
+}
+
+#[test]
+fn doctor_says_when_there_are_no_scenarios_and_setup_cures_it() {
+    let env = Env::catalogue_only();
+    let kinds = |out: &Out| -> Vec<String> {
+        out.json()["problems"]
+            .as_array()
+            .map(|p| {
+                p.iter()
+                    .filter_map(|x| x["kind"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let before = env.json(&["doctor", "--cached"]);
+    assert!(
+        kinds(&before).contains(&"scenarios-missing".to_string()),
+        "{}",
+        before.stdout
+    );
+    let setup = env.run(&["setup", "--no-skills", "--no-completions", "--no-launcher"]);
+    assert_eq!(setup.code, 0, "{}", setup.stderr);
+    let after = env.json(&["doctor", "--cached"]);
+    assert!(
+        !kinds(&after).contains(&"scenarios-missing".to_string()),
+        "{}",
+        after.stdout
+    );
 }
 
 #[test]

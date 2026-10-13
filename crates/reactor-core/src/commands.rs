@@ -13,7 +13,7 @@ use crate::config::{ConfigDrift, config_drift};
 use crate::err;
 use crate::error::Result;
 use crate::model::{ToolEntry, describe};
-use crate::paths::{CONFIG_FILES, Paths};
+use crate::paths::{CONFIG_FILES, Paths, Shipped};
 use crate::probe::{ProbeOpts, ProbeResult, ServiceState, Status, probe};
 use crate::recipes::{available_managers, sys_platform};
 use crate::render::{render_registry, render_tool_list, render_tool_show, service_glyph, table};
@@ -223,6 +223,22 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
                 ..Default::default()
             });
         }
+    }
+    // Without them the GUI lists no scenarios and says nothing about why. A catalogue that is
+    // still the shipped one has not been through `setup`, which the problem above covers; a
+    // checkout named by REACTOR_PACKAGE_ROOT serves its own.
+    let from_checkout = matches!(&paths.shipped, Shipped::Dir(root)
+        if root.join(crate::scenarios::DIR).is_dir());
+    if !l.cat.shipped && !from_checkout && crate::scenarios::installed_count(paths) == 0 {
+        problems.push(Problem {
+            kind: "scenarios-missing",
+            file: Some(crate::scenarios::DIR.to_string()),
+            message: format!(
+                "no scenarios in {} -- `reactor setup` seeds them",
+                paths.scenarios_dir().display()
+            ),
+            ..Default::default()
+        });
     }
     for e in &entries {
         if e.skill.as_ref().is_some_and(|s| !s.fetched) {

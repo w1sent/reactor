@@ -18,6 +18,15 @@
 # REACTOR_GUI_BIN (default target/debug/reactor-gui, relative to where this is run from).
 #
 # Environment: REACTOR_XDISPLAY (default :7), REACTOR_XSIZE (default 1400x900).
+#
+# Driving it, from use:
+#   - The first click after an overlay (menu, palette) only dismisses it: press Escape, then click.
+#   - Leave about 0.7 s between a click and typing, or the first characters can be lost (a typed
+#     path has arrived as just "/").
+#   - Xephyr without DRI3 repaints lazily: move the pointer a little before `shot`, or a panel can
+#     look stuck on "loading" when its state has already changed.
+#   - Run with a throwaway HOME (`HOME=/some/dir scripts/gui-xephyr.sh up`): the GUI records recent
+#     workdirs and sessions under $HOME/.reactor.
 
 set -eu
 

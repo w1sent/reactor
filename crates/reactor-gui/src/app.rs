@@ -1595,6 +1595,15 @@ impl ReactorApp {
         self.inspect = None;
         self.refresh_tree(cx);
         self.refresh_sessions(cx);
+        // Which tools are on is this session's (ADR-0042). The panels read and write
+        // activation through this client, so it follows the session in front; kept from the
+        // first session it would show, and toggle, that one's override while the session in
+        // front runs on its own. Not done in `load_bundle`: a background session's event
+        // passes through there and must not repoint the panels.
+        if let Some(b) = &self.backend {
+            self.reactor = Client::for_session(b.paths.clone(), Some(self.cwd.clone()));
+        }
+        self.refresh_catalogue(cx);
         if let Some(b) = &self.backend {
             b.refresh_context();
         }

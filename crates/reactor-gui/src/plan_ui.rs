@@ -1,4 +1,4 @@
-//! What the Plan tab of the Context panel shows besides the scenario: the goal, the guidelines
+//! What a transcript pane shows of the plan besides the scenario: the goal, the guidelines
 //! and the steps of the manifest, and the reporting switches -- as plain data from the
 //! session's stored state and the settings -- and the two texts of the Frame popup.
 

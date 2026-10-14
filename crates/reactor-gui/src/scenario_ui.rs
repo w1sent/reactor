@@ -1,4 +1,4 @@
-//! What the Scenario section of the Context panel shows, as plain data: the scenarios there
+//! What the Scenario chip and the pane's stepper show, as plain data: the scenarios there
 //! are to choose from, or the one that is running with where it stands. Built from the
 //! session's stored state and the scenario files, so it is the same whoever moved the
 //! scenario on -- the agent with `reactor_phase_complete`, or the person with the stepper.

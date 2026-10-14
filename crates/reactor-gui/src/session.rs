@@ -1,4 +1,4 @@
-//! The session view model: what the transcript, status bar and composer render.
+//! The session view model: what the transcript and composer render.
 //!
 //! The GUI holds *no facts*: the transcript is a function of the session store — the
 //! full current branch, including everything a context reduction has hidden from the
@@ -11,10 +11,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use reactor_agent::agent::Event;
-use reactor_agent::context::{SessionState, active_reductions, hidden_by};
+use reactor_agent::context::{active_reductions, hidden_by};
 use reactor_agent::entry::{Block, Kind, Mode};
 use reactor_agent::store::Store;
-use reactor_context::settings::Settings;
 use serde_json::Value;
 
 /// One renderable row of the transcript.
@@ -203,14 +202,10 @@ pub struct Session {
     pub items: Vec<ChatItem>,
     /// Rows a context reduction currently hides from the model — shown dimmed, never removed.
     pub hidden: HashSet<usize>,
-    /// The status bar's left side: key-sorted `(key, text)` — goal, identity, reporting, scenario.
-    pub statuses: Vec<(String, String)>,
     /// Messages typed while a turn ran; sent, oldest first, as turns end.
     pub follow_up: Vec<String>,
     /// The model in use, `provider/name`.
     pub model: Option<String>,
-    /// Estimated context use, percent of the usable window.
-    pub context_percent: Option<u64>,
     pub phase: AgentPhase,
     pub last_error: Option<String>,
     /// The prompt running now.
@@ -477,51 +472,6 @@ fn mode_word(m: Mode) -> &'static str {
         Mode::Fade => "fade",
         Mode::Compact => "compact",
     }
-}
-
-/// The status bar's left side, from the session's state modules: what the manifest, the
-/// identity, reporting and the scenario are doing right now.
-pub fn status_items(
-    state: &SessionState,
-    settings: &Settings,
-    scenarios_dir: &std::path::Path,
-) -> Vec<(String, String)> {
-    use reactor_context::{identity, reporting, scenario};
-    let mut out: Vec<(String, String)> = Vec::new();
-
-    let m = &state.manifest;
-    if m.is_enabled() && m.has_content() {
-        let head = m
-            .goal
-            .as_deref()
-            .map(str::trim)
-            .filter(|g| !g.is_empty())
-            .map(|g| reactor_context::text::truncate(g, 48))
-            .unwrap_or_else(|| "manifest".into());
-        let steps = match m.steps.len() {
-            0 => String::new(),
-            n => format!(" · {n} step{}", if n == 1 { "" } else { "s" }),
-        };
-        out.push(("goal".into(), format!("◎ {head}{steps}")));
-    }
-    if let Some(name) = state.identity.active_name(&settings.identity) {
-        out.push(("identity".into(), format!("@ {name}")));
-    }
-    if let Some(word) = reporting::status_word(&state.reporting, &settings.reporting) {
-        out.push(("reporting".into(), format!("¶ reporting · {word}")));
-    } else if state.reporting.is_enabled() {
-        out.push(("reporting".into(), "¶ reporting".into()));
-    }
-    if let Some(s) = &state.scenario {
-        let total = scenario::load_steps(scenarios_dir, &s.scenario_id).len();
-        out.push((
-            "scenario".into(),
-            format!("{} · phase {}/{}", s.scenario_id, s.step_index + 1, total),
-        ));
-    }
-    let _ = identity::BUILTINS;
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
 }
 
 #[cfg(test)]
@@ -809,29 +759,6 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["second answer"]);
-    }
-
-    #[test]
-    fn statuses_say_what_the_manifest_identity_reporting_and_scenario_are_doing() {
-        let mut state = SessionState::default();
-        let settings = Settings::default();
-        let none = std::path::Path::new("/nonexistent");
-        assert!(status_items(&state, &settings, none).is_empty());
-
-        state.manifest.goal = Some("crack the license check".into());
-        state.manifest.steps = vec![reactor_context::manifest::Step {
-            summary: "a".into(),
-            status: "b".into(),
-        }];
-        state.identity.active = Some("publisher".into());
-        state.reporting.enabled = Some(true);
-        state.reporting.level = reactor_context::settings::Enforcement::new(2);
-        let items = status_items(&state, &settings, none);
-        let keys: Vec<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["goal", "identity", "reporting"], "key-sorted");
-        assert_eq!(items[0].1, "◎ crack the license check · 1 step");
-        assert_eq!(items[1].1, "@ publisher");
-        assert_eq!(items[2].1, "¶ reporting · strict");
     }
 
     #[test]

@@ -41,7 +41,7 @@ A server REactor connects to as an MCP client — a local command or a remote UR
 `~/.reactor/mcp.json` — and the tools it offers. Not part of the concept, but often
 unavoidable. An MCP tool is a catalogue entry (activated, tagged and put into toolsets like
 any other) that is *not* in the registry: the model is given its definition as a tool, which
-costs its whole schema in every request while it is active, so the Tools panel tags it with
+costs its whole schema in every request while it is active, so the Toolbox tags it with
 that cost ([ADR-0048](docs/adr/0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md)).
 _Avoid_: plugin, extension, integration.
 
@@ -95,7 +95,7 @@ only the phases it needs. Scenarios run one at a time and do not carry state int
 the next; what carries over is the case (for example `evidence/INVENTORY.md`). The agent advances by calling
 `reactor_phase_complete`, whose *return value is the next phase's briefing*.
 Scenarios steer the agent's sequencing; like everything else in REactor they
-persuade rather than enforce. The person can go to any phase from the Context panel, between turns; that starts no turn, and their next prompt is recorded as the summary of the phase they left ([ADR-0049](docs/adr/0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md)). A scenario's stages are *phases* — distinct from
+persuade rather than enforce. The person can go to any phase from the stepper at the edge of the session's transcript, between turns; that starts no turn, and their next prompt is recorded as the summary of the phase they left ([ADR-0049](docs/adr/0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md)). A scenario's stages are *phases* — distinct from
 the manifest's *steps* (see goal-setting).
 _Avoid_: workflow, pipeline, playbook, state machine.
 

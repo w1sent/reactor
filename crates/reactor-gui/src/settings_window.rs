@@ -997,7 +997,7 @@ fn manifest_page(app: &Entity<ReactorApp>) -> SettingPage {
             .icon(IconName::Target)
             .group(group),
         "manifest-info",
-        "The manifest is the goal, the guidelines and the steps the agent keeps against the goal with update_steps. The goal and guidelines are written in the Context panel (Plan tab). The soft step limit is the number of steps past which the agent is asked to consolidate them; a step's description and status are cut to the lengths here. Saved in ~/.reactor/settings.json; they apply to the next request.",
+        "The manifest is the goal, the guidelines and the steps the agent keeps against the goal with update_steps. The goal and guidelines are written from the goal line above the transcript. The soft step limit is the number of steps past which the agent is asked to consolidate them; a step's description and status are cut to the lengths here. Saved in ~/.reactor/settings.json; they apply to the next request.",
     )
 }
 
@@ -1139,7 +1139,7 @@ fn reporting_page(app: &Entity<ReactorApp>) -> SettingPage {
             .icon(IconName::File)
             .group(group),
         "reporting-settings-info",
-        "Reporting makes the agent write its findings up as it works. It is switched on and its level chosen per session in the Context panel (Plan tab) or with /report; what is here is what a session starts from, and the folder, thresholds and template. The folder is a path in the case: the agent is checked against whether anything in it changed. Saved in ~/.reactor/settings.json.",
+        "Reporting makes the agent write its findings up as it works. It is switched on and its level chosen per session with the Reporting chip under the prompt or with /report; what is here is what a session starts from, and the folder, thresholds and template. The folder is a path in the case: the agent is checked against whether anything in it changed. Saved in ~/.reactor/settings.json.",
     )
 }
 

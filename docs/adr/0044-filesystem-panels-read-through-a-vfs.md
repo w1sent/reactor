@@ -1,5 +1,10 @@
 # The filesystem panels read through a `Vfs`
 
+> **Amended by [ADR-0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md):** the
+> explorer is no longer a fixed panel of a side dock. It is one of the rail's panels, shown in
+> the drawer, because the side dock had become six panels sharing one tab strip. The viewers
+> are still created on demand as centre tabs.
+
 The GUI gains a file explorer and five viewers (text editor, table, data viewer, hex
 viewer, and the explorer's own properties popup). They are built on one seam so that the
 day a forensic image's filesystem is mounted, none of them changes.

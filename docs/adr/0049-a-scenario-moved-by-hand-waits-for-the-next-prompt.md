@@ -1,5 +1,12 @@
 # A scenario moved by hand waits for the next prompt, and that prompt is the summary
 
+> **Amended by [ADR-0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md):** the
+> stepper is no longer in the Context panel, which is gone. It is numbers down the right edge
+> of the session's transcript pane, so that each open session shows its own; a click on a
+> number opens that phase's card and a second click goes there. Where this says "the panel",
+> read that card and the Scenario chip under the prompt. Everything decided below about a move
+> by hand is unchanged.
+
 [ADR-0009](0009-scenarios-advance-by-tool-result.md) has the agent advance a scenario with
 `reactor_phase_complete`, and gives the person a manual `next`. The GUI now shows the phases
 as a stepper in the Context panel, and the person can go to any phase. This records how a

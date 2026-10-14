@@ -52,7 +52,7 @@ impl InspectUi {
 /// How much of one piece the text pane draws; Copy always takes all of it.
 const SHOW_CHARS: usize = 40_000;
 
-/// The colour of a kind in the usage bar and its legend (the Context panel): the theme's
+/// The colour of a kind in the usage bar and its details (above the transcript): the theme's
 /// chart colours first, then its named ones. One mapping, so bar and legend cannot disagree.
 pub fn kind_colour(kind: Kind, theme: &Theme) -> Hsla {
     match kind {

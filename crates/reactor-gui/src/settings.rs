@@ -1,7 +1,7 @@
 //! The GUI's own settings: fonts and sizes per part of the window, and a few behaviours.
 //!
 //! These are about *this frontend* and live in `~/.reactor/gui.json` (`ui`), apart from the
-//! agent's settings (`settings.json`: models, context budget) which the Context panel and the
+//! agent's settings (`settings.json`: models, context budget) which the chips under the prompt and the
 //! slash commands own. Every field is optional: unset means "the theme's own", so a fresh
 //! install looks exactly as before and "reset" is just clearing a field.
 //!

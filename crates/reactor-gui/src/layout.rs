@@ -1,8 +1,16 @@
 //! Where the panels sit — and the named arrangements the user can switch
 //! between.
 //!
+//! The window is a rail, a drawer and a workspace. The rail ([`PanelKind::RAIL`]) holds the
+//! panels one picks from — sessions, toolbox, services, files — and shows one of them at a
+//! time in the drawer beside it (`crate::rail`), as wide as it is dragged. Everything else —
+//! transcripts, graph, documents, console, the viewers a file opens in — is a tab of the
+//! workspace, which is
+//! gpui-kit's dock: tabs are dragged, split and grouped with its own drag and drop. A rail
+//! panel can be put into the workspace as a tab too, and taken back.
+//!
 //! Nothing here is fixed furniture: every panel can be closed and opened again —
-//! from the Layout menu's Panels submenu, the command palette, or the button at the right
+//! from the Panels menu, the command palette, or the button at the right
 //! of its own header — and a closed panel returns to where the active preset keeps it.
 //!
 //! Each area of a preset is one tab group. That costs something gpui-base takes away from
@@ -35,9 +43,7 @@ use serde::Deserialize;
 pub enum PanelKind {
     Transcript,
     Tree,
-    Tools,
-    Toolsets,
-    Context,
+    Toolbox,
     Services,
     Files,
     Console,
@@ -46,12 +52,10 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 10] = [
+    pub const ALL: [PanelKind; 8] = [
         PanelKind::Transcript,
         PanelKind::Tree,
-        PanelKind::Tools,
-        PanelKind::Toolsets,
-        PanelKind::Context,
+        PanelKind::Toolbox,
         PanelKind::Services,
         PanelKind::Files,
         PanelKind::Console,
@@ -63,9 +67,7 @@ impl PanelKind {
         match self {
             PanelKind::Transcript => "Transcript",
             PanelKind::Tree => "Session Tree",
-            PanelKind::Tools => "Tools",
-            PanelKind::Toolsets => "Toolsets",
-            PanelKind::Context => "Context",
+            PanelKind::Toolbox => "Toolbox",
             PanelKind::Services => "Services",
             PanelKind::Files => "Files",
             PanelKind::Console => "Console",
@@ -79,9 +81,7 @@ impl PanelKind {
         match self {
             PanelKind::Transcript => "transcript",
             PanelKind::Tree => "tree",
-            PanelKind::Tools => "tools",
-            PanelKind::Toolsets => "toolsets",
-            PanelKind::Context => "context",
+            PanelKind::Toolbox => "toolbox",
             PanelKind::Services => "services",
             PanelKind::Files => "files",
             PanelKind::Console => "console",
@@ -91,9 +91,48 @@ impl PanelKind {
     }
 
     pub fn from_slug(slug: &str) -> Option<PanelKind> {
+        // The Toolbox was two panels once, and `/panel tools` is in people's fingers.
+        if slug.eq_ignore_ascii_case("tools") || slug.eq_ignore_ascii_case("toolsets") {
+            return Some(PanelKind::Toolbox);
+        }
         PanelKind::ALL
             .into_iter()
             .find(|kind| kind.slug().eq_ignore_ascii_case(slug))
+    }
+
+    /// The panels of the rail, top to bottom: what one picks from, shown one at a time in
+    /// the drawer.
+    pub const RAIL: [PanelKind; 4] = [
+        PanelKind::Tree,
+        PanelKind::Toolbox,
+        PanelKind::Services,
+        PanelKind::Files,
+    ];
+
+    pub fn on_rail(self) -> bool {
+        PanelKind::RAIL.contains(&self)
+    }
+
+    pub fn icon(self) -> gpui_kit::assets::IconName {
+        use gpui_kit::assets::IconName;
+        match self {
+            PanelKind::Transcript => IconName::MessageSquare,
+            PanelKind::Tree => IconName::GitBranch,
+            PanelKind::Toolbox => IconName::Wrench,
+            PanelKind::Services => IconName::Server,
+            PanelKind::Files => IconName::Folder,
+            PanelKind::Console => IconName::SquareTerminal,
+            PanelKind::Graph => IconName::ListTree,
+            PanelKind::Docs => IconName::BookOpen,
+        }
+    }
+
+    /// How wide the drawer opens for it, until it is dragged wider or narrower.
+    pub fn drawer_width(self) -> f32 {
+        match self {
+            PanelKind::Files => 300.,
+            _ => 280.,
+        }
     }
 
     /// Where it reopens when the active preset does not place it anywhere.
@@ -114,9 +153,7 @@ type Remover = dyn Fn(PanelKind, &mut DockArea, &mut Window, &mut Context<DockAr
 pub struct Panels {
     pub transcript: Arc<dyn PanelView>,
     pub tree: Arc<dyn PanelView>,
-    pub tools: Arc<dyn PanelView>,
-    pub toolsets: Arc<dyn PanelView>,
-    pub context: Arc<dyn PanelView>,
+    pub toolbox: Arc<dyn PanelView>,
     pub services: Arc<dyn PanelView>,
     pub files: Arc<dyn PanelView>,
     pub console: Arc<dyn PanelView>,
@@ -132,9 +169,7 @@ impl Panels {
         match kind {
             PanelKind::Transcript => &self.transcript,
             PanelKind::Tree => &self.tree,
-            PanelKind::Tools => &self.tools,
-            PanelKind::Toolsets => &self.toolsets,
-            PanelKind::Context => &self.context,
+            PanelKind::Toolbox => &self.toolbox,
             PanelKind::Services => &self.services,
             PanelKind::Files => &self.files,
             PanelKind::Console => &self.console,
@@ -198,17 +233,15 @@ impl DockSide {
 /// The centre belongs to whatever the work is, not permanently to the transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum LayoutPreset {
-    /// The conversation in the centre, every supporting panel tabbed on the right, the console
-    /// below.
+    /// The conversation and the graph in the centre, the console below.
     Default,
     /// The conversation with only the console below — for reading a long answer or writing a
     /// careful prompt.
     Focus,
-    /// The conversation, with the session tree on the left and the catalogue panels on the
-    /// right.
+    /// The conversation, the graph and the documents as tabs of the centre.
     Analysis,
-    /// Curating the toolbox: the tools take the centre, big enough to read descriptions rather
-    /// than guess from ids; services on the left, toolsets on the right.
+    /// Curating the toolbox: it takes the centre, big enough to read at a glance which tools
+    /// each toolset brings.
     Catalogue,
 }
 
@@ -238,27 +271,15 @@ impl LayoutPreset {
         use PanelKind::*;
         const CONSOLE: Side = (&[Console], 260.);
         match self {
-            LayoutPreset::Default => (
-                &[Transcript, Graph],
-                [
-                    (&[], 0.),
-                    (&[Tools, Toolsets, Context, Services, Files, Tree], 360.),
-                    CONSOLE,
-                ],
-            ),
+            // The side docks are empty in every preset: what used to be tabbed there is on
+            // the rail. A rail panel a preset names is made a tab of the workspace by it.
+            LayoutPreset::Default => (&[Transcript, Graph], [(&[], 0.), (&[], 0.), CONSOLE]),
             LayoutPreset::Focus => (&[Transcript], [(&[], 0.), (&[], 0.), CONSOLE]),
             LayoutPreset::Analysis => (
                 &[Transcript, Graph, Docs],
-                [
-                    (&[Files, Tree], 280.),
-                    (&[Tools, Toolsets, Context, Services], 360.),
-                    CONSOLE,
-                ],
+                [(&[], 0.), (&[], 0.), CONSOLE],
             ),
-            LayoutPreset::Catalogue => (
-                &[Tools],
-                [(&[Services], 280.), (&[Toolsets], 360.), CONSOLE],
-            ),
+            LayoutPreset::Catalogue => (&[Toolbox], [(&[], 0.), (&[], 0.), CONSOLE]),
         }
     }
 
@@ -373,6 +394,43 @@ mod tests {
         for kind in PanelKind::ALL {
             assert!(!kind.label().is_empty());
             assert_eq!(PanelKind::from_slug(kind.slug()), Some(kind));
+        }
+    }
+
+    /// The rail holds what is picked from, each once; what is arranged is not on it.
+    #[test]
+    fn the_rail_holds_its_four_panels_and_no_workspace_one() {
+        let mut rail = PanelKind::RAIL.to_vec();
+        rail.sort_by_key(|k| k.slug());
+        rail.dedup();
+        assert_eq!(rail.len(), PanelKind::RAIL.len(), "a panel is on the rail twice");
+        for kind in [
+            PanelKind::Transcript,
+            PanelKind::Graph,
+            PanelKind::Console,
+            PanelKind::Docs,
+        ] {
+            assert!(!kind.on_rail(), "{kind:?} is a workspace tab only");
+        }
+        for kind in PanelKind::RAIL {
+            assert!(kind.on_rail() && kind.drawer_width() > 0.);
+        }
+    }
+
+    /// `/panel tools` and `/panel toolsets` were two panels: both mean the Toolbox now.
+    #[test]
+    fn the_two_old_tool_panels_mean_the_toolbox() {
+        assert_eq!(PanelKind::from_slug("tools"), Some(PanelKind::Toolbox));
+        assert_eq!(PanelKind::from_slug("Toolsets"), Some(PanelKind::Toolbox));
+        assert_eq!(PanelKind::from_slug("context"), None);
+    }
+
+    /// No preset fills a side dock: what was tabbed there is on the rail.
+    #[test]
+    fn presets_leave_the_side_docks_to_the_rail() {
+        for preset in LayoutPreset::ALL {
+            let (_, [left, right, _bottom]) = preset.plan();
+            assert!(left.0.is_empty() && right.0.is_empty(), "{preset:?}");
         }
     }
 

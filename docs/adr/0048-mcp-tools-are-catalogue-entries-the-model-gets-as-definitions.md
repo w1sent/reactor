@@ -1,5 +1,10 @@
 # MCP tools are catalogue entries that the model gets as definitions, and nothing is active until asked for
 
+> **Amended by [ADR-0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md):** the Tools
+> and Toolsets panels are one panel, the Toolbox, because a tool can be in several toolsets
+> and two lists could not show that. Where this says "the Tools panel", read the Toolbox: the
+> `MCP · ~N tok` tag on the row and the line totalling the active ones are there, unchanged.
+
 REactor's position is that a CLI composes and an MCP call does not
 ([concept](../concept.md#why-a-cli)): a command's output can be filtered by `jq` or
 `rg` before it becomes context; a tool result cannot. That position stands. But MCP

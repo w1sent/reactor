@@ -16,6 +16,9 @@ they describe was removed from the tree in
 ADRs **0045–0047** add cases, the analysis database and the analysis graph. 0046
 supersedes the store choice of 0036, which is marked † for that reason.
 
+ADR **0052** rearranges the GUI's window. It amends where 0044, 0048 and 0049 put things,
+which are marked † for that; what they decided about behaviour stands.
+
 | # | Decision |
 |---|---|
 | †&nbsp;[0001](0001-pi-is-the-only-target-harness.md) | pi is the only target harness |
@@ -61,11 +64,12 @@ supersedes the store choice of 0036, which is marked † for that reason.
 | [0041](0041-the-agent-loop-owns-the-message-list.md) | The agent loop owns the message list, and reduction replaces whole ranges |
 | [0042](0042-the-gui-hosts-the-agent-in-process.md) | The GUI hosts the agent in process, and activation is session-scoped |
 | [0043](0043-the-pi-flavor-is-removed-from-the-tree.md) | The pi flavor is removed from the tree |
-| [0044](0044-filesystem-panels-read-through-a-vfs.md) | The filesystem panels read through a `Vfs` |
+| †&nbsp;[0044](0044-filesystem-panels-read-through-a-vfs.md) | The filesystem panels read through a `Vfs` |
 | [0045](0045-a-case-is-the-working-directory.md) | A case is the working directory, and it is created by saving |
 | [0046](0046-the-analysis-database-is-sqlite-inside-the-case.md) | The analysis database is SQLite inside the case, and the session log lives in it |
 | [0047](0047-the-analysis-graph-is-the-case-s-model.md) | The analysis graph is the case's model: claims are nodes, and history is never overwritten |
-| [0048](0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md) | MCP tools are catalogue entries that the model gets as definitions, and nothing is active until asked for |
-| [0049](0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md) | A scenario moved by hand waits for the next prompt, and that prompt is the summary |
+| †&nbsp;[0048](0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md) | MCP tools are catalogue entries that the model gets as definitions, and nothing is active until asked for |
+| †&nbsp;[0049](0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md) | A scenario moved by hand waits for the next prompt, and that prompt is the summary |
 | [0050](0050-the-table-viewer-is-a-grid-over-sources.md) | The table viewer is a grid over sources, and SQL is one of them |
 | [0051](0051-the-scenarios-are-compiled-in-and-seeded-by-setup.md) | The scenarios are compiled in and seeded by `reactor setup`, and their absence is said |
+| [0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md) | The window is a rail, a drawer and a workspace, and a session's state sits in its own pane |

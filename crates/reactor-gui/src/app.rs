@@ -19,9 +19,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command as PaletteList, CommandItem, CommandState};
 use gpui_kit::component::dock::{DockArea, DockPlacement, DockSkin, panel_handle};
 use gpui_kit::component::input::{InputEvent, TextareaState};
-use gpui_kit::component::menu::DropdownMenu as _;
-use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Root, Sizable as _};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::{ActiveTheme as _, Root};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{App, Entity, KeyBinding, Render, SharedString, Window, div, px};
@@ -34,10 +33,10 @@ use reactor_context::settings::{ContextSettings, Settings};
 use crate::backend::{Backend, ContextView, PlanView, StartOptions, TreeRow, UiEvent};
 use crate::palette::{self, Args, Entry, Usage};
 use crate::panels::{
-    ConsolePanel, ContextPanel, ServicesPanel, ToolsPanel, ToolsetsPanel, TranscriptPanel,
+    ConsolePanel, ServicesPanel, TranscriptPanel,
     TreePanel,
 };
-use crate::session::{AgentPhase, ChatItem, Session, status_items};
+use crate::session::{AgentPhase, ChatItem, Session};
 
 /// How often the event pump drains the backend's channel (SPEC.md §2).
 const PUMP_TICK: Duration = Duration::from_millis(50);
@@ -92,7 +91,7 @@ actions!(
     ]
 );
 
-/// Model picked from the status bar's dropdown (`provider/name`).
+/// Model picked from the dropdown beside Send (`provider/name`).
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
 pub struct SelectModelAction {
@@ -113,7 +112,7 @@ pub struct ToggleDockAction {
     pub side: crate::layout::DockSide,
 }
 
-/// Close or open one panel, from the Layout menu's Panels submenu.
+/// Close or open one panel, from the Panels menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
 pub struct TogglePanelAction {
@@ -126,7 +125,7 @@ pub struct TogglePanelAction {
 
 /// What belongs to one open session and nothing else: kept here for the sessions that are
 /// not the active one, while the active one's lives in `ReactorApp`'s own fields (which is
-/// what every panel reads: the tree, the context, the status bar follow the active session).
+/// what the rail's panels read: the tree and the toolbox follow the active session).
 #[derive(Clone)]
 struct Bundle {
     backend: Option<Arc<Backend>>,
@@ -137,6 +136,27 @@ struct Bundle {
     context: Option<ContextView>,
     preview: Option<PlanView>,
     context_busy: bool,
+    /// What its transcript pane shows of the plan: the goal, the scenario, the switches and
+    /// the identity, as of when they were last read.
+    plan: crate::plan_ui::PlanView,
+    scenario: crate::scenario_ui::View,
+    memory: (bool, bool, bool),
+    identity: Option<String>,
+}
+
+/// What a transcript pane shows of its own session besides the conversation: the usage bar,
+/// the goal line, the scenario's stepper and the chips under the prompt. Each pane has its
+/// session's, whichever session is the active one.
+#[derive(Clone, Default)]
+pub struct PaneView {
+    pub context: Option<ContextView>,
+    pub plan: crate::plan_ui::PlanView,
+    pub scenario: crate::scenario_ui::View,
+    /// (other sessions' history, the case graph, the documents).
+    pub memory: (bool, bool, bool),
+    /// The identity in use, if one is.
+    pub identity: Option<String>,
+    pub model: Option<String>,
 }
 
 /// A session open in this window, with the transcript tab that shows it. Sessions are not
@@ -164,13 +184,16 @@ pub struct ReactorApp {
     /// `None` only when the agent could not start; the window opens anyway and says why.
     backend: Option<Arc<Backend>>,
     /// Vectors are being made for the case's documents: how far along.
-    embedding: Option<reactor_db::corpus::Progress>,
+    pub(crate) embedding: Option<reactor_db::corpus::Progress>,
     /// The case's graph, drawn. Told to read again whenever the agent may have written.
     graph_panel: Entity<crate::graph::panel::GraphPanel>,
     /// The documents, searched by hand.
-    docs_panel: Entity<crate::docs_panel::DocsPanel>,
+    pub(crate) docs_panel: Entity<crate::docs_panel::DocsPanel>,
     /// The Session Tree, told to draw again when a session starts or stops working.
-    tree_panel: Entity<TreePanel>,
+    pub(crate) tree_panel: Entity<TreePanel>,
+    /// The rail panel the drawer shows, if it is open, and the drawer's view (`crate::rail`).
+    pub(crate) drawer: Option<crate::layout::PanelKind>,
+    drawer_view: Entity<crate::rail::Drawer>,
     reactor: Client,
     pub session: Entity<Session>,
     pub composer: Entity<TextareaState>,
@@ -206,16 +229,16 @@ pub struct ReactorApp {
     /// the dock: the primary session's, and changed when that session is closed.
     transcript_slot: Arc<std::sync::Mutex<Entity<TranscriptPanel>>>,
 
-    /// The context panel's feed, and the preview last asked for.
+    /// What the usage bar and the Budget chip show, and the preview last asked for.
     pub context: Option<ContextView>,
     pub preview: Option<PlanView>,
     /// A manual reduction or preview is in flight.
     pub context_busy: bool,
     scenarios_dir: PathBuf,
-    panels: crate::layout::Panels,
+    pub(crate) panels: crate::layout::Panels,
     /// The preset last applied — what the Layout menu shows a tick beside.
     pub layout: crate::layout::LayoutPreset,
-    dock_area: Entity<DockArea>,
+    pub(crate) dock_area: Entity<DockArea>,
     /// The in-window menu bar; `None` where the platform has a native one.
     menu_bar: Option<Entity<gpui_kit::component::menu::AppMenuBar>>,
     /// The command palette, while it is open.
@@ -244,12 +267,16 @@ pub struct ReactorApp {
     pub identity_remove_armed: Option<String>,
     /// An MCP server's Remove was pressed once and waits for its confirmation.
     pub mcp_remove_armed: Option<String>,
-    /// The Context panel's Scenario section: what can be started, or what is running.
+    /// The scenario: what can be started, or what is running.
     pub scenario: crate::scenario_ui::View,
     /// The scenario chosen to start (the first one until another is picked).
     pub scenario_pick: Option<String>,
-    /// The Plan tab's goal, guidelines, steps and reporting switches.
+    /// The goal, guidelines, steps and reporting switches.
     pub plan: crate::plan_ui::PlanView,
+    /// The active session's switches (other sessions, case graph, documents) and the
+    /// identity it uses, read when its statuses are.
+    pub memory_view: (bool, bool, bool),
+    pub identity_active: Option<String>,
     /// The goal editor and the Frame popup, while they are open.
     pub goal_editor: Option<crate::manifest_ui::GoalEditor>,
     pub frame_popup: Option<crate::manifest_ui::FramePopup>,
@@ -819,7 +846,7 @@ impl ReactorApp {
         {
             self.push_note("error", format!("could not change the switch: {e}"));
         }
-        cx.notify();
+        self.refresh_statuses(cx);
     }
 
     /// Open the main window: theme, dock, agent, event pump — in the order the spec's §6
@@ -933,10 +960,11 @@ impl ReactorApp {
         let slot_for_remove = transcript_slot.clone();
         let tree = cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx));
         let tree_panel = tree.clone();
-        let tools = cx.new(|cx| ToolsPanel::new(weak_app.clone(), window, cx));
-        let toolsets = cx.new(|cx| ToolsetsPanel::new(weak_app.clone(), window, cx));
-        let context = cx.new(|cx| ContextPanel::new(weak_app.clone(), window, cx));
+        let toolbox =
+            cx.new(|cx| crate::toolbox::ToolboxPanel::new(weak_app.clone(), window, cx));
+        let toolbox_panel = toolbox.clone();
         let services = cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx));
+        let services_panel = services.clone();
         let files = cx.new(|cx| {
             crate::files::explorer::FilesPanel::new(
                 weak_app.clone(),
@@ -945,6 +973,7 @@ impl ReactorApp {
                 cx,
             )
         });
+        let files_panel = files.clone();
         let console =
             cx.new(|cx| ConsolePanel::new(weak_app.clone(), Some(cwd.clone()), None, window, cx));
         let graph = cx.new(|cx| crate::graph::panel::GraphPanel::new(weak_app.clone(), window, cx));
@@ -954,9 +983,7 @@ impl ReactorApp {
         let panels = crate::layout::Panels {
             transcript: panel_handle(transcript.clone()),
             tree: panel_handle(tree.clone()),
-            tools: panel_handle(tools.clone()),
-            toolsets: panel_handle(toolsets.clone()),
-            context: panel_handle(context.clone()),
+            toolbox: panel_handle(toolbox.clone()),
             services: panel_handle(services.clone()),
             files: panel_handle(files.clone()),
             console: panel_handle(console.clone()),
@@ -971,9 +998,7 @@ impl ReactorApp {
                         area.remove_panel(current, window, cx)
                     }
                     Tree => area.remove_panel(tree.clone(), window, cx),
-                    Tools => area.remove_panel(tools.clone(), window, cx),
-                    Toolsets => area.remove_panel(toolsets.clone(), window, cx),
-                    Context => area.remove_panel(context.clone(), window, cx),
+                    Toolbox => area.remove_panel(toolbox.clone(), window, cx),
                     Services => area.remove_panel(services.clone(), window, cx),
                     Files => area.remove_panel(files.clone(), window, cx),
                     Console => area.remove_panel(console.clone(), window, cx),
@@ -981,6 +1006,10 @@ impl ReactorApp {
                     Docs => area.remove_panel(docs.clone(), window, cx),
                 }
             }),
+        };
+        let drawer_view = {
+            let (app, tree) = (weak_app.clone(), tree_panel.clone());
+            cx.new(|_| crate::rail::Drawer::new(app, tree, toolbox_panel, services_panel, files_panel))
         };
         let ui = crate::start::GuiConfig::load_ui();
         let layout = ui.start_layout();
@@ -1048,6 +1077,10 @@ impl ReactorApp {
                     context: None,
                     preview: None,
                     context_busy: false,
+                    plan: Default::default(),
+                    scenario: Default::default(),
+                    memory: (true, true, true),
+                    identity: None,
                 },
                 handle: panel_handle(primary_transcript.clone()),
                 transcript: primary_transcript.clone(),
@@ -1066,6 +1099,9 @@ impl ReactorApp {
             graph_panel,
             docs_panel,
             tree_panel,
+            drawer_view,
+            // The toolbox is what a new window most often needs first: what is on.
+            drawer: Some(crate::layout::PanelKind::Toolbox),
             reactor,
             session,
             composer,
@@ -1111,6 +1147,8 @@ impl ReactorApp {
             scenario: Default::default(),
             scenario_pick: None,
             plan: Default::default(),
+            memory_view: (true, true, true),
+            identity_active: None,
             goal_editor: None,
             frame_popup: None,
             embedding_draft: crate::settings_window::ModelDraft {
@@ -1295,7 +1333,7 @@ impl ReactorApp {
                 match result {
                     Ok(id) => self.push_note(
                         "info",
-                        format!("reduced (#{id}) — undo it from the Context panel"),
+                        format!("reduced (#{id}) — undo it from the Budget chip under the prompt"),
                     ),
                     Err(e) => self.push_note("error", e),
                 }
@@ -1328,8 +1366,6 @@ impl ReactorApp {
                 }
             }
             UiEvent::Context(view) => {
-                self.session
-                    .update(cx, |s, _| s.context_percent = Some(view.percent()));
                 self.context = Some(view);
             }
             UiEvent::Notice { kind, text } => {
@@ -1549,7 +1585,38 @@ impl ReactorApp {
             context: self.context.clone(),
             preview: self.preview.clone(),
             context_busy: self.context_busy,
+            plan: self.plan.clone(),
+            scenario: self.scenario.clone(),
+            memory: self.memory_view,
+            identity: self.identity_active.clone(),
         }
+    }
+
+    /// What session `id`'s transcript pane shows of it: the window's own fields for the
+    /// active session, and for any other what was put away when it stopped being active.
+    pub fn pane(&self, id: &str, cx: &App) -> PaneView {
+        if id == self.active {
+            return PaneView {
+                context: self.context.clone(),
+                plan: self.plan.clone(),
+                scenario: self.scenario.clone(),
+                memory: self.memory_view,
+                identity: self.identity_active.clone(),
+                model: self.session.read(cx).model.clone(),
+            };
+        }
+        self.open
+            .iter()
+            .find(|o| o.id == id)
+            .map(|o| PaneView {
+                context: o.bundle.context.clone(),
+                plan: o.bundle.plan.clone(),
+                scenario: o.bundle.scenario.clone(),
+                memory: o.bundle.memory,
+                identity: o.bundle.identity.clone(),
+                model: o.bundle.session.read(cx).model.clone(),
+            })
+            .unwrap_or_default()
     }
 
     /// Put the active session's state away in its place in the list.
@@ -1578,11 +1645,15 @@ impl ReactorApp {
         self.context = b.context;
         self.preview = b.preview;
         self.context_busy = b.context_busy;
+        self.plan = b.plan;
+        self.scenario = b.scenario;
+        self.memory_view = b.memory;
+        self.identity_active = b.identity;
         self.active = id.to_string();
         true
     }
 
-    /// Make a session the active one: the tree, the context, the status bar and the graph
+    /// Make a session the active one: the tree, the toolbox and the graph
     /// panel's edits follow it from now on.
     pub fn activate_session(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.active == id || !self.open.iter().any(|o| o.id == id) {
@@ -1614,7 +1685,7 @@ impl ReactorApp {
             .update(cx, |d, cx| d.set_backend(backend, cx));
         // Its tab's title says which one is active.
         let _ = window;
-        cx.notify();
+        self.refresh_statuses(cx);
     }
 
     /// Run `f` as if `id` were the active session, and put things back: how an event for a
@@ -1728,6 +1799,10 @@ impl ReactorApp {
                 context: None,
                 preview: None,
                 context_busy: false,
+                plan: Default::default(),
+                scenario: Default::default(),
+                memory: (true, true, true),
+                identity: None,
             },
             transcript,
             handle: handle.clone(),
@@ -1813,16 +1888,25 @@ impl ReactorApp {
         }
     }
 
-    /// The status bar's left side, from the session's state modules.
+    /// What a pane shows of its session's plan, read again from the session's stored state:
+    /// the goal, the scenario, the switches and the identity.
     pub fn refresh_statuses(&mut self, cx: &mut Context<Self>) {
         let Some(b) = self.backend.clone() else {
             return;
         };
         let (state, settings) = (b.session_state(), Settings::load(&b.paths));
-        let items = status_items(&state, &settings, &self.scenarios_dir);
-        self.session.update(cx, |s, _| s.statuses = items);
         self.scenario = crate::scenario_ui::view_of(state.scenario.as_ref(), &self.scenarios_dir);
         self.plan = crate::plan_ui::plan_of(&state, &settings);
+        let memory = state.memory.over(&settings.memory);
+        self.memory_view = (
+            memory.session_history(),
+            memory.case_graph(),
+            memory.documents(),
+        );
+        self.identity_active = state
+            .identity
+            .active_name(&settings.identity)
+            .map(str::to_string);
         cx.notify();
     }
 
@@ -1851,7 +1935,7 @@ impl ReactorApp {
         cx.notify();
     }
 
-    // -- the manifest and reporting (the Context panel's Plan tab) -------------------------
+    // -- the manifest and reporting (the Goal and Reporting chips) -------------------------
 
     /// Run a command of the agent's side quietly: what it says is not a notification, because
     /// the panel shows the result. The reason it failed is the `Err`.
@@ -2079,7 +2163,7 @@ impl ReactorApp {
         }
     }
 
-    // -- scenarios (the Context panel's Scenario section) ---------------------------------
+    // -- scenarios (the Scenario chip and the pane's stepper) ------------------------------
 
     /// Start the chosen scenario: the same as `/reactor-scenario start <id>`, which opens with
     /// the first phase's briefing as a turn.
@@ -2175,6 +2259,10 @@ impl ReactorApp {
     ) {
         preset.apply(&self.panels, &self.dock_area, window, cx);
         self.layout = preset;
+        // A rail panel the preset made a tab of the workspace is no longer the drawer's.
+        if self.drawer.is_some_and(|kind| self.docked(kind, cx)) {
+            self.drawer = None;
+        }
         cx.notify();
     }
 
@@ -2253,6 +2341,15 @@ impl ReactorApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A panel in the drawer is not in the dock: closing it closes the drawer.
+        let id = panel.entity_id();
+        if let Some(kind) = self.drawer_kind(cx)
+            && self.panels.view(kind).view().entity_id() == id
+        {
+            self.drawer = None;
+            cx.notify();
+            return;
+        }
         self.dock_area
             .update(cx, |area, cx| area.remove_panel(panel, window, cx));
         cx.notify();
@@ -2266,6 +2363,11 @@ impl ReactorApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A rail panel that is not a tab of the workspace opens and closes as the drawer.
+        if kind.on_rail() && !self.docked(kind, cx) {
+            self.rail_click(kind, window, cx);
+            return;
+        }
         crate::layout::toggle_panel(kind, self.layout, &self.panels, &self.dock_area, window, cx);
         cx.notify();
     }
@@ -2303,14 +2405,7 @@ impl ReactorApp {
                 hits.push(hit);
             }
         }
-        let kind = crate::layout::PanelKind::Docs;
-        let open = self.panels.is_open(kind, self.dock_area.read(cx), cx);
-        if !open {
-            self.toggle_panel(kind, window, cx);
-        }
-        let id = self.panels.view(kind).panel_id(cx);
-        self.dock_area
-            .update(cx, |area, cx| area.select_panel(id, window, cx));
+        self.reveal_panel(crate::layout::PanelKind::Docs, window, cx);
         self.docs_panel
             .update(cx, |d, cx| d.show(query, hits, chosen, window, cx));
         cx.notify();
@@ -4294,87 +4389,6 @@ impl ReactorApp {
     }
 }
 
-impl ReactorApp {
-    /// The status bar (SPEC.md §6): what the manifest, identity, reporting and scenario
-    /// are doing on the left; model and context use on the right.
-    fn render_status_bar(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let session = self.session.read(cx);
-        let statuses = session.statuses.clone();
-        let model = session.model.clone();
-        let percent = session.context_percent;
-
-        let mut left = h_flex().gap_3().items_center();
-        // Which session everything on screen that belongs to one is about.
-        let active = self.active.clone();
-        if !active.is_empty() {
-            left = left.child(crate::hints::tip(
-                div()
-                    .id("active-session")
-                    .text_color(cx.theme().accent)
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child(format!("session {}", crate::session_list::short_id(&active))),
-                format!(
-                    "Active session {}. The tree, the context and the status follow it: it is the session whose transcript was last in focus.",
-                    crate::session_list::reference(&self.case_id(), &active)
-                ),
-            ));
-        }
-        for (_, text) in &statuses {
-            left = left.child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child(text.clone()),
-            );
-        }
-
-        let models = self.models.clone();
-        let mut right = h_flex().gap_2().items_center();
-        if let Some(p) = percent {
-            right = right.child(
-                div()
-                    .text_color(if p >= 90 {
-                        cx.theme().warning
-                    } else {
-                        cx.theme().muted_foreground
-                    })
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child(format!("context {p}%")),
-            );
-        }
-        if let Some(p) = self.embedding {
-            right = right.child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(cx.theme().font_size * 0.85)
-                    .child(format!("embedding {}/{}", p.embedded, p.total)),
-            );
-        }
-        right = right.child(
-            Button::new("model-picker")
-                .ghost()
-                .small()
-                .label(model.unwrap_or_else(|| "no model".to_owned()))
-                .disabled(models.is_empty())
-                .dropdown_menu(move |mut menu, _window, _cx| {
-                    for spec in &models {
-                        menu = menu.menu(
-                            spec.clone(),
-                            Box::new(SelectModelAction { spec: spec.clone() }),
-                        );
-                    }
-                    menu
-                }),
-        );
-
-        StatusBar::new().left(left).right(right)
-    }
-}
-
 /// Take a panel out of the dock knowing it only as a view: the dock removes by typed entity, so
 /// this tries every kind of panel the window has.
 fn remove_any_panel(
@@ -4401,10 +4415,8 @@ fn remove_any_panel(
         crate::graph::panel::GraphPanel,
         crate::docs_panel::DocsPanel,
         TreePanel,
-        ToolsPanel,
-        ToolsetsPanel,
+        crate::toolbox::ToolboxPanel,
         ServicesPanel,
-        ContextPanel,
         ConsolePanel,
     );
     false
@@ -4505,13 +4517,15 @@ fn palette_list(weak: &gpui_kit::WeakEntity<ReactorApp>, cx: &mut App) -> gpui_k
 
 impl Render for ReactorApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rail = self.render_rail(window, cx);
+        let drawer = self.drawer_kind(cx);
         div()
             .id("reactor-workspace")
             .size_full()
             .flex()
             .flex_col()
             .relative()
-            // The status bar's model picker dispatches this from a `PopupMenu`, which
+            // The model picker beside Send dispatches this from a `PopupMenu`, which
             // bubbles up the dispatch tree — this is the ancestor that answers it.
             .on_action(
                 cx.listener(|this, action: &SelectModelAction, _window, cx| {
@@ -4585,8 +4599,35 @@ impl Render for ReactorApp {
                     }
                 }),
             )
-            .child(self.dock_area.clone())
-            .child(self.render_status_bar(window, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .child(rail)
+                    .child(div().flex_1().min_w_0().h_full().child(match drawer {
+                        // The drawer's edge is dragged to resize it. Each panel keeps its
+                        // own width: the split is named after the panel.
+                        Some(kind) => h_resizable(SharedString::from(format!(
+                            "drawer-split-{}",
+                            kind.slug()
+                        )))
+                        .child(
+                            resizable_panel()
+                                .size(px(kind.drawer_width()))
+                                .size_range(px(180.)..px(900.))
+                                .child(self.drawer_view.clone()),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(320.)..px(8000.))
+                                .child(self.dock_area.clone()),
+                        )
+                        .into_any_element(),
+                        None => self.dock_area.clone().into_any_element(),
+                    })),
+            )
             .when_some(
                 crate::notices_ui::history(self, cx.weak_entity(), cx),
                 |el, popup| el.child(popup),

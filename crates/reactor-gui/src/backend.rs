@@ -128,7 +128,7 @@ fn llm_for(spec: Option<&str>) -> (AnyLlm, String, u64) {
             Err(e) => (AnyLlm::Missing(e.to_string()), String::new(), 128_000),
         },
         None => (
-            AnyLlm::Missing("no model chosen -- pick one in the status bar, or set `defaultModel` in ~/.reactor/settings.json".into()),
+            AnyLlm::Missing("no model chosen -- pick one beside Send, or set `defaultModel` in ~/.reactor/settings.json".into()),
             String::new(),
             128_000,
         ),
@@ -566,7 +566,7 @@ impl Backend {
         match reactor_db::corpus::usable_model(self.case.db(), Some(&want)) {
             Ok(Some(m)) if m.name == want => Ok(m.name),
             _ => Err(format!(
-                "{want} has not made vectors for every passage yet: the status bar shows how far it is."
+                "{want} has not made vectors for every passage yet: the ring on the rail shows how far it is."
             )),
         }
     }
@@ -992,7 +992,7 @@ pub(crate) fn first_words(text: &str, n: usize) -> String {
     }
 }
 
-/// What the context panel shows.
+/// What the usage bar and the Budget chip show.
 #[derive(Debug, Clone)]
 pub struct ContextView {
     pub model: String,

@@ -212,27 +212,26 @@ fn install_menus(cx: &mut App) {
         });
     });
 
-    let mut items: Vec<MenuItem> = LayoutPreset::ALL
+    // Layout: the named arrangements of the workspace, then its docks. No left dock is
+    // listed: nothing is ever put there, the rail and its drawer being on that side.
+    let mut layout: Vec<MenuItem> = LayoutPreset::ALL
         .iter()
         .map(|preset| MenuItem::action(preset.label(), ApplyLayoutAction { preset: *preset }))
         .collect();
-    items.push(MenuItem::Separator);
-    items.extend(DockSide::ALL.iter().map(|side| {
+    layout.push(MenuItem::Separator);
+    layout.extend([DockSide::Bottom, DockSide::Right].iter().map(|side| {
         MenuItem::action(
-            format!("Show {}", side.label()),
+            format!("Toggle {}", side.label()),
             ToggleDockAction { side: *side },
         )
     }));
 
-    items.push(MenuItem::Separator);
-    items.push(MenuItem::submenu(Menu {
-        name: "Panels".into(),
-        items: PanelKind::ALL
-            .iter()
-            .map(|kind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind }))
-            .collect(),
-        disabled: false,
-    }));
+    // Panels: every panel, opened or closed where it is kept — the rail's in the drawer,
+    // then the workspace's as tabs.
+    let panel = |kind: &PanelKind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind });
+    let mut panels: Vec<MenuItem> = PanelKind::RAIL.iter().map(panel).collect();
+    panels.push(MenuItem::Separator);
+    panels.extend(PanelKind::ALL.iter().filter(|kind| !kind.on_rail()).map(panel));
 
     reactor_gui::chrome::install_menus(
         cx,
@@ -254,8 +253,13 @@ fn install_menus(cx: &mut App) {
                 disabled: false,
             },
             Menu {
+                name: "Panels".into(),
+                items: panels,
+                disabled: false,
+            },
+            Menu {
                 name: "Layout".into(),
-                items,
+                items: layout,
                 disabled: false,
             },
         ],

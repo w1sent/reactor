@@ -100,6 +100,26 @@ pub struct SelectModelAction {
     pub spec: String,
 }
 
+/// Thinking level picked from the menu beside Send: `off`, `low`, `medium`, `high`, or empty for
+/// the model's own.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct SelectThinkingAction {
+    pub level: String,
+}
+
+/// How a thinking level reads in the menu and on the picker.
+pub fn thinking_label(level: Option<&str>) -> &'static str {
+    match level {
+        Some("off") => "Off",
+        Some("low") => "Low",
+        Some("medium") => "Medium",
+        Some("high") => "High",
+        Some("on") => "On",
+        _ => "Default",
+    }
+}
+
 /// A layout preset picked from the Layout menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = reactor_gui, no_json)]
@@ -1377,6 +1397,7 @@ impl ReactorApp {
                 self.docs_panel.update(cx, |d, cx| d.refresh(cx));
                 self.push_note(kind, text)
             }
+            UiEvent::Redraw => {}
             UiEvent::Embedding(progress) => {
                 // The search choices change when the vectors are complete.
                 if progress.is_none_or(|p| p.complete()) {
@@ -3075,6 +3096,20 @@ impl ReactorApp {
         );
     }
 
+    /// The thinking level new sessions start on (`""` when the model decides).
+    pub fn default_thinking(&self) -> String {
+        self.backend
+            .as_ref()
+            .and_then(|b| Settings::load(&b.paths).default_thinking)
+            .unwrap_or_default()
+    }
+
+    /// Set the level new sessions start on; empty leaves it to the model.
+    pub fn set_default_thinking(&mut self, level: &str, cx: &mut Context<Self>) {
+        let level = Some(level.to_string()).filter(|l| !l.is_empty());
+        self.change_model_settings(|s| s.default_thinking = level, cx);
+    }
+
     /// Offer a model in the picker.
     pub fn list_model(&mut self, spec: &str, cx: &mut Context<Self>) {
         let spec = spec.to_string();
@@ -3620,6 +3655,14 @@ impl ReactorApp {
                 self.identity_window_command(args, window, cx)
             }
             "model" => self.set_model(args, cx),
+            "thinking" => match args.trim() {
+                "default" => self.set_thinking(None, cx),
+                l @ ("off" | "on" | "low" | "medium" | "high") => self.set_thinking(Some(l), cx),
+                other => self.push_note(
+                    "warning",
+                    format!("thinking: `{other}` is not off, on, low, medium, high or default"),
+                ),
+            },
             "preview" => self.preview_reduction(mode(), cx),
             "reduce" => self.reduce_now(mode(), cx),
             "undo" => {
@@ -4042,6 +4085,17 @@ impl ReactorApp {
         cx.notify();
     }
 
+    /// Ask the connected MCP servers whether they still answer, connect again to those that
+    /// are down, and take up changes made to `mcp.json`. The panels learn of the outcome
+    /// through the watch.
+    pub fn mcp_reconnect_failed(&mut self, cx: &mut Context<Self>) {
+        if let Some(host) = self.mcp_host() {
+            host.sync();
+            host.recheck();
+        }
+        cx.notify();
+    }
+
     /// Open the editor window on an MCP server: a new one, or a saved one to change.
     pub fn open_mcp_editor(&mut self, start: crate::mcp_editor::Start, cx: &mut Context<Self>) {
         let app = cx.entity();
@@ -4184,6 +4238,32 @@ impl ReactorApp {
                 .update(cx, |state, cx| state.set_value(&text, window, cx));
         }
         self.push_note("info", "interrupting…");
+        cx.notify();
+    }
+
+    /// The session's thinking level and the levels its model's provider takes.
+    pub fn thinking_state(&self) -> (Option<String>, Vec<String>) {
+        self.backend
+            .as_ref()
+            .map(|b| (b.thinking(), b.thinking_levels()))
+            .unwrap_or_default()
+    }
+
+    /// Choose the session's thinking level; `None` leaves it to the model.
+    pub fn set_thinking(&mut self, level: Option<&str>, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        match backend.set_thinking(level) {
+            Ok(()) => {
+                backend.refresh_context();
+                self.push_note(
+                    "info",
+                    format!("thinking: {}", thinking_label(level).to_lowercase()),
+                );
+            }
+            Err(e) => self.push_note("error", format!("thinking: {e}")),
+        }
         cx.notify();
     }
 
@@ -4594,6 +4674,12 @@ impl Render for ReactorApp {
             .on_action(
                 cx.listener(|this, action: &SelectModelAction, _window, cx| {
                     this.set_model(&action.spec, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &SelectThinkingAction, _window, cx| {
+                    let level = Some(action.level.as_str()).filter(|l| !l.is_empty());
+                    this.set_thinking(level, cx);
                 }),
             )
             .on_action(

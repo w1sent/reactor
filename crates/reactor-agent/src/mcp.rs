@@ -37,6 +37,8 @@ use crate::llm::ToolSpec;
 use crate::tools::ToolOutput;
 
 /// How long a server has to start and list its tools.
+/// How long a connected server has to answer a tool-list request before it counts as down.
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How much of a server's own error output is kept to explain a failure to start.
@@ -231,6 +233,63 @@ impl McpHost {
         };
         self.changed();
         self.spawn_connect(server, attempt);
+    }
+
+    /// Find out which connected servers have gone away, and connect again to every server that
+    /// is down. A connection that was made once is not known to be alive until it is asked:
+    /// each is asked for its tool list, and one that does not answer is marked failed. Returns
+    /// at once; the outcome arrives as changes of standing.
+    pub fn recheck(self: &Arc<Self>) {
+        let asked: Vec<(String, u64, Arc<Client>)> = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .live
+                .iter()
+                .filter(|(_, l)| l.standing == Standing::Connected)
+                .filter_map(|(n, l)| Some((n.clone(), l.attempt, l.client.clone()?)))
+                .collect()
+        };
+        let host = self.clone();
+        self.handle.spawn(async move {
+            let mut down = Vec::new();
+            for (name, attempt, client) in asked {
+                let answer =
+                    tokio::time::timeout(PING_TIMEOUT, client.list_all_tools()).await;
+                let why = match answer {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(e)) => format!("{e}"),
+                    Err(_) => format!("no answer in {} seconds", PING_TIMEOUT.as_secs()),
+                };
+                let mut inner = host.inner.lock().unwrap();
+                if let Some(live) = inner
+                    .live
+                    .get_mut(&name)
+                    .filter(|l| l.attempt == attempt)
+                {
+                    live.standing = Standing::Failed(why);
+                    live.client = None;
+                    down.push(name);
+                }
+            }
+            if !down.is_empty() {
+                if let Ok(config) = Config::load(&host.paths) {
+                    host.write_cache(&config);
+                }
+                host.changed();
+            }
+            let failed: Vec<String> = host
+                .inner
+                .lock()
+                .unwrap()
+                .live
+                .iter()
+                .filter(|(_, l)| matches!(l.standing, Standing::Failed(_)))
+                .map(|(n, _)| n.clone())
+                .collect();
+            for name in failed {
+                host.reconnect(&name);
+            }
+        });
     }
 
     fn spawn_connect(self: &Arc<Self>, server: Server, attempt: u64) {

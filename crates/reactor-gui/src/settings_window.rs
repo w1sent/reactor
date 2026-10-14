@@ -187,7 +187,7 @@ impl Render for SettingsWindow {
                             fonts_page(&app, cx),
                             behaviour_page(&app),
                             shortcuts_page(&app, cx),
-                            model_page(&self.cards),
+                            model_page(&app, &self.cards),
                             identities_page(&app, cx),
                             documents_page(&app, &self.embedding_cards, cx),
                             context_page(&app),
@@ -535,11 +535,34 @@ fn behaviour_page(app: &Entity<ReactorApp>) -> SettingPage {
 // Model
 // ---------------------------------------------------------------------------------------------
 
-fn model_page(cards: &Entity<crate::model_cards::ModelCards>) -> SettingPage {
+fn model_page(
+    app: &Entity<ReactorApp>,
+    cards: &Entity<crate::model_cards::ModelCards>,
+) -> SettingPage {
     let cards = cards.clone();
+    let (t_get, t_set) = (app.clone(), app.clone());
+    let thinking = SettingGroup::new().title("Thinking").item(SettingItem::new(
+        "Default thinking level",
+        SettingField::<SharedString>::dropdown(
+            vec![
+                (shared(""), shared("Default (the model decides)")),
+                (shared("off"), shared("Off")),
+                (shared("on"), shared("On")),
+                (shared("low"), shared("Low")),
+                (shared("medium"), shared("Medium")),
+                (shared("high"), shared("High")),
+            ],
+            move |cx| shared(t_get.read(cx).default_thinking()),
+            move |v, cx| {
+                t_set.update(cx, |app, cx| app.set_default_thinking(v.as_ref(), cx));
+            },
+        )
+        .default_value(shared("")),
+    ));
     info(
         SettingPage::new("Model")
             .icon(IconName::Server)
+            .group(thinking)
             .group(SettingGroup::new().item(SettingItem::render(move |_, _w, _cx| cards.clone()))),
         "model-info",
         "One card per provider. The endpoint and key are environment variables (the card's tooltips name them); typed values can also be kept in ~/.reactor/env. Models are listed by the endpoint itself; a click puts one in the picker, which is saved in ~/.reactor/settings.json with the default model. The context budget is on the Context page.",

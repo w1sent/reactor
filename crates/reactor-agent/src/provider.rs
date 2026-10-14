@@ -45,9 +45,78 @@ pub fn default_window(provider: &str) -> u64 {
     }
 }
 
+/// The thinking levels a provider's models take, in menu order. `Default` (send nothing and let
+/// the model decide) is always there as well and is not listed. These are the provider's own
+/// notion; a model that does not think ignores or rejects the parameter.
+///
+/// Ollama differs by model and is asked of the server instead (`/api/show`, see
+/// `connection::ollama_thinking_levels`); the guess here is for when it cannot be: `gpt-oss`
+/// takes the named levels, the others on or off.
+pub fn thinking_levels(provider: &str, model: &str) -> &'static [&'static str] {
+    match provider {
+        "openai" => &["low", "medium", "high"],
+        "ollama" if model.contains("gpt-oss") => &["low", "medium", "high"],
+        "ollama" => &["off", "on"],
+        "anthropic" | "gemini" | "openrouter" => &["off", "low", "medium", "high"],
+        _ => &[],
+    }
+}
+
+/// The request parameters that set `level` on `provider`, or `None` for no level (or one the
+/// provider does not take).
+pub fn thinking_params(
+    provider: &str,
+    model: &str,
+    level: Option<&str>,
+) -> Option<serde_json::Value> {
+    use serde_json::json;
+    // Ollama's levels are what the server says for the model; the caller has checked them.
+    let level = level.filter(|l| {
+        if provider == "ollama" {
+            ["off", "on", "low", "medium", "high"].contains(l)
+        } else {
+            thinking_levels(provider, model).contains(l)
+        }
+    })?;
+    Some(match (provider, level) {
+        ("anthropic", "off") => json!({"thinking": {"type": "disabled"}}),
+        // The budget must stay under the response's `max_tokens`.
+        ("anthropic", l) => {
+            let budget = match l {
+                "low" => 1024,
+                "medium" => 4096,
+                _ => 8000,
+            };
+            json!({"thinking": {"type": "enabled", "budget_tokens": budget}})
+        }
+        ("openai", l) => json!({"reasoning": {"effort": l}}),
+        ("gemini", l) => {
+            let budget = match l {
+                "off" => 0,
+                "low" => 1024,
+                "medium" => 8192,
+                _ => 24576,
+            };
+            json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": budget}}})
+        }
+        ("openrouter", "off") => json!({"reasoning": {"enabled": false}}),
+        ("openrouter", l) => json!({"reasoning": {"effort": l}}),
+        ("ollama", "off") => json!({"think": false}),
+        ("ollama", "on") => json!({"think": true}),
+        ("ollama", l) => json!({"think": l}),
+        _ => return None,
+    })
+}
+
 impl AnyLlm {
     /// `anthropic/claude-…`, `openai/gpt-…`, `ollama/llama3`, …
     pub fn from_spec(spec: &str) -> Result<(AnyLlm, String)> {
+        Self::from_spec_thinking(spec, None)
+    }
+
+    /// As [`AnyLlm::from_spec`], with a thinking level (`off`, `low`, `medium`, `high`) sent on
+    /// every request. `None` sends nothing.
+    pub fn from_spec_thinking(spec: &str, thinking: Option<&str>) -> Result<(AnyLlm, String)> {
         let (provider, model) = spec.split_once('/').ok_or_else(|| {
             Error::Model(format!(
                 "model must be provider/name, e.g. anthropic/claude-sonnet-5-5 (providers: {})",
@@ -62,31 +131,36 @@ impl AnyLlm {
                     .map_err(fail)?
                     .completion_model(model),
                 spec,
-            )),
+            )
+            .with_params(thinking_params(provider, model, thinking))),
             "openai" => AnyLlm::OpenAi(RigLlm::new(
                 openai::Client::from_env()
                     .map_err(fail)?
                     .completion_model(model),
                 spec,
-            )),
+            )
+            .with_params(thinking_params(provider, model, thinking))),
             "gemini" => AnyLlm::Gemini(RigLlm::new(
                 gemini::Client::from_env()
                     .map_err(fail)?
                     .completion_model(model),
                 spec,
-            )),
+            )
+            .with_params(thinking_params(provider, model, thinking))),
             "openrouter" => AnyLlm::OpenRouter(RigLlm::new(
                 openrouter::Client::from_env()
                     .map_err(fail)?
                     .completion_model(model),
                 spec,
-            )),
+            )
+            .with_params(thinking_params(provider, model, thinking))),
             "ollama" => AnyLlm::Ollama(RigLlm::new(
                 ollama::Client::from_env()
                     .map_err(fail)?
                     .completion_model(model),
                 spec,
-            )),
+            )
+            .with_params(thinking_params(provider, model, thinking))),
             other => {
                 return Err(Error::Model(format!(
                     "unknown provider `{other}` (providers: {})",
@@ -123,5 +197,37 @@ impl Llm for AnyLlm {
             AnyLlm::Ollama(m) => m.name(),
             AnyLlm::Missing(_) => "none".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::*;
+
+    #[test]
+    fn a_level_becomes_the_providers_own_parameter() {
+        let p = thinking_params("anthropic", "m", Some("low")).unwrap();
+        assert_eq!(p["thinking"]["budget_tokens"], 1024);
+        assert_eq!(thinking_params("ollama", "llama3", Some("off")).unwrap()["think"], false);
+        assert_eq!(
+            thinking_params("openai", "m", Some("high")).unwrap()["reasoning"]["effort"],
+            "high"
+        );
+    }
+
+    #[test]
+    fn no_level_or_one_the_provider_lacks_sends_nothing() {
+        assert!(thinking_params("anthropic", "m", None).is_none());
+        assert!(thinking_params("openai", "m", Some("off")).is_none());
+        assert_eq!(
+            thinking_params("ollama", "qwen3", Some("on")).unwrap()["think"],
+            true
+        );
+        assert_eq!(
+            thinking_params("ollama", "gpt-oss:20b", Some("high")).unwrap()["think"],
+            "high"
+        );
+        assert!(thinking_params("ollama", "x", Some("bogus")).is_none());
+        assert!(thinking_params("nowhere", "m", Some("high")).is_none());
     }
 }

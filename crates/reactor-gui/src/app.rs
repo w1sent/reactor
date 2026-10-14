@@ -78,6 +78,8 @@ actions!(
         ClosePalette,
         /// Open the settings window (Cmd+, / Ctrl+,, or the Commands menu).
         OpenSettings,
+        /// Open another terminal in the bottom dock (the Panels menu, or its shortcut).
+        NewConsole,
         /// The Case menu: make this folder a case (ADR-0045).
         SaveCase,
         /// The Case menu: import context documents (ADR-0046).
@@ -257,6 +259,8 @@ pub struct ReactorApp {
     pub inspect: Option<crate::inspect_ui::InspectUi>,
     /// Font family fields as typed (half a name is not applied, but is kept on screen).
     family_drafts: std::collections::HashMap<crate::settings::Slot, String>,
+    /// Why the keys last entered for a shortcut were not applied, by shortcut id.
+    shortcut_errors: std::collections::HashMap<&'static str, String>,
     /// The model page's provider and name fields.
     pub model_draft: crate::settings_window::ModelDraft,
     /// The provider and name typed on the Documents page for the embedding model.
@@ -353,10 +357,6 @@ pub fn bind_keys(cx: &mut App) {
     crate::files::hex::bind_keys(cx);
     crate::graph::panel::bind_keys(cx);
     cx.bind_keys(vec![
-        // `secondary` is Cmd on macOS and Ctrl elsewhere.
-        KeyBinding::new("secondary-p", OpenPalette, None),
-        KeyBinding::new("secondary-w", CloseTab, None),
-        KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("escape", CloseNotices, Some("ReactorNotices")),
         // The prompt: up on its top line and down on its bottom line walk through the messages
         // sent before; anywhere else the handlers decline and the input moves its cursor.
@@ -373,6 +373,9 @@ pub fn bind_keys(cx: &mut App) {
         // Esc always closes the palette — the list's own Esc only clears a typed query first.
         KeyBinding::new("escape", ClosePalette, Some("ReactorPalette > Input")),
     ]);
+    // The window's own shortcuts (the panels, the palette, the settings) are the person's
+    // to choose, and are installed apart so a change replaces only them.
+    crate::shortcuts::install(&crate::start::GuiConfig::load_ui().shortcuts, cx);
 }
 
 /// How many completions the popup lists.
@@ -1140,6 +1143,7 @@ impl ReactorApp {
             ui,
             inspect: None,
             family_drafts: Default::default(),
+            shortcut_errors: Default::default(),
             model_draft: Default::default(),
             reembed_armed: false,
             identity_remove_armed: None,
@@ -2328,7 +2332,11 @@ impl ReactorApp {
             return;
         }
         let view = panel.view();
-        let closed = area.update(cx, |area, cx| remove_any_panel(area, view, window, cx));
+        let closed = area.update(cx, |area, cx| {
+            let closed = remove_any_panel(area, view, window, cx);
+            crate::layout::drop_empty_docks(area, window, cx);
+            closed
+        });
         if closed {
             cx.notify();
         }
@@ -2350,8 +2358,10 @@ impl ReactorApp {
             cx.notify();
             return;
         }
-        self.dock_area
-            .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+        self.dock_area.update(cx, |area, cx| {
+            area.remove_panel(panel, window, cx);
+            crate::layout::drop_empty_docks(area, window, cx);
+        });
         cx.notify();
     }
 
@@ -2858,7 +2868,61 @@ impl ReactorApp {
         self.ui.normalize();
         crate::start::GuiConfig::save_ui(&self.ui);
         crate::settings::apply(&self.ui, cx);
+        crate::shortcuts::install(&self.ui.shortcuts, cx);
         cx.notify();
+    }
+
+    /// Whether the keys last entered for a shortcut were refused, and are still to be corrected.
+    pub fn shortcut_refused(&self, shortcut: crate::shortcuts::Shortcut) -> bool {
+        self.shortcut_errors.contains_key(shortcut.id)
+    }
+
+    /// Why a shortcut's keys were not applied, or what else answers to its keys.
+    pub fn shortcut_problem(&self, shortcut: crate::shortcuts::Shortcut) -> Option<String> {
+        if let Some(error) = self.shortcut_errors.get(shortcut.id) {
+            return Some(format!("Not applied: {error}"));
+        }
+        let clashes = crate::shortcuts::clashes(shortcut, &self.ui.shortcuts);
+        (!clashes.is_empty()).then(|| {
+            let names: Vec<&str> = clashes.iter().map(|s| s.label).collect();
+            format!("Also bound to {}", names.join(", "))
+        })
+    }
+
+    /// Keys entered for a shortcut (Enter, or leaving the field): applied when they can be
+    /// bound (empty unbinds), otherwise kept out with the reason. Keys equal to the default
+    /// are the same as no choice.
+    pub fn commit_shortcut(
+        &mut self,
+        shortcut: crate::shortcuts::Shortcut,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::shortcuts::parse(text) {
+            Ok(keys) => {
+                self.shortcut_errors.remove(shortcut.id);
+                self.update_ui(
+                    |ui| {
+                        if keys == shortcut.default {
+                            ui.shortcuts.remove(shortcut.id);
+                        } else {
+                            ui.shortcuts.insert(shortcut.id.to_string(), keys);
+                        }
+                    },
+                    cx,
+                );
+            }
+            Err(e) => {
+                self.shortcut_errors.insert(shortcut.id, e);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Put a shortcut back to its default keys.
+    pub fn reset_shortcut(&mut self, shortcut: crate::shortcuts::Shortcut, cx: &mut Context<Self>) {
+        self.shortcut_errors.remove(shortcut.id);
+        self.update_ui(|ui| drop(ui.shortcuts.remove(shortcut.id)), cx);
     }
 
     /// The text shown in a font family field: what is being typed, else what is set.

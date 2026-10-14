@@ -33,6 +33,7 @@
 use std::sync::Arc;
 
 use gpui_kit::base::dock::PanelView;
+use gpui_kit::base::dock::layout::PaneRef;
 use gpui_kit::component::dock::{DockArea, DockLayout, DockPlacement};
 use gpui_kit::{App, Context, Entity, Window, px};
 use serde::Deserialize;
@@ -181,6 +182,34 @@ impl Panels {
     /// Whether the panel is in the dock at all (a collapsed dock still holds its panels).
     pub fn is_open(&self, kind: PanelKind, area: &DockArea, cx: &App) -> bool {
         area.panel(self.view(kind).panel_id(cx)).is_some()
+    }
+
+    /// Where the panel is, and whether it can be seen there: the tab in front of its group,
+    /// in the centre or in a dock that is not collapsed. `None` when it is not in the dock.
+    pub fn shown(
+        &self,
+        kind: PanelKind,
+        area: &DockArea,
+        cx: &App,
+    ) -> Option<(DockPlacement, bool)> {
+        let id = self.view(kind).panel_id(cx);
+        [
+            DockPlacement::Center,
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ]
+        .into_iter()
+        .find_map(|placement| {
+            let tree = area.layout(placement)?;
+            let node = tree.find_panel_node(id)?;
+            let in_front = match tree.find_node(node).map(|n| n.kind()) {
+                Some(PaneRef::Tabs { panels, active_ix }) => panels.get(active_ix) == Some(&id),
+                _ => true,
+            };
+            let open = placement == DockPlacement::Center || area.is_dock_open(placement);
+            Some((placement, in_front && open))
+        })
     }
 
     /// A tab group holding these panels, in order.
@@ -332,8 +361,38 @@ impl LayoutPreset {
     }
 }
 
-/// Close the panel if it is open, otherwise open it where the preset keeps it.
+/// Close the panel if it can be seen. If it is there but hidden — a tab behind another, or
+/// in a collapsed dock — bring it into view; if it is not there, open it where the preset
+/// keeps it. A menu item or shortcut that closed a panel the person could not see would
+/// look like it did nothing.
 pub fn toggle_panel(
+    kind: PanelKind,
+    preset: LayoutPreset,
+    panels: &Panels,
+    dock: &Entity<DockArea>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let visible = {
+        let area = dock.read(cx);
+        panels
+            .shown(kind, area, cx)
+            .is_some_and(|(_, visible)| visible)
+    };
+    if visible {
+        let panels = panels.clone();
+        dock.update(cx, |area, cx| {
+            (panels.remove)(kind, area, window, cx);
+            drop_empty_docks(area, window, cx);
+        });
+    } else {
+        show_panel(kind, preset, panels, dock, window, cx);
+    }
+}
+
+/// Bring the panel into view: its tab to the front and its dock expanded, or, when it is
+/// not in the dock, opened where the preset keeps it.
+pub fn show_panel(
     kind: PanelKind,
     preset: LayoutPreset,
     panels: &Panels,
@@ -343,8 +402,11 @@ pub fn toggle_panel(
 ) {
     let panels = panels.clone();
     dock.update(cx, |area, cx| {
-        if panels.is_open(kind, area, cx) {
-            (panels.remove)(kind, area, window, cx);
+        if let Some((placement, _)) = panels.shown(kind, area, cx) {
+            area.select_panel(panels.view(kind).panel_id(cx), window, cx);
+            if placement != DockPlacement::Center && !area.is_dock_open(placement) {
+                area.toggle_dock(placement, window, cx);
+            }
             return;
         }
         let (placement, size) = preset.home(kind);
@@ -363,6 +425,24 @@ pub fn toggle_panel(
             area.toggle_dock(placement, window, cx);
         }
     });
+}
+
+/// Take away the side and bottom docks that no longer hold a panel. A dock whose last
+/// panel was closed would otherwise stay as an empty frame; opening a panel there again
+/// creates the dock afresh.
+pub fn drop_empty_docks(area: &mut DockArea, window: &mut Window, cx: &mut Context<DockArea>) {
+    for placement in [
+        DockPlacement::Left,
+        DockPlacement::Right,
+        DockPlacement::Bottom,
+    ] {
+        let empty = area
+            .layout(placement)
+            .is_some_and(|tree| tree.panels().next().is_none());
+        if empty {
+            area.remove_dock(placement, window, cx);
+        }
+    }
 }
 
 /// Show or hide one dock, leaving the rest of the arrangement alone.

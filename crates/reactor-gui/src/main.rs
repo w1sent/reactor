@@ -99,8 +99,8 @@ fn main() {
 /// the model and thinking pickers (see its `Render`).
 fn install_menus(cx: &mut App) {
     use reactor_gui::app::{
-        ApplyLayoutAction, ImportDocuments, MainWindow, OpenPalette, OpenSettings, SaveCase,
-        ToggleDockAction, TogglePanelAction,
+        ApplyLayoutAction, ImportDocuments, MainWindow, NewConsole, OpenPalette, OpenSettings,
+        SaveCase, ToggleDockAction, TogglePanelAction,
     };
     use reactor_gui::layout::{DockSide, LayoutPreset, PanelKind};
 
@@ -155,6 +155,19 @@ fn install_menus(cx: &mut App) {
             let _ = cx.update_window(main.handle, move |_, window, cx| {
                 if let Some(app) = main.app.upgrade() {
                     app.update(cx, |app, cx| app.toggle_panel(panel, window, cx));
+                }
+            });
+        });
+    });
+
+    cx.on_action(|_: &NewConsole, cx| {
+        let Some(main) = cx.try_global::<MainWindow>().cloned() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = cx.update_window(main.handle, move |_, window, cx| {
+                if let Some(app) = main.app.upgrade() {
+                    app.update(cx, |app, cx| app.open_console(None, window, cx));
                 }
             });
         });
@@ -226,12 +239,14 @@ fn install_menus(cx: &mut App) {
         )
     }));
 
-    // Panels: every panel, opened or closed where it is kept — the rail's in the drawer,
-    // then the workspace's as tabs.
+    // Panels: every panel, shown or closed where it is kept — the rail's in the drawer, then
+    // the workspace's as tabs — and another terminal.
     let panel = |kind: &PanelKind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind });
     let mut panels: Vec<MenuItem> = PanelKind::RAIL.iter().map(panel).collect();
     panels.push(MenuItem::Separator);
     panels.extend(PanelKind::ALL.iter().filter(|kind| !kind.on_rail()).map(panel));
+    panels.push(MenuItem::Separator);
+    panels.push(MenuItem::action("New Console", NewConsole));
 
     reactor_gui::chrome::install_menus(
         cx,

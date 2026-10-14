@@ -91,6 +91,10 @@ pub struct UiSettings {
     /// Write the endpoints and keys typed on the Model page to `~/.reactor/env`, so they are
     /// there next time. Off, they last until the window closes.
     pub keep_keys: bool,
+    /// The keys chosen for the window's shortcuts, by shortcut id, where they differ from the
+    /// default; empty keys mean none (`crate::shortcuts`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub shortcuts: BTreeMap<String, String>,
 }
 
 /// How the window is drawn. The light mode drops what costs fill rate and repaint rate on a
@@ -177,6 +181,7 @@ impl Default for UiSettings {
             animations: false,
             rendering: Rendering::Auto,
             keep_keys: true,
+            shortcuts: BTreeMap::new(),
         }
     }
 }
@@ -232,6 +237,7 @@ impl UiSettings {
                 .filter(|f| !f.is_empty());
         }
         self.fonts.retain(|_, p| *p != FontPref::default());
+        crate::shortcuts::normalize(&mut self.shortcuts);
         self.tool_output_chars = self
             .tool_output_chars
             .clamp(*OUTPUT_CHARS.start(), *OUTPUT_CHARS.end());

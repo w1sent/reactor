@@ -58,21 +58,10 @@ impl ReactorApp {
     /// Show a panel wherever it is kept: its tab if it has one, else the drawer for a rail
     /// panel, else a new tab where the layout keeps it.
     pub fn reveal_panel(&mut self, kind: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
-        if self.docked(kind, cx) {
-            let id = self.panels.view(kind).panel_id(cx);
-            self.dock_area
-                .update(cx, |area, cx| area.select_panel(id, window, cx));
-        } else if kind.on_rail() {
+        if kind.on_rail() && !self.docked(kind, cx) {
             self.drawer = Some(kind);
         } else {
-            crate::layout::toggle_panel(
-                kind,
-                self.layout,
-                &self.panels,
-                &self.dock_area,
-                window,
-                cx,
-            );
+            crate::layout::show_panel(kind, self.layout, &self.panels, &self.dock_area, window, cx);
         }
         cx.notify();
     }

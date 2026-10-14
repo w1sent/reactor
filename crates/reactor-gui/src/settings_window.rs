@@ -9,13 +9,14 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Entity, SharedString, Window, div, px, size};
+use gpui_kit::{App, Entity, Focusable as _, SharedString, Window, div, px, size};
 
 use reactor_context::settings::CONTEXT_MODES;
 
@@ -62,6 +63,7 @@ pub enum Page {
     #[default]
     Fonts,
     Behaviour,
+    Shortcuts,
     Model,
     Identities,
     Documents,
@@ -77,14 +79,15 @@ impl Page {
         match self {
             Page::Fonts => 0,
             Page::Behaviour => 1,
-            Page::Model => 2,
-            Page::Identities => 3,
-            Page::Documents => 4,
-            Page::Context => 5,
-            Page::Manifest => 6,
-            Page::Reporting => 7,
-            Page::Tools => 8,
-            Page::Mcp => 9,
+            Page::Shortcuts => 2,
+            Page::Model => 3,
+            Page::Identities => 4,
+            Page::Documents => 5,
+            Page::Context => 6,
+            Page::Manifest => 7,
+            Page::Reporting => 8,
+            Page::Tools => 9,
+            Page::Mcp => 10,
         }
     }
 }
@@ -183,6 +186,7 @@ impl Render for SettingsWindow {
                         .pages(vec![
                             fonts_page(&app, cx),
                             behaviour_page(&app),
+                            shortcuts_page(&app, cx),
                             model_page(&self.cards),
                             identities_page(&app, cx),
                             documents_page(&app, &self.embedding_cards, cx),
@@ -316,6 +320,90 @@ fn fonts_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
             .group(group.title("Fonts and sizes")),
         "fonts-info",
         "A family is an installed font's name; empty is the default. Sizes are in pixels. Interface and Monospace are the theme's base fonts; the rest follow them until set. Saved in ~/.reactor/gui.json for every session.",
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shortcuts
+// ---------------------------------------------------------------------------------------------
+
+/// A shortcut's field: an input that applies what is in it on Enter or when it loses the
+/// focus — never while it is typed, when `c` on the way to `ctrl-k` would be bound — and
+/// otherwise shows the keys in force.
+fn shortcut_field(
+    app: Entity<ReactorApp>,
+    shortcut: crate::shortcuts::Shortcut,
+) -> SettingField<SharedString> {
+    struct State {
+        input: Entity<InputState>,
+        _subscription: gpui_kit::Subscription,
+    }
+    SettingField::render(move |options, window, cx| {
+        let keys = shared(shortcut.keys(&app.read(cx).ui.shortcuts));
+        let state = window.use_keyed_state(
+            SharedString::from(format!("shortcut-{}", shortcut.id)),
+            cx,
+            {
+                let (app, keys) = (app.clone(), keys.clone());
+                move |window, cx| {
+                    let input = cx.new(|cx| InputState::new(window, cx).default_value(keys));
+                    let _subscription =
+                        cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                                let text = input.read(cx).value().to_string();
+                                app.update(cx, |app, cx| app.commit_shortcut(shortcut, &text, cx));
+                            }
+                        });
+                    State {
+                        input,
+                        _subscription,
+                    }
+                }
+            },
+        );
+        // Follow the setting (a reset, a clash resolved elsewhere) unless it is being typed
+        // in, or holds keys that were refused and are still to be corrected.
+        let input = state.read(cx).input.clone();
+        let typing = input.read(cx).focus_handle(cx).is_focused(window);
+        let refused = app.read(cx).shortcut_refused(shortcut);
+        if !typing && !refused && input.read(cx).value() != keys {
+            input.update(cx, |input, cx| input.set_value(keys, window, cx));
+        }
+        Input::new(&input).with_size(options.size()).w_64()
+    })
+}
+
+fn shortcuts_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
+    let (mut panels, mut commands) = (
+        SettingGroup::new().title("Panels"),
+        SettingGroup::new().title("Commands"),
+    );
+    for shortcut in crate::shortcuts::ALL {
+        let (dirty, reset) = (app.clone(), app.clone());
+        let mut item = SettingItem::new(
+            shortcut.label,
+            shortcut_field(app.clone(), shortcut).on_reset(
+                move |cx| dirty.read(cx).ui.shortcuts.contains_key(shortcut.id),
+                move |_, cx| reset.update(cx, |app, cx| app.reset_shortcut(shortcut, cx)),
+            ),
+        )
+        .keywords(["shortcut", "key", "keyboard", "binding"]);
+        if let Some(problem) = app.read(cx).shortcut_problem(shortcut) {
+            item = item.description(problem);
+        }
+        if shortcut.id.starts_with("panel.") {
+            panels = panels.item(item);
+        } else {
+            commands = commands.item(item);
+        }
+    }
+    info(
+        SettingPage::new("Shortcuts")
+            .icon(IconName::Keyboard)
+            .group(panels)
+            .group(commands),
+        "shortcuts-info",
+        "Keys are written like ctrl-shift-k: modifiers (ctrl, alt, shift, cmd, fn, or secondary for Cmd on macOS and Ctrl elsewhere) joined to a key by dashes, and a sequence separated by spaces; Enter applies them. A shortcut needs ctrl, alt, cmd or fn, or a function key (f1 to f24), so it does not take a key from text fields. Empty means no shortcut. A panel's shortcut shows it, or closes it when it is already in view. Saved in ~/.reactor/gui.json.",
     )
 }
 

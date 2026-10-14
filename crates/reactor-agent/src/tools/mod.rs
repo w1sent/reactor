@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::context::SessionState;
 use crate::llm::ToolSpec;
 use crate::store::Store;
+use crate::truncate::{self, Limit};
 
 pub mod bash;
 pub mod docs;
@@ -77,6 +78,10 @@ pub struct ToolCtx {
     pub model: String,
     /// Makes the vectors a query is compared with, when the user chose a model.
     pub embedder: Option<Arc<dyn crate::embed::Embedder>>,
+    /// How much of this call's output the model will see: what the call asked for with
+    /// [`truncate::ARG`], else the person's default. A tool that holds its own head and
+    /// tail (`bash`) sizes them by it.
+    pub limit: Limit,
 }
 
 impl ToolCtx {
@@ -95,6 +100,12 @@ pub trait Tool: Send + Sync {
     /// Whether to advertise it right now.
     fn available(&self, _state: &SessionState) -> bool {
         true
+    }
+    /// Whether its output can run long enough to be cut, so it advertises
+    /// [`truncate::ARG`]. A tool that answers in a line does not: the parameter would
+    /// only cost context. The loop honours the argument on every tool all the same.
+    fn prints_much(&self) -> bool {
+        false
     }
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput>;
 }
@@ -132,12 +143,30 @@ impl Tools {
             .with(docs::DocsSearch)
     }
 
-    /// What to advertise for this session state.
+    /// What to advertise for this session state, with the default output limit.
     pub fn specs(&self, state: &SessionState) -> Vec<ToolSpec> {
+        self.specs_limited(state, Limit::default())
+    }
+
+    /// What to advertise for this session state. A tool that [prints
+    /// much](Tool::prints_much) also takes [`truncate::ARG`], described with `limit`, the
+    /// default it overrides.
+    pub fn specs_limited(&self, state: &SessionState, limit: Limit) -> Vec<ToolSpec> {
         self.0
             .iter()
             .filter(|t| t.available(state))
-            .map(|t| t.spec_for(state))
+            .map(|t| {
+                let mut spec = t.spec_for(state);
+                if t.prints_much()
+                    && let Some(props) = spec
+                        .parameters
+                        .get_mut("properties")
+                        .and_then(Value::as_object_mut)
+                {
+                    props.insert(truncate::ARG.into(), truncate::arg_schema(limit));
+                }
+                spec
+            })
             .collect()
     }
 

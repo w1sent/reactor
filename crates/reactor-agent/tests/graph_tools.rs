@@ -33,6 +33,7 @@ fn rig() -> Rig {
         scenarios_dir: dir.path().join("scenarios"),
         model: "test/model".into(),
         embedder: None,
+        limit: Default::default(),
     };
     Rig {
         dir,

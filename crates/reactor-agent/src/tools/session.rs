@@ -28,6 +28,9 @@ fn other_sessions_off(ctx: &ToolCtx) -> Option<ToolOutput> {
 pub struct HistoryIndex;
 
 impl Tool for HistoryIndex {
+    fn prints_much(&self) -> bool {
+        true
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_index".into(),
@@ -72,16 +75,19 @@ impl Tool for HistoryIndex {
 pub struct HistoryRead;
 
 impl Tool for HistoryRead {
+    fn prints_much(&self) -> bool {
+        true
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_read".into(),
-            description: "Read one session entry in full by its #id -- a tool output that was cut or dropped from your context is here whole. Page a large one with `offset` (1-based line) and `limit`. With `session`, read an entry of another session of this case.".into(),
+            description: "Read one session entry in full by its #id -- a tool output that was cut or dropped from your context is here whole. Page a large one with `offset` (1-based line) and `limit` (lines); a cut output's note gives the call that reads the lines it left out. With `session`, read an entry of another session of this case.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "integer" },
-                    "offset": { "type": "integer" },
-                    "limit": { "type": "integer" },
+                    "offset": { "type": "integer", "description": "First line, 1-based." },
+                    "limit": { "type": "integer", "description": "How many lines." },
                     "session": { "type": "string", "description": "Another session's id. Default: this session." }
                 },
                 "required": ["id"]
@@ -123,6 +129,9 @@ impl Tool for HistoryRead {
 pub struct HistorySearch;
 
 impl Tool for HistorySearch {
+    fn prints_much(&self) -> bool {
+        true
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_search".into(),

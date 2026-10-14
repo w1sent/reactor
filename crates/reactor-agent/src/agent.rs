@@ -334,7 +334,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     /// The tool definitions of this request: ours, then those of the MCP tools that are active.
     fn advertised(&self, g: &Gathered) -> Vec<crate::llm::ToolSpec> {
-        let mut specs = self.tools.specs(&g.state);
+        let mut specs = self
+            .tools
+            .specs_limited(&g.state, default_limit(&g.settings));
         if let Some(host) = &self.cfg.mcp {
             specs.extend(host.specs(&g.view.mcp));
         }
@@ -436,7 +438,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             .as_ref()
             .map(|h| h.specs(&g.view.mcp))
             .unwrap_or_default();
-        let ours = self.tools.specs(&g.state);
+        let ours = self
+            .tools
+            .specs_limited(&g.state, default_limit(&g.settings));
         let defs = ours
             .into_iter()
             .map(|t| (Origin::ToolDefinition, t))
@@ -927,6 +931,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         in_a_row: &mut usize,
         outcome: &mut Outcome,
     ) -> Result<()> {
+        let default = default_limit(&self.settings());
         for (i, (id, name, args)) in calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 self.fill_results(&calls[i..], "not run: the turn was cancelled")?;
@@ -938,6 +943,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 args: args.clone(),
             });
 
+            // Our tools take a limit; an MCP tool's parameters are its server's.
+            let ours = self.tools.find(name).is_some();
+            let limit = if ours {
+                truncate::Limit::for_call(args, default)
+            } else {
+                default
+            };
             let events = self.events.clone();
             let call_id = id.clone();
             let ctx = ToolCtx {
@@ -954,6 +966,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 scenarios_dir: self.cfg.scenarios_dir.clone(),
                 model: self.llm.name(),
                 embedder: self.cfg.embedder.get(),
+                limit,
             };
             let out = match (self.tools.find(name), &self.cfg.mcp) {
                 (Some(tool), _) => tool.call(args.clone(), &ctx).await,
@@ -964,7 +977,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 _ => ToolOutput::err(format!("unknown tool `{name}`")),
             };
             let is_error = out.is_error;
-            let kind = self.finalize(id, name, out)?;
+            let kind = self.finalize(id, name, out, limit)?;
             let entry = self.append(kind)?;
             self.emit(Event::ToolEnd {
                 id: id.clone(),
@@ -997,16 +1010,22 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         Ok(())
     }
 
-    /// Apply the truncation policy: the model sees a bounded view, and the whole output
-    /// is kept and addressable.
-    fn finalize(&self, call_id: &str, name: &str, out: ToolOutput) -> Result<Kind> {
+    /// Apply the truncation policy: the model sees at most `limit` of the output, and the
+    /// whole of it is kept and addressable.
+    fn finalize(
+        &self,
+        call_id: &str,
+        name: &str,
+        out: ToolOutput,
+        limit: truncate::Limit,
+    ) -> Result<Kind> {
         let total = match &out.full {
             Some(p) => std::fs::metadata(p)
                 .map(|m| m.len())
                 .unwrap_or(out.text.len() as u64),
             None => out.text.len() as u64,
         };
-        if !truncate::needs_cut(total) {
+        if !limit.needs_cut(total) {
             let text = out.text.replace(truncate::CUT, "");
             return Ok(Kind::ToolResult {
                 call_id: call_id.into(),
@@ -1016,13 +1035,19 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 blob: None,
             });
         }
+        let lines = match &out.full {
+            Some(p) => truncate::count_lines_in(p)
+                .unwrap_or_else(|_| truncate::count_lines(out.text.as_bytes())),
+            None => truncate::count_lines(out.text.as_bytes()),
+        };
         let mut store = self.store.lock().unwrap();
-        let entry_id = store.len() as EntryId;
+        let entry = store.len() as EntryId;
         let blob = match &out.full {
             Some(path) => store.adopt_blob(path)?,
             None => store.write_blob(out.text.as_bytes())?,
         };
-        let content = truncate::view(&out.text, total, entry_id);
+        let whole = truncate::Whole { entry, lines };
+        let content = truncate::view(&out.text, whole, limit);
         Ok(Kind::ToolResult {
             call_id: call_id.into(),
             name: name.into(),
@@ -1174,4 +1199,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub fn context(&self) -> Vec<Item> {
         project(&self.store.lock().unwrap())
     }
+}
+
+/// The output limit a call gets when it does not ask for one.
+fn default_limit(settings: &Settings) -> truncate::Limit {
+    truncate::Limit::new(settings.tool_output.max_inline_bytes)
 }

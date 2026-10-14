@@ -233,6 +233,34 @@ impl ContextSettings {
     }
 }
 
+/// How much of one tool result the model sees before it is cut to its head and tail
+/// (`reactor-agent`'s `truncate`). A call to a built-in tool may ask for another limit;
+/// this is the one that applies when it does not, and always to MCP tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutputSettings {
+    pub max_inline_bytes: usize,
+}
+
+impl ToolOutputSettings {
+    /// Below this the marker would be most of what is shown.
+    pub const MIN_BYTES: usize = 1024;
+    /// Above this, paging with `history_read` is the better way to read.
+    pub const MAX_BYTES: usize = 1024 * 1024;
+
+    pub fn is_default(&self) -> bool {
+        *self == ToolOutputSettings::default()
+    }
+}
+
+impl Default for ToolOutputSettings {
+    fn default() -> Self {
+        Self {
+            max_inline_bytes: 32 * 1024,
+        }
+    }
+}
+
 /// What a session may draw on from the rest of its case
 /// ([ADR-0047](../../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)), as one
 /// *layer* like [`ContextSettings`]: an absent field means "the layer below decides", and
@@ -331,6 +359,8 @@ pub struct Settings {
     pub identity: IdentitySettings,
     pub reporting: ReportingSettings,
     pub context: ContextSettings,
+    #[serde(skip_serializing_if = "ToolOutputSettings::is_default")]
+    pub tool_output: ToolOutputSettings,
     #[serde(skip_serializing_if = "MemorySettings::is_empty")]
     pub memory: MemorySettings,
     #[serde(skip_serializing_if = "EmbeddingSettings::is_empty")]
@@ -350,6 +380,7 @@ impl Default for Settings {
             identity: IdentitySettings::default(),
             reporting: ReportingSettings::default(),
             context: ContextSettings::default(),
+            tool_output: ToolOutputSettings::default(),
             memory: MemorySettings::default(),
             embedding: EmbeddingSettings::default(),
             models: Vec::new(),
@@ -422,6 +453,12 @@ impl Settings {
             .map(str::to_string);
         if let Some(c) = root.get("context") {
             s.context = ContextSettings::normalize(c);
+        }
+        if let Some(n) = number(root.get("toolOutput").and_then(|t| t.get("maxInlineBytes")))
+            .filter(|n| *n > 0.0 && n.fract() == 0.0)
+        {
+            s.tool_output.max_inline_bytes =
+                (n as usize).clamp(ToolOutputSettings::MIN_BYTES, ToolOutputSettings::MAX_BYTES);
         }
         if let Some(m) = root.get("memory") {
             s.memory = MemorySettings::normalize(m);
@@ -512,6 +549,28 @@ impl Settings {
 mod threshold_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_tool_output_limit_is_kept_clamped_and_absent_means_32_kib() {
+        let at = |v: Value| Settings::from_json(&v).tool_output.max_inline_bytes;
+        assert_eq!(at(json!({})), 32 * 1024);
+        assert_eq!(
+            at(json!({ "toolOutput": { "maxInlineBytes": 65536 } })),
+            65536
+        );
+        assert_eq!(at(json!({ "toolOutput": { "maxInlineBytes": 10 } })), 1024);
+        assert_eq!(
+            at(json!({ "toolOutput": { "maxInlineBytes": 1e9 } })),
+            1024 * 1024
+        );
+        assert_eq!(
+            at(json!({ "toolOutput": { "maxInlineBytes": "big" } })),
+            32 * 1024
+        );
+        let s = Settings::from_json(&json!({ "toolOutput": { "maxInlineBytes": 4096 } }));
+        let back = Settings::from_json(&serde_json::to_value(&s).unwrap());
+        assert_eq!(back.tool_output, s.tool_output);
+    }
 
     #[test]
     fn the_meaning_threshold_is_kept_clamped_and_absent_means_none() {

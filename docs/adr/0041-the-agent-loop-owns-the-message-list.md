@@ -1,5 +1,10 @@
 # The agent loop owns the message list, and reduction replaces whole ranges
 
+> **Amended by [ADR-0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md):** the
+> 32 KiB bound is now the default of a setting (`toolOutput.maxInlineBytes`), a call to a
+> built-in tool may ask for another with `max_output_bytes`, and the marker is the
+> `history_read` call for the lines it left out.
+
 `reactor-agent` is the loop [ADR-0033](0033-reactor-is-a-rust-project-on-rig.md)
 promised: it holds the session, builds every request itself, and calls the model
 through rig's `CompletionModel::stream` — **not** through rig's own agent loop. This

@@ -500,9 +500,12 @@ async fn long_output_is_cut_to_head_and_tail_and_kept_whole_and_addressable() {
     );
     assert!(res[0].trim_end().ends_with("line 6000 of the dump"));
     assert!(
-        res[0].contains("bytes elided -- the whole output is #3"),
+        res[0].contains("output truncated; the rest: history_read {\"id\": 3, "),
         "{}",
-        res[0].lines().find(|l| l.contains("elided")).unwrap_or("")
+        res[0]
+            .lines()
+            .find(|l| l.contains("truncated"))
+            .unwrap_or("")
     );
     assert!(res[0].len() < 33 * 1024, "{}", res[0].len());
 
@@ -527,6 +530,71 @@ async fn long_output_is_cut_to_head_and_tail_and_kept_whole_and_addressable() {
             .lines()
             .count()
             == 6000
+    );
+}
+
+#[tokio::test]
+async fn a_call_sets_its_own_limit_and_the_marker_says_how_to_read_the_rest() {
+    let dump = "for i in $(seq 1 6000); do echo \"line $i of the dump\"; done";
+    let r = rig(
+        vec![
+            // Asks for everything: 6000 lines of ~20 bytes is under 200 KB.
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "1",
+                    "bash",
+                    json!({ "command": dump, "max_output_bytes": 200_000 }),
+                )],
+            ),
+            // Asks for less than the default.
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "2",
+                    "bash",
+                    json!({ "command": dump, "max_output_bytes": 2048 }),
+                )],
+            ),
+            ScriptedLlm::say("ok"),
+        ],
+        Sum::says("-"),
+        1_000_000,
+    );
+    run(&r, "dump").await.unwrap();
+    let res = results(&r);
+    assert_eq!(res[0].lines().count(), 6000, "not cut");
+    assert!(!res[0].contains("truncated"));
+
+    assert!(res[1].len() < 2048 + 512, "{}", res[1].len());
+    let marker = res[1].lines().find(|l| l.contains("truncated")).unwrap();
+    assert!(
+        marker.contains("history_read {\"id\": 5, \"offset\": "),
+        "{marker}"
+    );
+}
+
+#[tokio::test]
+async fn the_tools_that_can_print_much_advertise_the_limit_and_only_they() {
+    let state = reactor_agent::context::SessionState::default();
+    let mut with: Vec<String> = reactor_agent::tools::Tools::standard(".".into())
+        .specs(&state)
+        .into_iter()
+        .filter(|s| s.parameters["properties"]["max_output_bytes"].is_object())
+        .map(|s| s.name)
+        .collect();
+    with.sort();
+    assert_eq!(
+        with,
+        // `docs_search` too, but it is offered only while the case has documents.
+        [
+            "bash",
+            "graph_query",
+            "history_index",
+            "history_read",
+            "history_search",
+            "read"
+        ]
     );
 }
 
@@ -559,7 +627,7 @@ async fn a_huge_output_spills_to_disk_and_keeps_every_byte() {
         "the whole thing is on disk"
     );
     assert!(content.len() < 33 * 1024, "and the model's view is bounded");
-    assert!(content.contains("bytes elided"));
+    assert!(content.contains("output truncated"));
 }
 
 // -- state-gated tools and the prompt ---------------------------------------------------------------
@@ -953,7 +1021,8 @@ async fn zero_allowed_reductions_in_a_row_means_the_first_one_needed_stops_the_t
     let replies = (0..12)
         .map(|i| ScriptedLlm::say(&format!("reply {i}")))
         .collect();
-    let r = rig_with(replies, Sum::says("s"), SMALL, |cfg| {
+    // A little over SMALL: the tool definitions alone take most of SMALL's headroom.
+    let r = rig_with(replies, Sum::says("s"), SMALL + 500, |cfg| {
         cfg.max_reductions_in_a_row = 0
     });
     let mut last = Ok(Default::default());
@@ -1247,7 +1316,7 @@ async fn a_session_override_changes_when_the_loop_reduces() {
 
     r.agent
         .set_session_context(&reactor_context::settings::ContextSettings {
-            window: Some(4_000),
+            window: Some(4_500),
             ..Default::default()
         })
         .unwrap();
@@ -1586,6 +1655,7 @@ async fn a_session_reaches_the_cases_other_sessions_unless_the_switch_is_off() {
         scenarios_dir: r.root.join("scenarios"),
         model: "test/model".into(),
         embedder: None,
+        limit: Default::default(),
     };
     let tools = Tools::standard(r.root.join("work"));
     let search = tools.find("history_search").unwrap();

@@ -1342,27 +1342,36 @@ fn mcp_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
 }
 
 fn tools_page(app: &Entity<ReactorApp>) -> SettingPage {
-    let group = SettingGroup::new().item(actions(
-        "Activation",
-        vec![
-            (
-                "Make session's the default",
-                "This session's tools and toolsets become the default for new sessions",
-                |app, cx| app.tools_promote(cx),
-            ),
-            (
-                "Use the default",
-                "Drop this session's override: it uses the machine default again",
-                |app, cx| app.tools_inherit(cx),
-            ),
-        ],
-        app,
-    ));
+    let group = SettingGroup::new()
+        .item(count_field(
+            app,
+            "Tool output shown before it is cut (KiB)",
+            &["truncate", "limit", "output"],
+            (1.0, 1024.0),
+            |s| s.tool_output.max_inline_bytes / 1024,
+            |s, n| s.tool_output.max_inline_bytes = n.clamp(1, 1024) * 1024,
+        ))
+        .item(actions(
+            "Activation",
+            vec![
+                (
+                    "Make session's the default",
+                    "This session's tools and toolsets become the default for new sessions",
+                    |app, cx| app.tools_promote(cx),
+                ),
+                (
+                    "Use the default",
+                    "Drop this session's override: it uses the machine default again",
+                    |app, cx| app.tools_inherit(cx),
+                ),
+            ],
+            app,
+        ));
     info(
         SettingPage::new("Tools")
             .icon(IconName::Wrench)
             .group(group),
         "tools-info",
-        "Toggling a tool or toolset starts a session-only override of the machine's default (~/.reactor/state.json). Individual tools are toggled in the Tools panel or with /tool.",
+        "Toggling a tool or toolset starts a session-only override of the machine's default (~/.reactor/state.json). Individual tools are toggled in the Tools panel or with /tool. Longer tool output is cut to its head and tail and kept whole for history_read; a call may ask for another limit with max_output_bytes.",
     )
 }

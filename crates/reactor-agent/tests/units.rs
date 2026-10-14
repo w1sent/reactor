@@ -6,15 +6,49 @@ use reactor_agent::context::SessionState;
 use reactor_agent::prompt::{self, Inputs, RegistryView};
 use reactor_agent::provider::{AnyLlm, PROVIDERS, default_window};
 use reactor_agent::skills::{self, Skill};
-use reactor_agent::truncate::{self, CUT, HEAD_BYTES, MAX_INLINE_BYTES, TAIL_BYTES};
+use reactor_agent::truncate::{
+    self, CUT, HEAD_BYTES, Limit, MAX_INLINE_BYTES, MAX_REQUEST_BYTES, MIN_INLINE_BYTES,
+    TAIL_BYTES, Whole,
+};
 use reactor_context::settings::Settings;
+use serde_json::json;
 
 // -- truncation ----------------------------------------------------------------------
 
 #[test]
 fn output_under_the_limit_is_not_cut() {
-    assert!(!truncate::needs_cut(MAX_INLINE_BYTES as u64));
-    assert!(truncate::needs_cut(MAX_INLINE_BYTES as u64 + 1));
+    let limit = Limit::default();
+    assert!(!limit.needs_cut(MAX_INLINE_BYTES as u64));
+    assert!(limit.needs_cut(MAX_INLINE_BYTES as u64 + 1));
+}
+
+#[test]
+fn a_call_may_ask_for_its_own_limit_within_the_bounds() {
+    let default = Limit::new(4096);
+    assert_eq!(Limit::for_call(&json!({}), default), default);
+    assert_eq!(
+        Limit::for_call(&json!({"max_output_bytes": "lots"}), default),
+        default
+    );
+    assert_eq!(
+        Limit::for_call(&json!({"max_output_bytes": 100_000}), default).bytes(),
+        100_000
+    );
+    assert_eq!(
+        Limit::for_call(&json!({"max_output_bytes": 1}), default).bytes(),
+        MIN_INLINE_BYTES
+    );
+    assert_eq!(
+        Limit::for_call(&json!({"max_output_bytes": u64::MAX}), default).bytes(),
+        MAX_REQUEST_BYTES
+    );
+    // The split keeps the default's shape: a quarter head, the rest tail.
+    let l = Limit::new(100_000);
+    assert_eq!((l.head(), l.tail()), (25_000, 75_000));
+    assert_eq!(
+        (Limit::default().head(), Limit::default().tail()),
+        (HEAD_BYTES, TAIL_BYTES)
+    );
 }
 
 #[test]
@@ -30,7 +64,7 @@ fn head_and_tail_end_on_line_boundaries_and_never_split_a_character() {
     let wide = "é😀日本語".repeat(20_000);
     let _ = truncate::head(&wide, 8_000);
     let _ = truncate::tail(&wide, 24_000);
-    assert!(truncate::cut(&wide).contains(CUT));
+    assert!(truncate::cut(&wide, Limit::default()).contains(CUT));
 }
 
 #[test]
@@ -41,31 +75,62 @@ fn the_tail_gets_the_larger_share() {
 }
 
 #[test]
-fn the_view_names_the_entry_and_counts_what_was_elided() {
+fn the_view_says_it_was_cut_and_gives_the_call_for_the_rest() {
     let text = "a".repeat(100_000);
-    let v = truncate::view(&text, text.len() as u64, 42);
-    assert!(v.contains("the whole output is #42"));
-    assert!(v.contains("history_read") && v.contains("history_search"));
+    let whole = Whole {
+        entry: 42,
+        lines: 1,
+    };
+    let v = truncate::view(&text, whole, Limit::default());
     assert!(!v.contains(CUT), "the placeholder never reaches the model");
-    let elided: u64 = v
-        .split("… [")
-        .nth(1)
-        .unwrap()
-        .split(" of ")
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert_eq!(elided + (HEAD_BYTES + TAIL_BYTES) as u64, 100_000);
+    let marker = "\n… [output truncated; the rest: history_read {\"id\": 42, \"offset\": 1, \"limit\": 1}] …\n";
+    assert!(v.contains(marker), "{v:.200}");
+    assert_eq!(v.len() - marker.len(), HEAD_BYTES + TAIL_BYTES);
 }
 
 #[test]
 fn a_producer_that_cut_its_own_output_is_respected() {
     // `bash` spills huge output to disk and hands over head+CUT+tail.
     let composite = format!("HEAD{CUT}TAIL");
-    let v = truncate::view(&composite, 10_000_000, 7);
+    let whole = Whole {
+        entry: 7,
+        lines: 500,
+    };
+    let v = truncate::view(&composite, whole, Limit::default());
     assert!(v.starts_with("HEAD") && v.ends_with("TAIL"));
-    assert!(v.contains("of 10000000 bytes elided") && v.contains("#7"));
+    assert!(
+        v.contains("output truncated") && v.contains("{\"id\": 7, \"offset\": 1, \"limit\": 500}")
+    );
+}
+
+#[test]
+fn the_marker_says_which_lines_are_missing_and_how_to_read_them() {
+    let text: String = (1..=10_000).map(|i| format!("line {i}\n")).collect();
+    let whole = Whole {
+        entry: 9,
+        lines: truncate::count_lines(text.as_bytes()),
+    };
+    assert_eq!(whole.lines, 10_000);
+    let v = truncate::view(&text, whole, Limit::new(4096));
+    let shown: Vec<&str> = v.lines().filter(|l| l.starts_with("line ")).collect();
+    // The lines named as missing are exactly the ones the view skips.
+    let marker = v.lines().find(|l| l.contains("truncated")).unwrap();
+    let call = marker.split("history_read ").nth(1).unwrap();
+    let call: serde_json::Value = serde_json::from_str(&call[..=call.find('}').unwrap()]).unwrap();
+    assert_eq!(call["id"], 9);
+    let (offset, limit) = (
+        call["offset"].as_u64().unwrap(),
+        call["limit"].as_u64().unwrap(),
+    );
+    let mut seen: Vec<u64> = shown.iter().map(|l| l[5..].parse().unwrap()).collect();
+    seen.extend(offset..offset + limit);
+    seen.sort();
+    seen.dedup();
+    assert_eq!(
+        seen,
+        (1..=10_000).collect::<Vec<_>>(),
+        "no line is lost between the view and the call"
+    );
 }
 
 // -- skills ----------------------------------------------------------------------------

@@ -22,6 +22,9 @@ const DEFAULT_LINES: usize = 2_000;
 pub struct Read;
 
 impl Tool for Read {
+    fn prints_much(&self) -> bool {
+        true
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".into(),

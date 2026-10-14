@@ -19,6 +19,9 @@ supersedes the store choice of 0036, which is marked † for that reason.
 ADR **0052** rearranges the GUI's window. It amends where 0044, 0048 and 0049 put things,
 which are marked † for that; what they decided about behaviour stands.
 
+ADR **0053** makes the tool-output bound of 0041 a setting and a per-call choice, and
+marks 0041 † for that.
+
 | # | Decision |
 |---|---|
 | †&nbsp;[0001](0001-pi-is-the-only-target-harness.md) | pi is the only target harness |
@@ -61,7 +64,7 @@ which are marked † for that; what they decided about behaviour stands.
 | [0038](0038-settings-resolve-global-then-session.md) | Settings resolve global default, then session override |
 | [0039](0039-the-executables-contain-no-python.md) | The REactor executables contain no Python |
 | [0040](0040-reactor-context-is-a-port-verified-against-the-extensions.md) | reactor-context is a port verified against the frozen extensions, not a set of shims |
-| [0041](0041-the-agent-loop-owns-the-message-list.md) | The agent loop owns the message list, and reduction replaces whole ranges |
+| †&nbsp;[0041](0041-the-agent-loop-owns-the-message-list.md) | The agent loop owns the message list, and reduction replaces whole ranges |
 | [0042](0042-the-gui-hosts-the-agent-in-process.md) | The GUI hosts the agent in process, and activation is session-scoped |
 | [0043](0043-the-pi-flavor-is-removed-from-the-tree.md) | The pi flavor is removed from the tree |
 | †&nbsp;[0044](0044-filesystem-panels-read-through-a-vfs.md) | The filesystem panels read through a `Vfs` |
@@ -73,3 +76,4 @@ which are marked † for that; what they decided about behaviour stands.
 | [0050](0050-the-table-viewer-is-a-grid-over-sources.md) | The table viewer is a grid over sources, and SQL is one of them |
 | [0051](0051-the-scenarios-are-compiled-in-and-seeded-by-setup.md) | The scenarios are compiled in and seeded by `reactor setup`, and their absence is said |
 | [0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md) | The window is a rail, a drawer and a workspace, and a session's state sits in its own pane |
+| [0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md) | A call chooses how much of its output it sees, and the cut says how to read the rest |

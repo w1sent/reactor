@@ -720,6 +720,9 @@ fn revert_call(s: &Scope, r: &Map<String, Value>) -> ToolOutput {
 pub struct GraphQuery;
 
 impl Tool for GraphQuery {
+    fn prints_much(&self) -> bool {
+        true
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_query".into(),

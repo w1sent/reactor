@@ -31,7 +31,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::{BoxFut, Tool, ToolCtx, ToolOutput, str_arg, usize_arg};
 use crate::llm::ToolSpec;
-use crate::truncate::{CUT, HEAD_BYTES, TAIL_BYTES};
+use crate::truncate::{CUT, Limit};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 3_600;
@@ -102,6 +102,8 @@ impl Shell {
 
 /// Head, tail and (past a point) the whole of a command's output.
 struct Capture {
+    /// What the model will see, which sizes the head and tail held once spilled.
+    limit: Limit,
     mem: Vec<u8>,
     total: usize,
     spilled: Option<(std::fs::File, PathBuf)>,
@@ -110,8 +112,9 @@ struct Capture {
 }
 
 impl Capture {
-    fn new() -> Self {
+    fn new(limit: Limit) -> Self {
         Capture {
+            limit,
             mem: Vec::new(),
             total: 0,
             spilled: None,
@@ -125,7 +128,7 @@ impl Capture {
         if let Some((file, _)) = &mut self.spilled {
             let _ = file.write_all(bytes);
             self.tail.extend(bytes.iter().copied());
-            let excess = self.tail.len().saturating_sub(2 * TAIL_BYTES);
+            let excess = self.tail.len().saturating_sub(2 * self.limit.tail());
             self.tail.drain(..excess);
             return;
         }
@@ -138,8 +141,8 @@ impl Capture {
             ));
             if let Ok(mut file) = std::fs::File::create(&path) {
                 let _ = file.write_all(&self.mem);
-                self.head = self.mem[..HEAD_BYTES.min(self.mem.len())].to_vec();
-                let start = self.mem.len().saturating_sub(2 * TAIL_BYTES);
+                self.head = self.mem[..self.limit.head().min(self.mem.len())].to_vec();
+                let start = self.mem.len().saturating_sub(2 * self.limit.tail());
                 self.tail = self.mem[start..].iter().copied().collect();
                 self.mem = Vec::new();
                 self.spilled = Some((file, path));
@@ -154,7 +157,7 @@ impl Capture {
             Some((mut file, path)) => {
                 let _ = file.flush();
                 let tail: Vec<u8> = self.tail.iter().copied().collect();
-                let tail = &tail[tail.len().saturating_sub(TAIL_BYTES)..];
+                let tail = &tail[tail.len().saturating_sub(self.limit.tail())..];
                 let text = format!(
                     "{}{CUT}{}",
                     String::from_utf8_lossy(&self.head),
@@ -219,12 +222,15 @@ async fn run_in(
 }
 
 impl Tool for Bash {
+    fn prints_much(&self) -> bool {
+        true
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bash".into(),
             description: format!(
                 "Run a shell command and return its combined stdout and stderr. The shell is persistent: cd, exports and variables survive between calls (the `session` name picks one; `restart: true` starts it over). \
-                 Long output is cut to its head and tail with a note naming the entry that holds all of it -- read the rest with history_read, or search it with history_search. \
+                 Long output is cut to its head and tail (raise the cut with `max_output_bytes` when you know you need more) with a note giving the history_read call for the rest; history_search searches all of it. \
                  A command gets {DEFAULT_TIMEOUT_SECS}s unless `timeout_secs` says otherwise (max {MAX_TIMEOUT_SECS}); one that outlives it is killed along with the shell session, so run anything long-lived in the background (`cmd > out.log 2>&1 &`) and poll. Commands cannot read stdin."
             ),
             parameters: json!({
@@ -276,7 +282,7 @@ impl Tool for Bash {
             }
             let shell = sessions.get_mut(&session).expect("just ensured");
 
-            let mut cap = Capture::new();
+            let mut cap = Capture::new(ctx.limit);
             let ended = run_in(shell, command, &marker, timeout, ctx, &mut cap).await;
 
             let (mut notes, mut is_error) = (String::new(), false);

@@ -244,6 +244,7 @@ fn rig(embedder: Option<Arc<dyn Embedder>>) -> Rig {
         scenarios_dir: dir.path().join("scenarios"),
         model: "test/model".into(),
         embedder,
+        limit: Default::default(),
     };
     Rig {
         _dir: dir,

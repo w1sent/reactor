@@ -9,6 +9,7 @@ pub mod agent;
 pub mod budget;
 pub mod connection;
 pub mod context;
+pub mod deferral;
 pub mod embed;
 pub mod entry;
 pub mod error;

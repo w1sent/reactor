@@ -31,7 +31,11 @@ pub mod bash;
 pub mod docs;
 pub mod files;
 pub mod graph;
+pub mod search;
 pub mod session;
+
+/// The group of the case graph's tools (ADR-0055).
+pub const GRAPH_GROUP: &str = "graph";
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -82,6 +86,8 @@ pub struct ToolCtx {
     /// [`truncate::ARG`], else the person's default. A tool that holds its own head and
     /// tail (`bash`) sizes them by it.
     pub limit: Limit,
+    /// The tools this request left for `tool_search`, whether loaded since or not.
+    pub deferred: Arc<Vec<ToolSpec>>,
 }
 
 impl ToolCtx {
@@ -96,6 +102,16 @@ pub trait Tool: Send + Sync {
     /// on it (an option that cannot work is not offered).
     fn spec_for(&self, _state: &SessionState) -> ToolSpec {
         self.spec()
+    }
+    /// One-line rules for using the tool, which join the system prompt's rules while the
+    /// tool is advertised. Not a place for what the description already says.
+    fn guidelines(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// The group it is loaded with when the group is large (ADR-0055). Tools of one group
+    /// are advertised together or left for `tool_search` together.
+    fn group(&self) -> Option<&'static str> {
+        None
     }
     /// Whether to advertise it right now.
     fn available(&self, _state: &SessionState) -> bool {
@@ -141,6 +157,7 @@ impl Tools {
             .with(graph::GraphPull)
             .with(graph::ArtifactRegister)
             .with(docs::DocsSearch)
+            .with(search::ToolSearch)
     }
 
     /// What to advertise for this session state, with the default output limit.

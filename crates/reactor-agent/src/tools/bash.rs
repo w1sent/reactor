@@ -229,17 +229,17 @@ impl Tool for Bash {
         ToolSpec {
             name: "bash".into(),
             description: format!(
-                "Run a shell command and return its combined stdout and stderr. The shell is persistent: cd, exports and variables survive between calls (the `session` name picks one; `restart: true` starts it over). \
-                 Long output is cut to its head and tail (raise the cut with `max_output_bytes` when you know you need more) with a note giving the history_read call for the rest; history_search searches all of it. \
-                 A command gets {DEFAULT_TIMEOUT_SECS}s unless `timeout_secs` says otherwise (max {MAX_TIMEOUT_SECS}); one that outlives it is killed along with the shell session, so run anything long-lived in the background (`cmd > out.log 2>&1 &`) and poll. Commands cannot read stdin."
+                "Run a command in a persistent shell and return its stdout and stderr combined. The working directory, exports and variables survive between calls; `session` names a shell and `restart` starts it over. \
+                 Output past the limit is cut to its head and tail, and the note says how to read the rest. \
+                 A command gets {DEFAULT_TIMEOUT_SECS}s (at most {MAX_TIMEOUT_SECS}); one that outlives it is killed with its shell, so run anything long in the background (`cmd > out.log 2>&1 &`) and poll. There is no stdin."
             ),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The command line to run." },
                     "session": { "type": "string", "description": "Shell session name (default \"main\")." },
-                    "timeout_secs": { "type": "integer", "description": "Kill the command after this many seconds." },
-                    "restart": { "type": "boolean", "description": "Start this session over first." }
+                    "timeout_secs": { "type": "integer", "description": format!("Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECS}).") },
+                    "restart": { "type": "boolean", "description": "Start this session over first (default false)." }
                 },
                 "required": ["command"]
             }),

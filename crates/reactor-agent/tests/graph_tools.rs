@@ -34,6 +34,7 @@ fn rig() -> Rig {
         model: "test/model".into(),
         embedder: None,
         limit: Default::default(),
+        deferred: Default::default(),
     };
     Rig {
         dir,

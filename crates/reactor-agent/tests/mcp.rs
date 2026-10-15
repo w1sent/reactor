@@ -465,7 +465,12 @@ fn the_names_an_mcp_tool_may_not_take_are_the_agents_own() {
     // Gated tools are advertised only by state, so `specs` may omit them: name the ones that
     // might be, and check they are real by asking `Tools::find`.
     let tools = Tools::standard(PathBuf::from("."));
-    for gated in ["update_steps", "reactor_phase_complete", "graph_add"] {
+    for gated in [
+        "update_steps",
+        "reactor_phase_complete",
+        "graph_add",
+        "tool_search",
+    ] {
         assert!(
             tools.find(gated).is_some(),
             "{gated} is no longer one of ours"
@@ -559,4 +564,82 @@ async fn the_usage_by_kind_tells_mcp_tools_apart_and_splits_what_the_agent_said(
         "{kinds:?} vs {}",
         preview.total_tokens
     );
+}
+
+// -- loaded on demand (ADR-0055) ------------------------------------------------------------
+
+#[tokio::test]
+async fn a_servers_tools_are_left_for_tool_search_when_they_cost_more_than_the_threshold() {
+    let fx = fx(vec![server("fx", &[], &[])]);
+    let host = McpHost::new(fx.paths.clone());
+    host.sync();
+    settled(&host).await;
+    std::fs::write(
+        fx.paths.config_dir.join("settings.json"),
+        r#"{"toolSearch":{"deferOverTokens":0}}"#,
+    )
+    .unwrap();
+
+    let work = fx._dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let case = reactor_db::Case::create(&work, None).unwrap();
+    let store = Store::create(&case, "s").unwrap();
+    let mut cfg = AgentConfig::new(work.clone(), fx.paths.clone(), 100_000);
+    let view = RegistryView {
+        block: "## Available RE tools (this machine)".into(),
+        mcp: ids(&["mcp__fx__echo", "mcp__fx__fail"]),
+        ..Default::default()
+    };
+    cfg.registry = Arc::new(move || view.clone());
+    cfg.mcp = Some(host.clone());
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        ScriptedLlm::call(
+            "",
+            &[(
+                "t1",
+                "tool_search",
+                json!({"query": "select:mcp__fx__echo"}),
+            )],
+        ),
+        ScriptedLlm::call("", &[("c1", "mcp__fx__echo", json!({"text": "ping"}))]),
+        ScriptedLlm::say("done"),
+    ]));
+    let (agent, _events) = Agent::new(
+        llm.clone(),
+        Arc::new(Quiet),
+        store,
+        Tools::standard(work),
+        cfg,
+    );
+    agent.prompt("go", CancellationToken::new()).await.unwrap();
+
+    let names = |i: usize| -> Vec<String> {
+        llm.requests()[i]
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    };
+    // The first request carries neither definition, and says what the search tool can load.
+    assert!(!names(0).contains(&"mcp__fx__echo".to_string()));
+    let search = llm.requests()[0]
+        .tools
+        .iter()
+        .find(|t| t.name == "tool_search")
+        .unwrap()
+        .description
+        .clone();
+    assert!(search.contains("mcp__fx__echo") && search.contains("mcp__fx__fail"));
+    // After the load, the one that was asked for is there, and the other still is not.
+    assert!(names(1).contains(&"mcp__fx__echo".to_string()));
+    assert!(!names(1).contains(&"mcp__fx__fail".to_string()));
+    // The inspector shows what the request carries: the loaded definition, as MCP's.
+    let preview = agent.context_preview().await.unwrap();
+    let mcp: Vec<_> = preview
+        .segments
+        .iter()
+        .filter(|s| s.origin == reactor_agent::inspect::Origin::McpDefinition)
+        .map(|s| s.label.as_str())
+        .collect();
+    assert_eq!(mcp, ["mcp__fx__echo"]);
 }

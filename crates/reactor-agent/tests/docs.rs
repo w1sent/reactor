@@ -245,6 +245,7 @@ fn rig(embedder: Option<Arc<dyn Embedder>>) -> Rig {
         model: "test/model".into(),
         embedder,
         limit: Default::default(),
+        deferred: Default::default(),
     };
     Rig {
         _dir: dir,

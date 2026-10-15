@@ -51,7 +51,7 @@ fn mcp_tag(
     };
     let tip = if up {
         format!(
-            "{} the MCP server `{server}`. While {} active, {} definition — about {tokens} tokens{} — is part of every request. A catalogue tool costs a line in the system prompt; this costs its whole schema, so activate only what the work needs.",
+            "{} the MCP server `{server}`. While {} active, {} definition — about {tokens} tokens{} — is part of every request once it is loaded — at once, unless the server's tools together cost more than the limit in Settings › Tools, when the agent loads each on demand. A catalogue tool costs a line in the system prompt; this costs its whole schema, so activate only what the work needs.",
             if every { "Every tool of" } else { "A tool of" },
             if every { "they are" } else { "it is" },
             if every { "their" } else { "its" },

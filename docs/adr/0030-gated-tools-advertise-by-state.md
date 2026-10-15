@@ -1,5 +1,9 @@
 # Gated tools advertise by state, and explain themselves when stale
 
+> **Extended by [ADR-0055](0055-large-tool-groups-are-loaded-on-demand.md):** the graph's tools
+> are also left for `tool_search` while their group is large; the gate below decides whether
+> they are offered at all, deferral how.
+
 A tool whose usefulness depends on session state — a goal set
 (goal-setting's `update_steps`), a scenario running (`reactor_phase_complete`)
 — is **registered once, always**, so its definition, description and backstop

@@ -399,6 +399,12 @@ impl McpHost {
     /// The definitions to advertise: those of `active` ids that a connected server offers, in
     /// id order -- fixed, so the request does not change from one turn to the next.
     pub fn specs(&self, active: &BTreeSet<String>) -> Vec<ToolSpec> {
+        self.grouped(active).into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// The same, each with the server it comes from: the group it is deferred with
+    /// (ADR-0055).
+    pub fn grouped(&self, active: &BTreeSet<String>) -> Vec<(String, ToolSpec)> {
         let inner = self.inner.lock().unwrap();
         let mut found: BTreeMap<&str, &McpTool> = BTreeMap::new();
         for l in inner
@@ -412,7 +418,10 @@ impl McpHost {
                 }
             }
         }
-        found.values().map(|t| t.spec()).collect()
+        found
+            .values()
+            .map(|t| (t.server.clone(), t.spec()))
+            .collect()
     }
 
     /// Whether `name` is a tool of a server this host knows.

@@ -414,7 +414,7 @@ impl Render for Editor {
                             .child(div().text_color(theme.foreground).child(heading))
                             .child(hints::info_button(
                                 "mcp-editor-info",
-                                "An MCP server gives the agent tools of its own. Its tools are listed in the Tools panel, off until you turn them on: each active tool puts its whole definition into every request, which the panel shows as a cost. A tag you give the server is on every one of its tools, so a toolset with that tag includes them. `${NAME}` in a value is the environment variable NAME — keep tokens there rather than in the file. REactor runs a local server as you, with no sandbox: only add ones you trust.",
+                                "An MCP server gives the agent tools of its own. Its tools are listed in the Tools panel, off until you turn them on: each active tool puts its whole definition into every request, which the panel shows as a cost (a server whose tools together pass the limit in Settings › Tools is loaded on demand instead). A tag you give the server is on every one of its tools, so a toolset with that tag includes them. `${NAME}` in a value is the environment variable NAME — keep tokens there rather than in the file. REactor runs a local server as you, with no sandbox: only add ones you trust.",
                             )),
                     )
                     .child(row(

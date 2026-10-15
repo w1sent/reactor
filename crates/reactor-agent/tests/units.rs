@@ -243,6 +243,8 @@ fn inputs<'a>(
         registry,
         skills,
         scenarios_dir: std::path::Path::new("/nonexistent"),
+        rules: &[],
+        deferred: &[],
     }
 }
 
@@ -424,5 +426,138 @@ mod usage {
             ]
         );
         assert_eq!(kinds.iter().map(|k| k.1).sum::<u64>(), 77);
+    }
+}
+
+// -- tool rules and deferred groups (ADR-0055) ----------------------------------------------------
+
+#[test]
+fn the_rules_of_the_tools_in_the_request_come_after_the_registry_and_say_the_graph_is_not_loaded() {
+    let (settings, state) = (Settings::default(), SessionState::default());
+    let registry = RegistryView {
+        block: "## Available RE tools (this machine)".into(),
+        ..Default::default()
+    };
+    let rules = [
+        "Use `read` to look at a file.".to_string(),
+        "Second.".to_string(),
+    ];
+    let deferred = ["graph_add".to_string()];
+    let mut i = inputs(&settings, &state, &registry, &[]);
+    i.rules = &rules;
+    i.deferred = &deferred;
+    let p = prompt::system_prompt(&i);
+    let at = |n: &str| {
+        p.find(n)
+            .unwrap_or_else(|| panic!("{n} missing from:\n{p}"))
+    };
+    assert!(at("## Available RE tools") < at("## Tool rules"));
+    assert!(at("## Tool rules") < at("## Case graph"));
+    assert!(p.contains("- Use `read` to look at a file.\n- Second."));
+    assert!(p.contains("`tool_search` with `select:graph_add"));
+    // With nothing deferred the graph block is the plain text.
+    i.deferred = &[];
+    assert!(!prompt::system_prompt(&i).contains("tool_search"));
+}
+
+mod deferral {
+    use std::collections::BTreeSet;
+
+    use reactor_agent::deferral::{self, Candidate, TOOL};
+    use reactor_agent::inspect::Origin;
+    use reactor_agent::llm::ToolSpec;
+    use serde_json::json;
+
+    fn tool(name: &str, description: &str, params: usize) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({"type": "object", "properties": {"p": {"description": "x".repeat(params)}}}),
+        }
+    }
+
+    fn cand(group: Option<&str>, spec: ToolSpec) -> Candidate {
+        Candidate {
+            origin: Origin::ToolDefinition,
+            group: group.map(str::to_string),
+            spec,
+        }
+    }
+
+    fn names(p: &deferral::Plan) -> Vec<&str> {
+        p.advertised.iter().map(|(_, s)| s.name.as_str()).collect()
+    }
+
+    fn candidates() -> Vec<Candidate> {
+        vec![
+            cand(None, tool("bash", "Run it.", 10)),
+            cand(Some("big"), tool("big_a", "Find files. More text.", 2000)),
+            cand(Some("big"), tool("big_b", "Show a file.", 2000)),
+            cand(Some("small"), tool("small_a", "Tiny.", 20)),
+        ]
+    }
+
+    #[test]
+    fn only_a_group_over_the_threshold_is_left_for_the_search_tool() {
+        let p = deferral::plan(candidates(), &BTreeSet::new(), 1_000);
+        assert_eq!(names(&p), ["bash", "small_a", TOOL]);
+        let left: Vec<&str> = p.deferred.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(left, ["big_a", "big_b"]);
+        let search = &p.advertised.last().unwrap().1;
+        assert!(search.description.contains("- big_a: Find files"));
+        assert!(
+            !search.description.contains("More text"),
+            "a first sentence each"
+        );
+    }
+
+    #[test]
+    fn a_group_that_fits_is_advertised_and_there_is_no_search_tool() {
+        let p = deferral::plan(candidates(), &BTreeSet::new(), 100_000);
+        assert_eq!(names(&p), ["bash", "big_a", "big_b", "small_a"]);
+        assert!(p.deferred.is_empty());
+    }
+
+    #[test]
+    fn zero_defers_every_group_but_never_a_tool_that_has_none() {
+        let p = deferral::plan(candidates(), &BTreeSet::new(), 0);
+        assert_eq!(names(&p), ["bash", TOOL]);
+        assert_eq!(p.deferred.len(), 3);
+    }
+
+    #[test]
+    fn a_loaded_tool_is_advertised_and_the_search_tool_does_not_change() {
+        let none = deferral::plan(candidates(), &BTreeSet::new(), 1_000);
+        let loaded: BTreeSet<String> = ["big_b".to_string()].into();
+        let p = deferral::plan(candidates(), &loaded, 1_000);
+        assert_eq!(names(&p), ["bash", "big_b", "small_a", TOOL]);
+        assert_eq!(
+            p.advertised.last().unwrap().1,
+            none.advertised.last().unwrap().1,
+            "the listing is of what exists, not of what is left"
+        );
+    }
+
+    #[test]
+    fn select_names_tools_and_words_rank_a_name_over_a_description() {
+        let d = vec![
+            tool("net_hosts", "List the hosts a capture talked to.", 5),
+            tool("file_hash", "Hash a file. Names a host if it knows one.", 5),
+            tool("zip_open", "Open an archive.", 5),
+        ];
+        let got = |q: &str| -> Vec<&str> {
+            deferral::find(&d, q, 5)
+                .into_iter()
+                .map(|t| t.name.as_str())
+                .collect()
+        };
+        assert_eq!(
+            got("select:zip_open, FILE_HASH, nope"),
+            ["zip_open", "file_hash"]
+        );
+        assert_eq!(got("hosts"), ["net_hosts", "file_hash"]);
+        assert_eq!(got("hash"), ["file_hash"]);
+        assert!(got("nothing like it").is_empty());
+        assert_eq!(deferral::find(&d, "host", 1).len(), 1);
     }
 }

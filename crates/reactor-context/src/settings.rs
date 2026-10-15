@@ -261,6 +261,33 @@ impl Default for ToolOutputSettings {
     }
 }
 
+/// When tools are loaded on demand instead of advertised
+/// ([ADR-0055](../../../docs/adr/0055-large-tool-groups-are-loaded-on-demand.md)): a group of
+/// tools (the case graph's, or one MCP server's) whose definitions together cost more than
+/// `defer_over_tokens` is left out of the request, and the agent loads what it needs with
+/// `tool_search`. `0` defers every group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSearchSettings {
+    pub defer_over_tokens: usize,
+}
+
+impl ToolSearchSettings {
+    pub const MAX_TOKENS: usize = 100_000;
+
+    pub fn is_default(&self) -> bool {
+        *self == ToolSearchSettings::default()
+    }
+}
+
+impl Default for ToolSearchSettings {
+    fn default() -> Self {
+        Self {
+            defer_over_tokens: 1_000,
+        }
+    }
+}
+
 /// What a session may draw on from the rest of its case
 /// ([ADR-0047](../../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)), as one
 /// *layer* like [`ContextSettings`]: an absent field means "the layer below decides", and
@@ -361,6 +388,8 @@ pub struct Settings {
     pub context: ContextSettings,
     #[serde(skip_serializing_if = "ToolOutputSettings::is_default")]
     pub tool_output: ToolOutputSettings,
+    #[serde(skip_serializing_if = "ToolSearchSettings::is_default")]
+    pub tool_search: ToolSearchSettings,
     #[serde(skip_serializing_if = "MemorySettings::is_empty")]
     pub memory: MemorySettings,
     #[serde(skip_serializing_if = "EmbeddingSettings::is_empty")]
@@ -381,6 +410,7 @@ impl Default for Settings {
             reporting: ReportingSettings::default(),
             context: ContextSettings::default(),
             tool_output: ToolOutputSettings::default(),
+            tool_search: ToolSearchSettings::default(),
             memory: MemorySettings::default(),
             embedding: EmbeddingSettings::default(),
             models: Vec::new(),
@@ -459,6 +489,14 @@ impl Settings {
         {
             s.tool_output.max_inline_bytes =
                 (n as usize).clamp(ToolOutputSettings::MIN_BYTES, ToolOutputSettings::MAX_BYTES);
+        }
+        if let Some(n) = number(
+            root.get("toolSearch")
+                .and_then(|t| t.get("deferOverTokens")),
+        )
+        .filter(|n| *n >= 0.0 && n.fract() == 0.0)
+        {
+            s.tool_search.defer_over_tokens = (n as usize).min(ToolSearchSettings::MAX_TOKENS);
         }
         if let Some(m) = root.get("memory") {
             s.memory = MemorySettings::normalize(m);
@@ -549,6 +587,32 @@ impl Settings {
 mod threshold_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_deferral_threshold_is_kept_bounded_and_absent_means_a_thousand_tokens() {
+        let at = |v: Value| Settings::from_json(&v).tool_search.defer_over_tokens;
+        assert_eq!(at(json!({})), 1_000);
+        assert_eq!(at(json!({ "toolSearch": { "deferOverTokens": 0 } })), 0);
+        assert_eq!(
+            at(json!({ "toolSearch": { "deferOverTokens": 4000 } })),
+            4000
+        );
+        assert_eq!(
+            at(json!({ "toolSearch": { "deferOverTokens": 1e9 } })),
+            ToolSearchSettings::MAX_TOKENS
+        );
+        assert_eq!(
+            at(json!({ "toolSearch": { "deferOverTokens": -5 } })),
+            1_000
+        );
+        assert_eq!(
+            at(json!({ "toolSearch": { "deferOverTokens": "lots" } })),
+            1_000
+        );
+        let s = Settings::from_json(&json!({ "toolSearch": { "deferOverTokens": 0 } }));
+        let back = Settings::from_json(&serde_json::to_value(&s).unwrap());
+        assert_eq!(back.tool_search, s.tool_search);
+    }
 
     #[test]
     fn the_tool_output_limit_is_kept_clamped_and_absent_means_32_kib() {

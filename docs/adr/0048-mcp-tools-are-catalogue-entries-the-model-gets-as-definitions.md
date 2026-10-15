@@ -5,6 +5,12 @@
 > and two lists could not show that. Where this says "the Tools panel", read the Toolbox: the
 > `MCP · ~N tok` tag on the row and the line totalling the active ones are there, unchanged.
 
+> **Amended by [ADR-0055](0055-large-tool-groups-are-loaded-on-demand.md):** a server whose
+> active tools together cost more than a threshold is not advertised; the agent loads what it
+> needs with `tool_search`. "Puts its whole definition into every request" holds for what is
+> loaded, and the `MCP · ~N tok` tag is what loading it costs. The gateway rejected below is
+> still not what was built: a loaded tool is called as itself.
+
 REactor's position is that a CLI composes and an MCP call does not
 ([concept](../concept.md#why-a-cli)): a command's output can be filtered by `jq` or
 `rg` before it becomes context; a tool result cannot. That position stands. But MCP

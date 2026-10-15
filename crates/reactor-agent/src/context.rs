@@ -297,6 +297,9 @@ pub struct SessionState {
     /// and the chosen model when it gathers a request, and it decides whether the search
     /// tool offers the choice at all.
     pub meaning: bool,
+    /// The deferred tools this session has loaded with `tool_search` (ADR-0055): advertised
+    /// from then on, on this branch.
+    pub loaded: std::collections::BTreeSet<String>,
 }
 
 pub const KEY_MANIFEST: &str = "manifest";
@@ -305,6 +308,7 @@ pub const KEY_REPORTING: &str = "reporting";
 pub const KEY_SCENARIO: &str = "scenario";
 pub const KEY_CONTEXT: &str = "context";
 pub const KEY_MEMORY: &str = "memory";
+pub const KEY_TOOLS: &str = "tools";
 
 impl SessionState {
     pub fn load(store: &Store) -> SessionState {
@@ -319,6 +323,18 @@ impl SessionState {
                 KEY_REPORTING => s.reporting = reporting::SessionState::normalize(data),
                 KEY_CONTEXT => s.context = ContextSettings::normalize(data),
                 KEY_MEMORY => s.memory = MemorySettings::normalize(data),
+                KEY_TOOLS => {
+                    s.loaded = data
+                        .get("loaded")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }
                 KEY_SCENARIO => {
                     s.scenario = serde_json::from_value(data.clone())
                         .ok()

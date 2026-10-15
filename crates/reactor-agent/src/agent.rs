@@ -37,10 +37,11 @@ use crate::context::{
     self, Item, KEY_IDENTITY, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
     estimate_tokens, msg_tokens, project, save_state,
 };
+use crate::deferral::{self, Candidate};
 use crate::entry::{Attachment, EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
 use crate::inspect::ContextPreview;
-use crate::llm::{Delta, Llm, LlmRequest};
+use crate::llm::{Delta, Llm, LlmRequest, ToolSpec};
 use crate::prompt::{self, RegistryView};
 use crate::skills::{self, Skill};
 use crate::store::Store;
@@ -242,6 +243,9 @@ pub struct Agent<L: Llm, S: Summarizer> {
     /// Real tokens per estimated token, learned from what the provider reports.
     ratio: Mutex<f64>,
     authored_skills: Vec<Skill>,
+    /// What the last request left for `tool_search`: the tool needs it to answer, and it is
+    /// what that request's model call was shown.
+    deferred: Mutex<Arc<Vec<ToolSpec>>>,
 }
 
 impl<L: Llm, S: Summarizer> Agent<L, S> {
@@ -269,6 +273,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 tracker: Mutex::new(reporting::Tracker::new()),
                 ratio: Mutex::new(1.0),
                 authored_skills,
+                deferred: Mutex::new(Arc::new(Vec::new())),
             },
             rx,
         )
@@ -332,19 +337,57 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         })
     }
 
-    /// The tool definitions of this request: ours, then those of the MCP tools that are active.
-    fn advertised(&self, g: &Gathered) -> Vec<crate::llm::ToolSpec> {
-        let mut specs = self
+    /// The tool definitions of this request: ours, then those of the MCP tools that are
+    /// active, less the groups left for `tool_search` (ADR-0055).
+    fn definitions(&self, g: &Gathered) -> deferral::Plan {
+        let mut candidates: Vec<Candidate> = self
             .tools
-            .specs_limited(&g.state, default_limit(&g.settings));
+            .specs_limited(&g.state, default_limit(&g.settings))
+            .into_iter()
+            .map(|spec| Candidate {
+                origin: crate::inspect::Origin::ToolDefinition,
+                group: self
+                    .tools
+                    .find(&spec.name)
+                    .and_then(|t| t.group())
+                    .map(str::to_string),
+                spec,
+            })
+            .collect();
         if let Some(host) = &self.cfg.mcp {
-            specs.extend(host.specs(&g.view.mcp));
+            candidates.extend(host.grouped(&g.view.mcp).into_iter().map(|(server, spec)| {
+                Candidate {
+                    origin: crate::inspect::Origin::McpDefinition,
+                    group: Some(format!("mcp:{server}")),
+                    spec,
+                }
+            }));
         }
-        specs
+        deferral::plan(
+            candidates,
+            &g.state.loaded,
+            g.settings.tool_search.defer_over_tokens,
+        )
     }
 
-    fn system_parts(&self, g: &Gathered) -> Vec<(prompt::Part, String)> {
+    fn system_parts(&self, g: &Gathered, plan: &deferral::Plan) -> Vec<(prompt::Part, String)> {
+        // The rules of the tools that are in the request, once each, in the request's order.
+        let mut rules: Vec<String> = Vec::new();
+        for (_, spec) in &plan.advertised {
+            for rule in self
+                .tools
+                .find(&spec.name)
+                .map_or(&[][..], |t| t.guidelines())
+            {
+                if !rules.iter().any(|r| r == rule) {
+                    rules.push((*rule).to_string());
+                }
+            }
+        }
+        let deferred: Vec<String> = plan.deferred.iter().map(|t| t.name.clone()).collect();
         prompt::system_parts(&prompt::Inputs {
+            rules: &rules,
+            deferred: &deferred,
             base: &self.cfg.base_prompt,
             settings: &g.settings,
             state: &g.state,
@@ -357,8 +400,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// The request as it would be sent now, and what it costs.
     async fn build(&self) -> Result<(LlmRequest, u64, Vec<Item>)> {
         let g = self.gather().await?;
-        let system = prompt::join_parts(&self.system_parts(&g));
-        let tools = self.advertised(&g);
+        let plan = self.definitions(&g);
+        let system = prompt::join_parts(&self.system_parts(&g, &plan));
+        *self.deferred.lock().unwrap() = Arc::new(plan.deferred.clone());
+        let tools: Vec<ToolSpec> = plan.advertised.into_iter().map(|(_, s)| s).collect();
         let Gathered {
             settings,
             state,
@@ -405,7 +450,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         let g = self.gather().await?;
         let mut segments = Vec::new();
 
-        let parts = self.system_parts(&g);
+        let plan = self.definitions(&g);
+        let parts = self.system_parts(&g, &plan);
         // The budget counts the joined prompt, so the total does too; each piece's own
         // estimate is rounded separately and may differ from its share by a token.
         let system_tokens = estimate_tokens(&prompt::join_parts(&parts));
@@ -414,6 +460,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 prompt::Part::Base => (Origin::Base, "Base prompt"),
                 prompt::Part::Identity => (Origin::Identity, "Identity"),
                 prompt::Part::Registry => (Origin::Registry, "Available tools"),
+                prompt::Part::Rules => (Origin::Base, "Tool rules"),
                 prompt::Part::Skills => (Origin::Skills, "Skills"),
                 prompt::Part::CaseGraph => (Origin::CaseGraph, "Case graph"),
                 prompt::Part::Manifest => (Origin::Manifest, "Manifest"),
@@ -431,20 +478,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             });
         }
 
-        // Ours, then the MCP tools' (the order of the request itself).
-        let mcp_specs = self
-            .cfg
-            .mcp
-            .as_ref()
-            .map(|h| h.specs(&g.view.mcp))
-            .unwrap_or_default();
-        let ours = self
-            .tools
-            .specs_limited(&g.state, default_limit(&g.settings));
-        let defs = ours
-            .into_iter()
-            .map(|t| (Origin::ToolDefinition, t))
-            .chain(mcp_specs.into_iter().map(|t| (Origin::McpDefinition, t)));
+        // What the request carries, in its order (tool_search among them when a group is
+        // left for it).
+        let defs = plan.advertised;
         for (origin, t) in defs {
             let text = format!(
                 "{}\n\n{}",
@@ -478,7 +514,11 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                         _ => None,
                     };
                     match given {
-                        Some(label) => (Origin::Document, format!("#{id} given: {label}"), text.clone()),
+                        Some(label) => (
+                            Origin::Document,
+                            format!("#{id} given: {label}"),
+                            text.clone(),
+                        ),
                         None => (Origin::User, format!("#{id} you"), text.clone()),
                     }
                 }
@@ -865,9 +905,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             found
                 .into_iter()
                 .map(|r| match &r.target {
-                    crate::references::Target::File(path) => {
-                        crate::references::file(&cwd, path)
-                    }
+                    crate::references::Target::File(path) => crate::references::file(&cwd, path),
                     crate::references::Target::Doc { name, section } => {
                         crate::references::document(case.db(), name, section.as_deref())
                     }
@@ -967,6 +1005,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 model: self.llm.name(),
                 embedder: self.cfg.embedder.get(),
                 limit,
+                deferred: self.deferred.lock().unwrap().clone(),
             };
             let out = match (self.tools.find(name), &self.cfg.mcp) {
                 (Some(tool), _) => tool.call(args.clone(), &ctx).await,

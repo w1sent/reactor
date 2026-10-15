@@ -1337,7 +1337,7 @@ fn mcp_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
             .icon(IconName::Wrench)
             .groups([names, list]),
         "mcp-info",
-        "An MCP server gives the agent tools of its own. Add a local one (a command REactor starts and talks to) or a remote one (a URL). Each of its tools is listed in the Tools panel, off until you activate it, and tagged with what it costs: an active MCP tool puts its whole definition into every request, where an ordinary tool costs a line in the system prompt. By default a tool is called by the name its server gives it; with the prefix on it is `mcp__<server>__<tool>`, which keeps servers apart. A name that another tool already has keeps the prefix either way, so nothing is shadowed, and changing the setting renames every tool, so tools switched on one by one need switching on again. A tag you give a server is on all its tools, so a toolset with that tag includes them; every MCP tool also has the tag `mcp`. Servers are kept in ~/.reactor/mcp.json (the `mcpServers` form other clients use) and are connected to once for the window. A tool list is read when the server connects: use Reconnect after a server changes. REactor does not sandbox a local server — it runs as you.",
+        "An MCP server gives the agent tools of its own. Add a local one (a command REactor starts and talks to) or a remote one (a URL). Each of its tools is listed in the Tools panel, off until you activate it, and tagged with what it costs: an active MCP tool puts its whole definition into every request, where an ordinary tool costs a line in the system prompt — unless the server's tools together cost more than the limit under Tools, when they are not sent and the agent loads the ones it needs on demand (`tool_search`). By default a tool is called by the name its server gives it; with the prefix on it is `mcp__<server>__<tool>`, which keeps servers apart. A name that another tool already has keeps the prefix either way, so nothing is shadowed, and changing the setting renames every tool, so tools switched on one by one need switching on again. A tag you give a server is on all its tools, so a toolset with that tag includes them; every MCP tool also has the tag `mcp`. Servers are kept in ~/.reactor/mcp.json (the `mcpServers` form other clients use) and are connected to once for the window. A tool list is read when the server connects: use Reconnect after a server changes. REactor does not sandbox a local server — it runs as you.",
     )
 }
 
@@ -1350,6 +1350,26 @@ fn tools_page(app: &Entity<ReactorApp>) -> SettingPage {
             (1.0, 1024.0),
             |s| s.tool_output.max_inline_bytes / 1024,
             |s, n| s.tool_output.max_inline_bytes = n.clamp(1, 1024) * 1024,
+        ))
+        .item(count_field(
+            app,
+            "Load a group of tools on demand above (tokens)",
+            &[
+                "tool",
+                "search",
+                "defer",
+                "load",
+                "demand",
+                "mcp",
+                "graph",
+                "definitions",
+            ],
+            (0.0, 100_000.0),
+            |s| s.tool_search.defer_over_tokens,
+            |s, n| {
+                s.tool_search.defer_over_tokens =
+                    n.min(reactor_context::settings::ToolSearchSettings::MAX_TOKENS)
+            },
         ))
         .item(actions(
             "Activation",

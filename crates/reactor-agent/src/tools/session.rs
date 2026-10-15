@@ -34,13 +34,13 @@ impl Tool for HistoryIndex {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_index".into(),
-            description: "List the session log, one line per entry: #id, kind, size, a preview, and whether a context reduction currently hides it. Everything ever said or run is here, including what has left your context. With `session`, list another session of this case instead; with `session: \"all\"`, list the case's sessions.".into(),
+            description: "List the session log, one line per entry: #id, kind, size, a preview, and whether a context reduction hides it. Everything ever said or run is here, including what has left your context.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "from": { "type": "integer", "description": "First entry id." },
-                    "to": { "type": "integer", "description": "Last entry id." },
-                    "session": { "type": "string", "description": "Another session's id, or `all` for the list of sessions. Default: this session." }
+                    "from": { "type": "integer", "description": "First entry id (default: the start)." },
+                    "to": { "type": "integer", "description": "Last entry id (default: the end)." },
+                    "session": { "type": "string", "description": "Another session of this case: its id, or `all` for the list of sessions (default: this session)." }
                 }
             }),
         }
@@ -81,14 +81,14 @@ impl Tool for HistoryRead {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_read".into(),
-            description: "Read one session entry in full by its #id -- a tool output that was cut or dropped from your context is here whole. Page a large one with `offset` (1-based line) and `limit` (lines); a cut output's note gives the call that reads the lines it left out. With `session`, read an entry of another session of this case.".into(),
+            description: "Read one session entry in full by its #id. A tool output that was cut or dropped from your context is here whole; page a large one with `offset` and `limit`.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "integer" },
-                    "offset": { "type": "integer", "description": "First line, 1-based." },
-                    "limit": { "type": "integer", "description": "How many lines." },
-                    "session": { "type": "string", "description": "Another session's id. Default: this session." }
+                    "id": { "type": "integer", "description": "The entry's #id." },
+                    "offset": { "type": "integer", "description": "Line to start from (1-based, default 1)." },
+                    "limit": { "type": "integer", "description": "Maximum number of lines (default: to the end)." },
+                    "session": { "type": "string", "description": "Read an entry of another session of this case (default: this session)." }
                 },
                 "required": ["id"]
             }),
@@ -135,14 +135,14 @@ impl Tool for HistorySearch {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "history_search".into(),
-            description: "Search every line of every session entry -- including dropped ones and the whole of cut tool output -- with a regular expression. Returns #id:line matches. Optionally restrict to kinds: user, assistant, tool_result. With `all_sessions`, search the case's other sessions too; their matches are prefixed `session <id>`.".into(),
+            description: "Search every line of every session entry, including dropped ones and the whole of cut tool output, with a regular expression. Returns `#id:line` matches.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string" },
-                    "kinds": { "type": "array", "items": { "type": "string" } },
-                    "limit": { "type": "integer", "description": "Default 50." },
-                    "all_sessions": { "type": "boolean", "description": "Also search the other sessions of this case. Default false." }
+                    "pattern": { "type": "string", "description": "A regular expression." },
+                    "kinds": { "type": "array", "description": "Only these kinds of entry: user, assistant, tool_result (default: all).", "items": { "type": "string" } },
+                    "limit": { "type": "integer", "description": "Maximum number of matches (default 50)." },
+                    "all_sessions": { "type": "boolean", "description": "Also search the case's other sessions; their matches are prefixed `session <id>` (default false)." }
                 },
                 "required": ["pattern"]
             }),
@@ -191,7 +191,7 @@ impl Tool for UpdateSteps {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "update_steps".into(),
-            description: "Overwrite the step list of the session manifest -- the manifest's own durable steps, unrelated to REactor scenarios. Each step has a short conceptual summary (an investigative question or milestone, not a micro-action) and a 3-word status. Requires a session goal; called without one it returns instructions instead of acting.".into(),
+            description: "Overwrite the manifest's step list. A step is a short summary of an investigative question or milestone, not a micro-action, with a 3-word status. Needs a session goal. Unrelated to scenario phases.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -248,7 +248,7 @@ impl Tool for PhaseComplete {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: reactor_context::scenario::TOOL_NAME.into(),
-            description: "Mark the current REactor scenario's phase complete and receive the next phase's briefing. Call it once a phase's work is genuinely finished, with a summary of what you concluded -- not before, and not to narrate progress mid-phase. Phases are unrelated to the session manifest's steps (update_steps).".into(),
+            description: "Mark the current scenario phase complete and receive the next phase's briefing. Call it once, when the phase's work is finished, with a summary of what you concluded; not to narrate progress. Unrelated to the manifest's steps (update_steps).".into(),
             parameters: json!({
                 "type": "object",
                 "properties": { "summary": { "type": "string", "description": "What you concluded in this phase. Required before the scenario advances." } },

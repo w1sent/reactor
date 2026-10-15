@@ -93,10 +93,10 @@ impl Origin {
             Origin::Reporting => "The reporting discipline: `/report on`, level and folder.",
             Origin::Scenario => "The current scenario phase's briefing: `/reactor-scenario`.",
             Origin::ToolDefinition => {
-                "The tools the model may call, with their argument schemas. Sent with every request."
+                "The tools the model may call, with their argument schemas. Sent with every request. A large group (the case graph's tools) is left out and listed by `tool_search`, which loads what is asked for."
             }
             Origin::McpDefinition => {
-                "The definitions of the active tools of MCP servers, sent with every request. Activate only what the work needs: Tools panel, `/tool`, `/toolset`."
+                "The definitions of the active tools of MCP servers, sent with every request once loaded. A server whose tools together pass the limit in Settings › Tools is listed by `tool_search` instead, and only what the agent loaded is here. Activate only what the work needs: Tools panel, `/tool`, `/toolset`."
             }
             Origin::User => "A prompt you sent.",
             Origin::Document => {

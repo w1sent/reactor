@@ -77,3 +77,5 @@ marks 0041 † for that.
 | [0051](0051-the-scenarios-are-compiled-in-and-seeded-by-setup.md) | The scenarios are compiled in and seeded by `reactor setup`, and their absence is said |
 | [0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md) | The window is a rail, a drawer and a workspace, and a session's state sits in its own pane |
 | [0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md) | A call chooses how much of its output it sees, and the cut says how to read the rest |
+| [0055](0055-large-tool-groups-are-loaded-on-demand.md) | Large tool groups are loaded on demand, through one tool that lists them |
+| [0056](0056-a-tool-says-what-it-does-and-the-rules-are-one-line-each.md) | A tool's description says what it does, and the rules of use are one line each in the prompt |

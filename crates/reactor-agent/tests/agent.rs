@@ -179,14 +179,21 @@ async fn a_turn_without_tools_records_the_exchange_and_streams_it() {
             "history_index",
             "history_read",
             "history_search",
-            "graph_add",
-            "graph_annotate",
-            "graph_query",
-            "graph_pull",
-            "artifact_register"
+            "tool_search"
         ],
-        "the state-gated tools are not advertised"
+        "the state-gated tools are not advertised, and the graph's five wait for tool_search"
     );
+    let search = req.tools.last().unwrap();
+    for name in [
+        "graph_add",
+        "graph_annotate",
+        "graph_query",
+        "graph_pull",
+        "artifact_register",
+    ] {
+        assert!(search.description.contains(name), "{name} is not listed");
+    }
+    assert!(req.system.contains("select:graph_add"));
 }
 
 #[tokio::test]
@@ -866,6 +873,16 @@ async fn skills_are_offered_by_their_requirements_and_upstream_skills_by_the_reg
 /// A window small enough that one dump forces a reduction.
 const SMALL: u64 = 5_000;
 
+/// Advertise every tool, whatever a group costs (ADR-0055).
+fn no_deferral(cfg: &mut AgentConfig) {
+    std::fs::create_dir_all(&cfg.paths.config_dir).unwrap();
+    std::fs::write(
+        cfg.paths.config_dir.join("settings.json"),
+        r#"{"toolSearch":{"deferOverTokens":100000}}"#,
+    )
+    .unwrap();
+}
+
 /// Detach the session from the case's graph: its tools and its block alone are most of
 /// a window this small, and these tests are about the budget, not the graph.
 fn detached(cfg: &mut AgentConfig) {
@@ -1243,6 +1260,230 @@ async fn the_file_tools_read_write_and_edit_relative_to_the_working_directory() 
     assert_eq!(
         std::fs::read_to_string(r.root.join("work/notes/a.txt")).unwrap(),
         "alpha\nBETA\ngamma\n"
+    );
+}
+
+#[tokio::test]
+async fn edit_applies_every_replacement_against_the_original_or_none_of_them() {
+    let call = |id: &str, args: serde_json::Value| ScriptedLlm::call("", &[(id, "edit", args)]);
+    let r = rig(
+        vec![
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "w",
+                    "write",
+                    json!({"path": "f.txt", "content": "one\ntwo\nthree\nfour\n"}),
+                )],
+            ),
+            // Two disjoint replacements in one call.
+            call(
+                "1",
+                json!({"path": "f.txt", "edits": [
+                {"old_string": "one", "new_string": "1"},
+                {"old_string": "three", "new_string": "3"}]}),
+            ),
+            // One that cannot apply stops them all.
+            call(
+                "2",
+                json!({"path": "f.txt", "edits": [
+                {"old_string": "two", "new_string": "2"},
+                {"old_string": "nope", "new_string": "x"}]}),
+            ),
+            // Matched against the original, so overlapping ones are refused.
+            call(
+                "3",
+                json!({"path": "f.txt", "edits": [
+                {"old_string": "1\ntwo", "new_string": "A"},
+                {"old_string": "two\n3", "new_string": "B"}]}),
+            ),
+            // Not unique, and not asked to be.
+            call(
+                "4",
+                json!({"path": "f.txt", "edits": [{"old_string": "o", "new_string": "O"}]}),
+            ),
+            // replace_all.
+            call(
+                "5",
+                json!({"path": "f.txt", "edits": [
+                {"old_string": "o", "new_string": "O", "replace_all": true}]}),
+            ),
+            // The older shape, one replacement at the top level.
+            call(
+                "6",
+                json!({"path": "f.txt", "old_string": "3", "new_string": "three"}),
+            ),
+            call("7", json!({"path": "f.txt"})),
+            ScriptedLlm::say("ok"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "edits").await.unwrap();
+    let res = results(&r);
+    assert!(res[1].contains("(2 replacements)"), "{}", res[1]);
+    assert!(
+        res[2].contains("edit 2: old_string not found"),
+        "{}",
+        res[2]
+    );
+    assert!(res[3].contains("edit 1 and edit 2 overlap"), "{}", res[3]);
+    assert!(
+        res[4].contains("matches 2 times") && res[4].contains("replace_all"),
+        "{}",
+        res[4]
+    );
+    assert!(res[5].starts_with("edited "), "{}", res[5]);
+    assert!(res[6].starts_with("edited "), "{}", res[6]);
+    assert!(res[7].contains("needs `edits`"), "{}", res[7]);
+    assert_eq!(
+        std::fs::read_to_string(r.root.join("work/f.txt")).unwrap(),
+        "1\ntwO\nthree\nfOur\n"
+    );
+}
+
+// -- large tool groups are loaded on demand (ADR-0055) ----------------------------------------
+
+fn tool_names(req: &reactor_agent::llm::LlmRequest) -> Vec<&str> {
+    req.tools.iter().map(|t| t.name.as_str()).collect()
+}
+
+#[tokio::test]
+async fn a_load_puts_the_tool_in_the_next_request_and_stays_loaded() {
+    let r = rig(
+        vec![
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "t1",
+                    "tool_search",
+                    json!({"query": "select:graph_query,nope"}),
+                )],
+            ),
+            ScriptedLlm::say("looked"),
+            ScriptedLlm::say("again"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "go").await.unwrap();
+    run(&r, "and again").await.unwrap();
+
+    let reqs = r.llm.requests();
+    assert!(!tool_names(&reqs[0]).contains(&"graph_query"));
+    assert!(
+        tool_names(&reqs[1]).contains(&"graph_query"),
+        "{:?}",
+        tool_names(&reqs[1])
+    );
+    assert!(
+        !tool_names(&reqs[1]).contains(&"graph_add"),
+        "only what was asked for"
+    );
+    assert!(
+        tool_names(&reqs[2]).contains(&"graph_query"),
+        "a later turn keeps it"
+    );
+
+    let res = results(&r);
+    assert!(res[0].starts_with("Loaded: graph_query."), "{}", res[0]);
+    // The list tool_search shows does not change with a load: the request's prefix holds.
+    let listing = |i: usize| {
+        reqs[i]
+            .tools
+            .iter()
+            .find(|t| t.name == "tool_search")
+            .unwrap()
+            .description
+            .clone()
+    };
+    assert_eq!(listing(0), listing(1));
+    assert!(
+        SessionState::load(&r.agent.store().lock().unwrap())
+            .loaded
+            .contains("graph_query")
+    );
+}
+
+#[tokio::test]
+async fn words_load_the_best_matches_and_a_miss_says_what_is_left() {
+    let r = rig(
+        vec![
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "t1",
+                    "tool_search",
+                    json!({"query": "register file hashes"}),
+                )],
+            ),
+            ScriptedLlm::call("", &[("t2", "tool_search", json!({"query": "zebra"}))]),
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "t3",
+                    "tool_search",
+                    json!({"query": "select:artifact_register"}),
+                )],
+            ),
+            ScriptedLlm::say("done"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "go").await.unwrap();
+    let res = results(&r);
+    assert!(
+        res[0].starts_with("Loaded: artifact_register"),
+        "{}",
+        res[0]
+    );
+    assert!(
+        res[1].contains("No tool matches `zebra`") && res[1].contains("graph_add"),
+        "{}",
+        res[1]
+    );
+    assert!(
+        res[2].starts_with("Already loaded: artifact_register"),
+        "{}",
+        res[2]
+    );
+}
+
+#[tokio::test]
+async fn a_group_under_the_threshold_is_advertised_and_there_is_nothing_to_search() {
+    let r = rig_with(
+        vec![ScriptedLlm::say("ok")],
+        Sum::says("-"),
+        100_000,
+        no_deferral,
+    );
+    run(&r, "hi").await.unwrap();
+    let names = tool_names(&r.llm.requests()[0])
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"graph_add".to_string()));
+    assert!(!names.contains(&"tool_search".to_string()));
+    assert!(!r.llm.requests()[0].system.contains("tool_search"));
+}
+
+#[tokio::test]
+async fn a_threshold_of_zero_defers_every_group_and_a_detached_graph_has_none() {
+    let zero = |cfg: &mut AgentConfig| {
+        std::fs::create_dir_all(&cfg.paths.config_dir).unwrap();
+        std::fs::write(
+            cfg.paths.config_dir.join("settings.json"),
+            r#"{"toolSearch":{"deferOverTokens":0},"memory":{"caseGraph":false}}"#,
+        )
+        .unwrap();
+    };
+    let r = rig_with(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000, zero);
+    run(&r, "hi").await.unwrap();
+    let reqs = r.llm.requests();
+    assert!(
+        !tool_names(&reqs[0]).contains(&"tool_search"),
+        "no graph, no MCP: nothing to load"
     );
 }
 
@@ -1656,6 +1897,7 @@ async fn a_session_reaches_the_cases_other_sessions_unless_the_switch_is_off() {
         model: "test/model".into(),
         embedder: None,
         limit: Default::default(),
+        deferred: Default::default(),
     };
     let tools = Tools::standard(r.root.join("work"));
     let search = tools.find("history_search").unwrap();
@@ -1737,7 +1979,12 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
             req.tools.len(),
         )
     };
-    let on = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
+    let on = rig_with(
+        vec![ScriptedLlm::say("ok")],
+        Sum::says("-"),
+        100_000,
+        no_deferral,
+    );
     run(&on, "hi").await.unwrap();
     let off = rig_with(
         vec![ScriptedLlm::say("ok")],
@@ -1754,6 +2001,18 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
     eprintln!("the case graph costs {graph} tokens of every request (estimated)");
     // A ceiling, so that growing it is a decision and not an accident.
     assert!(graph < 3_000, "{graph}");
+
+    // By default the five wait for tool_search: the block stays, the definitions go.
+    let waiting = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
+    run(&waiting, "hi").await.unwrap();
+    let (deferred, block, count) = cost(&waiting);
+    let left = deferred - without;
+    eprintln!("deferred, the case graph costs {left} tokens of every request (estimated)");
+    assert!(
+        block && count == 8,
+        "{count} tools: the seven and tool_search"
+    );
+    assert!(left + 1_000 < graph, "{left} against {graph}");
 }
 
 // -- given documents and # references ---------------------------------------------------------
@@ -1773,7 +2032,11 @@ fn given_text(label: &str, text: &str) -> reactor_agent::entry::Attachment {
 #[tokio::test]
 async fn a_file_named_with_a_hash_goes_along_with_the_message_and_stays_text_in_it() {
     let r = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
-    std::fs::write(r.root.join("work").join("notes.txt"), "the alarm was silenced").unwrap();
+    std::fs::write(
+        r.root.join("work").join("notes.txt"),
+        "the alarm was silenced",
+    )
+    .unwrap();
     run(&r, "why? see #notes.txt").await.unwrap();
 
     assert_eq!(kinds(&r), ["session", "attachment", "user", "assistant"]);
@@ -1795,7 +2058,9 @@ async fn a_file_named_with_a_hash_goes_along_with_the_message_and_stays_text_in_
 #[tokio::test]
 async fn a_reference_that_names_nothing_is_left_as_text_and_attaches_nothing() {
     let mut r = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
-    run(&r, "look at #missing.txt and #doc:nothing.pdf").await.unwrap();
+    run(&r, "look at #missing.txt and #doc:nothing.pdf")
+        .await
+        .unwrap();
     assert_eq!(kinds(&r), ["session", "user", "assistant"]);
     let notices = drain(&mut r.events)
         .into_iter()
@@ -1811,7 +2076,10 @@ async fn something_given_is_in_the_next_request_until_it_is_detached() {
         Sum::says("-"),
         100_000,
     );
-    let id = r.agent.attach(given_text("manual.pdf", "bearing limit 85")).unwrap();
+    let id = r
+        .agent
+        .attach(given_text("manual.pdf", "bearing limit 85"))
+        .unwrap();
     assert_eq!(r.agent.attachments().len(), 1);
     run(&r, "first").await.unwrap();
     assert!(

@@ -295,10 +295,13 @@ pub fn detail(db: &Db, e: &Element) -> reactor_db::Result<String> {
 pub struct GraphAdd;
 
 impl Tool for GraphAdd {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_add".into(),
-            description: "Add to the case's graph what a source says. An `entity` is a thing that can show up in many places (an address, a host, a hash): give its type and value, and the same value always lands on the same node. An `event` happened and an `observation` holds: each links the entities it involves by role (src/dst, actor/target, parent/child, subject/object, query/answer) and MUST name its `source` -- a file or table in the case, or a session entry as `session:<id>#entry=<n>`. What you conclude yourself is not for this tool: use graph_annotate. For many rows, load them into reactor_data.sqlite and use graph_pull instead.".into(),
+            description: "Add to the case's graph what a source says. An `entity` is a thing that can show up in many places (an address, a host, a hash): the same type and value is always the same node. An `event` happened and an `observation` holds; each links the entities it involves by role, and needs a `source`. A conclusion of your own is not for this tool.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -308,12 +311,12 @@ impl Tool for GraphAdd {
                             "type": "object",
                             "properties": {
                                 "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
-                                "type": { "type": "string", "description": "Dot-namespaced, e.g. net.ipv4, net.domain, file.hash.sha256, host.name, account.user, auth.logon, net.connection, net.resolution. `graph_query what=types` lists the ones in use." },
-                                "value": { "type": "string", "description": "An entity's value; optional label for a claim." },
-                                "scope": { "type": "string", "description": "Entity only: the context a value is unique in (a private address at site-a)." },
-                                "time": { "type": "string", "description": "Event: when it happened, as the source wrote it." },
-                                "valid_from": { "type": "string" },
-                                "valid_to": { "type": "string" },
+                                "type": { "type": "string", "description": "Dot-namespaced, e.g. net.ipv4, file.hash.sha256, host.name, auth.logon, net.connection. `graph_query` with `what: vocabulary` lists the known ones." },
+                                "value": { "type": "string", "description": "An entity's value, or an optional label for an event or observation." },
+                                "scope": { "type": "string", "description": "Entities only: the context the value is unique in (a private address at site-a)." },
+                                "time": { "type": "string", "description": "Events: when it happened, as the source wrote it." },
+                                "valid_from": { "type": "string", "description": "Observations: when it started to hold." },
+                                "valid_to": { "type": "string", "description": "Observations: when it stopped." },
                                 "confidence": { "type": "string" },
                                 "tags": { "type": "array", "items": { "type": "string" } },
                                 "props": { "type": "object" },
@@ -322,13 +325,13 @@ impl Tool for GraphAdd {
                                     "items": {
                                         "type": "object",
                                         "properties": {
-                                            "role": { "type": "string" },
+                                            "role": { "type": "string", "description": "src/dst, actor/target, parent/child, subject/object, query/answer, ..." },
                                             "to": { "description": "An element id, or {type, value} for an entity." }
                                         },
                                         "required": ["role", "to"]
                                     }
                                 },
-                                "source": { "description": "A URI, or {uri, locator}. Required for an event or observation." }
+                                "source": { "description": "A URI, or {uri, locator}: a file or table in the case, or a session entry as `session:<id>#entry=<n>`. Required for an event or observation." }
                             },
                             "required": ["kind", "type"]
                         }
@@ -432,20 +435,23 @@ const ANNOTATIONS: [&str; 6] = [
 ];
 
 impl Tool for GraphAnnotate {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_annotate".into(),
-            description: "Record what you or the user conclude, in the case's graph. Add an annotation: a `hypothesis` (a candidate explanation), a `judgement` (your assessment of a claim, with a confidence; link it with `about`, and `supports` or `refutes` a hypothesis), a `note` (commentary, a question, a to-do), a `cluster` (these belong together: `members`), `same_as` (two entities are one: `about` both) or `search_negative` (you looked and found nothing: say where with `sources` and what for with `about`). Or `change` an element: its status (active, conflicting, soft-deleted), confidence, tags or properties -- a new version, nothing is overwritten. Or `revert` a mistake nothing builds on: one change by its number, or one element back to a version; preview first. Or `define_type`: make a recurring type of your own known, with its kind and a one-line definition; `icon` (a Lucide name) and `colour` say how it is drawn.".into(),
+            description: "Record in the case's graph what you or the user conclude, or revise it. `type` adds an annotation. `change` revises an element: a new version, nothing is overwritten. `revert` takes back a mistake nothing builds on (preview first). `define_type` makes a recurring type of your own known.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "type": { "type": "string", "enum": ANNOTATIONS },
-                    "text": { "type": "string", "description": "The hypothesis, assessment or note itself. Plain text when it is a sentence or two. Only a long one -- several paragraphs -- is written as Markdown (a short heading, lists, code in backticks), because the graph shows it rendered; a short one with markup in it just looks cluttered." },
-                    "confidence": { "type": "string", "description": "almost no chance | very unlikely | unlikely | roughly even | likely | very likely | almost certain" },
+                    "type": { "type": "string", "enum": ANNOTATIONS, "description": "hypothesis: a candidate explanation. judgement: your assessment of a claim, with a confidence (`about` it; `supports` or `refutes` a hypothesis). note: commentary, a question, a to-do. cluster: these belong together (`members`). same_as: two entities are one (`about` both). search_negative: you looked and found nothing (`sources` where, `about` what for)." },
+                    "text": { "type": "string", "description": "The hypothesis, assessment or note. Plain text; Markdown only for a long one (several paragraphs), because the graph shows it rendered." },
+                    "confidence": { "type": "string", "enum": ["almost no chance", "very unlikely", "unlikely", "roughly even", "likely", "very likely", "almost certain"] },
                     "about": { "type": "array", "description": "Element ids, or {type, value} entities.", "items": {} },
-                    "supports": { "type": "array", "items": {} },
-                    "refutes": { "type": "array", "items": {} },
-                    "members": { "type": "array", "items": {} },
+                    "supports": { "type": "array", "description": "Hypotheses this judgement supports (element ids).", "items": {} },
+                    "refutes": { "type": "array", "description": "Hypotheses this judgement refutes (element ids).", "items": {} },
+                    "members": { "type": "array", "description": "cluster: the elements that belong together.", "items": {} },
                     "sources": { "type": "array", "description": "search_negative: the URIs that were searched.", "items": { "type": "string" } },
                     "tags": { "type": "array", "items": { "type": "string" } },
                     "props": { "type": "object", "description": "E.g. for search_negative: {query, window_from, window_to}." },
@@ -478,9 +484,9 @@ impl Tool for GraphAnnotate {
                         "properties": {
                             "type": { "type": "string" },
                             "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
-                            "definition": { "type": "string" },
-                            "icon": { "type": "string" },
-                            "colour": { "type": "string" }
+                            "definition": { "type": "string", "description": "One line." },
+                            "icon": { "type": "string", "description": "A Lucide icon name." },
+                            "colour": { "type": "string", "description": "How it is drawn." }
                         },
                         "required": ["type"]
                     }
@@ -720,23 +726,26 @@ fn revert_call(s: &Scope, r: &Map<String, Value>) -> ToolOutput {
 pub struct GraphQuery;
 
 impl Tool for GraphQuery {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
     fn prints_much(&self) -> bool {
         true
     }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_query".into(),
-            description: "Read the case's graph. `find` lists elements (filter by kind, type prefix such as `net.` or `analysis.hypothesis`, text, tag). `element` shows one in full with everything it links to and everything that points at it -- for an entity that is where else it shows up; for a hypothesis, what supports and refutes it -- optionally `as_of` a moment or with its `history`. `relations` lists claims between two things as `from --type--> to`. `stale` lists what may no longer hold, `orphans` entities nothing mentions, `types` the types in use, `vocabulary` the known types by namespace (`type` narrows it: `net`), `files` the registered files and whether they changed. Absence here means not recorded, not that it does not exist.".into(),
+            description: "Read the case's graph. Absence here means not recorded, not that it does not exist.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "what": { "type": "string", "enum": ["find", "element", "relations", "stale", "orphans", "types", "vocabulary", "files"] },
+                    "what": { "type": "string", "enum": ["find", "element", "relations", "stale", "orphans", "types", "vocabulary", "files"], "description": "find: list elements (filter by `kind`, `type` prefix such as `net.` or `analysis.hypothesis`, `text`, `tag`). element: one in full, with what it links to and what links to it (`as_of`, `history`). relations: claims between two things, as `from --type--> to`. stale: what may no longer hold. orphans: entities nothing mentions. types: the types in use. vocabulary: the known types by namespace (`type` narrows it). files: the registered files and whether they changed." },
                     "id": { "description": "element, relations: an element id, or {type, value} for an entity." },
                     "kind": { "type": "string", "enum": ["entity", "event", "observation", "annotation", "external"] },
                     "type": { "type": "string", "description": "find: a type or its prefix." },
-                    "text": { "type": "string" },
-                    "tag": { "type": "string" },
-                    "include_deleted": { "type": "boolean" },
+                    "text": { "type": "string", "description": "find: text the element contains." },
+                    "tag": { "type": "string", "description": "find: a tag." },
+                    "include_deleted": { "type": "boolean", "description": "Also soft-deleted elements (default false)." },
                     "limit": { "type": "integer", "description": "find: default 40." },
                     "as_of": { "type": "string", "description": "element: a UTC timestamp; what was recorded by then." },
                     "history": { "type": "boolean", "description": "element: every version." }
@@ -939,16 +948,19 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
 pub struct GraphPull;
 
 impl Tool for GraphPull {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "graph_pull".into(),
-            description: "Turn rows of a source in the case into graph claims, each linked back to its row. `source` is `sqlite:reactor_data.sqlite?table=<t>`, or a .csv, .jsonl or .json file in the case (`json:path#/pointer` for an array inside). `query` is plain SQL over the table `src` (a whole SQLite file is also attached as `data`), whose column names say what each value is: \"@type\" (required: the claim's type), \"@time\" (an event) or \"@valid_from\"/\"@valid_to\" (an observation), \"@row\" (a stable row id, so pulling again changes nothing), \"<type>@<role>\" for each entity (e.g. src_ip AS \"net.ipv4@src\"), and any other column becomes a property. Pull what is relevant, not everything: aggregate large sets (count(*) ... GROUP BY) and leave the bulk in the source. `preview` shows what the first rows would become and writes nothing.".into(),
+            description: "Turn rows of a table or file in the case into graph claims, each linked back to its row. `query` is SQL over the table `src` (a whole SQLite file is also attached as `data`); its column names say what each value is: \"@type\" (required: the claim's type), \"@time\" (an event) or \"@valid_from\"/\"@valid_to\" (an observation), \"@row\" (a stable row id, so pulling again changes nothing), \"<type>@<role>\" for each entity (e.g. src_ip AS \"net.ipv4@src\"); any other column becomes a property.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "source": { "type": "string" },
-                    "query": { "type": "string" },
-                    "preview": { "type": "boolean" }
+                    "source": { "type": "string", "description": "`sqlite:reactor_data.sqlite?table=<t>`, or a .csv, .jsonl or .json file in the case (`json:path#/pointer` for an array inside)." },
+                    "query": { "type": "string", "description": "SQL over `src`." },
+                    "preview": { "type": "boolean", "description": "Show what the first rows would become and write nothing (default false)." }
                 },
                 "required": ["source", "query"]
             }),
@@ -1028,10 +1040,13 @@ impl Tool for GraphPull {
 pub struct ArtifactRegister;
 
 impl Tool for ArtifactRegister {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "artifact_register".into(),
-            description: "Register a file in the case as evidence or as something you produced: its path, hashes and kind are recorded and the file stays where it is. Do this for a sample, a capture, a dump, and for anything you unpack, extract or write that later work relies on (`parent` names the registered file it came out of). A file that changes afterwards is reported by `graph_query what=files`.".into(),
+            description: "Register a file in the case as evidence or as something you produced: its path, hashes and kind are recorded, and the file stays where it is. `graph_query` with `what: files` reports one that changed afterwards.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

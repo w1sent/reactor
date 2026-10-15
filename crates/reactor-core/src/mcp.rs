@@ -340,6 +340,7 @@ pub const RESERVED: &[&str] = &[
     "graph_pull",
     "artifact_register",
     "docs_search",
+    "tool_search",
 ];
 
 fn clean(tool: &str) -> String {

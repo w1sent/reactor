@@ -6410,6 +6410,7 @@ dependencies = [
  "reactor-core",
  "reactor-db",
  "regex",
+ "reqwest",
  "rig-core",
  "rmcp",
  "serde",

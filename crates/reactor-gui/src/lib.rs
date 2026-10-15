@@ -35,6 +35,7 @@ pub mod session;
 pub mod session_list;
 pub mod settings;
 pub mod settings_window;
+pub mod shortcuts;
 pub mod start;
 pub mod theme;
 pub mod toolbox;

@@ -78,6 +78,8 @@ actions!(
         ClosePalette,
         /// Open the settings window (Cmd+, / Ctrl+,, or the Commands menu).
         OpenSettings,
+        /// Open another terminal in the bottom dock (the Panels menu, or its shortcut).
+        NewConsole,
         /// The Case menu: make this folder a case (ADR-0045).
         SaveCase,
         /// The Case menu: import context documents (ADR-0046).
@@ -96,6 +98,26 @@ actions!(
 #[action(namespace = reactor_gui, no_json)]
 pub struct SelectModelAction {
     pub spec: String,
+}
+
+/// Thinking level picked from the menu beside Send: `off`, `low`, `medium`, `high`, or empty for
+/// the model's own.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = reactor_gui, no_json)]
+pub struct SelectThinkingAction {
+    pub level: String,
+}
+
+/// How a thinking level reads in the menu and on the picker.
+pub fn thinking_label(level: Option<&str>) -> &'static str {
+    match level {
+        Some("off") => "Off",
+        Some("low") => "Low",
+        Some("medium") => "Medium",
+        Some("high") => "High",
+        Some("on") => "On",
+        _ => "Default",
+    }
 }
 
 /// A layout preset picked from the Layout menu.
@@ -257,6 +279,8 @@ pub struct ReactorApp {
     pub inspect: Option<crate::inspect_ui::InspectUi>,
     /// Font family fields as typed (half a name is not applied, but is kept on screen).
     family_drafts: std::collections::HashMap<crate::settings::Slot, String>,
+    /// Why the keys last entered for a shortcut were not applied, by shortcut id.
+    shortcut_errors: std::collections::HashMap<&'static str, String>,
     /// The model page's provider and name fields.
     pub model_draft: crate::settings_window::ModelDraft,
     /// The provider and name typed on the Documents page for the embedding model.
@@ -353,10 +377,6 @@ pub fn bind_keys(cx: &mut App) {
     crate::files::hex::bind_keys(cx);
     crate::graph::panel::bind_keys(cx);
     cx.bind_keys(vec![
-        // `secondary` is Cmd on macOS and Ctrl elsewhere.
-        KeyBinding::new("secondary-p", OpenPalette, None),
-        KeyBinding::new("secondary-w", CloseTab, None),
-        KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("escape", CloseNotices, Some("ReactorNotices")),
         // The prompt: up on its top line and down on its bottom line walk through the messages
         // sent before; anywhere else the handlers decline and the input moves its cursor.
@@ -373,6 +393,9 @@ pub fn bind_keys(cx: &mut App) {
         // Esc always closes the palette — the list's own Esc only clears a typed query first.
         KeyBinding::new("escape", ClosePalette, Some("ReactorPalette > Input")),
     ]);
+    // The window's own shortcuts (the panels, the palette, the settings) are the person's
+    // to choose, and are installed apart so a change replaces only them.
+    crate::shortcuts::install(&crate::start::GuiConfig::load_ui().shortcuts, cx);
 }
 
 /// How many completions the popup lists.
@@ -1140,6 +1163,7 @@ impl ReactorApp {
             ui,
             inspect: None,
             family_drafts: Default::default(),
+            shortcut_errors: Default::default(),
             model_draft: Default::default(),
             reembed_armed: false,
             identity_remove_armed: None,
@@ -1373,6 +1397,7 @@ impl ReactorApp {
                 self.docs_panel.update(cx, |d, cx| d.refresh(cx));
                 self.push_note(kind, text)
             }
+            UiEvent::Redraw => {}
             UiEvent::Embedding(progress) => {
                 // The search choices change when the vectors are complete.
                 if progress.is_none_or(|p| p.complete()) {
@@ -2328,7 +2353,11 @@ impl ReactorApp {
             return;
         }
         let view = panel.view();
-        let closed = area.update(cx, |area, cx| remove_any_panel(area, view, window, cx));
+        let closed = area.update(cx, |area, cx| {
+            let closed = remove_any_panel(area, view, window, cx);
+            crate::layout::drop_empty_docks(area, window, cx);
+            closed
+        });
         if closed {
             cx.notify();
         }
@@ -2350,8 +2379,10 @@ impl ReactorApp {
             cx.notify();
             return;
         }
-        self.dock_area
-            .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+        self.dock_area.update(cx, |area, cx| {
+            area.remove_panel(panel, window, cx);
+            crate::layout::drop_empty_docks(area, window, cx);
+        });
         cx.notify();
     }
 
@@ -2858,7 +2889,61 @@ impl ReactorApp {
         self.ui.normalize();
         crate::start::GuiConfig::save_ui(&self.ui);
         crate::settings::apply(&self.ui, cx);
+        crate::shortcuts::install(&self.ui.shortcuts, cx);
         cx.notify();
+    }
+
+    /// Whether the keys last entered for a shortcut were refused, and are still to be corrected.
+    pub fn shortcut_refused(&self, shortcut: crate::shortcuts::Shortcut) -> bool {
+        self.shortcut_errors.contains_key(shortcut.id)
+    }
+
+    /// Why a shortcut's keys were not applied, or what else answers to its keys.
+    pub fn shortcut_problem(&self, shortcut: crate::shortcuts::Shortcut) -> Option<String> {
+        if let Some(error) = self.shortcut_errors.get(shortcut.id) {
+            return Some(format!("Not applied: {error}"));
+        }
+        let clashes = crate::shortcuts::clashes(shortcut, &self.ui.shortcuts);
+        (!clashes.is_empty()).then(|| {
+            let names: Vec<&str> = clashes.iter().map(|s| s.label).collect();
+            format!("Also bound to {}", names.join(", "))
+        })
+    }
+
+    /// Keys entered for a shortcut (Enter, or leaving the field): applied when they can be
+    /// bound (empty unbinds), otherwise kept out with the reason. Keys equal to the default
+    /// are the same as no choice.
+    pub fn commit_shortcut(
+        &mut self,
+        shortcut: crate::shortcuts::Shortcut,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::shortcuts::parse(text) {
+            Ok(keys) => {
+                self.shortcut_errors.remove(shortcut.id);
+                self.update_ui(
+                    |ui| {
+                        if keys == shortcut.default {
+                            ui.shortcuts.remove(shortcut.id);
+                        } else {
+                            ui.shortcuts.insert(shortcut.id.to_string(), keys);
+                        }
+                    },
+                    cx,
+                );
+            }
+            Err(e) => {
+                self.shortcut_errors.insert(shortcut.id, e);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Put a shortcut back to its default keys.
+    pub fn reset_shortcut(&mut self, shortcut: crate::shortcuts::Shortcut, cx: &mut Context<Self>) {
+        self.shortcut_errors.remove(shortcut.id);
+        self.update_ui(|ui| drop(ui.shortcuts.remove(shortcut.id)), cx);
     }
 
     /// The text shown in a font family field: what is being typed, else what is set.
@@ -3009,6 +3094,20 @@ impl ReactorApp {
             },
             cx,
         );
+    }
+
+    /// The thinking level new sessions start on (`""` when the model decides).
+    pub fn default_thinking(&self) -> String {
+        self.backend
+            .as_ref()
+            .and_then(|b| Settings::load(&b.paths).default_thinking)
+            .unwrap_or_default()
+    }
+
+    /// Set the level new sessions start on; empty leaves it to the model.
+    pub fn set_default_thinking(&mut self, level: &str, cx: &mut Context<Self>) {
+        let level = Some(level.to_string()).filter(|l| !l.is_empty());
+        self.change_model_settings(|s| s.default_thinking = level, cx);
     }
 
     /// Offer a model in the picker.
@@ -3556,6 +3655,14 @@ impl ReactorApp {
                 self.identity_window_command(args, window, cx)
             }
             "model" => self.set_model(args, cx),
+            "thinking" => match args.trim() {
+                "default" => self.set_thinking(None, cx),
+                l @ ("off" | "on" | "low" | "medium" | "high") => self.set_thinking(Some(l), cx),
+                other => self.push_note(
+                    "warning",
+                    format!("thinking: `{other}` is not off, on, low, medium, high or default"),
+                ),
+            },
             "preview" => self.preview_reduction(mode(), cx),
             "reduce" => self.reduce_now(mode(), cx),
             "undo" => {
@@ -3978,6 +4085,17 @@ impl ReactorApp {
         cx.notify();
     }
 
+    /// Ask the connected MCP servers whether they still answer, connect again to those that
+    /// are down, and take up changes made to `mcp.json`. The panels learn of the outcome
+    /// through the watch.
+    pub fn mcp_reconnect_failed(&mut self, cx: &mut Context<Self>) {
+        if let Some(host) = self.mcp_host() {
+            host.sync();
+            host.recheck();
+        }
+        cx.notify();
+    }
+
     /// Open the editor window on an MCP server: a new one, or a saved one to change.
     pub fn open_mcp_editor(&mut self, start: crate::mcp_editor::Start, cx: &mut Context<Self>) {
         let app = cx.entity();
@@ -4120,6 +4238,32 @@ impl ReactorApp {
                 .update(cx, |state, cx| state.set_value(&text, window, cx));
         }
         self.push_note("info", "interrupting…");
+        cx.notify();
+    }
+
+    /// The session's thinking level and the levels its model's provider takes.
+    pub fn thinking_state(&self) -> (Option<String>, Vec<String>) {
+        self.backend
+            .as_ref()
+            .map(|b| (b.thinking(), b.thinking_levels()))
+            .unwrap_or_default()
+    }
+
+    /// Choose the session's thinking level; `None` leaves it to the model.
+    pub fn set_thinking(&mut self, level: Option<&str>, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        match backend.set_thinking(level) {
+            Ok(()) => {
+                backend.refresh_context();
+                self.push_note(
+                    "info",
+                    format!("thinking: {}", thinking_label(level).to_lowercase()),
+                );
+            }
+            Err(e) => self.push_note("error", format!("thinking: {e}")),
+        }
         cx.notify();
     }
 
@@ -4530,6 +4674,12 @@ impl Render for ReactorApp {
             .on_action(
                 cx.listener(|this, action: &SelectModelAction, _window, cx| {
                     this.set_model(&action.spec, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &SelectThinkingAction, _window, cx| {
+                    let level = Some(action.level.as_str()).filter(|l| !l.is_empty());
+                    this.set_thinking(level, cx);
                 }),
             )
             .on_action(

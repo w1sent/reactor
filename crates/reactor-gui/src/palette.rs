@@ -146,6 +146,13 @@ pub fn commands() -> Vec<Entry> {
             "/model provider/name",
         ),
         Entry::fixed(
+            "thinking",
+            "Model",
+            Required,
+            "Thinking level",
+            "/thinking off | on | low | medium | high | default",
+        ),
+        Entry::fixed(
             "context",
             "Model",
             Optional,
@@ -652,6 +659,7 @@ fn candidates(command: &str, done: &[&str], snapshot: &Snapshot) -> Vec<Param> {
             _ => Vec::new(),
         },
         ("model", 0) => snapshot.models.iter().map(|m| Param::last(m, "")).collect(),
+        ("thinking", 0) => choices(&["off", "on", "low", "medium", "high", "default"], false, ""),
         ("layout", 0) => choices(&["default", "focus", "analysis", "catalogue"], false, ""),
         ("dock", 0) => choices(&["left", "right", "bottom"], false, ""),
         ("panel", 0) => crate::layout::PanelKind::ALL

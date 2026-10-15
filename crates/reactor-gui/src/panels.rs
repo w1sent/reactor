@@ -44,10 +44,12 @@ fn mcp_tag(
     every: bool,
     theme: &Theme,
 ) -> AnyElement {
-    let label = if up {
-        format!("MCP · ~{tokens} tok")
+    // The state is an icon, not a word: a plug with a spark when the server answers, an
+    // unplugged one when it does not. The cost stays beside the first; the tip says the rest.
+    let tint = if up {
+        theme.info
     } else {
-        "MCP · server down".to_string()
+        theme.muted_foreground
     };
     let tip = if up {
         format!(
@@ -67,21 +69,21 @@ fn mcp_tag(
     crate::hints::tip(
         div()
             .id(SharedString::from(format!("mcp-badge-{id}")))
-            .px_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(if up {
-                theme.info
-            } else {
-                theme.muted_foreground
-            })
+            .flex()
+            .items_center()
+            .gap_1()
             .text_size(theme.font_size * 0.75)
-            .text_color(if up {
-                theme.info
-            } else {
-                theme.muted_foreground
-            })
-            .child(SharedString::from(label)),
+            .text_color(tint)
+            .child(
+                Icon::new(if up {
+                    IconName::PlugZap
+                } else {
+                    IconName::Unplug
+                })
+                .small()
+                .text_color(tint),
+            )
+            .when(up, |el| el.child(SharedString::from(format!("~{tokens} tok")))),
         SharedString::from(tip),
     )
     .into_any_element()
@@ -1218,7 +1220,7 @@ impl Render for TranscriptPanel {
         });
 
         // What the pane shows of its own session around the conversation (`crate::pane`).
-        let (pane, toolsets, tools, models) = self
+        let (pane, toolsets, tools, models, (thinking, thinking_levels)) = self
             .app
             .upgrade()
             .map(|a| {
@@ -1228,6 +1230,7 @@ impl Render for TranscriptPanel {
                     a.toolsets.clone(),
                     a.catalogue.clone(),
                     a.models.clone(),
+                    a.thinking_state(),
                 )
             })
             .unwrap_or_default();
@@ -1314,7 +1317,11 @@ impl Render for TranscriptPanel {
         let model_picker = Button::new("model-picker")
             .ghost()
             .small()
-            .label(pane.model.clone().unwrap_or_else(|| "no model".to_owned()))
+            .label(format!(
+                "{} · {}",
+                pane.model.clone().unwrap_or_else(|| "no model".to_owned()),
+                crate::app::thinking_label(thinking.as_deref()),
+            ))
             .disabled(models.is_empty())
             .dropdown_menu(move |mut menu, _window, _cx| {
                 for spec in &models {
@@ -1322,6 +1329,23 @@ impl Render for TranscriptPanel {
                         spec.clone(),
                         Box::new(crate::app::SelectModelAction { spec: spec.clone() }),
                     );
+                }
+                // The thinking level of the model in use, in the same menu: only the levels
+                // its provider takes are listed, and `Default` leaves it to the model.
+                if !thinking_levels.is_empty() {
+                    menu = menu.separator().label("Thinking");
+                    for level in std::iter::once(None)
+                        .chain(thinking_levels.iter().map(|l| Some(l.to_string())))
+                    {
+                        let on = level == thinking;
+                        menu = menu.menu_with_check(
+                            crate::app::thinking_label(level.as_deref()),
+                            on,
+                            Box::new(crate::app::SelectThinkingAction {
+                                level: level.unwrap_or_default(),
+                            }),
+                        );
+                    }
                 }
                 menu
             });
@@ -1338,7 +1362,6 @@ impl Render for TranscriptPanel {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().font_family(prompt_family).text_size(prompt_size).child(Textarea::new(&self.composer)))
-                    .child(model_picker)
                     // One button: it sends, and while the agent works it interrupts. Enter in
                     // the prompt still schedules a message to run right after.
                     .child(if idle {
@@ -1366,7 +1389,14 @@ impl Render for TranscriptPanel {
                             }))
                     }),
             )
-            .child(chips);
+            // The chips, with the model and its thinking level at the right of the same line.
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(chips))
+                    .child(div().flex_none().child(model_picker)),
+            );
 
         let mut panel = v_flex()
             .id(SharedString::from(format!(

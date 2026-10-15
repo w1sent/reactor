@@ -92,6 +92,8 @@ pub trait Llm: Send + Sync {
 pub struct RigLlm<M> {
     model: M,
     name: String,
+    /// Provider-specific request parameters, such as the thinking level.
+    params: Option<Value>,
 }
 
 impl<M: CompletionModel + Clone> RigLlm<M> {
@@ -99,7 +101,14 @@ impl<M: CompletionModel + Clone> RigLlm<M> {
         RigLlm {
             model,
             name: name.into(),
+            params: None,
         }
+    }
+
+    /// Send these provider parameters with every request.
+    pub fn with_params(mut self, params: Option<Value>) -> Self {
+        self.params = params;
+        self
     }
 }
 
@@ -190,6 +199,9 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
             );
         if let Some(n) = req.max_tokens {
             builder = builder.max_tokens(n);
+        }
+        if let Some(p) = &self.params {
+            builder = builder.additional_params(p.clone());
         }
         let mut stream = builder
             .stream()

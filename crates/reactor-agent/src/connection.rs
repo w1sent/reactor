@@ -414,6 +414,63 @@ pub async fn list_models(provider: &str) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+/// The thinking levels an Ollama model takes, from the server's own answer for it
+/// (`POST /api/show`).
+///
+/// NOTE: rig (0.42) has no call for this, so it is made here with `reqwest` directly. If rig
+/// gains one (`/api/show` or a model-capabilities query), switch to it and drop this request
+/// and the direct `reqwest` dependency. `None` when the server cannot be asked or does not say; an empty list
+/// is a model that does not think.
+pub async fn ollama_thinking_levels(model: &str) -> Option<Vec<String>> {
+    let base = std::env::var("OLLAMA_API_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let url = format!("{}/api/show", base.trim_end_matches('/'));
+    let mut request = reqwest::Client::new()
+        .post(url)
+        .json(&serde_json::json!({ "model": model }))
+        .timeout(Duration::from_secs(5));
+    if let Ok(key) = std::env::var("OLLAMA_API_KEY")
+        && !key.is_empty()
+    {
+        request = request.bearer_auth(key);
+    }
+    let shown: serde_json::Value = request.send().await.ok()?.json().await.ok()?;
+    thinking_levels_from_show(&shown)
+}
+
+/// What `/api/show` says a model takes: the `thinking.values` list when there is one (named
+/// levels, or booleans for a model that only switches on and off), else the `thinking`
+/// capability.
+pub fn thinking_levels_from_show(shown: &serde_json::Value) -> Option<Vec<String>> {
+    if let Some(values) = shown
+        .get("thinking")
+        .and_then(|t| t.get("values"))
+        .and_then(|v| v.as_array())
+    {
+        let named: Vec<String> = values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        if !named.is_empty() {
+            return Some(named);
+        }
+        // `[false]` is a model that does not think; a `true` means it switches on and off.
+        return Some(if values.iter().any(|v| v.as_bool() == Some(true)) {
+            vec!["off".into(), "on".into()]
+        } else {
+            Vec::new()
+        });
+    }
+    let caps = shown.get("capabilities")?.as_array()?;
+    Some(if caps.iter().any(|c| c.as_str() == Some("thinking")) {
+        vec!["off".into(), "on".into()]
+    } else {
+        Vec::new()
+    })
+}
+
 /// A model id that names an embedding model: by the word, or by the well-known families whose
 /// names do not carry it. A guess; callers that need to be sure offer every model as well.
 pub fn is_embedding_model(id: &str) -> bool {
@@ -429,6 +486,27 @@ pub fn is_embedding_model(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_says_which_thinking_levels_a_model_takes() {
+        use serde_json::json;
+        let levels = |v| thinking_levels_from_show(&v);
+        assert_eq!(
+            levels(json!({"thinking": {"values": ["low", "medium", "high"], "default": "medium"}})),
+            Some(vec!["low".into(), "medium".into(), "high".into()])
+        );
+        assert_eq!(
+            levels(json!({"thinking": {"values": [false, true]}})),
+            Some(vec!["off".into(), "on".into()])
+        );
+        assert_eq!(levels(json!({"thinking": {"values": [false]}})), Some(vec![]));
+        assert_eq!(
+            levels(json!({"capabilities": ["completion", "thinking"]})),
+            Some(vec!["off".into(), "on".into()])
+        );
+        assert_eq!(levels(json!({"capabilities": ["completion"]})), Some(vec![]));
+        assert_eq!(levels(json!({})), None);
+    }
 
     #[test]
     fn the_specs_match_the_providers_the_agent_builds() {

@@ -110,7 +110,10 @@ impl Panel for ToolboxPanel {
                 })),
             refresh_button("refresh-toolbox", loading, move |_window, cx| {
                 if let Some(app) = app.upgrade() {
-                    app.update(cx, |app, cx| app.refresh_catalogue(cx));
+                    app.update(cx, |app, cx| {
+                        app.mcp_reconnect_failed(cx);
+                        app.refresh_catalogue(cx);
+                    });
                 }
             }),
             close_button(&self.app, cx.entity()),

@@ -47,6 +47,8 @@ pub enum UiEvent {
     },
     /// Vectors are being made: how far along, or `None` when the run is over.
     Embedding(Option<reactor_db::corpus::Progress>),
+    /// What a menu shows has changed in the background (an Ollama model's thinking levels).
+    Redraw,
 }
 
 /// What every session open in one window shares: the case (one handle to its database, not
@@ -92,6 +94,11 @@ pub struct Backend {
     pub session_dir: PathBuf,
     /// The model in use (`provider/name`), or empty when none is chosen.
     model: Mutex<String>,
+    /// The thinking level this session sends (`off`, `low`, `medium`, `high`), or `None` for
+    /// the model's own default. Starts at the global `defaultThinking`.
+    thinking: Mutex<Option<String>>,
+    /// The levels the server reported for the Ollama model in use, as `(spec, levels)`.
+    ollama_levels: Arc<Mutex<Option<(String, Vec<String>)>>>,
     /// The window a model gets when nothing sets one.
     default_window: Mutex<u64>,
 }
@@ -121,9 +128,9 @@ pub fn find_bundled(sub: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_dir())
 }
 
-fn llm_for(spec: Option<&str>) -> (AnyLlm, String, u64) {
+fn llm_for(spec: Option<&str>, thinking: Option<&str>) -> (AnyLlm, String, u64) {
     match spec {
-        Some(spec) => match AnyLlm::from_spec(spec) {
+        Some(spec) => match AnyLlm::from_spec_thinking(spec, thinking) {
             Ok((llm, provider)) => (llm, spec.to_string(), default_window(&provider)),
             Err(e) => (AnyLlm::Missing(e.to_string()), String::new(), 128_000),
         },
@@ -172,7 +179,8 @@ impl Backend {
             .clone()
             .or_else(|| settings.default_model.clone())
             .or_else(|| std::env::var("REACTOR_MODEL").ok());
-        let (llm, model, window) = llm_for(spec.as_deref());
+        let (llm, model, window) =
+            llm_for(spec.as_deref(), settings.default_thinking.as_deref());
         let llm = Switchable::new(llm);
         let summarizer = Switchable::new(llm.current());
 
@@ -260,9 +268,12 @@ impl Backend {
             session_id,
             session_dir,
             model: Mutex::new(model),
+            thinking: Mutex::new(settings.default_thinking.clone()),
+            ollama_levels: Arc::new(Mutex::new(None)),
             default_window: Mutex::new(window),
         };
         backend.sync_summarizer();
+        backend.fetch_ollama_levels();
         for text in [embed_problem, scenarios_problem].into_iter().flatten() {
             let _ = backend.ui_tx.send(UiEvent::Notice {
                 kind: "warning",
@@ -664,11 +675,73 @@ impl Backend {
 
     /// Choose the model, taking effect on the next call.
     pub fn set_model(&self, spec: &str) -> std::result::Result<(), String> {
-        let (llm, provider) = AnyLlm::from_spec(spec).map_err(|e| e.to_string())?;
+        let thinking = self.thinking();
+        let (llm, provider) =
+            AnyLlm::from_spec_thinking(spec, thinking.as_deref()).map_err(|e| e.to_string())?;
         self.llm.set(llm);
         *self.model.lock().unwrap() = spec.to_string();
         *self.default_window.lock().unwrap() = default_window(&provider);
         self.sync_summarizer();
+        self.fetch_ollama_levels();
+        Ok(())
+    }
+
+    /// The session's thinking level, `None` when the model decides.
+    pub fn thinking(&self) -> Option<String> {
+        self.thinking.lock().unwrap().clone()
+    }
+
+    /// The levels the current model takes, in menu order (`Default` is implied). For an
+    /// Ollama model they are what the server said for it; until it has, none are offered.
+    pub fn thinking_levels(&self) -> Vec<String> {
+        let model = self.model();
+        let (provider, name) = model.split_once('/').unwrap_or_default();
+        if provider == "ollama" {
+            return match &*self.ollama_levels.lock().unwrap() {
+                Some((spec, levels)) if *spec == model => levels.clone(),
+                _ => Vec::new(),
+            };
+        }
+        reactor_agent::provider::thinking_levels(provider, name)
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    /// Ask the Ollama server which thinking levels the model in use takes. Returns at once;
+    /// the menu is redrawn when the answer is in.
+    fn fetch_ollama_levels(&self) {
+        let model = self.model();
+        let Some(name) = model.strip_prefix("ollama/").map(str::to_string) else {
+            return;
+        };
+        let (slot, tx) = (self.ollama_levels.clone(), self.ui_tx.clone());
+        self.runtime.spawn(async move {
+            let levels = reactor_agent::connection::ollama_thinking_levels(&name)
+                .await
+                .unwrap_or_default();
+            *slot.lock().unwrap() = Some((model, levels));
+            let _ = tx.send(UiEvent::Redraw);
+        });
+    }
+
+    /// Choose the thinking level, taking effect on the next call. `None` is the model's own.
+    pub fn set_thinking(&self, level: Option<&str>) -> std::result::Result<(), String> {
+        if let Some(l) = level
+            && !self.thinking_levels().iter().any(|v| v == l)
+        {
+            let takes = self.thinking_levels();
+            return Err(if takes.is_empty() {
+                "this model has no thinking levels to set".to_string()
+            } else {
+                format!("this model takes {}", takes.join(", "))
+            });
+        }
+        *self.thinking.lock().unwrap() = level.map(str::to_string);
+        let model = self.model();
+        if !model.is_empty() {
+            self.set_model(&model)?;
+        }
         Ok(())
     }
 

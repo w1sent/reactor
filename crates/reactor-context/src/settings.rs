@@ -398,6 +398,10 @@ pub struct Settings {
     pub models: Vec<String>,
     /// The model a new session starts on.
     pub default_model: Option<String>,
+    /// The thinking level a session starts on (`off`, `on`, `low`, `medium`, `high`); unset leaves it
+    /// to the model. A session can choose its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_thinking: Option<String>,
 }
 
 impl Default for Settings {
@@ -415,6 +419,7 @@ impl Default for Settings {
             embedding: EmbeddingSettings::default(),
             models: Vec::new(),
             default_model: None,
+            default_thinking: None,
         }
     }
 }
@@ -480,6 +485,11 @@ impl Settings {
             .get("defaultModel")
             .and_then(Value::as_str)
             .filter(|m| m.contains('/'))
+            .map(str::to_string);
+        s.default_thinking = root
+            .get("defaultThinking")
+            .and_then(Value::as_str)
+            .filter(|l| ["off", "on", "low", "medium", "high"].contains(l))
             .map(str::to_string);
         if let Some(c) = root.get("context") {
             s.context = ContextSettings::normalize(c);

@@ -28,5 +28,8 @@ labels every value with where it came from.
 ## Consequences
 
 - Toggling a tool in one window no longer changes another window's session.
-- The thinking-level picker is gone until the agent exposes it.
+- The thinking-level picker was gone until the agent exposed it. It is back (amended
+  2026-10-14): the agent sends a level (`off`, `low`, `medium`, `high`) as the provider's own
+  parameter, and the picker beside Send lists the levels of the model in use, under the models.
+  The session's level starts at `defaultThinking` in `settings.json`; `/thinking` sets it.
 - The pi flavor keeps its own extension suite; the GUI does not depend on it.

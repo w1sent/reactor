@@ -1362,7 +1362,6 @@ impl Render for TranscriptPanel {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().font_family(prompt_family).text_size(prompt_size).child(Textarea::new(&self.composer)))
-                    .child(model_picker)
                     // One button: it sends, and while the agent works it interrupts. Enter in
                     // the prompt still schedules a message to run right after.
                     .child(if idle {
@@ -1390,7 +1389,14 @@ impl Render for TranscriptPanel {
                             }))
                     }),
             )
-            .child(chips);
+            // The chips, with the model and its thinking level at the right of the same line.
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(chips))
+                    .child(div().flex_none().child(model_picker)),
+            );
 
         let mut panel = v_flex()
             .id(SharedString::from(format!(

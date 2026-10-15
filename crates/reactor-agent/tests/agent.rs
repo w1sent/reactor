@@ -87,7 +87,7 @@ fn rig_with(
     let paths = Paths::new(root.join("cfg"), Shipped::Embedded);
     let mut cfg = AgentConfig::new(cwd.clone(), paths, window);
     cfg.registry = registry(
-        "## Available RE tools (this machine)\n\nsh   shell",
+        "## Available tools (this machine)\n\nsh   shell",
         &["sh"],
     );
     cfg.scenarios_dir = root.join("scenarios");
@@ -166,7 +166,7 @@ async fn a_turn_without_tools_records_the_exchange_and_streams_it() {
     // The request carried the tools and a system prompt with the registry block.
     let req = &r.llm.requests()[0];
     assert!(req.system.contains("You are REactor"));
-    assert!(req.system.contains("## Available RE tools (this machine)"));
+    assert!(req.system.contains("## Available tools (this machine)"));
     assert_eq!(req.messages, [Msg::User { text: "hi".into() }]);
     let names: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
@@ -848,7 +848,7 @@ async fn skills_are_offered_by_their_requirements_and_upstream_skills_by_the_reg
         |cfg| {
             cfg.skills_dir = Some(skills);
             let view = RegistryView {
-                block: "## Available RE tools (this machine)".into(),
+                block: "## Available tools (this machine)".into(),
                 skill_dirs: vec![up],
                 usable: ["sh".to_string()].into(),
                 ..Default::default()

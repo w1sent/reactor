@@ -34,7 +34,7 @@ So REactor probes the machine and injects a compact registry of what is actually
 present and active:
 
 ```
-## Available RE tools (this machine)
+## Available tools (this machine)
 bn      Binary Ninja RE framework       [BN running, 1 binary open]
 frida   dynamic instrumentation         17.2
 jadx    Android/Java decompiler

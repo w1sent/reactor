@@ -252,7 +252,7 @@ fn inputs<'a>(
 fn an_untouched_session_is_the_base_the_registry_and_the_case_graph_and_nothing_else() {
     let (settings, mut state) = (Settings::default(), SessionState::default());
     let registry = RegistryView {
-        block: "## Available RE tools (this machine)\n\nsh  shell".into(),
+        block: "## Available tools (this machine)\n\nsh  shell".into(),
         ..Default::default()
     };
     // Attached to the case's graph by default (ADR-0047): the block is static text, so
@@ -260,7 +260,7 @@ fn an_untouched_session_is_the_base_the_registry_and_the_case_graph_and_nothing_
     assert_eq!(
         prompt::system_prompt(&inputs(&settings, &state, &registry, &[])),
         format!(
-            "BASE\n\n## Available RE tools (this machine)\n\nsh  shell\n\n{}",
+            "BASE\n\n## Available tools (this machine)\n\nsh  shell\n\n{}",
             prompt::CASE_GRAPH
         )
     );
@@ -268,7 +268,7 @@ fn an_untouched_session_is_the_base_the_registry_and_the_case_graph_and_nothing_
     state.memory.case_graph = Some(false);
     assert_eq!(
         prompt::system_prompt(&inputs(&settings, &state, &registry, &[])),
-        "BASE\n\n## Available RE tools (this machine)\n\nsh  shell"
+        "BASE\n\n## Available tools (this machine)\n\nsh  shell"
     );
 }
 
@@ -281,7 +281,7 @@ fn the_blocks_come_in_a_fixed_order_so_an_unchanged_session_sends_the_same_bytes
     state.manifest.goal = Some("the goal".into());
     state.reporting.enabled = Some(true);
     let registry = RegistryView {
-        block: "## Available RE tools (this machine)".into(),
+        block: "## Available tools (this machine)".into(),
         ..Default::default()
     };
     let skills = [Skill {
@@ -300,8 +300,8 @@ fn the_blocks_come_in_a_fixed_order_so_an_unchanged_session_sends_the_same_bytes
     };
     assert!(
         at("BASE") < at("## Identity")
-            && at("## Identity") < at("## Available RE tools")
-            && at("## Available RE tools") < at("## Skills")
+            && at("## Identity") < at("## Available tools")
+            && at("## Available tools") < at("## Skills")
     );
     assert!(
         at("## Skills") < at("## Session Manifest")
@@ -310,16 +310,13 @@ fn the_blocks_come_in_a_fixed_order_so_an_unchanged_session_sends_the_same_bytes
 }
 
 #[test]
-fn the_default_base_prompt_tells_the_agent_where_history_went() {
-    // The context-management contract: cut and dropped material must be findable.
-    for needle in [
-        "history_read",
-        "history_search",
-        "history_index",
-        "#id",
-        "nothing is ever deleted",
-    ] {
-        assert!(prompt::DEFAULT_BASE.contains(needle), "{needle}");
+fn the_default_base_prompt_is_short_and_leaves_context_and_permission_alone() {
+    let base = prompt::DEFAULT_BASE;
+    assert!(base.len() < 600, "{} bytes", base.len());
+    // How a cut or dropped entry is read back is said where the cut is (the truncation
+    // note, a reduction's stand-in) and by the history tools, not here.
+    for word in ["history_", "context", "permission", "destructive"] {
+        assert!(!base.contains(word), "the base prompt mentions {word}");
     }
 }
 
@@ -435,7 +432,7 @@ mod usage {
 fn the_rules_of_the_tools_in_the_request_come_after_the_registry_and_say_the_graph_is_not_loaded() {
     let (settings, state) = (Settings::default(), SessionState::default());
     let registry = RegistryView {
-        block: "## Available RE tools (this machine)".into(),
+        block: "## Available tools (this machine)".into(),
         ..Default::default()
     };
     let rules = [
@@ -451,7 +448,7 @@ fn the_rules_of_the_tools_in_the_request_come_after_the_registry_and_say_the_gra
         p.find(n)
             .unwrap_or_else(|| panic!("{n} missing from:\n{p}"))
     };
-    assert!(at("## Available RE tools") < at("## Tool rules"));
+    assert!(at("## Available tools") < at("## Tool rules"));
     assert!(at("## Tool rules") < at("## Case graph"));
     assert!(p.contains("- Use `read` to look at a file.\n- Second."));
     assert!(p.contains("`tool_search` with `select:graph_add"));

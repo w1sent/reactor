@@ -1,4 +1,4 @@
-## Available RE tools (this machine)
+## Available tools (this machine)
 
 bn               reverse engineering framework  [BN session: up]
 frida            dynamic instrumentation        17.2

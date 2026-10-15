@@ -8,7 +8,7 @@ use crate::model::ToolEntry;
 use crate::probe::{ServiceState, Status};
 use crate::util::ljust;
 
-pub const REGISTRY_HEADING: &str = "## Available RE tools (this machine)";
+pub const REGISTRY_HEADING: &str = "## Available tools (this machine)";
 pub const REGISTRY_FOOTER: &str = "\
 `<tool> --help` or `man <tool>` is the documentation -- read it rather than guessing flags.
 `reactor tools show <id>` for detail, `reactor doctor` for what else exists and how to install it.
@@ -41,7 +41,7 @@ pub fn render_registry(entries: &[ToolEntry]) -> String {
     if listed.is_empty() {
         return format!(
             "{REGISTRY_HEADING}\n\n\
-             None. No RE tool is active and installed on this machine -- activate a toolset, \
+             None. No tool is active and installed on this machine -- activate a toolset, \
              or run `reactor doctor` to see what is missing and how to install it."
         );
     }

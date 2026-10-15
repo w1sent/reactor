@@ -35,7 +35,7 @@ removed from the tree; it lives in git history. The last commit that has it is
        doctor/tools              probes and injects
        services                        │
               │                        ▼
-              │      ## Available RE tools (this machine)
+              │      ## Available tools (this machine)
               │      bn         reverse engineering framework  [BN session: up]
               │      frida      dynamic instrumentation        17.9.7
               │      jadx       decompile Android DEX/APK      1.5.6

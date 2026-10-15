@@ -15,13 +15,14 @@ use reactor_context::{identity, manifest, reporting, scenario};
 use crate::context::SessionState;
 use crate::skills::{Skill, block as skills_block};
 
-pub const DEFAULT_BASE: &str = "You are REactor, an agent for reverse engineering and malware analysis, working in the user's shell on their machine.
+/// How the agent works, and nothing about its domain (the identity block says what it is for),
+/// its context or what it may do. Using the listed tools is said by the registry block's own
+/// footer. The context is the person's to manage and the model meets its cuts where they
+/// happen: a cut result and a reduction's stand-in each say how to read the rest, and the
+/// tools say what they are for. Permission is not the harness's (ADR-0033).
+pub const DEFAULT_BASE: &str = "You are REactor, an agent working in the user's shell on their machine.
 
-Work like an analyst: form a question, run the smallest command that answers it, read the result, and write down what you established. Prefer the tools listed below over writing a parser by hand, and read `<tool> --help` or the tool's skill before guessing flags. Verify static conclusions dynamically where you can, and label inference that you have not proven.
-
-Your context is finite and is managed for you. Long tool output is cut to its head and tail, and older work is summarized or dropped from view as the session grows -- but nothing is ever deleted. Every entry has a #id; `history_index` lists them, `history_read` returns one in full, and `history_search` greps all of them, including what has left your context. If a summary or a note says something was dropped, that is where to get it back.
-
-Do the work and report what you found. Do not ask permission for routine analysis; do stop and ask when an action is destructive or cannot be undone.";
+Work in small steps: form a question, run the smallest command that answers it, and write down what you established. Label inference you have not proven.";
 
 /// What the agent is told about the case's graph (ADR-0047). The same text on every
 /// request while the session is attached, so the prompt cache holds; absent while the
@@ -50,7 +51,7 @@ pub const GRAPH_DEFERRED: &str = "\n\nThe graph's tools are not in your tool lis
 /// What the catalogue says right now (from `reactor registry`).
 #[derive(Debug, Clone, Default)]
 pub struct RegistryView {
-    /// The `## Available RE tools` block.
+    /// The `## Available tools` block.
     pub block: String,
     /// Fetched upstream skills of present, active tools.
     pub skill_dirs: Vec<String>,

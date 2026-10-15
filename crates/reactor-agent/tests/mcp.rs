@@ -331,7 +331,7 @@ async fn the_model_is_given_the_active_definitions_and_may_call_one() {
     let store = Store::create(&case, "s").unwrap();
     let mut cfg = AgentConfig::new(work.clone(), fx.paths.clone(), 100_000);
     let view = RegistryView {
-        block: "## Available RE tools (this machine)".into(),
+        block: "## Available tools (this machine)".into(),
         // `fail` is active too, but the model only calls `echo` -- and `env` is called though
         // it is not active, which is allowed (ADR-0007).
         mcp: ids(&["mcp__fx__echo", "mcp__fx__fail"]),
@@ -504,7 +504,7 @@ async fn the_usage_by_kind_tells_mcp_tools_apart_and_splits_what_the_agent_said(
     let store = Store::create(&case, "s").unwrap();
     let mut cfg = AgentConfig::new(work.clone(), fx.paths.clone(), 100_000);
     let view = RegistryView {
-        block: "## Available RE tools (this machine)".into(),
+        block: "## Available tools (this machine)".into(),
         mcp: ids(&["mcp__fx__echo", "mcp__fx__fail"]),
         ..Default::default()
     };
@@ -586,7 +586,7 @@ async fn a_servers_tools_are_left_for_tool_search_when_they_cost_more_than_the_t
     let store = Store::create(&case, "s").unwrap();
     let mut cfg = AgentConfig::new(work.clone(), fx.paths.clone(), 100_000);
     let view = RegistryView {
-        block: "## Available RE tools (this machine)".into(),
+        block: "## Available tools (this machine)".into(),
         mcp: ids(&["mcp__fx__echo", "mcp__fx__fail"]),
         ..Default::default()
     };

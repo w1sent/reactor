@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "block": "## Available RE tools (this machine)\n\nNone. No RE tool is active and installed on this machine -- activate a toolset, or run `reactor doctor` to see what is missing and how to install it.",
+  "block": "## Available tools (this machine)\n\nNone. No tool is active and installed on this machine -- activate a toolset, or run `reactor doctor` to see what is missing and how to install it.",
   "tools": [
     {
       "id": "alpha",

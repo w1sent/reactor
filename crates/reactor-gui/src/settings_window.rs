@@ -989,6 +989,8 @@ fn context_page(app: &Entity<ReactorApp>) -> SettingPage {
         .item(number!("Reserve (tokens)", 0.0, 1_000_000.0, 500.0, reserve, |c: crate::backend::ContextView| c.reserve as f64, |v: f64| v.round() as u64, |v: u64| v as f64))
         .item(number!("Reduce at (%)", 1.0, 100.0, 1.0, pct, |c: crate::backend::ContextView| (c.pct * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
         .item(number!("Keep after reducing (%)", 1.0, 99.0, 1.0, keep, |c: crate::backend::ContextView| (c.keep * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
+        .item(number!("Mask old tool output down to (%)", 1.0, 99.0, 1.0, mask_target, |c: crate::backend::ContextView| (c.mask_target * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
+        .item(number!("Never mask the newest (% of window)", 0.0, 99.0, 1.0, protect, |c: crate::backend::ContextView| (c.protect * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
         .item(SettingItem::new(
             "Summarizer (provider/name)",
             SettingField::<SharedString>::input(
@@ -1021,7 +1023,7 @@ fn context_page(app: &Entity<ReactorApp>) -> SettingPage {
             .group(scope_group)
             .group(budget),
         "context-info",
-        "The context window is not asked of the provider: set it for your model (REactor guesses 200,000 for anthropic, 1,000,000 for gemini, 32,000 for ollama, 128,000 otherwise). Usable context is the window minus the reserve. A reduction starts once the context passes 'Reduce at' of that and goes down to 'Keep', keeping the newest work. A field that is not set here shows what this session uses now; reset clears it, so the session uses the default and the default the built-in value. Default values are saved in ~/.reactor/settings.json; a session's own are kept in the session.",
+        "The context window is not asked of the provider: set it for your model (REactor guesses 200,000 for anthropic, 1,000,000 for gemini, 32,000 for ollama, 128,000 otherwise). Usable context is the window minus the reserve. A reduction starts once the context passes 'Reduce at' of that. First, old tool output is shown as a stub (the original is kept and `history_read` reads it) down to 'Mask old tool output down to', sparing the newest part of the window; only if that is not enough is the older work summarized, down to 'Keep', keeping the newest work. A field that is not set here shows what this session uses now; reset clears it, so the session uses the default and the default the built-in value. Default values are saved in ~/.reactor/settings.json; a session's own are kept in the session.",
     )
 }
 

@@ -4192,12 +4192,14 @@ impl ReactorApp {
             ("", _) => {
                 let note = match &self.context {
                     Some(c) => format!(
-                        "context: mode {}, window {}, reserve {}, reduce at {:.0}%, keep {:.0}%, summarizer {}",
+                        "context: mode {}, window {}, reserve {}, reduce at {:.0}%, keep {:.0}%, mask to {:.0}%, spare newest {:.0}%, summarizer {}",
                         c.mode,
                         c.window,
                         c.reserve,
                         c.pct * 100.0,
                         c.keep * 100.0,
+                        c.mask_target * 100.0,
+                        c.protect * 100.0,
                         c.summarizer.as_deref().unwrap_or("the session's model")
                     ),
                     None => "context: not measured yet".to_string(),
@@ -4214,9 +4216,11 @@ impl ReactorApp {
             ("reserve", v) if number(v).is_some() => layer.reserve = number(v),
             ("pct", v) if fraction(v).is_some() => layer.pct = fraction(v),
             ("keep", v) if fraction(v).is_some() => layer.keep = fraction(v),
+            ("mask", v) if fraction(v).is_some() => layer.mask_target = fraction(v),
+            ("protect", v) if fraction(v).is_some() => layer.protect = fraction(v),
             ("summarizer", v) if !v.is_empty() => layer.summarizer = Some(v.to_string()),
             _ => {
-                self.push_note("warning", "context: mode <auto|fade|compact> | window <tokens> | reserve <tokens> | pct <%> | keep <%> | summarizer <provider/name> | default | inherit");
+                self.push_note("warning", "context: mode <auto|fade|compact> | window <tokens> | reserve <tokens> | pct <%> | keep <%> | mask <%> | protect <%> | summarizer <provider/name> | default | inherit");
                 return;
             }
         }

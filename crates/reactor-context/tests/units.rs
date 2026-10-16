@@ -522,6 +522,52 @@ mod context_settings {
     }
 
     #[test]
+    fn the_masking_knobs_are_fractions_and_layer_like_the_rest() {
+        let n = |v| ContextSettings::normalize(&v);
+        assert_eq!(n(json!({"maskTarget": 0.5})).mask_target, Some(0.5));
+        assert_eq!(
+            n(json!({"maskTarget": 1.0})).mask_target,
+            None,
+            "a fraction below 1"
+        );
+        assert_eq!(n(json!({"maskTarget": 0})).mask_target, None, "and above 0");
+        assert_eq!(
+            n(json!({"protect": 0})).protect,
+            Some(0.0),
+            "nothing spared is allowed"
+        );
+        assert_eq!(n(json!({"protect": 1.5})).protect, None);
+        assert_eq!(n(json!({"protect": "lots"})).protect, None);
+
+        let global = ContextSettings {
+            mask_target: Some(0.5),
+            protect: Some(0.1),
+            ..Default::default()
+        };
+        let session = ContextSettings {
+            protect: Some(0.3),
+            ..Default::default()
+        };
+        let eff = session.over(&global);
+        assert_eq!((eff.mask_target, eff.protect), (Some(0.5), Some(0.3)));
+
+        let origins: std::collections::HashMap<_, _> = session.origins().into_iter().collect();
+        assert_eq!(origins["protect"], Origin::Session);
+        assert_eq!(origins["maskTarget"], Origin::Default);
+
+        // And in the file they are camelCase, and absent when unset.
+        let json = serde_json::to_value(&global).unwrap();
+        assert_eq!(json["maskTarget"], 0.5);
+        assert!(
+            serde_json::to_value(ContextSettings::default())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn context_and_models_survive_a_save_and_reload() {
         let dir = tempfile::tempdir().unwrap();
         let paths = reactor_core::Paths::new(dir.path(), reactor_core::paths::Shipped::Embedded);

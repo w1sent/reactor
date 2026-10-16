@@ -629,7 +629,7 @@ impl<L: Llm> LlmSummarizer<L> {
             req.transcript.clone()
         };
 
-        let (mut thought, mut rungs, mut tries) = (false, 0usize, 0usize);
+        let (mut thought, mut reminded, mut rungs, mut tries) = (false, false, 0usize, 0usize);
         let mut rejected: Option<u64> = None;
         loop {
             let sent = complete_watched(
@@ -684,6 +684,14 @@ impl<L: Llm> LlmSummarizer<L> {
                 .collect::<Vec<_>>()
                 .join("\n");
             if !notes.trim().is_empty() {
+                // Notes that ignore the headings are asked for once more; a second time they
+                // are taken as they are, since a small model that cannot follow a template
+                // can still write useful notes.
+                if req.template && !crate::budget::follows_template(&notes) && !reminded {
+                    reminded = true;
+                    text = format!("{text}\n\n{}", crate::budget::SUMMARY_REMINDER);
+                    continue;
+                }
                 return Ok(notes);
             }
             let thinking: usize = reply

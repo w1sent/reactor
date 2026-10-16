@@ -699,7 +699,7 @@ fn candidates(command: &str, done: &[&str], snapshot: &Snapshot) -> Vec<Param> {
         ("embedding", 0) => choices(&["off", "now"], false, ""),
         ("context", 0) => {
             let mut v = choices(
-                &["mode", "window", "reserve", "pct", "keep", "summarizer"],
+                &["mode", "window", "reserve", "pct", "keep", "mask", "protect", "summarizer"],
                 true,
                 "then a value",
             );

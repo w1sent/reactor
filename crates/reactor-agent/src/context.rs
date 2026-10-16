@@ -107,16 +107,55 @@ pub fn hidden_by(store: &Store) -> HashMap<EntryId, EntryId> {
     hidden
 }
 
+/// The stand-in message of a reduction: what the model reads in place of what it hid.
+fn stand_in(store: &Store, rid: EntryId) -> Option<Item> {
+    match store.get(rid).map(|e| &e.kind) {
+        Some(Kind::Reduction(r)) => Some(Item {
+            source: Source::Reduction(rid),
+            msg: Msg::User {
+                text: render_reduction(r),
+            },
+        }),
+        _ => None,
+    }
+}
+
 /// The current branch as the model sees it.
 pub fn project(store: &Store) -> Vec<Item> {
     let branch = store.branch();
     let active = active_reductions(store);
     let hidden = hidden_by(store);
+    let on_branch: HashSet<EntryId> = branch.iter().map(|e| e.id).collect();
 
-    // Where each reduction's stand-in goes: at its first covered entry on the branch.
+    // Tool results shown as stubs in place; the latest reduction to name one wins.
+    let mut masked: HashMap<EntryId, &str> = HashMap::new();
+    // Reductions whose stand-in goes right after an entry (the person's last message,
+    // kept in view), when that entry is in view.
+    let mut anchored: HashMap<EntryId, Vec<EntryId>> = HashMap::new();
+    let mut anchored_ids: HashSet<EntryId> = HashSet::new();
+    for rid in &active {
+        let Some(Kind::Reduction(r)) = store.get(*rid).map(|e| &e.kind) else {
+            continue;
+        };
+        for m in &r.masks {
+            masked.insert(m.entry, m.stub.as_str());
+        }
+        if let Some(a) = r.after
+            && !r.covers.is_empty()
+            && on_branch.contains(&a)
+            && !hidden.contains_key(&a)
+        {
+            anchored.entry(a).or_default().push(*rid);
+            anchored_ids.insert(*rid);
+        }
+    }
+
+    // Where each other reduction's stand-in goes: at its first covered entry on the branch.
     let mut first: HashMap<EntryId, EntryId> = HashMap::new();
     for e in &branch {
-        if let Some(rid) = hidden.get(&e.id) {
+        if let Some(rid) = hidden.get(&e.id)
+            && !anchored_ids.contains(rid)
+        {
             first.entry(*rid).or_insert(e.id);
         }
     }
@@ -134,14 +173,9 @@ pub fn project(store: &Store) -> Vec<Item> {
     for e in &branch {
         if let Some(rid) = placed_at.get(&e.id)
             && active.contains(rid)
-            && let Some(Kind::Reduction(r)) = store.get(*rid).map(|x| &x.kind)
+            && let Some(item) = stand_in(store, *rid)
         {
-            out.push(Item {
-                source: Source::Reduction(*rid),
-                msg: Msg::User {
-                    text: render_reduction(r),
-                },
-            });
+            out.push(item);
         }
         if hidden.contains_key(&e.id) {
             continue;
@@ -160,7 +194,9 @@ pub fn project(store: &Store) -> Vec<Item> {
             } => Msg::ToolResult {
                 call_id: call_id.clone(),
                 name: name.clone(),
-                content: content.clone(),
+                content: masked
+                    .get(&e.id)
+                    .map_or_else(|| content.clone(), |stub| stub.to_string()),
                 is_error: *is_error,
             },
             Kind::Attachment(_) if detached.contains(&e.id) => continue,
@@ -179,6 +215,11 @@ pub fn project(store: &Store) -> Vec<Item> {
             source: Source::Entry(e.id),
             msg,
         });
+        for rid in anchored.get(&e.id).into_iter().flatten() {
+            if let Some(item) = stand_in(store, *rid) {
+                out.push(item);
+            }
+        }
     }
     out
 }
@@ -202,6 +243,17 @@ pub fn render_attachment(a: &crate::entry::Attachment) -> String {
 
 /// What stands in for a reduced range. Deterministic: same reduction, same bytes.
 pub fn render_reduction(r: &Reduction) -> String {
+    if r.is_mask() {
+        // Nothing is hidden: this is the list of results that were cut down in place, for a
+        // person reading the log.
+        let mut out = String::from(
+            "## Tool results shown as stubs (the originals are kept; read one back with `history_read` and its #address)\n",
+        );
+        for m in &r.masks {
+            out.push_str(&format!("- #{} ({} bytes)\n", m.entry, m.bytes));
+        }
+        return out.trim_end().to_string();
+    }
     let mut out = String::from("## Earlier in this session (context reduced)\n");
     if let Some(s) = &r.summary {
         out.push('\n');
@@ -211,10 +263,19 @@ pub fn render_reduction(r: &Reduction) -> String {
     if !r.stubs.is_empty() {
         out.push_str("\nDropped from view (the originals are kept; read one back with `history_read` and its #address):\n");
         for s in &r.stubs {
-            out.push_str(&format!(
-                "- #{} {}: {} ({} bytes)\n",
-                s.entry, s.what, s.detail, s.bytes
-            ));
+            match &s.text {
+                // What a person said is kept as they said it.
+                Some(text) => {
+                    out.push_str(&format!("- #{} {} (in full):\n", s.entry, s.what));
+                    for line in text.lines() {
+                        out.push_str(&format!("  > {line}\n"));
+                    }
+                }
+                None => out.push_str(&format!(
+                    "- #{} {}: {} ({} bytes)\n",
+                    s.entry, s.what, s.detail, s.bytes
+                )),
+            }
         }
     } else if r.summary.is_some() {
         out.push_str(&format!(

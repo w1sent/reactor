@@ -163,6 +163,12 @@ pub struct ContextSettings {
     /// The model that writes summaries (`provider/name`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summarizer: Option<String>,
+    /// Mask old tool results until the context is down to this fraction of `window - reserve`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask_target: Option<f64>,
+    /// The newest this fraction of the window is never masked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protect: Option<f64>,
 }
 
 pub const CONTEXT_MODES: [&str; 3] = ["auto", "fade", "compact"];
@@ -192,6 +198,8 @@ impl ContextSettings {
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            mask_target: number(r.get("maskTarget")).filter(|p| *p > 0.0 && *p < 1.0),
+            protect: number(r.get("protect")).filter(|p| *p >= 0.0 && *p < 1.0),
         }
     }
 
@@ -209,12 +217,14 @@ impl ContextSettings {
             reserve: self.reserve.or(below.reserve),
             window: self.window.or(below.window),
             summarizer: self.summarizer.clone().or_else(|| below.summarizer.clone()),
+            mask_target: self.mask_target.or(below.mask_target),
+            protect: self.protect.or(below.protect),
         }
     }
 
     /// Where each field of `self.over(global)` comes from — what a UI shows beside a
     /// setting so the cascade is never the confusing kind of magic.
-    pub fn origins(&self) -> [(&'static str, Origin); 6] {
+    pub fn origins(&self) -> [(&'static str, Origin); 8] {
         let o = |set: bool| {
             if set {
                 Origin::Session
@@ -229,6 +239,8 @@ impl ContextSettings {
             ("reserve", o(self.reserve.is_some())),
             ("window", o(self.window.is_some())),
             ("summarizer", o(self.summarizer.is_some())),
+            ("maskTarget", o(self.mask_target.is_some())),
+            ("protect", o(self.protect.is_some())),
         ]
     }
 }

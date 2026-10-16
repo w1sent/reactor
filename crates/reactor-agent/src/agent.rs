@@ -10,6 +10,10 @@
 //!   overflow the window inside one turn is reduced before the next request goes out.
 //!   There is no turn to park and nothing to restart: no synthetic "continue" message
 //!   is ever sent.
+//! - **Reduction is a ladder** ([ADR-0058]): old tool output is cut down to stubs when that
+//!   alone is enough; else the older work is summarized; if the summary cannot be had, it is
+//!   faded with no model; and if nothing older is left, the biggest results are cut. Each
+//!   stage writes one entry and loses nothing.
 //! - **Two loop invariants** survive from ADR-0025 as rules rather than an extension's
 //!   edge cases: reductions that do not get the context to fit stop the turn after a
 //!   budget of attempts, and a *failed* reduction stops it at once — the context did
@@ -19,6 +23,7 @@
 //!   mid-batch, so a session can always be resumed and its history always replays.
 //!
 //! [ADR-0037]: ../../../docs/adr/0037-context-reduction-is-one-budget-manager.md
+//! [ADR-0058]: ../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md
 //! [ADR-0057]: ../../../docs/adr/0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md
 
 use std::path::PathBuf;
@@ -242,6 +247,8 @@ pub struct ReductionInfo {
     pub after_tokens: u64,
     pub summary: Option<String>,
     pub stubs: usize,
+    /// Tool results this reduction shows as stubs in place.
+    pub masks: usize,
 }
 
 /// What a session command did, for the frontend to show and act on.
@@ -655,6 +662,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 _ => base.mode,
             },
             summary_tokens: base.summary_tokens,
+            mask_target: eff.mask_target.unwrap_or(base.mask_target),
+            protect: eff.protect.unwrap_or(base.protect),
         }
     }
 
@@ -700,7 +709,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     }
 
     /// A person asking to reduce wants *more* gone than the budget would take: the keep
-    /// window shrinks to the latest work (the last message and what followed it).
+    /// window shrinks to the latest group of work. Their last message stays in view.
     fn manual_budget(&self) -> BudgetConfig {
         BudgetConfig {
             keep: 0.0,
@@ -745,7 +754,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             items,
             p,
             trigger,
-            self.cfg.budget.summary_tokens,
+            p.summary_tokens,
         )?;
         // Nothing is written until the summary is in, so giving up on it midway leaves the
         // log as it was.
@@ -775,8 +784,74 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         Ok(id)
     }
 
+    /// Count one more reduction in a row, or stop: they are not getting the context to fit.
+    fn count_attempt(&self, in_a_row: &mut usize) -> Result<()> {
+        if *in_a_row >= self.cfg.max_reductions_in_a_row {
+            return Err(Error::ReductionBudget {
+                attempts: *in_a_row,
+            });
+        }
+        *in_a_row += 1;
+        Ok(())
+    }
+
+    /// Which tool results a masking pass would show as stubs.
+    fn masks(
+        &self,
+        fixed: u64,
+        items: &[Item],
+        opts: &budget::MaskOptions,
+    ) -> Option<budget::MaskPlan> {
+        budget::plan_mask(&self.store.lock().unwrap(), fixed, items, opts)
+    }
+
+    /// Show those tool results as stubs. One entry in the log; the results stay in it, whole.
+    fn apply_mask(&self, m: budget::MaskPlan, trigger: Trigger) -> Result<EntryId> {
+        let (before, after) = (m.before_tokens, m.after_tokens);
+        let id = budget::commit_mask(&mut self.store.lock().unwrap(), m, trigger)?;
+        self.emit(Event::Reduced {
+            entry: id,
+            mode: Mode::Fade,
+            trigger,
+            before_tokens: before,
+            after_tokens: after,
+        });
+        self.emit(Event::Appended(id));
+        Ok(id)
+    }
+
+    /// The summarizer could not be had: drop the older entries to stubs instead. That needs
+    /// no model, and shrinks the context just the same, so the turn can go on (ADR-0058).
+    async fn fade_instead(
+        &self,
+        items: &[Item],
+        fixed: u64,
+        cfg: &BudgetConfig,
+        cancel: &CancellationToken,
+        why: Error,
+    ) -> Result<()> {
+        let Ok(p) = plan(fixed, items, cfg, Mode::Fade) else {
+            return Err(why);
+        };
+        self.emit(Event::Notice(format!(
+            "summarizing failed ({}); the older entries were dropped to stubs instead. Nothing is lost: `history_read` reaches every one.",
+            why.to_string().lines().next().unwrap_or("").chars().take(160).collect::<String>()
+        )));
+        match self.carry_out(items, &p, Trigger::Budget, cancel).await {
+            Ok(_) => Ok(()),
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            // The summarizer's failure is the one to report: it is why this happened.
+            Err(_) => Err(why),
+        }
+    }
+
     /// Reduce until the context fits. Called before every request and after every tool
     /// result. `in_a_row` counts reductions that did not by themselves get it to fit.
+    ///
+    /// A ladder, cheapest first (ADR-0058): mask old tool output when that alone is enough;
+    /// else summarize (and fade the tool output); if the summary cannot be had, fade the
+    /// range with no model; and if nothing older is left, cut the biggest results, the
+    /// newest too.
     async fn ensure_fits(
         &self,
         in_a_row: &mut usize,
@@ -790,15 +865,36 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 *in_a_row = 0;
                 return Ok(());
             }
+
+            // 1. Mask. Only in `auto`: `compact` asks for summaries and `fade` for the
+            // range to go.
+            if cfg.mode == Mode::Auto
+                && let Some(m) = self.masks(fixed, &items, &budget::MaskOptions::proactive(&cfg))
+            {
+                self.count_attempt(in_a_row)?;
+                self.apply_mask(m, Trigger::Budget)?;
+                outcome.reductions += 1;
+                continue;
+            }
+
             let p = match plan(fixed, &items, &cfg, cfg.mode) {
                 Ok(p) => p,
                 Err(nothing) => {
                     // Over the trigger with nothing older to reduce: fine while there is
-                    // still room, fatal once there is not.
+                    // still room, and once there is not, cut what is big.
                     let used = context_tokens(fixed, &items);
                     if used > cfg.hard() {
+                        // 4. The last resort.
+                        if let Some(m) =
+                            self.masks(fixed, &items, &budget::MaskOptions::last_resort(&cfg))
+                        {
+                            self.count_attempt(in_a_row)?;
+                            self.apply_mask(m, Trigger::Budget)?;
+                            outcome.reductions += 1;
+                            continue;
+                        }
                         return Err(Error::Reduction(format!(
-                            "the context is full ({used} of {} tokens) and {nothing}",
+                            "the context is full ({used} of {} tokens) and {nothing}; nothing in it is big enough to cut down",
                             cfg.hard()
                         )));
                     }
@@ -806,13 +902,16 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     return Ok(());
                 }
             };
-            if *in_a_row >= self.cfg.max_reductions_in_a_row {
-                return Err(Error::ReductionBudget {
-                    attempts: *in_a_row,
-                });
+            self.count_attempt(in_a_row)?;
+            // 2. Summarize; 3. if that cannot be done, fade.
+            match self.carry_out(&items, &p, Trigger::Budget, cancel).await {
+                Ok(_) => {}
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(why) if p.needs_summarizer() => {
+                    self.fade_instead(&items, fixed, &cfg, cancel, why).await?;
+                }
+                Err(e) => return Err(e),
             }
-            *in_a_row += 1;
-            self.carry_out(&items, &p, Trigger::Budget, cancel).await?;
             outcome.reductions += 1;
         }
     }
@@ -1420,6 +1519,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     after_tokens: r.after_tokens,
                     summary: r.summary.clone(),
                     stubs: r.stubs.len(),
+                    masks: r.masks.len(),
                 }),
                 _ => None,
             })

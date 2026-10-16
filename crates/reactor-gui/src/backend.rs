@@ -1076,6 +1076,8 @@ pub struct ContextView {
     pub mode: String,
     pub pct: f64,
     pub keep: f64,
+    pub mask_target: f64,
+    pub protect: f64,
     pub reserve: u64,
     pub summarizer: Option<String>,
     /// Where each setting comes from: this session, or the default.
@@ -1116,6 +1118,8 @@ pub fn context_view(
         .into(),
         pct: b.pct,
         keep: b.keep,
+        mask_target: b.mask_target,
+        protect: b.protect,
         reserve: b.reserve,
         summarizer: session.over(&global).summarizer,
         origins: session

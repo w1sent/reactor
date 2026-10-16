@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use crate::context::{Item, Msg, Source, estimate_tokens, msg_tokens, render_reduction};
-use crate::entry::{Block, EntryId, Kind, Mode, Reduction, Stub, Trigger};
+use crate::entry::{Block, EntryId, Kind, Mask, Mode, Reduction, Stub, Trigger};
 use crate::error::{Error, Result};
 use crate::store::Store;
 
@@ -42,8 +42,14 @@ pub struct BudgetConfig {
     /// Reduce down to this fraction of `window - reserve`: the keep window.
     pub keep: f64,
     pub mode: Mode,
-    /// What the stand-in summary is allowed to cost.
+    /// What the stand-in summary is allowed to cost, at least; it grows with what it covers.
     pub summary_tokens: u64,
+    /// Mask old tool results until the context is down to this fraction of
+    /// `window - reserve` (ADR-0058). Between the keep window and the trigger, so the next
+    /// tool result does not bring a reduction straight back.
+    pub mask_target: f64,
+    /// The newest this fraction of the *window* is never masked.
+    pub protect: f64,
 }
 
 /// The most headroom a reply is ever kept: what a large window gets.
@@ -66,16 +72,19 @@ pub fn default_output(window: u64) -> u64 {
 
 impl BudgetConfig {
     pub fn new(window: u64) -> Self {
-        // `pct` is the fade's own default (0.9). `keep` is new: owning both
-        // strategies needs a target *below* the trigger, or a reduction that lands
-        // just under it fires again on the next tool result.
+        // Owning both strategies needs a target *below* the trigger, or a reduction that
+        // lands just under it fires again on the next tool result. Eight other harnesses
+        // keep 15 to 20% of the window verbatim; half of it spent a summarizer call on every
+        // third of a window of new work (ADR-0058).
         BudgetConfig {
             window,
             reserve: default_reserve(window),
-            pct: 0.9,
-            keep: 0.5,
+            pct: 0.85,
+            keep: 0.28,
             mode: Mode::Auto,
             summary_tokens: 1_500,
+            mask_target: 0.6,
+            protect: 0.15,
         }
     }
 
@@ -169,6 +178,14 @@ pub struct Plan {
     pub estimated_after_tokens: u64,
     pub mechanical_tokens: u64,
     pub conceptual_tokens: u64,
+    /// The person's last message, when the cut falls after it: it is not covered, and the
+    /// stand-in goes right behind it. `None` when the cut falls before it, so it is in the
+    /// kept part anyway.
+    pub anchor: Option<EntryId>,
+    /// What the summary may cost: it grows with what it covers.
+    pub summary_tokens: u64,
+    /// How much of the person's own words a fade keeps as they said them.
+    pub verbatim_tokens: u64,
 }
 
 impl Plan {
@@ -182,7 +199,19 @@ impl Plan {
     }
 }
 
+/// What a summary of `covered` tokens may cost: a sixth of it, between the configured
+/// size and 5,000, and never more than an eighth of the window.
+pub fn summary_size(covered: u64, cfg: &BudgetConfig) -> u64 {
+    let hi = 5_000u64.min(cfg.window / 8).max(cfg.summary_tokens);
+    let lo = cfg.summary_tokens.min(hi);
+    (covered * 17 / 100).clamp(lo, hi)
+}
+
 /// Plan a reduction of `items` down to the keep window.
+///
+/// The cut may fall inside the current turn: one prompt can drive dozens of tool calls, and
+/// a window that could not be reduced until the next prompt would fill up with nothing to
+/// take out. The person's last message is kept in view whatever the cut.
 pub fn plan(
     fixed: u64,
     items: &[Item],
@@ -192,11 +221,9 @@ pub fn plan(
     let tokens: Vec<u64> = items.iter().map(|i| msg_tokens(&i.msg)).collect();
     let suffix_budget = cfg.keep_budget().saturating_sub(fixed + cfg.summary_tokens);
 
-    // Never cut away the person's current instruction.
     let last_user = items
         .iter()
         .rposition(|i| matches!(i.msg, Msg::User { .. }) && matches!(i.source, Source::Entry(_)));
-    let ceiling = last_user.unwrap_or(items.len().saturating_sub(1));
 
     // The smallest k (largest suffix) that fits the keep budget from a safe boundary.
     let mut k = None;
@@ -211,9 +238,7 @@ pub fn plan(
         }
     }
     // Nothing fits: keep the last group at least, which starts at the last boundary.
-    let mut k = k
-        .unwrap_or_else(|| items.iter().rposition(is_boundary).unwrap_or(0))
-        .min(ceiling);
+    let mut k = k.unwrap_or_else(|| items.iter().rposition(is_boundary).unwrap_or(0));
     while k > 0 && !is_boundary(&items[k]) {
         k -= 1;
     }
@@ -222,13 +247,11 @@ pub fn plan(
             "everything left is the latest work; there is nothing older to reduce",
         ));
     }
-    if k == 1 && matches!(items[0].source, Source::Reduction(_)) {
-        return Err(NothingToReduce("everything older is already reduced"));
-    }
-
+    // The person's last message stays in view even when the cut falls after it.
+    let kept_user = last_user.filter(|&u| u < k);
     let (mut mechanical, mut conceptual) = (Vec::new(), Vec::new());
     let (mut mech_tokens, mut concept_tokens) = (0, 0);
-    for i in 0..k {
+    for i in (0..k).filter(|&i| Some(i) != kept_user) {
         match classify(&items[i].msg) {
             Class::Mechanical => {
                 mechanical.push(i);
@@ -240,20 +263,45 @@ pub fn plan(
             }
         }
     }
+    let covers: Vec<Source> = (0..k)
+        .filter(|&i| Some(i) != kept_user)
+        .map(|i| items[i].source)
+        .collect();
+    if covers.is_empty() {
+        return Err(NothingToReduce(
+            "everything left is the latest work; there is nothing older to reduce",
+        ));
+    }
+    // What is older is only what an earlier reduction left (it may sit behind the person's
+    // last message, which is kept in front of it): reducing that again frees next to nothing,
+    // and would be repeated until the attempts ran out.
+    if covers.iter().all(|c| matches!(c, Source::Reduction(_))) {
+        return Err(NothingToReduce("everything older is already reduced"));
+    }
+    let anchor = kept_user.and_then(|u| match items[u].source {
+        Source::Entry(id) => Some(id),
+        Source::Reduction(_) => None,
+    });
+    let covered = mech_tokens + concept_tokens;
+    let summary_tokens = summary_size(covered, cfg);
     let before = fixed + tokens.iter().sum::<u64>();
     let after = fixed
-        + cfg.summary_tokens.min(concept_tokens + mech_tokens)
-        + tokens[k..].iter().sum::<u64>();
+        + summary_tokens.min(covered)
+        + tokens[k..].iter().sum::<u64>()
+        + kept_user.map_or(0, |u| tokens[u]);
     Ok(Plan {
         mode,
         keep_from: k,
-        covers: items[..k].iter().map(|i| i.source).collect(),
+        covers,
         mechanical,
         conceptual,
         before_tokens: before,
         estimated_after_tokens: after,
         mechanical_tokens: mech_tokens,
         conceptual_tokens: concept_tokens,
+        anchor,
+        summary_tokens,
+        verbatim_tokens: cfg.window / 20,
     })
 }
 
@@ -274,6 +322,9 @@ pub struct SummaryRequest {
     pub input_cap: u64,
     /// The transcript taken apart, so it can be shrunk without cutting through an entry.
     pub parts: Vec<TranscriptPart>,
+    /// The notes are asked to follow [`SUMMARY_HEADINGS`]; a reply that does not is asked
+    /// again once.
+    pub template: bool,
 }
 
 /// How an entry may be shrunk to make a transcript fit.
@@ -302,7 +353,33 @@ pub trait Summarizer: Send + Sync {
     fn summarize(&self, req: SummaryRequest) -> impl Future<Output = Result<String>> + Send;
 }
 
-pub const SUMMARY_SYSTEM: &str = "You compress the earlier part of a reverse-engineering session so the work can continue from the summary alone. Write it as notes for yourself: what was asked, what was established (with concrete names, addresses, hashes, paths, values), what was ruled out and why, what is still open. Keep every finding a later step could depend on; drop narration. Tool output appears in the transcript so that findings in it can be captured -- record the conclusion, not the bytes; entries are labelled #id, and you may cite them as #id so the original can be read back. Reply with the notes only.";
+pub const SUMMARY_SYSTEM: &str = "You compress the earlier part of a reverse-engineering session so the work can continue from the summary alone. Write it as notes for yourself, under exactly these headings:\n## Goal\nwhat was asked, and what the work is for.\n## Established\nwhat is known, with concrete names, addresses, hashes, paths and values, and the #id of the entry that shows it.\n## Ruled out\nwhat was tried or checked and found not to be so, and why.\n## Open\nquestions and leads not yet followed.\n## Next\nthe next steps, in order.\nKeep every finding a later step could depend on; drop narration. Tool output appears in the transcript so that findings in it can be captured -- record the conclusion, not the bytes. Entries are labelled #id; cite them as #id so the original can be read back. Reply with the notes only.";
+
+/// Added when the range holds the notes of an earlier reduction.
+pub const SUMMARY_UPDATE: &str = "Part of the transcript is marked <previous-summary>: those are your own earlier notes. Keep what is still true, let the newer entries replace what they contradict, and do not say anything twice.";
+
+/// The headings the notes are asked to have.
+pub const SUMMARY_HEADINGS: [&str; 5] = [
+    "## Goal",
+    "## Established",
+    "## Ruled out",
+    "## Open",
+    "## Next",
+];
+
+/// Said once to a summarizer whose reply ignored the headings.
+pub const SUMMARY_REMINDER: &str = "Your notes must be under these headings, in this order: ## Goal, ## Established, ## Ruled out, ## Open, ## Next. Write them again that way, and nothing else.";
+
+/// Whether notes use the headings: three of the five is enough (a small model may fold two
+/// together), and a reply with none of them has ignored the request.
+pub fn follows_template(notes: &str) -> bool {
+    let lower = notes.to_lowercase();
+    SUMMARY_HEADINGS
+        .iter()
+        .filter(|h| lower.contains(&h.to_lowercase()))
+        .count()
+        >= 3
+}
 
 /// The longest a single tool result may be in the transcript handed to a summarizer.
 const TRANSCRIPT_TOOL_CAP: usize = 6_000;
@@ -333,45 +410,55 @@ pub fn transcript(store: &Store, items: &[Item]) -> String {
 }
 
 /// The range as entries, each labelled with the `#id` the summarizer may cite.
+///
+/// Thinking is left out: it is the bulkiest part of a long session, scratch work that
+/// may be kept as fact, and a conclusion that matters is in what the model said next.
 pub fn transcript_parts(items: &[Item]) -> Vec<TranscriptPart> {
     items
         .iter()
-        .map(|item| {
+        .filter_map(|item| {
             let (id, earlier) = match item.source {
                 Source::Entry(id) => (format!("#{id}"), false),
                 Source::Reduction(id) => (format!("#{id} (earlier reduction)"), true),
             };
-            match &item.msg {
+            Some(match &item.msg {
+                Msg::User { text } if earlier => TranscriptPart {
+                    label: format!("{id} user"),
+                    body: format!("<previous-summary>\n{text}\n</previous-summary>"),
+                    kind: PartKind::Earlier,
+                },
                 Msg::User { text } => TranscriptPart {
                     label: format!("{id} user"),
                     body: text.clone(),
-                    kind: if earlier {
-                        PartKind::Earlier
-                    } else {
-                        PartKind::Prose
-                    },
-                },
-                Msg::Assistant { blocks } => TranscriptPart {
-                    label: format!("{id} assistant"),
-                    body: blocks
-                        .iter()
-                        .map(|b| match b {
-                            Block::Text { text } => text.clone(),
-                            Block::Thinking { text, .. } => format!("(thinking) {text}"),
-                            Block::ToolCall {
-                                name, arguments, ..
-                            } => format!("-> {name} {arguments}"),
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
                     kind: PartKind::Prose,
                 },
+                Msg::Assistant { blocks } => {
+                    let body = blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Text { text } => Some(text.clone()),
+                            Block::Thinking { .. } => None,
+                            Block::ToolCall {
+                                name, arguments, ..
+                            } => Some(format!("-> {name} {arguments}")),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if body.trim().is_empty() {
+                        return None;
+                    }
+                    TranscriptPart {
+                        label: format!("{id} assistant"),
+                        body,
+                        kind: PartKind::Prose,
+                    }
+                }
                 Msg::ToolResult { name, content, .. } => TranscriptPart {
                     label: format!("{id} tool result: {name}"),
                     body: content.clone(),
                     kind: PartKind::Result,
                 },
-            }
+            })
         })
         .collect()
 }
@@ -444,12 +531,15 @@ impl<T: Summarizer + ?Sized> Summarizer for std::sync::Arc<T> {
 
 // -- stubs --------------------------------------------------------------------------
 
-fn digest(v: &serde_json::Value) -> String {
+fn digest(v: &serde_json::Value, max: usize) -> String {
     let s = v.to_string();
-    if s.chars().count() <= 80 {
+    if s.chars().count() <= max {
         s
     } else {
-        format!("{}…", s.chars().take(79).collect::<String>())
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
 }
 
@@ -469,11 +559,17 @@ fn first_words(text: &str, n: usize) -> String {
     }
 }
 
-/// What a dropped entry leaves behind.
+/// The longest a person's message is kept as they wrote it.
+const USER_TEXT_MAX_CHARS: usize = 4_000;
+
+/// What a dropped entry leaves behind. `args_len` is how much of a call's arguments the stub
+/// keeps; `verbatim` keeps what a person said in full.
 fn stub_for(
     store: &Store,
     id: EntryId,
     calls: &HashMap<String, (String, serde_json::Value)>,
+    args_len: usize,
+    verbatim: bool,
 ) -> Option<Stub> {
     let e = store.get(id)?;
     Some(match &e.kind {
@@ -486,7 +582,7 @@ fn stub_for(
         } => {
             let args = calls
                 .get(call_id)
-                .map(|(_, a)| digest(a))
+                .map(|(_, a)| digest(a, args_len))
                 .unwrap_or_default();
             Stub {
                 entry: id,
@@ -500,6 +596,7 @@ fn stub_for(
                     .as_ref()
                     .map(|b| b.bytes)
                     .unwrap_or(content.len() as u64),
+                text: None,
             }
         }
         Kind::User { text } => Stub {
@@ -507,6 +604,7 @@ fn stub_for(
             what: "user message".into(),
             detail: first_words(text, 60),
             bytes: text.len() as u64,
+            text: verbatim.then(|| cap(text, USER_TEXT_MAX_CHARS)),
         },
         Kind::Assistant { .. } => {
             let text = crate::history::text_of(&e.kind);
@@ -515,10 +613,266 @@ fn stub_for(
                 what: "assistant message".into(),
                 detail: first_words(&text, 60),
                 bytes: text.len() as u64,
+                text: None,
             }
         }
         _ => return None,
     })
+}
+
+/// Keep what people said as they said it, newest first, within `budget` tokens; an older
+/// message that does not fit is left as its first words. A fade repeated many times would
+/// otherwise carry every message that was ever dropped.
+fn limit_verbatim(stubs: &mut [Stub], budget: u64) {
+    let mut order: Vec<usize> = (0..stubs.len())
+        .filter(|&i| stubs[i].text.is_some())
+        .collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(stubs[i].entry));
+    let mut left = budget;
+    for i in order {
+        let text = stubs[i].text.take().unwrap_or_default();
+        let tokens = estimate_tokens(&text) + 4;
+        if tokens <= left {
+            left -= tokens;
+            stubs[i].text = Some(text);
+        } else if left >= 64 {
+            // The newest that does not fit whole is cut, rather than lost.
+            let keep = (left as usize).saturating_mul(4).saturating_sub(16);
+            stubs[i].text = Some(format!(
+                "{} …(cut)",
+                text.chars().take(keep).collect::<String>()
+            ));
+            left = 0;
+        }
+    }
+}
+
+// -- masking ------------------------------------------------------------------------
+
+/// A tool result under this is not worth a stub.
+pub const MASK_MIN_BYTES: usize = 1_024;
+/// What a masked result's stub begins with.
+pub const MASK_MARK: &str = "[masked: ";
+
+/// How much of the start and of the end of a result its stub keeps, for a window of
+/// `window` tokens: a fiftieth of it, between 120 and 400 characters.
+pub fn preview_chars(window: u64) -> usize {
+    ((window.saturating_mul(4) / 200) as usize).clamp(120, 400)
+}
+
+/// What a masking pass is asked to do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaskOptions {
+    /// Mask until the context is down to this many tokens.
+    pub target_tokens: u64,
+    /// The newest this many tokens are never masked.
+    pub protect_tokens: u64,
+    pub preview_chars: usize,
+    /// Mask nothing unless that reaches the target: a partial mask would change the start of
+    /// the request, and so the provider's cache, and still leave a summary to be written.
+    pub require_target: bool,
+    /// Leave alone the results the model has not answered yet: it has not read them.
+    pub spare_unread: bool,
+}
+
+impl MaskOptions {
+    /// The first stage of the ladder: down to the mask target, sparing the newest work.
+    pub fn proactive(cfg: &BudgetConfig) -> Self {
+        MaskOptions {
+            target_tokens: (cfg.mask_target * cfg.hard() as f64) as u64,
+            protect_tokens: (cfg.protect * cfg.window as f64) as u64,
+            preview_chars: preview_chars(cfg.window),
+            require_target: true,
+            spare_unread: true,
+        }
+    }
+
+    /// The last stage: nothing older is left to reduce, so whatever is big is cut, the
+    /// newest included, as far as it helps.
+    pub fn last_resort(cfg: &BudgetConfig) -> Self {
+        MaskOptions {
+            target_tokens: cfg.trigger(),
+            protect_tokens: 0,
+            preview_chars: preview_chars(cfg.window),
+            require_target: false,
+            spare_unread: false,
+        }
+    }
+}
+
+/// What a masking pass would do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPlan {
+    pub masks: Vec<Mask>,
+    pub before_tokens: u64,
+    pub after_tokens: u64,
+}
+
+fn mask_stub(
+    id: EntryId,
+    name: &str,
+    args: &str,
+    bytes: u64,
+    content: &str,
+    preview: usize,
+) -> String {
+    let what = if args.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {args}")
+    };
+    let chars = content.chars().count();
+    let head: String = content.chars().take(preview).collect();
+    let tail: String = content
+        .chars()
+        .skip(chars.saturating_sub(preview))
+        .collect();
+    format!(
+        "{MASK_MARK}#{id} {what} -- {bytes} bytes. The output is kept; read it back with `history_read` and #{id}.]\nstart:\n{head}\n...\nend:\n{tail}"
+    )
+}
+
+/// Plan which tool results to show as stubs: the oldest first, outside the protected newest
+/// part, until the context is at the target. A result that was read back with `history_read`
+/// goes last, since the model asked for it; one that is small, or already a stub, is left.
+/// `None` when nothing would be masked, or (if the target is required) when that is not
+/// enough.
+pub fn plan_mask(
+    store: &Store,
+    fixed: u64,
+    items: &[Item],
+    opts: &MaskOptions,
+) -> Option<MaskPlan> {
+    let tokens: Vec<u64> = items.iter().map(|i| msg_tokens(&i.msg)).collect();
+    let total = fixed + tokens.iter().sum::<u64>();
+    if total <= opts.target_tokens {
+        return None;
+    }
+    let need = total - opts.target_tokens;
+
+    let mut protected_from = items.len();
+    let mut seen = 0u64;
+    for i in (0..items.len()).rev() {
+        seen += tokens[i];
+        if seen > opts.protect_tokens {
+            break;
+        }
+        protected_from = i;
+    }
+    // Results the model has not answered yet are never masked first: it has not read them.
+    // (Only when nothing else is left, in the last resort, are they cut, and then to what fits.)
+    if opts.spare_unread {
+        let unread = items
+            .iter()
+            .rposition(|i| matches!(i.msg, Msg::Assistant { .. }))
+            .map_or(items.len(), |a| a + 1);
+        protected_from = protected_from.min(unread);
+    }
+
+    let calls: HashMap<String, (String, serde_json::Value)> = items
+        .iter()
+        .filter_map(|i| match &i.msg {
+            Msg::Assistant { blocks } => Some(blocks),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|b| match b {
+            Block::ToolCall {
+                id,
+                name,
+                arguments,
+            } => Some((id.clone(), (name.clone(), arguments.clone()))),
+            _ => None,
+        })
+        .collect();
+
+    let mut candidates: Vec<usize> = (0..protected_from)
+        .filter(|&i| match (&items[i].msg, items[i].source) {
+            (Msg::ToolResult { content, .. }, Source::Entry(_)) => {
+                content.len() >= MASK_MIN_BYTES && !content.starts_with(MASK_MARK)
+            }
+            _ => false,
+        })
+        .collect();
+    let read_back =
+        |i: usize| matches!(&items[i].msg, Msg::ToolResult { name, .. } if name == "history_read");
+    candidates.sort_by_key(|&i| (read_back(i), i));
+
+    // In the last resort the results left are what the model has to work with, so each keeps
+    // as much of its start and end as the room allows, not a token's worth.
+    let preview_for = {
+        let cand: u64 = candidates.iter().map(|&i| tokens[i]).sum();
+        let room = opts.target_tokens.saturating_sub(total - cand);
+        let per = room / candidates.len().max(1) as u64;
+        let roomy = (per.saturating_mul(4).saturating_sub(300) / 2).clamp(0, 6_000) as usize;
+        if opts.require_target {
+            opts.preview_chars
+        } else {
+            roomy.max(opts.preview_chars)
+        }
+    };
+
+    let mut masks = Vec::new();
+    let mut saved = 0u64;
+    for i in candidates {
+        let (
+            Msg::ToolResult {
+                call_id,
+                name,
+                content,
+                ..
+            },
+            Source::Entry(id),
+        ) = (&items[i].msg, items[i].source)
+        else {
+            continue;
+        };
+        let bytes = match store.get(id).map(|e| &e.kind) {
+            Some(Kind::ToolResult { blob: Some(b), .. }) => b.bytes,
+            _ => content.len() as u64,
+        };
+        let args = calls
+            .get(call_id)
+            .map(|(_, a)| digest(a, 160))
+            .unwrap_or_default();
+        let stub = mask_stub(id, name, &args, bytes, content, preview_for);
+        let after = 8 + estimate_tokens(&stub);
+        if after >= tokens[i] {
+            continue;
+        }
+        saved += tokens[i] - after;
+        masks.push(Mask {
+            entry: id,
+            stub,
+            bytes,
+        });
+        if saved >= need {
+            break;
+        }
+    }
+    if masks.is_empty() || (opts.require_target && saved < need) {
+        return None;
+    }
+    Some(MaskPlan {
+        masks,
+        before_tokens: total,
+        after_tokens: total - saved,
+    })
+}
+
+/// Record the masking. Appends one entry; the results stay in the log, whole.
+pub fn commit_mask(store: &mut Store, plan: MaskPlan, trigger: Trigger) -> Result<EntryId> {
+    store.append(Kind::Reduction(Reduction {
+        mode: Mode::Fade,
+        trigger,
+        covers: Vec::new(),
+        summary: None,
+        stubs: Vec::new(),
+        before_tokens: plan.before_tokens,
+        after_tokens: plan.after_tokens,
+        masks: plan.masks,
+        after: None,
+    }))
 }
 
 // -- applying -----------------------------------------------------------------------
@@ -536,6 +890,7 @@ pub struct Prepared {
     before_tokens: u64,
     fixed_tokens: u64,
     suffix_tokens: u64,
+    after: Option<EntryId>,
     /// What to ask the summarizer, when the mode summarizes.
     pub request: Option<SummaryRequest>,
 }
@@ -572,11 +927,13 @@ pub fn prepare(
     let mut covers: Vec<EntryId> = Vec::new();
     let mut carried_summary: Option<String> = None;
     let mut stubs: Vec<Stub> = Vec::new();
+    let mut has_earlier = false;
     for src in &plan.covers {
         match src {
             Source::Entry(id) => covers.push(*id),
             Source::Reduction(id) => {
                 covers.push(*id);
+                has_earlier = true;
                 if let Some(Kind::Reduction(prev)) = store.get(*id).map(|e| &e.kind) {
                     // Everything the earlier reduction hid stays hidden.
                     covers.extend(prev.covers.iter().copied());
@@ -600,12 +957,17 @@ pub fn prepare(
         Mode::Compact => Vec::new(),
     };
     dropped.sort_unstable();
+    // A fade keeps what the person said, and more of what was asked of the tools.
+    let fade = plan.mode == Mode::Fade;
     for i in dropped {
         if let Source::Entry(id) = prefix[i].source
-            && let Some(stub) = stub_for(store, id, &calls)
+            && let Some(stub) = stub_for(store, id, &calls, if fade { 160 } else { 80 }, fade)
         {
             stubs.push(stub);
         }
+    }
+    if fade {
+        limit_verbatim(&mut stubs, plan.verbatim_tokens);
     }
 
     let all: u64 = items.iter().map(|i| msg_tokens(&i.msg)).sum();
@@ -620,16 +982,28 @@ pub fn prepare(
         suffix_tokens: items[plan.keep_from..]
             .iter()
             .map(|i| msg_tokens(&i.msg))
-            .sum(),
+            .sum::<u64>()
+            + plan.anchor.map_or(0, |a| {
+                items
+                    .iter()
+                    .find(|i| i.source == Source::Entry(a))
+                    .map_or(0, |i| msg_tokens(&i.msg))
+            }),
+        after: plan.anchor,
         // Summarize with everything still in view, so a finding in a dump is written
         // down before its bytes leave the context.
         request: plan.needs_summarizer().then(|| {
             let parts = transcript_parts(prefix);
             SummaryRequest {
-                system: SUMMARY_SYSTEM.to_string(),
+                system: if has_earlier {
+                    format!("{SUMMARY_SYSTEM} {SUMMARY_UPDATE}")
+                } else {
+                    SUMMARY_SYSTEM.to_string()
+                },
                 transcript: render_parts(&parts, TRANSCRIPT_TOOL_CAP),
                 max_tokens: summary_tokens,
                 parts,
+                template: true,
                 ..Default::default()
             }
         }),
@@ -648,14 +1022,19 @@ pub fn commit(store: &mut Store, p: Prepared, summary: Option<String>) -> Result
         stubs: p.stubs,
         before_tokens: p.before_tokens,
         after_tokens: 0,
+        masks: Vec::new(),
+        after: p.after,
     };
     reduction.after_tokens =
         p.fixed_tokens + estimate_tokens(&render_reduction(&reduction)) + 8 + p.suffix_tokens;
     store.append(Kind::Reduction(reduction))
 }
 
-/// Ask for the summary the request describes, and refuse an empty one.
+/// Ask for the summary the request describes, and refuse an empty one, or one that is no
+/// shorter than what it covers (a summary that restates its source frees nothing and the
+/// reduction would be for nothing).
 pub async fn summarize(summarizer: &impl Summarizer, request: SummaryRequest) -> Result<String> {
+    let covered = estimate_tokens(&request.transcript);
     let text = summarizer
         .summarize(request)
         .await
@@ -663,6 +1042,11 @@ pub async fn summarize(summarizer: &impl Summarizer, request: SummaryRequest) ->
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err(Error::Reduction("the summarizer returned nothing".into()));
+    }
+    if covered >= 400 && estimate_tokens(&text) >= covered {
+        return Err(Error::Reduction(
+            "the summary is no shorter than what it covers, so summarizing it frees nothing".into(),
+        ));
     }
     Ok(text)
 }

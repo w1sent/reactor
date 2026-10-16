@@ -164,30 +164,50 @@ fn a_plan_keeps_a_suffix_that_fits_and_starts_on_a_group_boundary() {
 }
 
 #[test]
-fn a_plan_never_cuts_away_the_current_instruction() {
-    // The last user message is in the keep window even when everything after it is huge.
+fn a_plan_keeps_the_current_instruction_in_view_even_when_the_cut_falls_after_it() {
+    // One prompt can drive dozens of tool calls. The cut may fall inside that turn -- or the
+    // window would fill with nothing to take out -- but the task is never cut away: it is
+    // not covered, and the stand-in goes right behind it.
     let (_d, mut s) = store();
     user(&mut s, "old");
     assistant(&mut s, "older");
-    user(&mut s, "THE CURRENT TASK");
+    let task_id = user(&mut s, "THE CURRENT TASK");
     for i in 0..6 {
         bash(&mut s, &format!("c{i}"), "dump", &big("dump"));
     }
     let items = project(&s);
     let p = plan(0, &items, &cfg(3_000), Mode::Auto).unwrap();
-    let Source::Entry(id) = items[p.keep_from].source else {
-        panic!()
-    };
     let task = items
         .iter()
         .position(|i| matches!(&i.msg, Msg::User { text } if text == "THE CURRENT TASK"))
         .unwrap();
-    assert!(
-        p.keep_from <= task,
-        "kept from #{id}, but the task is item {task}"
+    assert!(p.keep_from > task, "the cut fell inside the turn");
+    assert_eq!(
+        p.anchor,
+        Some(task_id),
+        "the task is kept in front of the stand-in"
     );
+    assert!(
+        !p.covers.contains(&items[task].source),
+        "and it is not among what is covered"
+    );
+    assert!(!p.mechanical.contains(&task) && !p.conceptual.contains(&task));
 }
 
+#[test]
+fn a_cut_before_the_instruction_needs_no_anchor() {
+    let (_d, mut s) = store();
+    for i in 0..4 {
+        user(&mut s, &format!("older question {i}"));
+        assistant(&mut s, &big("an answer"));
+    }
+    user(&mut s, "THE CURRENT TASK");
+    let items = project(&s);
+    let p = plan(0, &items, &cfg(3_000), Mode::Auto).unwrap();
+    let task = items.len() - 1;
+    assert!(p.keep_from <= task);
+    assert_eq!(p.anchor, None);
+}
 #[test]
 fn nothing_older_means_no_plan() {
     let (_d, mut s) = store();

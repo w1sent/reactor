@@ -1,5 +1,15 @@
 # Context reduction is one budget manager with three modes, not two mechanisms
 
+> **Amended by [ADR-0058](0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)
+> and [ADR-0057](0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md) (all built):** the
+> reserve follows the window; reduction is a ladder whose first stage cuts old tool output down
+> to a stub with no summary, so the one-pass rule below holds for every reduction that writes a
+> summary; the trigger is 85% and the keep window 28%; the summary has headings, updates the last
+> one and is refused if it is no shorter than its source; thinking is not shown to the
+> summarizer; a failed summary is replaced by a fade instead of ending the turn; and what the
+> loop does when a request is rejected or a reply is cut off is recorded in 0057.
+> What is written below stands where not named here.
+
 The fade and summarization compaction stop being alternatives. One budget
 manager owns both, checks the budget at every tool-result boundary, and
 applies them by *entry kind* rather than by user preference:

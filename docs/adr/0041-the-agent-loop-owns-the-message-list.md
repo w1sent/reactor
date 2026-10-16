@@ -1,5 +1,12 @@
 # The agent loop owns the message list, and reduction replaces whole ranges
 
+> **Amended by [ADR-0058](0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)
+> and [ADR-0057](0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md) (both built):** a
+> reduction may also be a *mask* that shows tool results as stubs in place, and the keep window may
+> begin inside the current turn so long as the person's last message is kept in view, with the
+> stand-in right behind it; the loop's invariants gain the recovery rules of 0057; and the default
+> reserve is no longer a flat 16k.
+
 > **Amended by [ADR-0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md):** the
 > 32 KiB bound is now the default of a setting (`toolOutput.maxInlineBytes`), a call to a
 > built-in tool may ask for another with `max_output_bytes`, and the marker is the

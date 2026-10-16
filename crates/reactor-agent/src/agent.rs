@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::{
     self, BudgetConfig, Plan, Replay, Summarizer, SummaryRequest, context_tokens, default_output,
-    needs_reduction, plan,
+    plan,
 };
 use crate::classify::StopKind;
 use crate::context::{
@@ -228,7 +228,10 @@ pub struct Measure {
     /// The projected messages.
     pub messages: u64,
     pub total: u64,
-    /// Real tokens per estimated token, as learned from the provider (1.0 until it reports).
+    /// What the provider would count: its last count plus an estimate of what has come since,
+    /// else the estimate at the learned ratio.
+    pub real: u64,
+    /// Real tokens per estimated token (1.0 until a provider reports).
     pub calibration: f64,
 }
 
@@ -303,6 +306,8 @@ pub struct Agent<L: Llm, S: Summarizer> {
     /// What the last request left for `tool_search`: the tool needs it to answer, and it is
     /// what that request's model call was shown.
     deferred: Mutex<Arc<Vec<ToolSpec>>>,
+    /// The warning that the fixed part of a request is most of the window has been given.
+    warned_fixed: std::sync::atomic::AtomicBool,
 }
 
 impl<L: Llm, S: Summarizer> Agent<L, S> {
@@ -331,6 +336,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 ratio: Mutex::new(1.0),
                 authored_skills,
                 deferred: Mutex::new(Arc::new(Vec::new())),
+                warned_fixed: std::sync::atomic::AtomicBool::new(false),
             },
             rx,
         )
@@ -423,7 +429,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         deferral::plan(
             candidates,
             &g.state.loaded,
-            g.settings.tool_search.defer_over_tokens,
+            self.defer_threshold(&g.settings),
         )
     }
 
@@ -660,10 +666,21 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 .filter(|s| s.section != Section::System)
                 .map(|s| s.tokens)
                 .sum::<u64>();
+        // What every request carries whatever the work: the prompt and the tool definitions.
+        let fixed = system_tokens
+            + segments
+                .iter()
+                .filter(|s| s.section == Section::Tools)
+                .map(|s| s.tokens)
+                .sum::<u64>();
+        let warnings = budget::fixed_warning(fixed, &self.scaled_budget())
+            .into_iter()
+            .collect();
         Ok(ContextPreview {
             segments,
             total_tokens,
             calibration: *self.ratio.lock().unwrap(),
+            warnings,
         })
     }
 
@@ -695,6 +712,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             summary_tokens: base.summary_tokens,
             mask_target: eff.mask_target.unwrap_or(base.mask_target),
             protect: eff.protect.unwrap_or(base.protect),
+            verify: eff.verify.unwrap_or(base.verify),
         }
     }
 
@@ -739,28 +757,73 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         self.effective_budget().scaled(*self.ratio.lock().unwrap())
     }
 
+    /// What the request costs in real tokens: the count the provider last gave for the start of
+    /// it, plus an estimate of what has come since (and of the fixed part having changed), if
+    /// nothing has changed the start since; else an estimate of all of it, at the ratio learned
+    /// from what the providers reported. The count is closer than the estimate, which is off by
+    /// what the tokenizer does to hex and code, and it is there from the first request of a
+    /// resumed session ([ADR-0058]).
+    pub fn real_tokens(&self, fixed: u64, items: &[Item]) -> u64 {
+        let ema = *self.ratio.lock().unwrap();
+        let anchor = context::usage_anchor(&self.store.lock().unwrap(), items, &self.llm.name());
+        match anchor {
+            Some(a) if a.index < items.len() => {
+                let trailing: u64 = items[a.index + 1..]
+                    .iter()
+                    .map(|i| msg_tokens(&i.msg))
+                    .sum();
+                // The fixed part may have changed since: tools switched on, a block grown.
+                let drift = if a.fixed > 0 {
+                    fixed as i64 - a.fixed as i64
+                } else {
+                    0
+                };
+                a.tokens + ((trailing as i64 + drift).max(0) as f64 * ema) as u64
+            }
+            _ => (context_tokens(fixed, items) as f64 * ema) as u64,
+        }
+    }
+
+    /// Real tokens per estimated token for this request, from [`Agent::real_tokens`].
+    fn ratio_for(&self, fixed: u64, items: &[Item]) -> f64 {
+        let est = context_tokens(fixed, items).max(1);
+        (self.real_tokens(fixed, items) as f64 / est as f64).clamp(0.25, 4.0)
+    }
+
+    /// The budget in the units this request's estimates are in.
+    fn scaled_budget_for(&self, fixed: u64, items: &[Item]) -> BudgetConfig {
+        self.effective_budget().scaled(self.ratio_for(fixed, items))
+    }
+
     /// A person asking to reduce wants *more* gone than the budget would take: the keep
     /// window shrinks to the latest group of work. Their last message stays in view.
-    fn manual_budget(&self) -> BudgetConfig {
+    fn manual_budget(&self, fixed: u64, items: &[Item]) -> BudgetConfig {
         BudgetConfig {
             keep: 0.0,
-            ..self.scaled_budget()
+            ..self.scaled_budget_for(fixed, items)
         }
     }
 
     /// What a reduction would do right now, without doing it.
     pub async fn preview(&self, mode: Mode) -> Result<Plan> {
         let (_, fixed, items) = self.build().await?;
-        plan(fixed, &items, &self.manual_budget(), mode)
+        plan(fixed, &items, &self.manual_budget(fixed, &items), mode)
             .map_err(|n| Error::Reduction(n.to_string()))
     }
 
     /// Reduce now, at a person's request. A manual reduction means *summarize* in every
     /// mode but `fade` (a manual fade exists for a burst of dumps that should just go).
-    pub async fn reduce_now(&self, mode: Mode) -> Result<EntryId> {
+    ///
+    /// `focus` is what the person wants the summary to keep ("the C2 findings"); a fade has no
+    /// summary and ignores it.
+    pub async fn reduce_now(&self, mode: Mode, focus: Option<&str>) -> Result<EntryId> {
         let (base, fixed, items) = self.build().await?;
-        let p = plan(fixed, &items, &self.manual_budget(), mode)
+        let mut p = plan(fixed, &items, &self.manual_budget(fixed, &items), mode)
             .map_err(|n| Error::Reduction(n.to_string()))?;
+        p.focus = focus
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(str::to_string);
         self.carry_out(
             &base,
             &items,
@@ -800,6 +863,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             Some(req) => {
                 let mut req = req.clone();
                 self.size_summary(&mut req);
+                // A person who asked for a reduction by hand gets the second look.
+                req.verify = trigger == Trigger::Manual || self.effective_budget().verify;
                 // What the main model was sent up to the end of the range, for a summarizer
                 // that is the main model to begin its request the same way.
                 req.replay = Some(Replay {
@@ -910,8 +975,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     ) -> Result<()> {
         loop {
             let (base, fixed, items) = self.build().await?;
-            let cfg = self.scaled_budget();
-            if !needs_reduction(fixed, &items, &cfg) {
+            let cfg = self.scaled_budget_for(fixed, &items);
+            // Whether it is time is a question of real tokens against the real threshold: no
+            // ratio in between, which is clamped and could hide a count far from the estimate.
+            if self.real_tokens(fixed, &items) <= self.effective_budget().trigger() {
                 *in_a_row = 0;
                 return Ok(());
             }
@@ -970,6 +1037,19 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         }
     }
 
+    /// What a group of tools may cost before it is left for `tool_search`: the person's setting,
+    /// or a hundredth of the window (ADR-0058).
+    fn defer_threshold(&self, settings: &Settings) -> usize {
+        settings
+            .tool_search
+            .for_window(self.effective_budget().window)
+    }
+
+    /// The same, for a frontend to say.
+    pub fn deferral_threshold(&self) -> usize {
+        self.defer_threshold(&self.settings())
+    }
+
     /// The output limit a call gets when it does not ask for one: the person's setting, or
     /// a share of the window (ADR-0058).
     fn output_limit(&self, settings: &Settings) -> truncate::Limit {
@@ -982,11 +1062,23 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     // -- asking the model -----------------------------------------------------------------------
 
+    /// Say, once, that the fixed part of a request is most of what the window leaves. The work
+    /// goes on: a small window should work, with less room.
+    fn note_cramped(&self, fixed: u64) {
+        if let Some(w) = budget::fixed_warning(fixed, &self.scaled_budget())
+            && !self
+                .warned_fixed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.emit(Event::Notice(w));
+        }
+    }
+
     /// Set a request's reply limit and window. Returns whether the limit had to be cut to
     /// the room the window leaves, which a reduction can widen.
-    fn size_request(&self, req: &mut LlmRequest, used_estimate: u64, boost: bool) -> bool {
+    fn size_request(&self, req: &mut LlmRequest, fixed: u64, items: &[Item], boost: bool) -> bool {
         let b = self.effective_budget();
-        let used = (used_estimate as f64 * *self.ratio.lock().unwrap()) as u64;
+        let used = self.real_tokens(fixed, items);
         let mut want = self
             .cfg
             .max_tokens
@@ -1005,7 +1097,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// not enough. Whether anything older could be reduced.
     async fn force_reduce(&self, cancel: &CancellationToken, keep_scale: f64) -> Result<bool> {
         let (base, fixed, items) = self.build().await?;
-        let mut cfg = self.scaled_budget();
+        let mut cfg = self.scaled_budget_for(fixed, &items);
         cfg.keep *= keep_scale;
         match plan(fixed, &items, &cfg, cfg.mode) {
             Ok(p) => {
@@ -1027,7 +1119,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         cancel: &CancellationToken,
         in_a_row: &mut usize,
         outcome: &mut Outcome,
-    ) -> Result<(Reply, u64)> {
+    ) -> Result<(Reply, u64, u64)> {
         let (mut overflowed, mut lengthened, mut tries) = (false, false, 0usize);
         loop {
             if cancel.is_cancelled() {
@@ -1035,9 +1127,11 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             }
             self.ensure_fits(in_a_row, outcome, cancel).await?;
             let (mut req, fixed, items) = self.build().await?;
-            let cramped = self.size_request(&mut req, context_tokens(fixed, &items), lengthened);
-            let estimated: u64 = context_tokens(0, &project(&self.store.lock().unwrap()))
-                + estimate_tokens(&req.system);
+            let cramped = self.size_request(&mut req, fixed, &items, lengthened);
+            // What the request is estimated at, tools and all, to be set against what the
+            // provider says it was.
+            let estimated: u64 = context_tokens(fixed, &items);
+            self.note_cramped(fixed);
 
             let on_delta = |d: Delta| {
                 self.emit(match d {
@@ -1068,7 +1162,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                         }
                         continue;
                     }
-                    return Ok((reply, estimated));
+                    return Ok((reply, estimated, fixed));
                 }
                 Err(Error::Overflow(why)) => {
                     let window = self.effective_budget().window;
@@ -1161,10 +1255,16 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 if cancel.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                let (reply, estimated) =
+                let (reply, estimated, fixed) =
                     self.ask_model(&cancel, &mut in_a_row, &mut outcome).await?;
                 outcome.rounds += 1;
-                if let Some(u) = reply.usage {
+                // The fixed part is kept with the count, so a later count can allow for it having
+                // changed.
+                let usage = reply.usage.map(|mut u| {
+                    u.fixed_estimate = fixed;
+                    u
+                });
+                if let Some(u) = usage {
                     self.emit(Event::Usage(u));
                     if u.input_tokens > 0 && estimated > 0 {
                         // Fold in what the provider actually counted.
@@ -1180,7 +1280,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 self.append(Kind::Assistant {
                     blocks: reply.blocks.clone(),
                     model: Some(self.llm.name()),
-                    usage: reply.usage,
+                    usage,
                     stop: reply.stop.clone(),
                 })?;
 
@@ -1583,7 +1683,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             fixed,
             messages,
             total: fixed + messages,
-            calibration: *self.ratio.lock().unwrap(),
+            real: self.real_tokens(fixed, &items),
+            calibration: self.ratio_for(fixed, &items),
         })
     }
 

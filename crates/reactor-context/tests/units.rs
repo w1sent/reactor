@@ -555,6 +555,34 @@ mod context_settings {
         assert_eq!(origins["protect"], Origin::Session);
         assert_eq!(origins["maskTarget"], Origin::Default);
 
+        // The verify switch is a boolean that layers like the rest.
+        assert_eq!(n(json!({"verify": true})).verify, Some(true));
+        assert_eq!(
+            n(json!({"verify": "yes"})).verify,
+            None,
+            "wrong shape is unset"
+        );
+        let on = ContextSettings {
+            verify: Some(true),
+            ..Default::default()
+        };
+        let off = ContextSettings {
+            verify: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            off.over(&on).verify,
+            Some(false),
+            "the session's choice wins"
+        );
+        assert_eq!(ContextSettings::default().over(&on).verify, Some(true));
+        assert_eq!(
+            off.origins()
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>()["verify"],
+            Origin::Session
+        );
+
         // And in the file they are camelCase, and absent when unset.
         let json = serde_json::to_value(&global).unwrap();
         assert_eq!(json["maskTarget"], 0.5);

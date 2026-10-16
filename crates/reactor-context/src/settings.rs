@@ -169,6 +169,10 @@ pub struct ContextSettings {
     /// The newest this fraction of the window is never masked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protect: Option<f64>,
+    /// After a summary is written, ask the model what it left out and take its answer. A
+    /// second call over the whole range; a manual reduction does it whatever this says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<bool>,
 }
 
 pub const CONTEXT_MODES: [&str; 3] = ["auto", "fade", "compact"];
@@ -200,6 +204,7 @@ impl ContextSettings {
                 .map(str::to_string),
             mask_target: number(r.get("maskTarget")).filter(|p| *p > 0.0 && *p < 1.0),
             protect: number(r.get("protect")).filter(|p| *p >= 0.0 && *p < 1.0),
+            verify: r.get("verify").and_then(Value::as_bool),
         }
     }
 
@@ -219,12 +224,13 @@ impl ContextSettings {
             summarizer: self.summarizer.clone().or_else(|| below.summarizer.clone()),
             mask_target: self.mask_target.or(below.mask_target),
             protect: self.protect.or(below.protect),
+            verify: self.verify.or(below.verify),
         }
     }
 
     /// Where each field of `self.over(global)` comes from — what a UI shows beside a
     /// setting so the cascade is never the confusing kind of magic.
-    pub fn origins(&self) -> [(&'static str, Origin); 8] {
+    pub fn origins(&self) -> [(&'static str, Origin); 9] {
         let o = |set: bool| {
             if set {
                 Origin::Session
@@ -241,6 +247,7 @@ impl ContextSettings {
             ("summarizer", o(self.summarizer.is_some())),
             ("maskTarget", o(self.mask_target.is_some())),
             ("protect", o(self.protect.is_some())),
+            ("verify", o(self.verify.is_some())),
         ]
     }
 }
@@ -291,25 +298,39 @@ impl ToolOutputSettings {
 /// tools (the case graph's, or one MCP server's) whose definitions together cost more than
 /// `defer_over_tokens` is left out of the request, and the agent loads what it needs with
 /// `tool_search`. `0` defers every group.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// Unset, it follows the window ([`ToolSearchSettings::default_for_window`]): a group is left
+/// out once it costs a hundredth of the window; set, it is what the person chose
+/// ([ADR-0058](../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolSearchSettings {
-    pub defer_over_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_over_tokens: Option<usize>,
 }
 
 impl ToolSearchSettings {
     pub const MAX_TOKENS: usize = 100_000;
+    /// What a large window gets.
+    pub const DEFAULT_TOKENS: usize = 1_000;
+    /// The least a window's share comes to: a small group of tools is cheap in any window.
+    pub const MIN_DEFAULT_TOKENS: usize = 250;
 
     pub fn is_default(&self) -> bool {
-        *self == ToolSearchSettings::default()
+        self.defer_over_tokens.is_none()
     }
-}
 
-impl Default for ToolSearchSettings {
-    fn default() -> Self {
-        Self {
-            defer_over_tokens: 1_000,
-        }
+    /// The threshold when nothing says otherwise: a hundredth of the window, between 250 and
+    /// 1,000 tokens. A group of tools that costs 1,000 tokens is a hundredth of a 100k window,
+    /// and a tenth of a 10k one.
+    pub fn default_for_window(window_tokens: u64) -> usize {
+        ((window_tokens / 100) as usize).clamp(Self::MIN_DEFAULT_TOKENS, Self::DEFAULT_TOKENS)
+    }
+
+    /// The threshold in force for a window of `window_tokens`.
+    pub fn for_window(&self, window_tokens: u64) -> usize {
+        self.defer_over_tokens
+            .unwrap_or_else(|| Self::default_for_window(window_tokens))
     }
 }
 
@@ -532,7 +553,8 @@ impl Settings {
         )
         .filter(|n| *n >= 0.0 && n.fract() == 0.0)
         {
-            s.tool_search.defer_over_tokens = (n as usize).min(ToolSearchSettings::MAX_TOKENS);
+            s.tool_search.defer_over_tokens =
+                Some((n as usize).min(ToolSearchSettings::MAX_TOKENS));
         }
         if let Some(m) = root.get("memory") {
             s.memory = MemorySettings::normalize(m);
@@ -625,8 +647,9 @@ mod threshold_tests {
     use serde_json::json;
 
     #[test]
-    fn the_deferral_threshold_is_kept_bounded_and_absent_means_a_thousand_tokens() {
-        let at = |v: Value| Settings::from_json(&v).tool_search.defer_over_tokens;
+    fn the_deferral_threshold_is_kept_bounded_and_absent_follows_the_window() {
+        // For a large window: a thousand tokens, as it always was.
+        let at = |v: Value| Settings::from_json(&v).tool_search.for_window(200_000);
         assert_eq!(at(json!({})), 1_000);
         assert_eq!(at(json!({ "toolSearch": { "deferOverTokens": 0 } })), 0);
         assert_eq!(
@@ -648,6 +671,20 @@ mod threshold_tests {
         let s = Settings::from_json(&json!({ "toolSearch": { "deferOverTokens": 0 } }));
         let back = Settings::from_json(&serde_json::to_value(&s).unwrap());
         assert_eq!(back.tool_search, s.tool_search);
+
+        // Unset it is a hundredth of the window, between 250 and 1,000; set, it is the person's.
+        let unset = Settings::default().tool_search;
+        assert_eq!(unset.for_window(100_000), 1_000);
+        assert_eq!(unset.for_window(50_000), 500);
+        assert_eq!(unset.for_window(32_000), 320);
+        assert_eq!(unset.for_window(8_000), 250, "and never less");
+        assert!(unset.is_default() && !s.tool_search.is_default());
+        let set =
+            Settings::from_json(&json!({ "toolSearch": { "deferOverTokens": 4000 } })).tool_search;
+        assert_eq!(
+            (set.for_window(8_000), set.for_window(1_000_000)),
+            (4000, 4000)
+        );
     }
 
     #[test]

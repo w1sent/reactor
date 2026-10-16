@@ -1157,7 +1157,7 @@ async fn a_manual_reduction_previews_then_summarizes_and_can_be_undone() {
         "previewing asks no model"
     );
 
-    let id = r.agent.reduce_now(Mode::Compact).await.unwrap();
+    let id = r.agent.reduce_now(Mode::Compact, None).await.unwrap();
     assert_eq!(r.sum.seen.lock().unwrap().len(), 1);
     let store = r.agent.store();
     assert!(
@@ -1789,7 +1789,7 @@ async fn a_frontend_can_measure_list_and_undo_reductions() {
     assert_eq!(before.calibration, 1.0);
     assert!(r.agent.reductions().is_empty());
 
-    let id = r.agent.reduce_now(Mode::Compact).await.unwrap();
+    let id = r.agent.reduce_now(Mode::Compact, None).await.unwrap();
     let after = r.agent.measure().await.unwrap();
     assert!(after.messages < before.messages, "{after:?} vs {before:?}");
     let info = &r.agent.reductions()[0];
@@ -3448,4 +3448,345 @@ async fn the_detector_can_be_turned_off() {
     let r = rig_with(replies, Sum::says("-"), 100_000, |c| c.max_repeats = 0);
     run(&r, "go").await.unwrap();
     assert_eq!(results(&r).len(), 8);
+}
+
+// -- Part D: the count, the focus, the second look, the threshold, the warning ---------------------------------
+
+fn counted(text: &str, input: u64) -> Result<Reply> {
+    Ok(Reply {
+        blocks: vec![Block::Text { text: text.into() }],
+        usage: Some(reactor_agent::entry::Usage {
+            input_tokens: input,
+            output_tokens: 100,
+            ..Default::default()
+        }),
+        stop: Some("stop".into()),
+    })
+}
+
+#[tokio::test]
+async fn what_the_provider_counted_decides_when_to_reduce_not_the_estimate() {
+    // The estimate of this session is a few thousand tokens. The provider says the last request
+    // was 16,800 of a window of 20,000 (trigger: 16,915): the next message crosses it.
+    let r = rig(
+        vec![
+            ScriptedLlm::say("a"),
+            counted("b", 16_800),
+            ScriptedLlm::say("c"),
+        ],
+        Sum::says("## Goal\nx\n## Established\ny\n## Next\nz"),
+        20_000,
+    );
+    run(&r, &format!("first: {}", "padding ".repeat(300)))
+        .await
+        .unwrap();
+    run(&r, &format!("second: {}", "padding ".repeat(300)))
+        .await
+        .unwrap();
+    assert!(r.sum.seen.lock().unwrap().is_empty(), "nothing yet");
+    let m = r.agent.measure().await.unwrap();
+    assert!(
+        m.real >= 16_900,
+        "the count plus what came after: {}",
+        m.real
+    );
+    assert!(
+        m.real > m.total * 3 / 2,
+        "{} against an estimate of {}",
+        m.real,
+        m.total
+    );
+
+    let out = run(&r, &format!("third: {}", "padding ".repeat(300)))
+        .await
+        .unwrap();
+    assert!(
+        out.reductions >= 1,
+        "the count said the window was nearly full: {out:?}"
+    );
+    assert!(!r.sum.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_count_is_there_when_a_session_is_reopened_and_the_estimate_alone_would_not_be() {
+    let r = rig(vec![counted("a", 12_000)], Sum::says("-"), 20_000);
+    run(&r, "hello").await.unwrap();
+    let before = r.agent.measure().await.unwrap();
+    assert!(before.real >= 12_100);
+
+    // A new Agent over the same log, as when a window is reopened: its learned ratio starts at 1.
+    let case = r.agent.store().lock().unwrap().case().clone();
+    let Rig {
+        _dir: dir, agent, ..
+    } = r;
+    drop(agent);
+    let reopened = Store::open(&case, "s").unwrap();
+    let paths = Paths::new(dir.path().join("cfg"), Shipped::Embedded);
+    let mut cfg = AgentConfig::new(dir.path().join("work"), paths, 20_000);
+    cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
+    cfg.budget.reserve = 100;
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let (agent, _ev) = Agent::new(
+        llm,
+        Sum::says("-"),
+        reopened,
+        Tools::standard(dir.path().join("work")),
+        cfg,
+    );
+    let after = agent.measure().await.unwrap();
+    assert!(after.calibration > 1.5, "{}", after.calibration);
+    assert!(after.real >= 12_100, "{}", after.real);
+}
+
+#[tokio::test]
+async fn a_reply_records_the_fixed_part_of_the_request_it_answered() {
+    let r = rig(vec![counted("a", 3_000)], Sum::says("-"), 20_000);
+    run(&r, "hello").await.unwrap();
+    let store = r.agent.store();
+    let store = store.lock().unwrap();
+    let usage = store
+        .all()
+        .iter()
+        .find_map(|e| match &e.kind {
+            Kind::Assistant { usage, .. } => *usage,
+            _ => None,
+        })
+        .unwrap();
+    assert!(usage.fixed_estimate > 100, "{usage:?}");
+    assert_eq!(usage.input_tokens, 3_000);
+}
+
+#[tokio::test]
+async fn a_reduction_asked_for_with_a_focus_tells_the_summarizer_to_keep_it() {
+    let r = rig(
+        (0..9).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::says("## Goal\nx\n## Established\ny\n## Next\nz"),
+        60_000,
+    );
+    for i in 0..4 {
+        run(&r, &format!("question {i}: {}", "padding ".repeat(300)))
+            .await
+            .unwrap();
+    }
+    r.agent
+        .reduce_now(Mode::Compact, Some("  the C2 address and the XOR key  "))
+        .await
+        .unwrap();
+    let seen = r.sum.seen.lock().unwrap().clone();
+    assert!(
+        seen[0]
+            .system
+            .contains("keep this in particular, in full: the C2 address and the XOR key"),
+        "{}",
+        seen[0].system
+    );
+
+    // Without one, nothing is added; and a blank one is none.
+    r.agent.reduce_now(Mode::Compact, None).await.ok();
+    r.agent.reduce_now(Mode::Compact, Some("   ")).await.ok();
+    for later in &r.sum.seen.lock().unwrap()[1..] {
+        assert!(!later.system.contains("in particular"), "{}", later.system);
+    }
+}
+
+#[tokio::test]
+async fn a_fade_has_no_summary_so_a_focus_is_not_asked_of_anyone() {
+    let r = rig(
+        (0..5).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::says("-"),
+        60_000,
+    );
+    for i in 0..3 {
+        run(&r, &format!("question {i}: {}", "padding ".repeat(300)))
+            .await
+            .unwrap();
+    }
+    r.agent
+        .reduce_now(Mode::Fade, Some("the C2 findings"))
+        .await
+        .unwrap();
+    assert!(r.sum.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_reduction_by_hand_checks_its_summary_and_one_by_the_budget_does_not_unless_asked() {
+    let mk = |settings: Option<&'static str>| {
+        rig_with(
+            (0..12).map(|_| ScriptedLlm::say("noted")).collect(),
+            Sum::says("## Goal\nx\n## Established\ny\n## Next\nz"),
+            9_000,
+            move |c: &mut AgentConfig| {
+                if let Some(json) = settings {
+                    std::fs::create_dir_all(&c.paths.config_dir).unwrap();
+                    std::fs::write(c.paths.config_dir.join("settings.json"), json).unwrap();
+                }
+            },
+        )
+    };
+    // By the budget, nothing asked: no second look.
+    let r = mk(None);
+    with_history(&r).await;
+    let seen = r.sum.seen.lock().unwrap().clone();
+    assert!(!seen.is_empty() && seen.iter().all(|q| !q.verify));
+    // By hand: always.
+    drop(seen);
+    r.agent.reduce_now(Mode::Compact, None).await.ok();
+    assert!(r.sum.seen.lock().unwrap().last().unwrap().verify);
+    // By the budget, with the setting on: the second look.
+    let r = mk(Some(r#"{"context":{"verify":true}}"#));
+    with_history(&r).await;
+    assert!(r.sum.seen.lock().unwrap().iter().all(|q| q.verify));
+}
+
+#[tokio::test]
+async fn the_deferral_threshold_follows_the_window_unless_it_was_set() {
+    let at = |window: u64, settings: Option<&'static str>| {
+        let r = rig_with(
+            vec![],
+            Sum::says("-"),
+            window,
+            move |c: &mut AgentConfig| {
+                c.budget = reactor_agent::budget::BudgetConfig::new(window);
+                if let Some(json) = settings {
+                    std::fs::create_dir_all(&c.paths.config_dir).unwrap();
+                    std::fs::write(c.paths.config_dir.join("settings.json"), json).unwrap();
+                }
+            },
+        );
+        r.agent.deferral_threshold()
+    };
+    assert_eq!(at(200_000, None), 1_000, "what it always was");
+    assert_eq!(at(100_000, None), 1_000);
+    assert_eq!(at(32_000, None), 320);
+    assert_eq!(at(8_000, None), 250);
+    assert_eq!(
+        at(8_000, Some(r#"{"toolSearch":{"deferOverTokens":4000}}"#)),
+        4_000
+    );
+}
+
+#[tokio::test]
+async fn a_window_the_fixed_part_fills_is_told_so_once_and_the_work_goes_on() {
+    let mut r = rig(
+        vec![ScriptedLlm::say("a"), ScriptedLlm::say("b")],
+        Sum::says("-"),
+        4_000,
+    );
+    run(&r, "hello").await.unwrap();
+    run(&r, "and again").await.unwrap();
+    let said: Vec<String> = notices(&drain(&mut r.events))
+        .into_iter()
+        .filter(|n| n.contains("fixed part of every request"))
+        .collect();
+    assert_eq!(said.len(), 1, "once, not on every request: {said:?}");
+
+    // The preview carries it too.
+    let p = r.agent.context_preview().await.unwrap();
+    assert_eq!(p.warnings.len(), 1);
+
+    // A roomy window has nothing to say.
+    let roomy = rig(vec![], Sum::says("-"), 100_000);
+    assert!(
+        roomy
+            .agent
+            .context_preview()
+            .await
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
+}
+
+// -- the second look at a summary ---------------------------------------------------------------------------------
+
+fn verifying(req: SummaryRequest) -> SummaryRequest {
+    SummaryRequest {
+        verify: true,
+        template: true,
+        ..req
+    }
+}
+
+#[tokio::test]
+async fn a_summary_that_is_checked_is_replaced_by_the_better_one_the_model_writes() {
+    use reactor_agent::llm::LlmSummarizer;
+    let first = "## Goal\nfind the C2\n## Established\nit is 10.1.2.3\n## Next\nconfirm";
+    let better = "## Goal\nfind the C2\n## Established\nit is 10.1.2.3, port 4443, XOR key 0x5a\n## Next\nconfirm";
+    let llm = Arc::new(ScriptedLlm::new([
+        ScriptedLlm::say(first),
+        ScriptedLlm::say(better),
+    ]));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(verifying(summary_request()))
+        .await
+        .unwrap();
+    assert_eq!(notes, better);
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 2);
+    // The second request is the first, then the notes as the model's own words, then the question.
+    assert_eq!(seen[1].system, seen[0].system);
+    assert_eq!(
+        seen[1].messages[..seen[0].messages.len()],
+        seen[0].messages[..]
+    );
+    let n = seen[1].messages.len();
+    assert!(
+        matches!(&seen[1].messages[n - 2], Msg::Assistant { blocks } if blocks == &vec![Block::Text { text: first.into() }])
+    );
+    assert!(
+        matches!(&seen[1].messages[n - 1], Msg::User { text } if text == reactor_agent::budget::SUMMARY_VERIFY)
+    );
+}
+
+#[tokio::test]
+async fn a_check_that_fails_or_loses_the_notes_leaves_them_as_they_were() {
+    use reactor_agent::llm::LlmSummarizer;
+    let first = "## Goal\nfind the C2 and the key\n## Established\nit is 10.1.2.3 and the XOR key is 0x5a\n## Next\nconfirm both";
+    for second in [
+        Err(Error::Model("quota".into())),
+        ScriptedLlm::say(""),
+        ScriptedLlm::say("## Goal\nshort\n## Established\nx\n## Next\ny"),
+        ScriptedLlm::say(
+            "the same, but without headings, as one long paragraph about the sample and its key",
+        ),
+    ] {
+        let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say(first), second]));
+        let notes = LlmSummarizer::new(llm.clone())
+            .summarize(verifying(summary_request()))
+            .await
+            .unwrap();
+        assert_eq!(notes, first);
+        assert_eq!(llm.requests().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn a_summary_that_is_not_asked_to_be_checked_is_not() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say(NOTES)]));
+    LlmSummarizer::new(llm.clone())
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn the_check_is_made_the_main_models_way_too_with_its_tools_and_none_called() {
+    use reactor_agent::llm::LlmSummarizer;
+    let better =
+        "## Goal\nfind the C2\n## Established\nit is 10.1.2.3 and port 4443\n## Next\nconfirm";
+    let llm = main_llm([ScriptedLlm::say(NOTES), ScriptedLlm::say(better)]);
+    let mut req = verifying(summary_request());
+    req.replay = Some(main_replay("main"));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert_eq!(notes, better);
+    let seen = llm.requests();
+    assert!(
+        seen.iter()
+            .all(|q| q.no_tools && q.system == "THE MAIN SYSTEM PROMPT" && !q.tools.is_empty())
+    );
 }

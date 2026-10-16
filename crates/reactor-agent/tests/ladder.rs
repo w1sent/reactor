@@ -759,3 +759,126 @@ fn the_defaults_trigger_at_85_percent_and_keep_28_and_mask_down_to_60() {
     );
     assert_eq!(MaskOptions::last_resort(&c).protect_tokens, 0);
 }
+
+// -- counting from what the provider said (ADR-0058) ----------------------------------------------------
+
+use reactor_agent::context::usage_anchor;
+use reactor_agent::entry::{Block, Usage};
+
+fn replied(s: &mut Store, model: &str, input: u64, output: u64) -> u64 {
+    s.append(Kind::Assistant {
+        blocks: vec![Block::Text {
+            text: "an answer".into(),
+        }],
+        model: Some(model.into()),
+        usage: Some(Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cached_input_tokens: 0,
+            fixed_estimate: 700,
+        }),
+        stop: Some("stop".into()),
+    })
+    .unwrap()
+}
+
+#[test]
+fn the_newest_count_of_the_same_model_is_the_anchor_and_says_where_it_sits() {
+    let (_d, mut s) = store();
+    user(&mut s, "first");
+    replied(&mut s, "m", 1_000, 50);
+    user(&mut s, "second");
+    let newest = replied(&mut s, "m", 2_000, 80);
+    user(&mut s, "third");
+    let items = project(&s);
+    let a = usage_anchor(&s, &items, "m").unwrap();
+    assert_eq!(a.tokens, 2_080, "what was sent and what came back");
+    assert_eq!(a.fixed, 700);
+    assert_eq!(items[a.index].source, Source::Entry(newest));
+}
+
+#[test]
+fn a_count_in_another_models_tokens_is_not_used_and_an_older_one_of_this_model_is() {
+    let (_d, mut s) = store();
+    user(&mut s, "first");
+    let mine = replied(&mut s, "mine", 1_000, 50);
+    user(&mut s, "second");
+    replied(&mut s, "other", 9_000, 90);
+    let items = project(&s);
+    let a = usage_anchor(&s, &items, "mine").unwrap();
+    assert_eq!(items[a.index].source, Source::Entry(mine));
+    assert!(usage_anchor(&s, &items, "nobody").is_none());
+}
+
+#[test]
+fn a_reduction_or_a_restore_after_the_count_makes_it_stale() {
+    let (_d, mut s) = store();
+    user(&mut s, "first");
+    replied(&mut s, "m", 1_000, 50);
+    user(&mut s, "second");
+    let items = project(&s);
+    assert!(usage_anchor(&s, &items, "m").is_some());
+
+    let (_d2, mut s2, _) = worked(3);
+    replied(&mut s2, "m", 5_000, 50);
+    let items = project(&s2);
+    let p = plan_mask(&s2, 0, &items, &all(0)).unwrap();
+    let red = budget::commit_mask(&mut s2, p, Trigger::Budget).unwrap();
+    assert!(
+        usage_anchor(&s2, &project(&s2), "m").is_none(),
+        "the start of the request changed after the count"
+    );
+    // A reply after the change counts again.
+    replied(&mut s2, "m", 3_000, 40);
+    assert!(usage_anchor(&s2, &project(&s2), "m").is_some());
+    // And undoing the change makes that one stale in its turn.
+    s2.append(Kind::Restore { reduction: red }).unwrap();
+    assert!(usage_anchor(&s2, &project(&s2), "m").is_none());
+}
+
+#[test]
+fn an_older_log_with_no_fixed_estimate_still_anchors() {
+    let json = r#"{"input_tokens": 100, "output_tokens": 5}"#;
+    let u: Usage = serde_json::from_str(json).unwrap();
+    assert_eq!(u.fixed_estimate, 0);
+    assert!(
+        !serde_json::to_string(&u)
+            .unwrap()
+            .contains("fixed_estimate")
+    );
+}
+
+// -- the warning when the fixed part is most of the window ----------------------------------------------------
+
+#[test]
+fn the_fixed_part_being_most_of_what_the_window_leaves_is_worth_a_warning() {
+    let c = BudgetConfig {
+        reserve: 1_000,
+        ..BudgetConfig::new(11_000)
+    }; // 10,000 usable
+    assert!(
+        budget::fixed_warning(5_000, &c).is_none(),
+        "half is not over half"
+    );
+    let w = budget::fixed_warning(5_001, &c).unwrap();
+    assert!(
+        w.contains("5001") && w.contains("10000") && w.contains("50%"),
+        "{w}"
+    );
+    assert!(
+        w.contains("larger window") && w.contains("toolsets"),
+        "it says what to do: {w}"
+    );
+    assert!(budget::fixed_warning(100, &c).is_none());
+    assert!(
+        budget::fixed_warning(
+            1,
+            &BudgetConfig {
+                reserve: 5_000,
+                ..BudgetConfig::new(5_000)
+            }
+        )
+        .is_none(),
+        "no usable budget at all is the budget's to say, not this"
+    );
+}

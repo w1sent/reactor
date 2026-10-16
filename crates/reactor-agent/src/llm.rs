@@ -263,6 +263,7 @@ pub fn usage_of(u: &rig_core::completion::Usage, cache_counted_apart: bool) -> U
         input_tokens: input,
         output_tokens: u.output_tokens,
         cached_input_tokens: u.cached_input_tokens,
+        fixed_estimate: 0,
     }
 }
 
@@ -622,6 +623,45 @@ impl<L> LlmSummarizer<L> {
 }
 
 impl<L: Llm> LlmSummarizer<L> {
+    /// The second look: given its own notes and asked what they leave out, a model writes them
+    /// again with it added, or the same. A summary cannot be had again later, and one that
+    /// lost a finding costs more than the call, so this is worth asking for when the reduction is
+    /// one a person asked for. It is a check, not a rewrite: a failure, an empty answer, one that
+    /// ignores the headings or one less than half as long as the notes (a model that took
+    /// "write them again" as "write less") leaves the first notes as they were.
+    async fn verify(
+        &self,
+        llm: &L,
+        mut request: LlmRequest,
+        notes: &str,
+        template: bool,
+    ) -> Option<String> {
+        request.messages.push(Msg::Assistant {
+            blocks: vec![Block::Text {
+                text: notes.to_string(),
+            }],
+        });
+        request.messages.push(Msg::User {
+            text: crate::budget::SUMMARY_VERIFY.to_string(),
+        });
+        let reply = complete_watched(llm, request, self.idle_timeout, |_| {})
+            .await
+            .ok()?;
+        let again = reply
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let usable = !again.trim().is_empty()
+            && (!template || crate::budget::follows_template(&again))
+            && again.trim().len() * 2 >= notes.trim().len();
+        usable.then(|| again.trim().to_string())
+    }
+
     async fn ask(&self, llm: &L, req: &crate::budget::SummaryRequest) -> Result<String> {
         // The notes are asked to stay short (`req.max_tokens` is what the budget plans for), but
         // the output limit is far wider: a reasoning model spends part of it thinking first, and
@@ -712,6 +752,8 @@ impl<L: Llm> LlmSummarizer<L> {
                     no_tools: false,
                 },
             };
+            // The request that produces the notes is the start of the one that checks them.
+            let asked = req.verify.then(|| request.clone());
             let sent = complete_watched(llm, request, self.idle_timeout, |_| {}).await;
             let reply = match sent {
                 Ok(r) => r,
@@ -763,6 +805,11 @@ impl<L: Llm> LlmSummarizer<L> {
                 if req.template && !crate::budget::follows_template(&notes) && !reminded {
                     reminded = true;
                     continue;
+                }
+                if let Some(asked) = asked
+                    && let Some(better) = self.verify(llm, asked, &notes, req.template).await
+                {
+                    return Ok(better);
                 }
                 return Ok(notes);
             }

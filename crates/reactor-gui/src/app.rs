@@ -3664,7 +3664,10 @@ impl ReactorApp {
                 ),
             },
             "preview" => self.preview_reduction(mode(), cx),
-            "reduce" => self.reduce_now(mode(), cx),
+            "reduce" => {
+                let (m, focus) = palette::reduce_args(args);
+                self.reduce_now(m, focus, cx)
+            }
             "undo" => {
                 let target = match args.trim_start_matches('#') {
                     "" => self
@@ -4192,7 +4195,7 @@ impl ReactorApp {
             ("", _) => {
                 let note = match &self.context {
                     Some(c) => format!(
-                        "context: mode {}, window {}, reserve {}, reduce at {:.0}%, keep {:.0}%, mask to {:.0}%, spare newest {:.0}%, summarizer {}",
+                        "context: mode {}, window {}, reserve {}, reduce at {:.0}%, keep {:.0}%, mask to {:.0}%, spare newest {:.0}%, verify {}, summarizer {}",
                         c.mode,
                         c.window,
                         c.reserve,
@@ -4200,6 +4203,7 @@ impl ReactorApp {
                         c.keep * 100.0,
                         c.mask_target * 100.0,
                         c.protect * 100.0,
+                        if c.verify { "on" } else { "off" },
                         c.summarizer.as_deref().unwrap_or("the session's model")
                     ),
                     None => "context: not measured yet".to_string(),
@@ -4218,9 +4222,11 @@ impl ReactorApp {
             ("keep", v) if fraction(v).is_some() => layer.keep = fraction(v),
             ("mask", v) if fraction(v).is_some() => layer.mask_target = fraction(v),
             ("protect", v) if fraction(v).is_some() => layer.protect = fraction(v),
+            ("verify", "on" | "true") => layer.verify = Some(true),
+            ("verify", "off" | "false") => layer.verify = Some(false),
             ("summarizer", v) if !v.is_empty() => layer.summarizer = Some(v.to_string()),
             _ => {
-                self.push_note("warning", "context: mode <auto|fade|compact> | window <tokens> | reserve <tokens> | pct <%> | keep <%> | mask <%> | protect <%> | summarizer <provider/name> | default | inherit");
+                self.push_note("warning", "context: mode <auto|fade|compact> | window <tokens> | reserve <tokens> | pct <%> | keep <%> | mask <%> | protect <%> | verify <on|off> | summarizer <provider/name> | default | inherit");
                 return;
             }
         }
@@ -4299,7 +4305,7 @@ impl ReactorApp {
         cx.notify();
     }
 
-    pub fn reduce_now(&mut self, mode: Mode, cx: &mut Context<Self>) {
+    pub fn reduce_now(&mut self, mode: Mode, focus: Option<String>, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;
         };
@@ -4311,7 +4317,7 @@ impl ReactorApp {
         self.preview = None;
         self.session
             .update(cx, |s, _| s.phase = AgentPhase::Compacting);
-        backend.reduce_now(mode);
+        backend.reduce_now(mode, focus);
         cx.notify();
     }
 

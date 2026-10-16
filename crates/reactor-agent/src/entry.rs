@@ -132,6 +132,15 @@ pub struct Usage {
     pub output_tokens: u64,
     #[serde(default)]
     pub cached_input_tokens: u64,
+    /// What the loop estimated the fixed part of that request to be (system prompt and tool
+    /// definitions), so that a later count can allow for the fixed part having changed since.
+    /// Zero for a reply that did not record it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fixed_estimate: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Where the whole of a truncated tool output lives, and how big it was.

@@ -50,6 +50,8 @@ pub struct BudgetConfig {
     pub mask_target: f64,
     /// The newest this fraction of the *window* is never masked.
     pub protect: f64,
+    /// Ask the model what a summary left out, and take its second answer.
+    pub verify: bool,
 }
 
 /// The most headroom a reply is ever kept: what a large window gets.
@@ -85,6 +87,7 @@ impl BudgetConfig {
             summary_tokens: 1_500,
             mask_target: 0.6,
             protect: 0.15,
+            verify: false,
         }
     }
 
@@ -186,6 +189,8 @@ pub struct Plan {
     pub summary_tokens: u64,
     /// How much of the person's own words a fade keeps as they said them.
     pub verbatim_tokens: u64,
+    /// What the person asked the summary to keep ("the C2 findings"); a fade has no summary.
+    pub focus: Option<String>,
 }
 
 impl Plan {
@@ -302,6 +307,7 @@ pub fn plan(
         anchor,
         summary_tokens,
         verbatim_tokens: cfg.window / 20,
+        focus: None,
     })
 }
 
@@ -328,6 +334,8 @@ pub struct SummaryRequest {
     /// The main request's own start, so a summarizer that is the main model can be asked in a
     /// way the provider has already done most of the work for.
     pub replay: Option<Replay>,
+    /// Once the notes are written, ask what they left out and take the answer.
+    pub verify: bool,
 }
 
 /// What the main model was sent, up to the end of the range being summarized: the same system
@@ -386,6 +394,24 @@ pub const SUMMARY_HEADINGS: [&str; 5] = [
 
 /// Said once to a summarizer whose reply ignored the headings.
 pub const SUMMARY_REMINDER: &str = "Your notes must be under these headings, in this order: ## Goal, ## Established, ## Ruled out, ## Open, ## Next. Write them again that way, and nothing else.";
+
+/// What a verification pass asks of a model that has written notes: the second look at the
+/// transcript that finds what the first left out.
+pub const SUMMARY_VERIFY: &str = "Critically read the notes you just wrote against the transcript. Did you leave out a name, address, hash, path, value, constraint or instruction that a later step could depend on, or a lead that is still open? If so, write the final notes again under the same headings with it added. If not, write the same notes again exactly. Reply with the notes only.";
+
+/// A warning for the person when the fixed part of every request (system prompt, tools and the
+/// blocks generated each time) is most of what the window leaves, since little is then left for
+/// the work. Not a refusal: a small window should work, only with less room.
+pub fn fixed_warning(fixed: u64, cfg: &BudgetConfig) -> Option<String> {
+    let hard = cfg.hard();
+    if hard == 0 || fixed * 2 <= hard {
+        return None;
+    }
+    Some(format!(
+        "The fixed part of every request (system prompt, tools, case graph, manifest) is about {fixed} tokens, {}% of the {hard} the window leaves. Little is left for the work. Switch off tools or toolsets you do not need, detach the case graph, or use a model with a larger window.",
+        fixed * 100 / hard
+    ))
+}
 
 /// Whether notes use the headings: three of the five is enough (a small model may fold two
 /// together), and a reply with none of them has ignored the request.
@@ -1012,10 +1038,18 @@ pub fn prepare(
         request: plan.needs_summarizer().then(|| {
             let parts = transcript_parts(prefix);
             SummaryRequest {
-                system: if has_earlier {
-                    format!("{SUMMARY_SYSTEM} {SUMMARY_UPDATE}")
-                } else {
-                    SUMMARY_SYSTEM.to_string()
+                system: {
+                    let mut system = SUMMARY_SYSTEM.to_string();
+                    if has_earlier {
+                        system = format!("{system} {SUMMARY_UPDATE}");
+                    }
+                    if let Some(focus) = plan.focus.as_deref().filter(|f| !f.trim().is_empty()) {
+                        system = format!(
+                            "{system} The person asked you to keep this in particular, in full: {}",
+                            focus.trim()
+                        );
+                    }
+                    system
                 },
                 transcript: render_parts(&parts, TRANSCRIPT_TOOL_CAP),
                 max_tokens: summary_tokens,

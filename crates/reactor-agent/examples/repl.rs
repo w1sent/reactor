@@ -274,7 +274,7 @@ where
                     Err(e) => println!("{e}"),
                 }
             } else {
-                match agent.reduce_now(mode).await {
+                match agent.reduce_now(mode, None).await {
                     Ok(id) => println!("reduced (#{id}); /undo restores it"),
                     Err(e) => println!("{e}"),
                 }

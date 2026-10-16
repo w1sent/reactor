@@ -1365,7 +1365,7 @@ fn budget_popover(app: &Weak, id: &str, idle: bool, cx: &mut App) -> AnyElement 
             .disabled(busy || !idle)
             .on_click(on_session(app, id, move |app, _, cx| {
                 if reduce {
-                    app.reduce_now(mode, cx)
+                    app.reduce_now(mode, None, cx)
                 } else {
                     app.preview_reduction(mode, cx)
                 }
@@ -1380,9 +1380,15 @@ fn budget_popover(app: &Weak, id: &str, idle: bool, cx: &mut App) -> AnyElement 
                 .child(Label::new("Context budget"))
                 .child(crate::hints::info_button(
                     "context-settings-info",
-                    "Change one with /context <mode|window|reserve|pct|keep|mask|protect|summarizer> <value>, or use the mode buttons. Old tool output is masked (shown as a stub, the original kept) down to \"mask to\" before anything is summarized; \"spare newest\" is the share of the window never masked. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
+                    "Change one with /context <mode|window|reserve|pct|keep|mask|protect|verify|summarizer> <value>, or use the mode buttons. Old tool output is masked (shown as a stub, the original kept) down to \"mask to\" before anything is summarized; \"spare newest\" is the share of the window never masked. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
                 )),
         )
+        .children(view.warnings.iter().map(|w| {
+            div()
+                .text_size(small(&theme))
+                .text_color(theme.warning)
+                .child(w.clone())
+        }))
         .child(
             h_flex()
                 .gap_2()

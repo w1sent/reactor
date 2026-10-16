@@ -224,6 +224,55 @@ pub fn project(store: &Store) -> Vec<Item> {
     out
 }
 
+/// What the provider last said a request cost, and where in the projection that reply sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    /// The index in the projection of the assistant message the count came with.
+    pub index: usize,
+    /// Real tokens: what that request carried plus what the model replied, which is what the
+    /// next request carries up to that point.
+    pub tokens: u64,
+    /// The loop's estimate of that request's fixed part, or zero if it was not recorded.
+    pub fixed: u64,
+}
+
+/// The newest count a provider gave that still describes the start of the projection: the
+/// latest assistant reply of `model` that is in view and that no reduction, mask or restore has
+/// come after. Counting from it is closer than counting everything with an estimate, which is
+/// off by whatever the tokenizer does to hex and code ([ADR-0058](../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)).
+pub fn usage_anchor(store: &Store, items: &[Item], model: &str) -> Option<Anchor> {
+    let branch = store.branch();
+    // Whatever changed the start of the request after a reply makes its count stale.
+    let last_change = branch
+        .iter()
+        .rposition(|e| matches!(e.kind, Kind::Reduction(_) | Kind::Restore { .. }));
+    for (pos, e) in branch.iter().enumerate().rev() {
+        if last_change.is_some_and(|c| pos < c) {
+            return None;
+        }
+        let Kind::Assistant {
+            usage: Some(u),
+            model: m,
+            ..
+        } = &e.kind
+        else {
+            continue;
+        };
+        // A count in another model's tokens is not this model's.
+        if u.input_tokens == 0 || m.as_deref().is_some_and(|m| m != model) {
+            continue;
+        }
+        if let Some(index) = items.iter().position(|i| i.source == Source::Entry(e.id)) {
+            return Some(Anchor {
+                index,
+                tokens: u.input_tokens + u.output_tokens,
+                fixed: u.fixed_estimate,
+            });
+        }
+    }
+    None
+}
+
 /// What the model reads of an attachment: where it comes from, then the text.
 pub fn render_attachment(a: &crate::entry::Attachment) -> String {
     let mut out = format!("## Given to you by the user: {}", a.label);

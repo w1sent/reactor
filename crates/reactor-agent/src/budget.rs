@@ -46,6 +46,24 @@ pub struct BudgetConfig {
     pub summary_tokens: u64,
 }
 
+/// The most headroom a reply is ever kept: what a large window gets.
+pub const MAX_RESERVE: u64 = 16_384;
+/// The least, for a window big enough to have any.
+pub const MIN_RESERVE: u64 = 1_024;
+
+/// The headroom kept free for the reply when nothing says otherwise: an eighth of the
+/// window, between a floor and 16k. A flat 16k leaves no usable budget at all in a window
+/// of 16k, and leaves a 32k window with half of it (ADR-0058).
+pub fn default_reserve(window: u64) -> u64 {
+    (window / 8).clamp(MIN_RESERVE.min(window / 4), MAX_RESERVE)
+}
+
+/// The longest a reply may be when nothing says otherwise: a quarter of the window, at most
+/// 32k. A thinking model spends part of this thinking.
+pub fn default_output(window: u64) -> u64 {
+    (window / 4).clamp(1_024, 32_768)
+}
+
 impl BudgetConfig {
     pub fn new(window: u64) -> Self {
         // `pct` is the fade's own default (0.9). `keep` is new: owning both
@@ -53,11 +71,26 @@ impl BudgetConfig {
         // just under it fires again on the next tool result.
         BudgetConfig {
             window,
-            reserve: 16_384,
+            reserve: default_reserve(window),
             pct: 0.9,
             keep: 0.5,
             mode: Mode::Auto,
             summary_tokens: 1_500,
+        }
+    }
+
+    /// The same budget for another window. A reserve that was only the default for the old
+    /// window becomes the default for the new one; a chosen reserve stays.
+    pub fn rebased(&self, window: u64) -> BudgetConfig {
+        let reserve = if self.reserve == default_reserve(self.window) {
+            default_reserve(window)
+        } else {
+            self.reserve
+        };
+        BudgetConfig {
+            window,
+            reserve,
+            ..*self
         }
     }
     pub fn hard(&self) -> u64 {
@@ -227,11 +260,40 @@ pub fn plan(
 // -- summarizing ----------------------------------------------------------------
 
 /// What a summarizer is asked.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SummaryRequest {
     pub system: String,
+    /// The range as one text: [`parts`](Self::parts) at their usual size.
     pub transcript: String,
     pub max_tokens: u64,
+    /// The context window the summarizer runs in, in tokens (0: not known). A server that
+    /// sizes its window per request is told it.
+    pub window: u64,
+    /// The most transcript to send, in estimated tokens (0: no limit). Set by the loop from
+    /// the budget; a transcript over it is shrunk before it is sent.
+    pub input_cap: u64,
+    /// The transcript taken apart, so it can be shrunk without cutting through an entry.
+    pub parts: Vec<TranscriptPart>,
+}
+
+/// How an entry may be shrunk to make a transcript fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartKind {
+    /// A tool result: bulk whose body is cut first.
+    Result,
+    /// Prose, instructions, reasoning.
+    Prose,
+    /// What an earlier reduction left: the last thing to go.
+    Earlier,
+}
+
+/// One entry of a transcript.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptPart {
+    /// `#12 tool result: bash`: what the summarizer may cite.
+    pub label: String,
+    pub body: String,
+    pub kind: PartKind,
 }
 
 /// Anything that can turn a transcript into a summary. Usually a model call; a
@@ -245,7 +307,7 @@ pub const SUMMARY_SYSTEM: &str = "You compress the earlier part of a reverse-eng
 /// The longest a single tool result may be in the transcript handed to a summarizer.
 const TRANSCRIPT_TOOL_CAP: usize = 6_000;
 
-fn cap(text: &str, max: usize) -> String {
+pub(crate) fn cap(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
@@ -266,38 +328,112 @@ fn cap(text: &str, max: usize) -> String {
 
 /// The range as a transcript, every entry visible and addressable.
 pub fn transcript(store: &Store, items: &[Item]) -> String {
-    let mut out = Vec::new();
-    for item in items {
-        let label = match item.source {
-            Source::Entry(id) => format!("#{id}"),
-            Source::Reduction(id) => format!("#{id} (earlier reduction)"),
-        };
-        out.push(match &item.msg {
-            Msg::User { text } => format!("[{label} user]\n{text}"),
-            Msg::Assistant { blocks } => {
-                let body: Vec<String> = blocks
-                    .iter()
-                    .map(|b| match b {
-                        Block::Text { text } => text.clone(),
-                        Block::Thinking { text, .. } => format!("(thinking) {text}"),
-                        Block::ToolCall {
-                            name, arguments, ..
-                        } => format!("-> {name} {arguments}"),
-                    })
-                    .collect();
-                format!("[{label} assistant]\n{}", body.join("\n"))
+    let _ = store;
+    render_parts(&transcript_parts(items), TRANSCRIPT_TOOL_CAP)
+}
+
+/// The range as entries, each labelled with the `#id` the summarizer may cite.
+pub fn transcript_parts(items: &[Item]) -> Vec<TranscriptPart> {
+    items
+        .iter()
+        .map(|item| {
+            let (id, earlier) = match item.source {
+                Source::Entry(id) => (format!("#{id}"), false),
+                Source::Reduction(id) => (format!("#{id} (earlier reduction)"), true),
+            };
+            match &item.msg {
+                Msg::User { text } => TranscriptPart {
+                    label: format!("{id} user"),
+                    body: text.clone(),
+                    kind: if earlier {
+                        PartKind::Earlier
+                    } else {
+                        PartKind::Prose
+                    },
+                },
+                Msg::Assistant { blocks } => TranscriptPart {
+                    label: format!("{id} assistant"),
+                    body: blocks
+                        .iter()
+                        .map(|b| match b {
+                            Block::Text { text } => text.clone(),
+                            Block::Thinking { text, .. } => format!("(thinking) {text}"),
+                            Block::ToolCall {
+                                name, arguments, ..
+                            } => format!("-> {name} {arguments}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    kind: PartKind::Prose,
+                },
+                Msg::ToolResult { name, content, .. } => TranscriptPart {
+                    label: format!("{id} tool result: {name}"),
+                    body: content.clone(),
+                    kind: PartKind::Result,
+                },
             }
-            Msg::ToolResult { name, content, .. } => {
-                // If it was truncated for the model, the summarizer sees the same.
-                let _ = store;
-                format!(
-                    "[{label} tool result: {name}]\n{}",
-                    cap(content, TRANSCRIPT_TOOL_CAP)
-                )
-            }
-        });
+        })
+        .collect()
+}
+
+/// The entries as one text, a tool result cut to `tool_cap` bytes (0: left out).
+pub fn render_parts(parts: &[TranscriptPart], tool_cap: usize) -> String {
+    parts
+        .iter()
+        .map(|p| {
+            let body = match p.kind {
+                PartKind::Result if tool_cap == 0 => {
+                    format!("[{} bytes left out to fit]", p.body.len())
+                }
+                PartKind::Result => cap(&p.body, tool_cap),
+                _ => p.body.clone(),
+            };
+            format!("[{}]\n{body}", p.label)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The entries as a text of at most about `target` estimated tokens: tool results are cut
+/// shorter in steps, then the oldest entries are left out (an earlier reduction's last), and
+/// what was left out is said. Always returns something, however small the target.
+pub fn fit_parts(parts: &[TranscriptPart], target: u64) -> String {
+    let fits = |t: &str| estimate_tokens(t) <= target;
+    for tool_cap in [TRANSCRIPT_TOOL_CAP, 1_500, 400, 0] {
+        let text = render_parts(parts, tool_cap);
+        if fits(&text) {
+            return text;
+        }
     }
-    out.join("\n\n")
+    // Leave out the oldest first: the work nearest the cut is what the next step needs.
+    let mut order: Vec<usize> = (0..parts.len())
+        .filter(|&i| parts[i].kind != PartKind::Earlier)
+        .collect();
+    order.extend((0..parts.len()).filter(|&i| parts[i].kind == PartKind::Earlier));
+    let mut dropped: Vec<usize> = Vec::new();
+    let mut text = render_parts(parts, 0);
+    for i in order {
+        if parts.len() - dropped.len() <= 1 {
+            break;
+        }
+        dropped.push(i);
+        let kept: Vec<TranscriptPart> = parts
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| !dropped.contains(j))
+            .map(|(_, p)| p.clone())
+            .collect();
+        text = format!(
+            "[{} older entries left out to fit]\n\n{}",
+            dropped.len(),
+            render_parts(&kept, 0)
+        );
+        if fits(&text) {
+            return text;
+        }
+    }
+    // One entry left and still too big: cut it to the target.
+    cap(&text, (target as usize).saturating_mul(4).max(256))
 }
 
 impl<T: Summarizer + ?Sized> Summarizer for std::sync::Arc<T> {
@@ -487,10 +623,15 @@ pub fn prepare(
             .sum(),
         // Summarize with everything still in view, so a finding in a dump is written
         // down before its bytes leave the context.
-        request: plan.needs_summarizer().then(|| SummaryRequest {
-            system: SUMMARY_SYSTEM.to_string(),
-            transcript: transcript(store, prefix),
-            max_tokens: summary_tokens,
+        request: plan.needs_summarizer().then(|| {
+            let parts = transcript_parts(prefix);
+            SummaryRequest {
+                system: SUMMARY_SYSTEM.to_string(),
+                transcript: render_parts(&parts, TRANSCRIPT_TOOL_CAP),
+                max_tokens: summary_tokens,
+                parts,
+                ..Default::default()
+            }
         }),
     })
 }

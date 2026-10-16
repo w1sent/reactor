@@ -25,6 +25,8 @@ use tokio_util::sync::CancellationToken;
 struct Sum {
     answer: std::result::Result<String, String>,
     seen: Mutex<Vec<SummaryRequest>>,
+    /// Never answers.
+    hang: bool,
 }
 
 impl Sum {
@@ -32,12 +34,21 @@ impl Sum {
         Arc::new(Sum {
             answer: Ok(t.into()),
             seen: Mutex::new(vec![]),
+            hang: false,
         })
     }
     fn fails(t: &str) -> Arc<Self> {
         Arc::new(Sum {
             answer: Err(t.into()),
             seen: Mutex::new(vec![]),
+            hang: false,
+        })
+    }
+    fn hangs() -> Arc<Self> {
+        Arc::new(Sum {
+            answer: Ok(String::new()),
+            seen: Mutex::new(vec![]),
+            hang: true,
         })
     }
 }
@@ -45,6 +56,9 @@ impl Sum {
 impl Summarizer for Sum {
     async fn summarize(&self, req: SummaryRequest) -> Result<String> {
         self.seen.lock().unwrap().push(req);
+        if self.hang {
+            std::future::pending::<()>().await;
+        }
         self.answer.clone().map_err(Error::Model)
     }
 }
@@ -86,10 +100,7 @@ fn rig_with(
     let store = Store::create(&case, "s").unwrap();
     let paths = Paths::new(root.join("cfg"), Shipped::Embedded);
     let mut cfg = AgentConfig::new(cwd.clone(), paths, window);
-    cfg.registry = registry(
-        "## Available tools (this machine)\n\nsh   shell",
-        &["sh"],
-    );
+    cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
     cfg.scenarios_dir = root.join("scenarios");
     cfg.budget.reserve = 100;
     tweak(&mut cfg);
@@ -1579,6 +1590,7 @@ async fn switching_the_model_takes_effect_on_the_next_call() {
         messages: vec![Msg::User { text: "hi".into() }],
         tools: vec![],
         max_tokens: None,
+        num_ctx: None,
     };
 
     assert_eq!(
@@ -1743,6 +1755,7 @@ async fn an_unconfigured_model_fails_each_call_clearly_instead_of_blocking_the_s
                 messages: vec![],
                 tools: vec![],
                 max_tokens: None,
+                num_ctx: None,
             },
             &mut |_| {},
         )
@@ -1811,6 +1824,7 @@ fn summary_request() -> SummaryRequest {
         system: "You compress.".into(),
         transcript: "#1 user: hi".into(),
         max_tokens: 1_500,
+        ..Default::default()
     }
 }
 
@@ -1821,7 +1835,7 @@ async fn a_reasoning_model_that_runs_out_of_room_thinking_is_given_more_and_the_
         thinking_only(),
         ScriptedLlm::say("The notes."),
     ]));
-    let notes = LlmSummarizer { llm: llm.clone() }
+    let notes = LlmSummarizer::new(llm.clone())
         .summarize(summary_request())
         .await
         .unwrap();
@@ -1847,7 +1861,7 @@ async fn a_reasoning_model_that_runs_out_of_room_thinking_is_given_more_and_the_
 async fn a_summarizer_that_never_writes_notes_fails_saying_why() {
     use reactor_agent::llm::LlmSummarizer;
     let llm = Arc::new(ScriptedLlm::new([thinking_only(), thinking_only()]));
-    let e = LlmSummarizer { llm }
+    let e = LlmSummarizer::new(llm)
         .summarize(summary_request())
         .await
         .unwrap_err()
@@ -1862,7 +1876,7 @@ async fn a_summarizer_that_never_writes_notes_fails_saying_why() {
         usage: None,
         stop: Some("stop".into()),
     })]));
-    let e = LlmSummarizer { llm: empty }
+    let e = LlmSummarizer::new(empty)
         .summarize(summary_request())
         .await
         .unwrap_err()
@@ -2101,4 +2115,605 @@ async fn something_given_is_in_the_next_request_until_it_is_detached() {
     // The log keeps it.
     assert!(kinds(&r).contains(&"attachment"));
     assert!(kinds(&r).contains(&"detach"));
+}
+
+// -- a turn recovers from a rejected or cut-off request (ADR-0057) -------------------------------
+
+fn cut_call(id: &str) -> Result<Reply> {
+    Ok(Reply {
+        blocks: vec![Block::ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: json!({"command": "echo half a comma"}),
+        }],
+        usage: None,
+        stop: Some("length".into()),
+    })
+}
+
+fn no_waiting(cfg: &mut AgentConfig) {
+    cfg.retry_delay = std::time::Duration::ZERO;
+}
+
+fn assistants(r: &Rig) -> usize {
+    r.agent
+        .store()
+        .lock()
+        .unwrap()
+        .all()
+        .iter()
+        .filter(|e| matches!(e.kind, Kind::Assistant { .. }))
+        .count()
+}
+
+fn notices(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notice(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A session with enough older turns that a reduction has something to take.
+async fn with_history(r: &Rig) {
+    for i in 0..8 {
+        run(
+            r,
+            &format!("older question {i}: {}", "padding ".repeat(500)),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_reply_cut_off_in_a_tool_call_runs_none_of_it_and_the_model_is_told() {
+    let mut r = rig(
+        vec![cut_call("c1"), ScriptedLlm::say("a smaller step, then")],
+        Sum::says("-"),
+        100_000,
+    );
+    let out = run(&r, "do the thing").await.unwrap();
+
+    assert_eq!(out.tool_calls, 0, "the half-made call was not run");
+    let res = results(&r);
+    assert_eq!(res.len(), 1, "but it was answered, so the log replays");
+    assert!(
+        res[0].contains("not run: your reply was cut off"),
+        "{res:?}"
+    );
+    assert_eq!(r.llm.requests().len(), 2, "and the model asked again");
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("cut off by the output limit")),
+    );
+}
+
+#[tokio::test]
+async fn replies_cut_off_in_a_tool_call_again_and_again_stop_the_turn() {
+    let r = rig(
+        vec![
+            cut_call("c1"),
+            cut_call("c2"),
+            cut_call("c3"),
+            ScriptedLlm::say("never reached"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "do the thing").await.unwrap_err();
+    assert!(
+        e.to_string().contains("3 replies in a row were cut off"),
+        "{e}"
+    );
+    assert_eq!(results(&r).len(), 3, "every call still has its result");
+    assert_eq!(r.llm.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn text_cut_off_by_the_output_limit_is_kept_and_said_to_be_cut() {
+    let mut r = rig(
+        vec![Ok(Reply {
+            blocks: vec![Block::Text {
+                text: "The binary is packed with UPX and the unpack stub".into(),
+            }],
+            usage: None,
+            stop: Some("length".into()),
+        })],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "what is it").await.unwrap();
+    assert_eq!(assistants(&r), 1, "what it said is kept");
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("cut off by the output limit"))
+    );
+}
+
+#[tokio::test]
+async fn a_reply_that_ran_out_of_room_thinking_is_tried_again_once_with_more_room() {
+    let mut r = rig(
+        vec![thinking_only(), ScriptedLlm::say("the answer")],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "work it out").await.unwrap();
+
+    let seen = r.llm.requests();
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen[1].max_tokens > seen[0].max_tokens,
+        "{:?} then {:?}",
+        seen[0].max_tokens,
+        seen[1].max_tokens
+    );
+    assert_eq!(
+        assistants(&r),
+        1,
+        "the reply that said nothing is not in the log"
+    );
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("ran out of output room while thinking"))
+    );
+}
+
+#[tokio::test]
+async fn thinking_that_runs_out_of_room_twice_ends_the_turn_and_says_so() {
+    let r = rig(
+        vec![thinking_only(), thinking_only(), ScriptedLlm::say("never")],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "work it out").await.unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("ran out of output room while thinking"),
+        "{e}"
+    );
+    assert_eq!(r.llm.requests().len(), 2, "one more try, not a loop");
+}
+
+#[tokio::test]
+async fn a_request_the_provider_finds_too_long_is_reduced_and_sent_again() {
+    let mut r = rig(
+        (0..8)
+            .map(|_| ScriptedLlm::say("noted"))
+            .chain([
+                Err(Error::Overflow("prompt is too long: 30001 > 20000".into())),
+                ScriptedLlm::say("answered"),
+            ])
+            .collect(),
+        Sum::says("notes on the older turns"),
+        20_000,
+    );
+    with_history(&r).await;
+    drain(&mut r.events);
+    let before = r.agent.measure().await.unwrap().calibration;
+
+    run(&r, "and now?").await.unwrap();
+
+    let events = drain(&mut r.events);
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Reduced { .. })),
+        "the history was reduced"
+    );
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("rejected the request as too long")),
+    );
+    let seen = r.llm.requests();
+    let (rejected, retried) = (&seen[seen.len() - 2], &seen[seen.len() - 1]);
+    let size = |q: &reactor_agent::llm::LlmRequest| {
+        q.messages
+            .iter()
+            .map(|m| match m {
+                Msg::User { text } => text.len(),
+                _ => 0,
+            })
+            .sum::<usize>()
+    };
+    assert!(
+        size(retried) < size(rejected),
+        "the second request is smaller: {} then {}",
+        size(rejected),
+        size(retried)
+    );
+    assert!(
+        r.agent.measure().await.unwrap().calibration > before,
+        "and the estimate is trusted less from now on"
+    );
+}
+
+#[tokio::test]
+async fn a_second_rejection_gives_up_and_names_the_window() {
+    let r = rig(
+        (0..8)
+            .map(|_| ScriptedLlm::say("noted"))
+            .chain([
+                Err(Error::Overflow("prompt is too long".into())),
+                Err(Error::Overflow("prompt is too long".into())),
+                ScriptedLlm::say("never"),
+            ])
+            .collect(),
+        Sum::says("notes"),
+        20_000,
+    );
+    with_history(&r).await;
+    let e = run(&r, "and now?").await.unwrap_err();
+    assert!(matches!(e, Error::Overflow(_)), "{e}");
+    assert!(
+        e.to_string().contains("real window") && e.to_string().contains("20000"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_with_nothing_older_to_reduce_says_what_to_do_about_it() {
+    let r = rig(
+        vec![Err(Error::Overflow("prompt is too long".into()))],
+        Sum::says("-"),
+        20_000,
+    );
+    let e = run(&r, "the very first question").await.unwrap_err();
+    assert!(matches!(e, Error::Overflow(_)), "{e}");
+    assert!(e.to_string().contains("nothing older to reduce"), "{e}");
+    assert_eq!(
+        r.llm.requests().len(),
+        1,
+        "no retry on a request that cannot shrink"
+    );
+}
+
+#[tokio::test]
+async fn a_busy_server_is_tried_again_and_the_turn_goes_on() {
+    let mut r = rig_with(
+        vec![
+            Err(Error::Transient("503 service unavailable".into())),
+            Err(Error::Transient("connection reset".into())),
+            ScriptedLlm::say("back"),
+        ],
+        Sum::says("-"),
+        100_000,
+        no_waiting,
+    );
+    run(&r, "hello").await.unwrap();
+    assert_eq!(r.llm.requests().len(), 3);
+    assert_eq!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .filter(|n| n.contains("trying again"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_stays_down_is_given_up_on_after_the_retries() {
+    let r = rig_with(
+        (0..6)
+            .map(|_| Err(Error::Transient("503".into())))
+            .collect(),
+        Sum::says("-"),
+        100_000,
+        |c| {
+            no_waiting(c);
+            c.transient_retries = 2;
+        },
+    );
+    let e = run(&r, "hello").await.unwrap_err();
+    assert!(matches!(e, Error::Transient(_)), "{e}");
+    assert!(e.to_string().contains("gave up after 2 retries"), "{e}");
+    assert_eq!(r.llm.requests().len(), 3, "the first try and two more");
+}
+
+#[tokio::test]
+async fn a_request_the_provider_blocked_is_not_sent_again() {
+    let r = rig_with(
+        vec![
+            Err(Error::Blocked(
+                "This request was flagged for cyber policy.".into(),
+            )),
+            ScriptedLlm::say("never"),
+        ],
+        Sum::says("-"),
+        100_000,
+        no_waiting,
+    );
+    let e = run(&r, "take apart this sample").await.unwrap_err();
+    assert!(matches!(e, Error::Blocked(_)), "{e}");
+    assert!(e.to_string().contains("was not retried"), "{e}");
+    assert_eq!(r.llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn an_error_with_no_recovery_is_passed_on_as_it_is() {
+    let r = rig_with(
+        vec![Err(Error::Model("invalid api key".into()))],
+        Sum::says("-"),
+        100_000,
+        no_waiting,
+    );
+    let e = run(&r, "hello").await.unwrap_err();
+    assert_eq!(e.to_string(), "invalid api key");
+    assert_eq!(r.llm.requests().len(), 1, "and not tried again");
+}
+
+// -- every request says how long the reply may be and how big the window is --------------------------
+
+#[tokio::test]
+async fn every_request_carries_a_reply_limit_and_the_window_it_is_sized_for() {
+    let r = rig(vec![ScriptedLlm::say("hi")], Sum::says("-"), 100_000);
+    run(&r, "hello").await.unwrap();
+    let q = &r.llm.requests()[0];
+    assert_eq!(q.max_tokens, Some(25_000), "a quarter of the window");
+    assert_eq!(q.num_ctx, Some(100_000));
+}
+
+#[tokio::test]
+async fn a_reply_limit_is_cut_to_the_room_the_window_has_left() {
+    let r = rig_with(vec![ScriptedLlm::say("hi")], Sum::says("-"), 20_000, |c| {
+        c.max_tokens = Some(50_000)
+    });
+    run(&r, "hello").await.unwrap();
+    let limit = r.llm.requests()[0].max_tokens.unwrap();
+    assert!(
+        (256..20_000).contains(&limit),
+        "asked for 50k in a window of 20k, got {limit}"
+    );
+}
+
+// -- a reduction can be given up on, and a stalled summarizer does not hold the turn ------------------
+
+#[tokio::test]
+async fn a_turn_can_be_cancelled_while_a_reduction_waits_for_its_summary() {
+    let r = rig(
+        (0..9).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::hangs(),
+        20_000,
+    );
+    // Reductions happen as the history grows; the summarizer never answers.
+    let token = CancellationToken::new();
+    let t2 = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        t2.cancel();
+    });
+    let started = std::time::Instant::now();
+    let mut ended = None;
+    for i in 0..9 {
+        if let Err(e) = r
+            .agent
+            .prompt(
+                &format!("question {i}: {}", "padding ".repeat(900)),
+                token.clone(),
+            )
+            .await
+        {
+            ended = Some(e);
+            break;
+        }
+    }
+    assert!(matches!(ended, Some(Error::Cancelled)), "{ended:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the wait for the summary ended with the cancel"
+    );
+    assert!(
+        !kinds(&r).contains(&"reduction"),
+        "and nothing was written for a summary that never came"
+    );
+}
+
+// -- windows from 16k to 100k all work -----------------------------------------------------------------
+
+#[tokio::test]
+async fn windows_from_16k_to_100k_all_run_a_long_session_without_the_context_filling_up() {
+    for window in [16_000u64, 20_000, 32_000, 50_000, 100_000] {
+        let r = rig_with(
+            (0..40).map(|_| ScriptedLlm::say("noted")).collect(),
+            Sum::says("notes on what came before"),
+            window,
+            |c| c.budget = reactor_agent::budget::BudgetConfig::new(window),
+        );
+        for i in 0..14 {
+            let e = run(
+                &r,
+                &format!("question {i}: {}", "padding text ".repeat(450)),
+            )
+            .await;
+            assert!(e.is_ok(), "window {window}, turn {i}: {:?}", e.err());
+        }
+        let m = r.agent.measure().await.unwrap();
+        let hard = r.agent.effective_budget().hard();
+        assert!(
+            m.total <= hard,
+            "window {window}: {} tokens in a budget of {hard}",
+            m.total
+        );
+    }
+}
+
+// -- the summarizer asks again, smaller, when its own window is overrun ---------------------------------
+
+fn big_parts(n: usize) -> Vec<reactor_agent::budget::TranscriptPart> {
+    use reactor_agent::budget::{PartKind, TranscriptPart};
+    (0..n)
+        .map(|i| TranscriptPart {
+            label: format!("#{i} tool result: strings"),
+            body: format!("line {i} ").repeat(1_500),
+            kind: PartKind::Result,
+        })
+        .collect()
+}
+
+fn big_request(n: usize) -> SummaryRequest {
+    let parts = big_parts(n);
+    SummaryRequest {
+        system: "You compress.".into(),
+        transcript: reactor_agent::budget::render_parts(&parts, 6_000),
+        max_tokens: 1_500,
+        parts,
+        ..Default::default()
+    }
+}
+
+fn user_len(q: &reactor_agent::llm::LlmRequest) -> usize {
+    match &q.messages[0] {
+        Msg::User { text } => text.len(),
+        _ => 0,
+    }
+}
+
+fn quick(
+    s: reactor_agent::llm::LlmSummarizer<Arc<ScriptedLlm>>,
+) -> reactor_agent::llm::LlmSummarizer<Arc<ScriptedLlm>> {
+    reactor_agent::llm::LlmSummarizer {
+        retry_delay: std::time::Duration::ZERO,
+        ..s
+    }
+}
+
+#[tokio::test]
+async fn a_summarizer_whose_window_is_overrun_is_asked_again_with_less() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([
+        Err(Error::Overflow("prompt is too long".into())),
+        Err(Error::Overflow("prompt is too long".into())),
+        ScriptedLlm::say("The notes."),
+    ]));
+    let notes = quick(LlmSummarizer::new(llm.clone()))
+        .summarize(big_request(24))
+        .await
+        .unwrap();
+    assert_eq!(notes, "The notes.");
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 3);
+    assert!(
+        user_len(&seen[1]) < user_len(&seen[0]) && user_len(&seen[2]) < user_len(&seen[1]),
+        "smaller each time: {} {} {}",
+        user_len(&seen[0]),
+        user_len(&seen[1]),
+        user_len(&seen[2])
+    );
+}
+
+#[tokio::test]
+async fn a_summarizer_that_never_fits_gives_up_after_three_smaller_tries_saying_so() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new(
+        (0..6).map(|_| Err(Error::Overflow("prompt is too long".into()))),
+    ));
+    let e = quick(LlmSummarizer::new(llm.clone()))
+        .summarize(big_request(24))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Overflow(_)), "{e}");
+    assert!(e.to_string().contains("a third of its size"), "{e}");
+    assert_eq!(llm.requests().len(), 4, "the first try and three smaller");
+}
+
+#[tokio::test]
+async fn a_transcript_over_the_summarizers_cap_is_cut_before_it_is_sent() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say("The notes.")]));
+    let mut req = big_request(24);
+    req.input_cap = 3_000;
+    let whole = req.transcript.len();
+    quick(LlmSummarizer::new(llm.clone()))
+        .summarize(req)
+        .await
+        .unwrap();
+    let sent = user_len(&llm.requests()[0]);
+    assert!(sent < whole / 4, "{whole} bytes cut to {sent}");
+    assert!(
+        sent / 4 <= 3_000,
+        "and within the cap: about {} tokens",
+        sent / 4
+    );
+}
+
+#[tokio::test]
+async fn a_summarizer_in_a_small_window_is_told_the_window_and_leaves_room_to_answer() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say("The notes.")]));
+    let mut req = summary_request();
+    req.window = 8_000;
+    quick(LlmSummarizer::new(llm.clone()))
+        .summarize(req)
+        .await
+        .unwrap();
+    let q = &llm.requests()[0];
+    assert_eq!(q.num_ctx, Some(8_000));
+    assert!(q.max_tokens.unwrap() <= 4_000, "{:?}", q.max_tokens);
+}
+
+#[tokio::test]
+async fn a_busy_summarizer_is_asked_again_after_a_pause() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([
+        Err(Error::Transient("503".into())),
+        ScriptedLlm::say("The notes."),
+    ]));
+    let notes = quick(LlmSummarizer::new(llm.clone()))
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(notes, "The notes.");
+    assert_eq!(llm.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_summarizer_that_fails_is_replaced_by_the_main_model_once() {
+    use reactor_agent::llm::LlmSummarizer;
+    let cheap =
+        Arc::new(ScriptedLlm::new([Err(Error::Model("quota exceeded".into()))]).named("cheap"));
+    let main =
+        Arc::new(ScriptedLlm::new([ScriptedLlm::say("Notes from the main model.")]).named("main"));
+    let notes = quick(LlmSummarizer::new(cheap.clone()).with_fallback(main.clone()))
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(notes, "Notes from the main model.");
+    assert_eq!((cheap.requests().len(), main.requests().len()), (1, 1));
+}
+
+#[tokio::test]
+async fn the_main_model_is_not_asked_again_when_it_is_the_one_that_failed() {
+    use reactor_agent::llm::LlmSummarizer;
+    let same = Arc::new(ScriptedLlm::new([
+        Err(Error::Model("down".into())),
+        ScriptedLlm::say("never"),
+    ]));
+    let e = quick(LlmSummarizer::new(same.clone()).with_fallback(same.clone()))
+        .summarize(summary_request())
+        .await
+        .unwrap_err();
+    assert_eq!(e.to_string(), "down");
+    assert_eq!(same.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn when_both_fail_the_error_names_both() {
+    use reactor_agent::llm::LlmSummarizer;
+    let cheap =
+        Arc::new(ScriptedLlm::new([Err(Error::Model("quota exceeded".into()))]).named("cheap"));
+    let main =
+        Arc::new(ScriptedLlm::new([Err(Error::Model("invalid api key".into()))]).named("main"));
+    let e = quick(LlmSummarizer::new(cheap).with_fallback(main))
+        .summarize(summary_request())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("quota exceeded") && e.contains("invalid api key"),
+        "{e}"
+    );
 }

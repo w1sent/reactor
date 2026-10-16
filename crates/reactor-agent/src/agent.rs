@@ -19,9 +19,11 @@
 //!   mid-batch, so a session can always be resumed and its history always replays.
 //!
 //! [ADR-0037]: ../../../docs/adr/0037-context-reduction-is-one-budget-manager.md
+//! [ADR-0057]: ../../../docs/adr/0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use reactor_context::settings::Settings;
 use reactor_context::{identity, manifest, reporting, scenario};
@@ -32,7 +34,11 @@ use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use crate::budget::{self, BudgetConfig, Plan, Summarizer, context_tokens, needs_reduction, plan};
+use crate::budget::{
+    self, BudgetConfig, Plan, Summarizer, SummaryRequest, context_tokens, default_output,
+    needs_reduction, plan,
+};
+use crate::classify::StopKind;
 use crate::context::{
     self, Item, KEY_IDENTITY, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
     estimate_tokens, msg_tokens, project, save_state,
@@ -41,12 +47,15 @@ use crate::deferral::{self, Candidate};
 use crate::entry::{Attachment, EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
 use crate::inspect::ContextPreview;
-use crate::llm::{Delta, Llm, LlmRequest, ToolSpec};
+use crate::llm::{Delta, Llm, LlmRequest, Reply, ToolSpec, backoff, complete_watched};
 use crate::prompt::{self, RegistryView};
 use crate::skills::{self, Skill};
 use crate::store::Store;
 use crate::tools::{ToolCtx, ToolOutput, Tools};
 use crate::truncate;
+
+/// Replies in a row cut off in the middle of a tool call before the turn stops.
+const MAX_CUT_CALLS: usize = 3;
 
 /// What a frontend watches. Sent as things happen; never required for correctness.
 #[derive(Debug, Clone, PartialEq)]
@@ -98,7 +107,15 @@ pub struct AgentConfig {
     pub max_reductions_in_a_row: usize,
     /// A backstop on model round trips in one turn.
     pub max_rounds: usize,
+    /// The longest a reply may be. Unset, it is a quarter of the window, at most 32k, and
+    /// always cut to the room the window has left ([ADR-0057]).
     pub max_tokens: Option<u64>,
+    /// How long the model may say nothing before the call is given up on (zero: never).
+    pub idle_timeout: Duration,
+    /// How many times a failure worth another go (a busy server, a dropped stream) is retried.
+    pub transient_retries: usize,
+    /// The wait before the first retry; each doubles it.
+    pub retry_delay: Duration,
     /// What the catalogue says now. Replaceable, so the loop can be tested without probing.
     pub registry: Arc<dyn Fn() -> RegistryView + Send + Sync>,
     /// The user's embedding model, if they chose one: it lets `docs_search` ask by meaning.
@@ -121,6 +138,9 @@ impl AgentConfig {
             max_reductions_in_a_row: 3,
             max_rounds: 200,
             max_tokens: None,
+            idle_timeout: Duration::from_secs(300),
+            transient_retries: 3,
+            retry_delay: Duration::from_secs(1),
             registry,
             embedder: Default::default(),
             mcp: None,
@@ -437,6 +457,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 messages,
                 tools,
                 max_tokens: self.cfg.max_tokens,
+                num_ctx: None,
             },
             fixed,
             items,
@@ -617,7 +638,11 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         let global = self.settings().context;
         let session = SessionState::load(&self.store.lock().unwrap()).context;
         let eff = session.over(&global);
-        let base = self.cfg.budget;
+        let base = match eff.window {
+            // A reserve that was only the default follows the window it was the default of.
+            Some(w) if w != self.cfg.budget.window => self.cfg.budget.rebased(w),
+            _ => self.cfg.budget,
+        };
         BudgetConfig {
             window: eff.window.unwrap_or(base.window),
             reserve: eff.reserve.unwrap_or(base.reserve),
@@ -696,10 +721,25 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         let (_, fixed, items) = self.build().await?;
         let p = plan(fixed, &items, &self.manual_budget(), mode)
             .map_err(|n| Error::Reduction(n.to_string()))?;
-        self.carry_out(&items, &p, Trigger::Manual).await
+        self.carry_out(&items, &p, Trigger::Manual, &CancellationToken::new())
+            .await
     }
 
-    async fn carry_out(&self, items: &[Item], p: &Plan, trigger: Trigger) -> Result<EntryId> {
+    /// Say how big the summarizer's window is, and how much transcript fits in it.
+    fn size_summary(&self, req: &mut SummaryRequest) {
+        req.window = self.effective_budget().window;
+        // In estimated tokens, leaving a quarter for the instructions, the notes and the
+        // estimate being low.
+        req.input_cap = (self.scaled_budget().window as f64 * 0.75) as u64;
+    }
+
+    async fn carry_out(
+        &self,
+        items: &[Item],
+        p: &Plan,
+        trigger: Trigger,
+        cancel: &CancellationToken,
+    ) -> Result<EntryId> {
         let prepared = budget::prepare(
             &self.store.lock().unwrap(),
             items,
@@ -707,8 +747,17 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             trigger,
             self.cfg.budget.summary_tokens,
         )?;
+        // Nothing is written until the summary is in, so giving up on it midway leaves the
+        // log as it was.
         let summary = match &prepared.request {
-            Some(req) => Some(budget::summarize(&self.summarizer, req.clone()).await?),
+            Some(req) => {
+                let mut req = req.clone();
+                self.size_summary(&mut req);
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(Error::Cancelled),
+                    r = budget::summarize(&self.summarizer, req) => Some(r?),
+                }
+            }
             None => None,
         };
         let id = budget::commit(&mut self.store.lock().unwrap(), prepared, summary)?;
@@ -728,7 +777,12 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     /// Reduce until the context fits. Called before every request and after every tool
     /// result. `in_a_row` counts reductions that did not by themselves get it to fit.
-    async fn ensure_fits(&self, in_a_row: &mut usize, outcome: &mut Outcome) -> Result<()> {
+    async fn ensure_fits(
+        &self,
+        in_a_row: &mut usize,
+        outcome: &mut Outcome,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
         loop {
             let (_, fixed, items) = self.build().await?;
             let cfg = self.scaled_budget();
@@ -758,8 +812,148 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 });
             }
             *in_a_row += 1;
-            self.carry_out(&items, &p, Trigger::Budget).await?;
+            self.carry_out(&items, &p, Trigger::Budget, cancel).await?;
             outcome.reductions += 1;
+        }
+    }
+
+    // -- asking the model -----------------------------------------------------------------------
+
+    /// Set a request's reply limit and window. Returns whether the limit had to be cut to
+    /// the room the window leaves, which a reduction can widen.
+    fn size_request(&self, req: &mut LlmRequest, used_estimate: u64, boost: bool) -> bool {
+        let b = self.effective_budget();
+        let used = (used_estimate as f64 * *self.ratio.lock().unwrap()) as u64;
+        let mut want = self
+            .cfg
+            .max_tokens
+            .unwrap_or_else(|| default_output(b.window));
+        if boost {
+            want = (want + want / 2).min(60_000).max(want);
+        }
+        let room = b.window.saturating_sub(used + 512 + b.window / 50).max(256);
+        req.max_tokens = Some(want.min(room));
+        req.num_ctx = Some(b.window);
+        room < want
+    }
+
+    /// Reduce now, down to a smaller keep window than the budget aims at. For the moment a
+    /// request has been rejected or has no room for its reply: the budget's own estimate was
+    /// not enough. Whether anything older could be reduced.
+    async fn force_reduce(&self, cancel: &CancellationToken, keep_scale: f64) -> Result<bool> {
+        let (_, fixed, items) = self.build().await?;
+        let mut cfg = self.scaled_budget();
+        cfg.keep *= keep_scale;
+        match plan(fixed, &items, &cfg, cfg.mode) {
+            Ok(p) => {
+                self.carry_out(&items, &p, Trigger::Budget, cancel).await?;
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// One answer from the model, recovering from what can be recovered from
+    /// ([ADR-0057]): a request the provider found too long is reduced and sent again, a
+    /// busy or unreachable server is tried again after a pause, a reply that ran out of room
+    /// before saying anything is given more. Each is tried once or a few times, never for ever.
+    /// Returns the reply and the estimate of the request it answers.
+    async fn ask_model(
+        &self,
+        cancel: &CancellationToken,
+        in_a_row: &mut usize,
+        outcome: &mut Outcome,
+    ) -> Result<(Reply, u64)> {
+        let (mut overflowed, mut lengthened, mut tries) = (false, false, 0usize);
+        loop {
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            self.ensure_fits(in_a_row, outcome, cancel).await?;
+            let (mut req, fixed, items) = self.build().await?;
+            let cramped = self.size_request(&mut req, context_tokens(fixed, &items), lengthened);
+            let estimated: u64 = context_tokens(0, &project(&self.store.lock().unwrap()))
+                + estimate_tokens(&req.system);
+
+            let on_delta = |d: Delta| {
+                self.emit(match d {
+                    Delta::Text(t) => Event::Text(t),
+                    Delta::Thinking(t) => Event::Thinking(t),
+                    Delta::ToolCall { name } => Event::ToolCallStarted { name },
+                })
+            };
+            let sent = tokio::select! {
+                _ = cancel.cancelled() => return Err(Error::Cancelled),
+                r = complete_watched(&self.llm, req, self.cfg.idle_timeout, on_delta) => r,
+            };
+            match sent {
+                Ok(reply) => {
+                    // Out of room before it said or did anything: thinking took it all.
+                    if reply.stop_kind() == StopKind::Length && !reply.has_output() {
+                        if lengthened {
+                            return Err(Error::Model(
+                                "the model ran out of output room while thinking, twice. Raise the output limit, lower the thinking level, or ask for a smaller step.".into(),
+                            ));
+                        }
+                        lengthened = true;
+                        self.emit(Event::Notice(
+                            "the model ran out of output room while thinking; trying again with more room".into(),
+                        ));
+                        if cramped {
+                            self.force_reduce(cancel, 0.6).await?;
+                        }
+                        continue;
+                    }
+                    return Ok((reply, estimated));
+                }
+                Err(Error::Overflow(why)) => {
+                    let window = self.effective_budget().window;
+                    if overflowed {
+                        return Err(Error::Overflow(format!(
+                            "{why}\n\nReducing the context and asking again did not help. The model's real window may be smaller than the {window} tokens REactor assumes: set it in Settings → Context."
+                        )));
+                    }
+                    overflowed = true;
+                    // The estimate was low, and will be again: believe it less from now on.
+                    {
+                        let mut r = self.ratio.lock().unwrap();
+                        *r = (*r * 1.25).min(4.0);
+                    }
+                    self.emit(Event::Notice(
+                        "the provider rejected the request as too long; reducing the context and trying again".into(),
+                    ));
+                    if !self.force_reduce(cancel, 0.6).await? {
+                        return Err(Error::Overflow(format!(
+                            "{why}\n\nThere is nothing older to reduce: the system prompt, the tools and the current work alone are too big for the window. Set the real window in Settings → Context, switch some tools off, or use a model with a larger window."
+                        )));
+                    }
+                }
+                Err(Error::Transient(why)) => {
+                    if tries >= self.cfg.transient_retries {
+                        return Err(Error::Transient(format!(
+                            "{why} (gave up after {tries} retries)"
+                        )));
+                    }
+                    tries += 1;
+                    let wait = backoff(self.cfg.retry_delay, tries);
+                    self.emit(Event::Notice(format!(
+                        "the model failed ({}); trying again in {}s ({tries}/{})",
+                        why.chars().take(120).collect::<String>(),
+                        wait.as_secs().max(1),
+                        self.cfg.transient_retries
+                    )));
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Err(Error::Cancelled),
+                        _ = tokio::time::sleep(wait) => {}
+                    }
+                }
+                Err(Error::Blocked(why)) => {
+                    return Err(Error::Blocked(format!(
+                        "the provider blocked this request: {why}\n\nThe same request would be blocked again, so it was not retried. Rephrase it, or choose another model."
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 
@@ -769,6 +963,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub async fn prompt(&self, text: &str, cancel: CancellationToken) -> Result<Outcome> {
         let mut outcome = Outcome::default();
         let mut in_a_row = 0usize;
+        // Replies in a row that were cut off by the output limit in the middle of a tool call.
+        let mut cut_calls = 0usize;
         let mut next: String = text.to_string();
 
         // A scenario moved on by hand is waiting to hear what the phase it left concluded:
@@ -800,22 +996,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 if cancel.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                self.ensure_fits(&mut in_a_row, &mut outcome).await?;
-                let (req, _, _) = self.build().await?;
-                let estimated: u64 = context_tokens(0, &project(&self.store.lock().unwrap()))
-                    + estimate_tokens(&req.system);
-
-                let mut on_delta = |d: Delta| {
-                    self.emit(match d {
-                        Delta::Text(t) => Event::Text(t),
-                        Delta::Thinking(t) => Event::Thinking(t),
-                        Delta::ToolCall { name } => Event::ToolCallStarted { name },
-                    })
-                };
-                let reply = tokio::select! {
-                    _ = cancel.cancelled() => return Err(Error::Cancelled),
-                    r = self.llm.complete(req, &mut on_delta) => r?,
-                };
+                let (reply, estimated) =
+                    self.ask_model(&cancel, &mut in_a_row, &mut outcome).await?;
                 outcome.rounds += 1;
                 if let Some(u) = reply.usage {
                     self.emit(Event::Usage(u));
@@ -836,6 +1018,32 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     usage: reply.usage,
                     stop: reply.stop.clone(),
                 })?;
+
+                // A reply the output limit cut off may hold a tool call whose arguments are
+                // unfinished: none of its calls is run. Each is answered, so the log stays
+                // valid, and the model is told why and asks again, smaller.
+                if reply.stop_kind() == StopKind::Length && !calls.is_empty() {
+                    cut_calls += 1;
+                    self.fill_results(
+                        &calls,
+                        "not run: your reply was cut off by the output limit before this call was complete. Make a smaller call, or split the work over several.",
+                    )?;
+                    if cut_calls >= MAX_CUT_CALLS {
+                        return Err(Error::Model(format!(
+                            "stopped: {MAX_CUT_CALLS} replies in a row were cut off by the output limit in the middle of a tool call. Raise the output limit, or ask for a smaller step."
+                        )));
+                    }
+                    self.emit(Event::Notice(
+                        "the reply was cut off by the output limit in the middle of a tool call; the call was not run".into(),
+                    ));
+                    continue;
+                }
+                cut_calls = 0;
+                if reply.stop_kind() == StopKind::Length {
+                    self.emit(Event::Notice(
+                        "the reply was cut off by the output limit".into(),
+                    ));
+                }
 
                 if calls.is_empty() {
                     // The turn has settled. Level-2 reporting may send it back.
@@ -1038,7 +1246,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             }
 
             // The boundary check: a dump can overflow the window inside one turn.
-            if let Err(e) = self.ensure_fits(in_a_row, outcome).await {
+            if let Err(e) = self.ensure_fits(in_a_row, outcome, cancel).await {
                 self.fill_results(
                     &calls[i + 1..],
                     "not run: context reduction failed, so the turn stopped",

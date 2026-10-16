@@ -160,6 +160,8 @@ impl AnyLlm {
                     .completion_model(model),
                 spec,
             )
+            // Without it Ollama serves its own default window and silently cuts the prompt.
+            .with_num_ctx(true)
             .with_params(thinking_params(provider, model, thinking))),
             other => {
                 return Err(Error::Model(format!(

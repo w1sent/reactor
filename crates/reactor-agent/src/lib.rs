@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod budget;
+pub mod classify;
 pub mod connection;
 pub mod context;
 pub mod deferral;

@@ -90,9 +90,13 @@ fn the_thresholds_derive_from_window_reserve_and_fractions() {
     assert_eq!(c.trigger(), 9_000);
     assert_eq!(c.keep_budget(), 5_000);
     assert_eq!(
-        BudgetConfig::new(100).hard(),
+        BudgetConfig {
+            reserve: 1_000,
+            ..BudgetConfig::new(100)
+        }
+        .hard(),
         0,
-        "a window smaller than the reserve saturates"
+        "a chosen reserve larger than the window saturates"
     );
     assert_eq!(
         BudgetConfig::new(200_000).mode,
@@ -510,4 +514,132 @@ async fn the_transcript_caps_a_huge_tool_result_but_keeps_both_ends() {
     assert!(t.contains("HEAD-MARKER") && t.contains("TAIL-MARKER"));
     assert!(t.contains("bytes elided"));
     assert!(t.len() < huge.len(), "the summarizer's input is bounded");
+}
+
+// -- the reserve follows the window (ADR-0058) -----------------------------------------
+
+#[test]
+fn the_default_reserve_is_an_eighth_of_the_window_between_a_floor_and_16k() {
+    use reactor_agent::budget::default_reserve;
+    assert_eq!(default_reserve(200_000), 16_384, "a large window keeps 16k");
+    assert_eq!(default_reserve(100_000), 12_500);
+    assert_eq!(default_reserve(50_000), 6_250);
+    assert_eq!(default_reserve(32_000), 4_000);
+    assert_eq!(default_reserve(8_000), 1_024, "the floor");
+    assert!(
+        default_reserve(100) < 100 && BudgetConfig::new(100).hard() > 0,
+        "even a tiny window has something to use"
+    );
+}
+
+#[test]
+fn a_small_window_is_not_all_reserve() {
+    for window in [16_000u64, 20_000, 32_000, 50_000, 100_000] {
+        let c = BudgetConfig::new(window);
+        assert!(
+            c.hard() * 4 >= window * 3,
+            "{window}: the usable budget is most of the window ({} of it)",
+            c.hard()
+        );
+        assert!(c.hard() > 0 && c.trigger() > c.keep_budget());
+    }
+}
+
+#[test]
+fn a_chosen_reserve_survives_a_change_of_window_and_the_default_follows_it() {
+    use reactor_agent::budget::default_reserve;
+    let base = BudgetConfig::new(200_000);
+    assert_eq!(base.rebased(32_000).reserve, default_reserve(32_000));
+    let chosen = BudgetConfig {
+        reserve: 5_000,
+        ..base
+    };
+    assert_eq!(chosen.rebased(32_000).reserve, 5_000);
+    assert_eq!(chosen.rebased(32_000).window, 32_000);
+}
+
+#[test]
+fn the_default_reply_limit_is_a_quarter_of_the_window_at_most_32k() {
+    use reactor_agent::budget::default_output;
+    assert_eq!(default_output(200_000), 32_768);
+    assert_eq!(default_output(100_000), 25_000);
+    assert_eq!(default_output(32_000), 8_000);
+    assert_eq!(default_output(2_000), 1_024);
+}
+
+// -- fitting a transcript to a smaller window (ADR-0057) -----------------------------------------
+
+fn part(
+    label: &str,
+    kind: reactor_agent::budget::PartKind,
+    body: &str,
+) -> reactor_agent::budget::TranscriptPart {
+    reactor_agent::budget::TranscriptPart {
+        label: label.into(),
+        body: body.into(),
+        kind,
+    }
+}
+
+#[test]
+fn a_transcript_that_fits_is_sent_as_it_is_and_one_that_does_not_loses_tool_output_first() {
+    use reactor_agent::budget::{PartKind::*, fit_parts, render_parts};
+    let parts = vec![
+        part("#1 user", Prose, "find the C2 address"),
+        part("#2 tool result: strings", Result, &"A".repeat(20_000)),
+        part("#3 assistant", Prose, "the address is 10.1.2.3"),
+    ];
+    assert_eq!(
+        fit_parts(&parts, 100_000),
+        render_parts(&parts, 6_000),
+        "room enough: unchanged"
+    );
+
+    let squeezed = fit_parts(&parts, 600);
+    assert!(
+        squeezed.contains("find the C2 address") && squeezed.contains("the address is 10.1.2.3"),
+        "the words stay: {squeezed}"
+    );
+    assert!(
+        squeezed.len() < 20_000 && squeezed.contains("#2 tool result: strings"),
+        "the dump is cut, and still named"
+    );
+}
+
+#[test]
+fn when_cutting_output_is_not_enough_the_oldest_go_and_the_cut_is_said() {
+    use reactor_agent::budget::{PartKind::*, fit_parts};
+    let mut parts = vec![part(
+        "#1 (earlier reduction) user",
+        Earlier,
+        "Earlier notes: the sample is packed.",
+    )];
+    for i in 2..30 {
+        parts.push(part(
+            &format!("#{i} user"),
+            Prose,
+            &format!("question {i} {}", "x".repeat(800)),
+        ));
+    }
+    let text = fit_parts(&parts, 1_200);
+    assert!(text.contains("older entries left out to fit"), "{text}");
+    assert!(
+        text.contains("Earlier notes: the sample is packed."),
+        "what an earlier reduction kept is the last to go"
+    );
+    assert!(text.contains("question 29"), "and the newest stays");
+    assert!(!text.contains("question 2 "), "the oldest went");
+    assert!(
+        text.len() / 4 <= 1_300,
+        "about the target: {} tokens",
+        text.len() / 4
+    );
+}
+
+#[test]
+fn a_target_nothing_can_meet_still_returns_something() {
+    use reactor_agent::budget::{PartKind::*, fit_parts};
+    let parts = vec![part("#1 user", Prose, &"y".repeat(50_000))];
+    let text = fit_parts(&parts, 10);
+    assert!(!text.is_empty() && text.len() < 2_000, "{}", text.len());
 }

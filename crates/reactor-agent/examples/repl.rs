@@ -162,9 +162,7 @@ async fn run(args: Args) -> Result<(), String> {
 
     let (agent, mut events) = Agent::new(
         llm,
-        LlmSummarizer {
-            llm: summarizer_llm,
-        },
+        LlmSummarizer::new(summarizer_llm),
         store,
         Tools::standard(args.cwd.clone()),
         cfg,

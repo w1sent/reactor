@@ -227,9 +227,8 @@ impl Backend {
         cfg.skills_dir = find_bundled("skills");
         let (agent, mut events) = Agent::new(
             llm.clone(),
-            LlmSummarizer {
-                llm: summarizer.clone(),
-            },
+            // If the model named for summaries fails, the main one is asked instead.
+            LlmSummarizer::new(summarizer.clone()).with_fallback(llm.clone()),
             store,
             Tools::standard(opts.cwd.clone()),
             cfg,

@@ -126,13 +126,21 @@ impl AnyLlm {
         let fail =
             |e: rig_core::client::ProviderClientError| Error::Model(format!("{provider}: {e}"));
         let llm = match provider {
-            "anthropic" => AnyLlm::Anthropic(RigLlm::new(
-                anthropic::Client::from_env()
-                    .map_err(fail)?
-                    .completion_model(model),
-                spec,
-            )
-            .with_params(thinking_params(provider, model, thinking))),
+            "anthropic" => AnyLlm::Anthropic(
+                RigLlm::new(
+                    // Anthropic caches nothing unless asked: every request would otherwise pay
+                    // in full for a prompt that is the last one plus a few lines. The break
+                    // point moves forward as the conversation grows (five minutes by default).
+                    anthropic::Client::from_env()
+                        .map_err(fail)?
+                        .completion_model(model)
+                        .with_automatic_caching(),
+                    spec,
+                )
+                // Its input count leaves the cached part out, which the budget needs in.
+                .with_cache_counted_apart(true)
+                .with_params(thinking_params(provider, model, thinking)),
+            ),
             "openai" => AnyLlm::OpenAi(RigLlm::new(
                 openai::Client::from_env()
                     .map_err(fail)?

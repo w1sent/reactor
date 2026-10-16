@@ -248,10 +248,14 @@ impl ContextSettings {
 /// How much of one tool result the model sees before it is cut to its head and tail
 /// (`reactor-agent`'s `truncate`). A call to a built-in tool may ask for another limit;
 /// this is the one that applies when it does not, and always to MCP tools.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// Unset, it follows the window ([`ToolOutputSettings::for_window`]); set, it is what the person
+/// chose, whatever the window ([ADR-0058](../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolOutputSettings {
-    pub max_inline_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_inline_bytes: Option<usize>,
 }
 
 impl ToolOutputSettings {
@@ -259,17 +263,26 @@ impl ToolOutputSettings {
     pub const MIN_BYTES: usize = 1024;
     /// Above this, paging with `history_read` is the better way to read.
     pub const MAX_BYTES: usize = 1024 * 1024;
+    /// What a large window gets: about 8,000 tokens.
+    pub const DEFAULT_BYTES: usize = 32 * 1024;
+    /// The least a window's share comes to, so a very small window still shows something.
+    pub const MIN_DEFAULT_BYTES: usize = 2 * 1024;
 
     pub fn is_default(&self) -> bool {
-        *self == ToolOutputSettings::default()
+        self.max_inline_bytes.is_none()
     }
-}
 
-impl Default for ToolOutputSettings {
-    fn default() -> Self {
-        Self {
-            max_inline_bytes: 32 * 1024,
-        }
+    /// What the model sees of one result when nothing says otherwise: a twentieth of the window
+    /// (four bytes to a token), between 2 KiB and 32 KiB. A single 32 KiB result is a quarter of
+    /// a 32k window.
+    pub fn default_for_window(window_tokens: u64) -> usize {
+        ((window_tokens / 5) as usize).clamp(Self::MIN_DEFAULT_BYTES, Self::DEFAULT_BYTES)
+    }
+
+    /// The limit in force for a window of `window_tokens`.
+    pub fn for_window(&self, window_tokens: u64) -> usize {
+        self.max_inline_bytes
+            .unwrap_or_else(|| Self::default_for_window(window_tokens))
     }
 }
 
@@ -509,8 +522,9 @@ impl Settings {
         if let Some(n) = number(root.get("toolOutput").and_then(|t| t.get("maxInlineBytes")))
             .filter(|n| *n > 0.0 && n.fract() == 0.0)
         {
-            s.tool_output.max_inline_bytes =
-                (n as usize).clamp(ToolOutputSettings::MIN_BYTES, ToolOutputSettings::MAX_BYTES);
+            s.tool_output.max_inline_bytes = Some(
+                (n as usize).clamp(ToolOutputSettings::MIN_BYTES, ToolOutputSettings::MAX_BYTES),
+            );
         }
         if let Some(n) = number(
             root.get("toolSearch")
@@ -637,8 +651,9 @@ mod threshold_tests {
     }
 
     #[test]
-    fn the_tool_output_limit_is_kept_clamped_and_absent_means_32_kib() {
-        let at = |v: Value| Settings::from_json(&v).tool_output.max_inline_bytes;
+    fn the_tool_output_limit_is_kept_clamped_and_absent_follows_the_window() {
+        // For a large window: 32 KiB, as it always was.
+        let at = |v: Value| Settings::from_json(&v).tool_output.for_window(200_000);
         assert_eq!(at(json!({})), 32 * 1024);
         assert_eq!(
             at(json!({ "toolOutput": { "maxInlineBytes": 65536 } })),
@@ -653,6 +668,22 @@ mod threshold_tests {
             at(json!({ "toolOutput": { "maxInlineBytes": "big" } })),
             32 * 1024
         );
+        // A chosen limit is the person's whatever the window; an unset one is a twentieth of it.
+        let chosen = Settings::from_json(&json!({ "toolOutput": { "maxInlineBytes": 8192 } }));
+        assert_eq!(chosen.tool_output.for_window(16_000), 8192);
+        assert_eq!(chosen.tool_output.for_window(1_000_000), 8192);
+        let unset = Settings::default().tool_output;
+        assert_eq!(
+            unset.for_window(1_000_000),
+            32 * 1024,
+            "never more than it was"
+        );
+        assert_eq!(unset.for_window(128_000), 25_600);
+        assert_eq!(unset.for_window(100_000), 20_000);
+        assert_eq!(unset.for_window(32_000), 6_400);
+        assert_eq!(unset.for_window(16_000), 3_200);
+        assert_eq!(unset.for_window(4_000), 2 * 1024, "and never nothing");
+        assert!(unset.is_default() && !chosen.tool_output.is_default());
         let s = Settings::from_json(&json!({ "toolOutput": { "maxInlineBytes": 4096 } }));
         let back = Settings::from_json(&serde_json::to_value(&s).unwrap());
         assert_eq!(back.tool_output, s.tool_output);

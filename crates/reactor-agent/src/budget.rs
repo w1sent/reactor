@@ -325,6 +325,23 @@ pub struct SummaryRequest {
     /// The notes are asked to follow [`SUMMARY_HEADINGS`]; a reply that does not is asked
     /// again once.
     pub template: bool,
+    /// The main request's own start, so a summarizer that is the main model can be asked in a
+    /// way the provider has already done most of the work for.
+    pub replay: Option<Replay>,
+}
+
+/// What the main model was sent, up to the end of the range being summarized: the same system
+/// prompt, the same tools, the same messages. A summary request that begins with exactly this
+/// and then asks for the notes shares its start with the request before it, so a provider that
+/// caches the start of a prompt (or a local server that keeps the last one) has the most of it
+/// done already ([ADR-0058](../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)).
+#[derive(Debug, Clone)]
+pub struct Replay {
+    pub system: String,
+    pub tools: Vec<crate::llm::ToolSpec>,
+    pub messages: Vec<Msg>,
+    /// The model it was sent to: only that model's cache holds it.
+    pub model: String,
 }
 
 /// How an entry may be shrunk to make a transcript fit.

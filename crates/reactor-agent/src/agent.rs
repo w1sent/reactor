@@ -40,7 +40,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::{
-    self, BudgetConfig, Plan, Summarizer, SummaryRequest, context_tokens, default_output,
+    self, BudgetConfig, Plan, Replay, Summarizer, SummaryRequest, context_tokens, default_output,
     needs_reduction, plan,
 };
 use crate::classify::StopKind;
@@ -61,6 +61,32 @@ use crate::truncate;
 
 /// Replies in a row cut off in the middle of a tool call before the turn stops.
 const MAX_CUT_CALLS: usize = 3;
+
+/// The last tool call of a turn, with its result, and how many times in a row it has come out
+/// the same. A call is "the same" only if its result is too, so polling something whose output
+/// changes is not a loop.
+#[derive(Default)]
+struct Repeats {
+    last: Option<u64>,
+    count: usize,
+}
+
+impl Repeats {
+    /// Note a call and what it gave; how many times in a row that now is.
+    fn note(&mut self, name: &str, args: &Value, result: &str) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (name, args.to_string(), result).hash(&mut h);
+        let sig = h.finish();
+        if self.last == Some(sig) {
+            self.count += 1;
+        } else {
+            self.last = Some(sig);
+            self.count = 1;
+        }
+        self.count
+    }
+}
 
 /// What a frontend watches. Sent as things happen; never required for correctness.
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +138,9 @@ pub struct AgentConfig {
     pub max_reductions_in_a_row: usize,
     /// A backstop on model round trips in one turn.
     pub max_rounds: usize,
+    /// The same tool call, with the same result, this many times in a row ends the turn: the
+    /// model is going round in circles. Zero turns it off.
+    pub max_repeats: usize,
     /// The longest a reply may be. Unset, it is a quarter of the window, at most 32k, and
     /// always cut to the room the window has left ([ADR-0057]).
     pub max_tokens: Option<u64>,
@@ -142,6 +171,7 @@ impl AgentConfig {
             budget: BudgetConfig::new(window),
             max_reductions_in_a_row: 3,
             max_rounds: 200,
+            max_repeats: 5,
             max_tokens: None,
             idle_timeout: Duration::from_secs(300),
             transient_retries: 3,
@@ -369,7 +399,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     fn definitions(&self, g: &Gathered) -> deferral::Plan {
         let mut candidates: Vec<Candidate> = self
             .tools
-            .specs_limited(&g.state, default_limit(&g.settings))
+            .specs_limited(&g.state, self.output_limit(&g.settings))
             .into_iter()
             .map(|spec| Candidate {
                 origin: crate::inspect::Origin::ToolDefinition,
@@ -465,6 +495,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 tools,
                 max_tokens: self.cfg.max_tokens,
                 num_ctx: None,
+                no_tools: false,
             },
             fixed,
             items,
@@ -727,11 +758,17 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// Reduce now, at a person's request. A manual reduction means *summarize* in every
     /// mode but `fade` (a manual fade exists for a burst of dumps that should just go).
     pub async fn reduce_now(&self, mode: Mode) -> Result<EntryId> {
-        let (_, fixed, items) = self.build().await?;
+        let (base, fixed, items) = self.build().await?;
         let p = plan(fixed, &items, &self.manual_budget(), mode)
             .map_err(|n| Error::Reduction(n.to_string()))?;
-        self.carry_out(&items, &p, Trigger::Manual, &CancellationToken::new())
-            .await
+        self.carry_out(
+            &base,
+            &items,
+            &p,
+            Trigger::Manual,
+            &CancellationToken::new(),
+        )
+        .await
     }
 
     /// Say how big the summarizer's window is, and how much transcript fits in it.
@@ -744,6 +781,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     async fn carry_out(
         &self,
+        base: &LlmRequest,
         items: &[Item],
         p: &Plan,
         trigger: Trigger,
@@ -762,6 +800,14 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             Some(req) => {
                 let mut req = req.clone();
                 self.size_summary(&mut req);
+                // What the main model was sent up to the end of the range, for a summarizer
+                // that is the main model to begin its request the same way.
+                req.replay = Some(Replay {
+                    system: base.system.clone(),
+                    tools: base.tools.clone(),
+                    messages: items[..p.keep_from].iter().map(|i| i.msg.clone()).collect(),
+                    model: self.llm.name(),
+                });
                 tokio::select! {
                     _ = cancel.cancelled() => return Err(Error::Cancelled),
                     r = budget::summarize(&self.summarizer, req) => Some(r?),
@@ -824,6 +870,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// no model, and shrinks the context just the same, so the turn can go on (ADR-0058).
     async fn fade_instead(
         &self,
+        base: &LlmRequest,
         items: &[Item],
         fixed: u64,
         cfg: &BudgetConfig,
@@ -837,7 +884,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             "summarizing failed ({}); the older entries were dropped to stubs instead. Nothing is lost: `history_read` reaches every one.",
             why.to_string().lines().next().unwrap_or("").chars().take(160).collect::<String>()
         )));
-        match self.carry_out(items, &p, Trigger::Budget, cancel).await {
+        match self
+            .carry_out(base, items, &p, Trigger::Budget, cancel)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(Error::Cancelled) => Err(Error::Cancelled),
             // The summarizer's failure is the one to report: it is why this happened.
@@ -859,7 +909,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         cancel: &CancellationToken,
     ) -> Result<()> {
         loop {
-            let (_, fixed, items) = self.build().await?;
+            let (base, fixed, items) = self.build().await?;
             let cfg = self.scaled_budget();
             if !needs_reduction(fixed, &items, &cfg) {
                 *in_a_row = 0;
@@ -904,16 +954,30 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             };
             self.count_attempt(in_a_row)?;
             // 2. Summarize; 3. if that cannot be done, fade.
-            match self.carry_out(&items, &p, Trigger::Budget, cancel).await {
+            match self
+                .carry_out(&base, &items, &p, Trigger::Budget, cancel)
+                .await
+            {
                 Ok(_) => {}
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
                 Err(why) if p.needs_summarizer() => {
-                    self.fade_instead(&items, fixed, &cfg, cancel, why).await?;
+                    self.fade_instead(&base, &items, fixed, &cfg, cancel, why)
+                        .await?;
                 }
                 Err(e) => return Err(e),
             }
             outcome.reductions += 1;
         }
+    }
+
+    /// The output limit a call gets when it does not ask for one: the person's setting, or
+    /// a share of the window (ADR-0058).
+    fn output_limit(&self, settings: &Settings) -> truncate::Limit {
+        truncate::Limit::new(
+            settings
+                .tool_output
+                .for_window(self.effective_budget().window),
+        )
     }
 
     // -- asking the model -----------------------------------------------------------------------
@@ -940,12 +1004,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// request has been rejected or has no room for its reply: the budget's own estimate was
     /// not enough. Whether anything older could be reduced.
     async fn force_reduce(&self, cancel: &CancellationToken, keep_scale: f64) -> Result<bool> {
-        let (_, fixed, items) = self.build().await?;
+        let (base, fixed, items) = self.build().await?;
         let mut cfg = self.scaled_budget();
         cfg.keep *= keep_scale;
         match plan(fixed, &items, &cfg, cfg.mode) {
             Ok(p) => {
-                self.carry_out(&items, &p, Trigger::Budget, cancel).await?;
+                self.carry_out(&base, &items, &p, Trigger::Budget, cancel)
+                    .await?;
                 Ok(true)
             }
             Err(_) => Ok(false),
@@ -1064,6 +1129,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         let mut in_a_row = 0usize;
         // Replies in a row that were cut off by the output limit in the middle of a tool call.
         let mut cut_calls = 0usize;
+        let mut repeats = Repeats::default();
         let mut next: String = text.to_string();
 
         // A scenario moved on by hand is waiting to hear what the phase it left concluded:
@@ -1189,7 +1255,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     )));
                 }
                 outcome.tool_calls += calls.len();
-                self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome)
+                self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome, &mut repeats)
                     .await?;
             }
         }
@@ -1275,8 +1341,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         cancel: &CancellationToken,
         in_a_row: &mut usize,
         outcome: &mut Outcome,
+        repeats: &mut Repeats,
     ) -> Result<()> {
-        let default = default_limit(&self.settings());
+        let default = self.output_limit(&self.settings());
         for (i, (id, name, args)) in calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 self.fill_results(&calls[i..], "not run: the turn was cancelled")?;
@@ -1324,12 +1391,28 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             };
             let is_error = out.is_error;
             let kind = self.finalize(id, name, out, limit)?;
+            let seen = match &kind {
+                Kind::ToolResult { content, .. } => repeats.note(name, args, content),
+                _ => 0,
+            };
             let entry = self.append(kind)?;
             self.emit(Event::ToolEnd {
                 id: id.clone(),
                 entry,
                 is_error,
             });
+
+            // The same call, giving the same result, again and again: nothing is going to change.
+            if self.cfg.max_repeats > 0 && seen >= self.cfg.max_repeats {
+                self.fill_results(
+                    &calls[i + 1..],
+                    "not run: the turn was stopped because the same call kept giving the same result",
+                )?;
+                return Err(Error::Model(format!(
+                    "stopped: `{name}` was called {seen} times in a row with the same arguments ({}) and gave the same result each time. Say what to try instead, or ask for something different.",
+                    args.to_string().chars().take(120).collect::<String>()
+                )));
+            }
 
             // Reporting asks the filesystem, after every tool call, whether anything was written up.
             {
@@ -1546,9 +1629,4 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub fn context(&self) -> Vec<Item> {
         project(&self.store.lock().unwrap())
     }
-}
-
-/// The output limit a call gets when it does not ask for one.
-fn default_limit(settings: &Settings) -> truncate::Limit {
-    truncate::Limit::new(settings.tool_output.max_inline_bytes)
 }

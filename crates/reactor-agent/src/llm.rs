@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use rig_core::completion::message::{
-    AssistantContent, Message, Reasoning, ReasoningContent, ToolResultContent, UserContent,
+    AssistantContent, Message, Reasoning, ReasoningContent, ToolChoice, ToolResultContent,
+    UserContent,
 };
 use rig_core::completion::{CompletionModel, CompletionRequestBuilder, ToolDefinition};
 use rig_core::streaming::StreamedAssistantContent;
@@ -46,6 +47,9 @@ pub struct LlmRequest {
     /// The context window the request is sized for. A server that sizes its window per
     /// request (Ollama) is told it; every other provider ignores it.
     pub num_ctx: Option<u64>,
+    /// The model is told not to call any tool (the tools are there only so the request begins
+    /// as the one before it did). A provider that cannot be told may call one anyway.
+    pub no_tools: bool,
 }
 
 /// Progress while a reply streams.
@@ -119,6 +123,9 @@ pub struct RigLlm<M> {
     /// The server sizes its context window per request, so each request says how big
     /// (`num_ctx`): without it Ollama serves its own default and silently cuts the prompt.
     sets_num_ctx: bool,
+    /// The provider's input count leaves out what it read from or wrote to its cache
+    /// (Anthropic's does; OpenAI's counts it in), so those are added back.
+    cache_counted_apart: bool,
 }
 
 impl<M: CompletionModel + Clone> RigLlm<M> {
@@ -128,7 +135,14 @@ impl<M: CompletionModel + Clone> RigLlm<M> {
             name: name.into(),
             params: None,
             sets_num_ctx: false,
+            cache_counted_apart: false,
         }
+    }
+
+    /// The provider reports cached input tokens apart from `input_tokens`, not within it.
+    pub fn with_cache_counted_apart(mut self, on: bool) -> Self {
+        self.cache_counted_apart = on;
+        self
     }
 
     /// Send the request's `num_ctx` with it (for a server that sizes its window per request).
@@ -235,6 +249,23 @@ impl<M: CompletionModel + Clone> RigLlm<M> {
     }
 }
 
+/// What a provider reported, as REactor counts it: `input_tokens` is everything sent, and
+/// `cached_input_tokens` the part of it that came from a cache. Anthropic reports the cached
+/// part (and what it wrote to its cache) *apart* from its input count, so with caching on its
+/// `input_tokens` is a few hundred while the prompt is tens of thousands; the others count it in.
+pub fn usage_of(u: &rig_core::completion::Usage, cache_counted_apart: bool) -> Usage {
+    let input = if cache_counted_apart {
+        u.input_tokens + u.cached_input_tokens + u.cache_creation_input_tokens
+    } else {
+        u.input_tokens
+    };
+    Usage {
+        input_tokens: input,
+        output_tokens: u.output_tokens,
+        cached_input_tokens: u.cached_input_tokens,
+    }
+}
+
 /// The least a thinking model must be left to answer with after it has thought.
 pub const MIN_ANSWER_TOKENS: u64 = 1024;
 /// The least thinking budget Anthropic accepts.
@@ -291,6 +322,9 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
         if let Some(n) = req.max_tokens {
             builder = builder.max_tokens(n);
         }
+        if req.no_tools {
+            builder = builder.tool_choice(ToolChoice::None);
+        }
         if let Some(p) = self.request_params(&req) {
             builder = builder.additional_params(p);
         }
@@ -310,11 +344,7 @@ impl<M: CompletionModel + Clone + 'static> Llm for RigLlm<M> {
                     name: tool_call.function.name.clone(),
                 }),
                 StreamedAssistantContent::Final(f) => {
-                    usage = Some(Usage {
-                        input_tokens: f.usage.input_tokens,
-                        output_tokens: f.usage.output_tokens,
-                        cached_input_tokens: f.usage.cached_input_tokens,
-                    });
+                    usage = Some(usage_of(&f.usage, self.cache_counted_apart));
                     stop = f.finish_reason.map(|r| format!("{r:?}").to_lowercase());
                 }
                 _ => {}
@@ -629,24 +659,67 @@ impl<L: Llm> LlmSummarizer<L> {
             req.transcript.clone()
         };
 
+        // Ask the way the main request was made, if this is the main model and the whole of
+        // that request fits: the provider has most of it done already. It cannot be shrunk, so
+        // a rejection, or a reply that is not notes, goes on to the flattened form below.
+        let replay = req.replay.as_ref().filter(|r| r.model == llm.name());
+        let replay_tokens = |r: &crate::budget::Replay| -> u64 {
+            crate::context::estimate_tokens(&r.system)
+                + r.tools.iter().map(crate::deferral::cost).sum::<u64>()
+                + r.messages
+                    .iter()
+                    .map(crate::context::msg_tokens)
+                    .sum::<u64>()
+                + system_tokens
+                + 64
+        };
+        let mut replaying =
+            replay.is_some_and(|r| req.input_cap == 0 || replay_tokens(r) <= req.input_cap);
+
         let (mut thought, mut reminded, mut rungs, mut tries) = (false, false, 0usize, 0usize);
         let mut rejected: Option<u64> = None;
         loop {
-            let sent = complete_watched(
-                llm,
-                LlmRequest {
+            let reminder = if reminded {
+                format!("\n\n{}", crate::budget::SUMMARY_REMINDER)
+            } else {
+                String::new()
+            };
+            let request = match replay.filter(|_| replaying) {
+                Some(r) => {
+                    let mut messages = r.messages.clone();
+                    messages.push(Msg::User {
+                        text: format!(
+                            "{system}\n\nEverything above is the part of the session to be summarized. Do not call any tool; reply with the notes only.{reminder}"
+                        ),
+                    });
+                    LlmRequest {
+                        system: r.system.clone(),
+                        messages,
+                        tools: r.tools.clone(),
+                        max_tokens: Some(limit),
+                        num_ctx: (req.window > 0).then_some(req.window),
+                        no_tools: true,
+                    }
+                }
+                None => LlmRequest {
                     system: system.clone(),
-                    messages: vec![Msg::User { text: text.clone() }],
+                    messages: vec![Msg::User {
+                        text: format!("{text}{reminder}"),
+                    }],
                     tools: vec![],
                     max_tokens: Some(limit),
                     num_ctx: (req.window > 0).then_some(req.window),
+                    no_tools: false,
                 },
-                self.idle_timeout,
-                |_| {},
-            )
-            .await;
+            };
+            let sent = complete_watched(llm, request, self.idle_timeout, |_| {}).await;
             let reply = match sent {
                 Ok(r) => r,
+                // The whole request was too long: it cannot be cut, so ask the other way.
+                Err(Error::Overflow(_)) if replaying => {
+                    replaying = false;
+                    continue;
+                }
                 // Too long for the model: aim lower, and lower again, then give up.
                 Err(Error::Overflow(why)) => {
                     let Some(step) = SHRINK_STEPS.get(rungs) else {
@@ -689,7 +762,6 @@ impl<L: Llm> LlmSummarizer<L> {
                 // can still write useful notes.
                 if req.template && !crate::budget::follows_template(&notes) && !reminded {
                     reminded = true;
-                    text = format!("{text}\n\n{}", crate::budget::SUMMARY_REMINDER);
                     continue;
                 }
                 return Ok(notes);
@@ -705,10 +777,21 @@ impl<L: Llm> LlmSummarizer<L> {
                     }
                 })
                 .sum();
+            // A model that called a tool instead (it was told not to, and some providers cannot
+            // be told) has not written notes: ask the other way, where there are no tools.
+            if replaying && reply.tool_calls().next().is_some() {
+                replaying = false;
+                continue;
+            }
             // Only thinking: it ran out of room before the notes. Once more, with a lot more.
             if thinking > 0 && !thought {
                 thought = true;
                 limit = limit.saturating_mul(3).min(out_cap.max(limit));
+                continue;
+            }
+            // Nothing usable the main model's way: the flattened way gets one try of its own.
+            if replaying {
+                replaying = false;
                 continue;
             }
             let what = if thinking > 0 {
@@ -845,6 +928,40 @@ mod tests {
             stop: Some("tool_use".into()),
         };
         assert!(call.has_output());
+    }
+
+    fn rig_usage(
+        input: u64,
+        cached: u64,
+        written: u64,
+        output: u64,
+    ) -> rig_core::completion::Usage {
+        let mut u = rig_core::completion::Usage::new();
+        u.input_tokens = input;
+        u.cached_input_tokens = cached;
+        u.cache_creation_input_tokens = written;
+        u.output_tokens = output;
+        u
+    }
+
+    #[test]
+    fn anthropics_input_count_gets_its_cached_part_added_back_and_the_others_are_left_as_they_are()
+    {
+        // Anthropic: 300 tokens were new, 40,000 came from the cache, 1,200 were written to it.
+        let u = rig_usage(300, 40_000, 1_200, 500);
+        let a = usage_of(&u, true);
+        assert_eq!(a.input_tokens, 41_500, "everything that was sent");
+        assert_eq!(
+            a.cached_input_tokens, 40_000,
+            "and the part that came from the cache"
+        );
+        assert_eq!(a.output_tokens, 500);
+        // OpenAI and the rest count the cached part within the input already.
+        let o = usage_of(&rig_usage(41_500, 40_000, 0, 500), false);
+        assert_eq!(o.input_tokens, 41_500);
+        assert_eq!(o.cached_input_tokens, 40_000);
+        // Without caching on, the two agree.
+        assert_eq!(usage_of(&rig_usage(900, 0, 0, 5), true).input_tokens, 900);
     }
 
     /// A model that says nothing, for ever.

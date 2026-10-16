@@ -1458,11 +1458,23 @@ fn tools_page(app: &Entity<ReactorApp>) -> SettingPage {
     let group = SettingGroup::new()
         .item(count_field(
             app,
-            "Tool output shown before it is cut (KiB)",
+            // 32 is what a large window shows; in a smaller one the default is a twentieth of
+            // the window, and only a value other than 32 pins it.
+            "Tool output shown before it is cut (KiB; 32 follows the window)",
             &["truncate", "limit", "output"],
             (1.0, 1024.0),
-            |s| s.tool_output.max_inline_bytes / 1024,
-            |s, n| s.tool_output.max_inline_bytes = n.clamp(1, 1024) * 1024,
+            |s| {
+                s.tool_output
+                    .max_inline_bytes
+                    .unwrap_or(reactor_context::settings::ToolOutputSettings::DEFAULT_BYTES)
+                    / 1024
+            },
+            |s, n| {
+                let bytes = n.clamp(1, 1024) * 1024;
+                s.tool_output.max_inline_bytes = (bytes
+                    != reactor_context::settings::ToolOutputSettings::DEFAULT_BYTES)
+                    .then_some(bytes);
+            },
         ))
         .item(count_field(
             app,

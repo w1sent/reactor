@@ -39,3 +39,4 @@ pub mod shortcuts;
 pub mod start;
 pub mod theme;
 pub mod toolbox;
+pub mod transcript_ui;

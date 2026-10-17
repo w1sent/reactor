@@ -278,11 +278,17 @@ pub struct TranscriptPanel {
     /// which is exactly what a transcript needs). See
     /// [`gpui_kit::component::message_scroller`].
     scroller: Entity<MessageScrollerState>,
-    /// How many items the scroller was last told about, so a render can
-    /// tell an append from an in-place mutation (a streaming delta changes
-    /// the last item's content without changing the count) and remeasure
-    /// instead of appending.
-    last_item_count: usize,
+    /// A fingerprint of each row as the scroller last measured it
+    /// ([`crate::transcript_ui::row_sign`]), so a render can tell an append from an
+    /// in-place mutation (a streaming delta changes one row's content without changing the
+    /// count) and measure just that row again, instead of every row.
+    row_signs: Vec<u64>,
+    /// What the rows' measured heights depend on besides their text (fonts, the output
+    /// limit, whether thinking opens by itself): when it changes every row is measured again.
+    layout_key: String,
+    /// Which tool calls (by transcript index) are open. Closed is the default: a call is two
+    /// lines until the person opens it.
+    expanded_tools: std::collections::HashSet<usize>,
     /// Which "thinking" blocks (by transcript index) the user has expanded.
     /// Presentation state, not session data — it lives here rather than on
     /// `ChatItem` (SPEC.md §4.4) — and indices are stable to key it by:
@@ -328,7 +334,9 @@ impl TranscriptPanel {
             composer,
             focus,
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
-            last_item_count: 0,
+            row_signs: Vec::new(),
+            layout_key: String::new(),
+            expanded_tools: std::collections::HashSet::new(),
             expanded_thinking: std::collections::HashSet::new(),
             copied: None,
             details_open: false,
@@ -362,20 +370,6 @@ pub struct ToolStyle {
     pub max_chars: usize,
 }
 
-/// The background of a whole entry: what you said is a shade lighter than the window, what the
-/// agent produced is the window's own. Errors bring their own colour.
-fn entry_background(item: &ChatItem, theme: &gpui_kit::component::Theme) -> Option<gpui_kit::Hsla> {
-    match item {
-        // An absolute lift: `lighten` scales, and a near-black window has nothing to scale.
-        ChatItem::User { .. } => Some(gpui_kit::Hsla {
-            l: (theme.background.l + 0.04).min(1.0),
-            ..theme.background
-        }),
-        ChatItem::Error { .. } => None,
-        _ => Some(theme.background),
-    }
-}
-
 /// What the transcript needs to make file references in the assistant's text clickable.
 #[derive(Clone)]
 struct FileLinks {
@@ -406,17 +400,52 @@ type OpenReference = dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut Ap
 fn render_item(
     index: usize,
     item: &ChatItem,
+    prev: Option<&ChatItem>,
+    out_of_context: bool,
     theme: &gpui_kit::component::Theme,
     tools: &ToolStyle,
     thinking_expanded: bool,
+    tool_expanded: bool,
     toggle_thinking: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
+    toggle_tool: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
     restore: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
     detach: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
     links: &FileLinks,
 ) -> gpui_kit::Div {
+    use crate::transcript_ui::{self as ui, Node};
+    // The agent's name goes above its first row after something else was said.
+    let continues_agent = matches!(
+        prev,
+        Some(
+            ChatItem::AssistantText { .. }
+                | ChatItem::Thinking { .. }
+                | ChatItem::ToolCall { .. }
+                | ChatItem::Reduction { .. }
+        )
+    );
     match item {
-        // Who said it is the entry's background (`entry_background`), not a label.
-        ChatItem::User { text } => div().px_2().child(text.clone()),
+        // What you said is a shade lighter than the window.
+        ChatItem::User { text } => {
+            // An absolute lift: `lighten` scales, and a near-black window has nothing to scale.
+            let lifted = gpui_kit::Hsla {
+                l: (theme.background.l + 0.04).min(1.0),
+                ..theme.background
+            };
+            ui::lane(
+                Node::User,
+                v_flex().py_1().child(
+                    v_flex()
+                        .gap_0p5()
+                        .rounded_lg()
+                        .px_3()
+                        .py_2()
+                        .bg(lifted)
+                        .child(ui::speaker("YOU", theme.accent, theme))
+                        .child(div().child(text.clone())),
+                ),
+                theme,
+            )
+        }
         ChatItem::AssistantText { text, streaming } => {
             let streaming = *streaming;
             let linked = crate::files::refs::linkify(text, &|path| {
@@ -426,42 +455,59 @@ fn render_item(
             // The text as the model wrote it — Markdown and all — for the clipboard.
             let (copy, raw) = (links.copy.clone(), text.clone());
             let copied = links.copied == Some(index);
-            div()
-                .relative()
-                .px_2()
-                .pr_12()
-                .child(
-                    // Clear of the scrollbar, which runs down the right edge.
-                    div().absolute().top_0().right(px(16.)).child(
-                        Button::new(("copy-message", index))
-                            .icon(if copied {
-                                IconName::Check
-                            } else {
-                                IconName::Copy
-                            })
-                            .ghost()
-                            .small()
-                            .tooltip(if copied {
-                                "Copied"
-                            } else {
-                                "Copy the message as written (Markdown)"
-                            })
-                            .on_click(move |_, window, cx| copy(index, raw.clone(), window, cx)),
+            ui::lane(
+                Node::Agent,
+                v_flex()
+                    .py_1()
+                    .when(!continues_agent, |el| {
+                        el.child(
+                            div()
+                                .px_2()
+                                .child(ui::speaker("REACTOR", theme.muted_foreground, theme)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .relative()
+                            .px_2()
+                            .pr_12()
+                            .child(
+                                // Clear of the scrollbar, which runs down the right edge.
+                                div().absolute().top_0().right(px(16.)).child(
+                                    Button::new(("copy-message", index))
+                                        .icon(if copied {
+                                            IconName::Check
+                                        } else {
+                                            IconName::Copy
+                                        })
+                                        .ghost()
+                                        .small()
+                                        .tooltip(if copied {
+                                            "Copied"
+                                        } else {
+                                            "Copy the message as written (Markdown)"
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            copy(index, raw.clone(), window, cx)
+                                        }),
+                                ),
+                            )
+                            .child(
+                                TextView::markdown(format!("assistant-{index}"), linked)
+                                    .style(crate::theme::text_view_style(theme))
+                                    .on_link_click(move |url, event, window, cx| {
+                                        match crate::files::refs::parse_url(url) {
+                                            Some((path, line)) => {
+                                                open(path, line, event.modifiers(), window, cx)
+                                            }
+                                            None => cx.open_url(url),
+                                        }
+                                    }),
+                            )
+                            .when(streaming, |el| el.opacity(0.85)),
                     ),
-                )
-                .child(
-                    TextView::markdown(format!("assistant-{index}"), linked)
-                        .style(crate::theme::text_view_style(theme))
-                        .on_link_click(move |url, event, window, cx| {
-                            match crate::files::refs::parse_url(url) {
-                                Some((path, line)) => {
-                                    open(path, line, event.modifiers(), window, cx)
-                                }
-                                None => cx.open_url(url),
-                            }
-                        }),
-                )
-                .when(streaming, |el| el.opacity(0.85))
+                theme,
+            )
         }
         ChatItem::Thinking { text, streaming } => {
             let chevron = if thinking_expanded {
@@ -469,39 +515,46 @@ fn render_item(
             } else {
                 IconName::ChevronRight
             };
-            v_flex().px_2().child(
-                gpui_kit::component::collapsible::Collapsible::new()
-                    .open(thinking_expanded)
-                    .child(
-                        h_flex()
-                            .id(("thinking-trigger", index))
-                            .gap_1()
-                            .items_center()
-                            .cursor_pointer()
-                            .on_click(move |_, window, cx| toggle_thinking(index, window, cx))
-                            .child(
-                                Icon::new(chevron)
-                                    .small()
-                                    .text_color(theme.muted_foreground),
-                            )
-                            .child(if *streaming {
-                                // Still thinking: a shimmer sweeps over the word.
-                                div()
-                                    .text_color(theme.muted_foreground)
-                                    .child(crate::indicator::shimmer("thinking…", theme.foreground))
-                                    .into_any_element()
-                            } else {
-                                Label::new("thinking")
-                                    .text_color(theme.muted_foreground)
-                                    .into_any_element()
-                            }),
-                    )
-                    .content(
-                        div().child(
-                            TextView::markdown(format!("thinking-{index}"), text.clone())
-                                .style(crate::theme::text_view_style(theme)),
+            ui::lane(
+                Node::Thinking { live: *streaming },
+                v_flex().px_2().py_0p5().child(
+                    gpui_kit::component::collapsible::Collapsible::new()
+                        .open(thinking_expanded)
+                        .child(
+                            h_flex()
+                                .id(("thinking-trigger", index))
+                                .gap_1()
+                                .items_center()
+                                .cursor_pointer()
+                                .on_click(move |_, window, cx| toggle_thinking(index, window, cx))
+                                .child(
+                                    Icon::new(chevron)
+                                        .small()
+                                        .text_color(theme.muted_foreground),
+                                )
+                                .child(if *streaming {
+                                    // Still thinking: a shimmer sweeps over the word.
+                                    div()
+                                        .text_color(theme.muted_foreground)
+                                        .child(crate::indicator::shimmer(
+                                            "thinking…",
+                                            theme.foreground,
+                                        ))
+                                        .into_any_element()
+                                } else {
+                                    Label::new("thinking")
+                                        .text_color(theme.muted_foreground)
+                                        .into_any_element()
+                                }),
+                        )
+                        .content(
+                            div().child(
+                                TextView::markdown(format!("thinking-{index}"), text.clone())
+                                    .style(crate::theme::text_view_style(theme)),
+                            ),
                         ),
-                    ),
+                ),
+                theme,
             )
         }
         ChatItem::ToolCall {
@@ -512,91 +565,44 @@ fn render_item(
             done,
             ..
         } => {
-            let colour = if *is_error {
-                theme.danger
-            } else {
-                *theme.tokens.tab_bar
-            };
             // A finished passage search is shown as a list, not as the tagged text the model got.
             let docs = (name == "docs_search" && *done && !*is_error)
                 .then(|| reactor_agent::tools::docs::parse_result(output))
                 .flatten();
-            // On a character boundary: tool output is arbitrary text and `…` and friends are
-            // not one byte. (The whole output is in the session, and `history_read` gets it.)
-            let output = if output.len() > tools.max_chars {
-                let mut end = tools.max_chars;
-                while !output.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!(
-                    "{}\n… truncated (the whole output is in the session log)",
-                    &output[..end]
+            let docs = docs.as_ref().map(|parsed| {
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                (
+                    parsed.summary.clone(),
+                    docs_result(index, parsed, query, theme, tools, links),
                 )
-            } else {
-                output.clone()
-            };
-            v_flex()
-                .px_2()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Label::new(name.clone()).text_color(if *is_error {
-                            theme.danger
-                        } else {
-                            theme.accent
-                        }))
-                        .child(
-                            Label::new(if *done { "done" } else { "running…" })
-                                .text_color(theme.muted_foreground),
-                        ),
-                )
-                .child(
-                    div()
-                        .px_2()
-                        .text_color(theme.muted_foreground)
-                        .font_family(tools.family.clone())
-                        .text_size(tools.size)
-                        // Selectable, and whole: what is copied is the command as it ran.
-                        .child(
-                            SelectableText::new(("tool-command", index), command_text(args))
-                                .document_order(index as u64 * 10),
-                        ),
-                )
-                .children(docs.as_ref().map(|parsed| {
-                    let query = args
-                        .get("query")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    docs_result(index, parsed, query, theme, tools, links)
-                }))
-                .when(!output.is_empty() && docs.is_none(), |el| {
-                    el.child(
-                        div()
-                            .px_2()
-                            .text_color(if *is_error {
-                                theme.danger
-                            } else {
-                                theme.foreground
-                            })
-                            .font_family(tools.family.clone())
-                            .text_size(tools.size)
-                            .child(
-                                SelectableText::new(("tool-output", index), output)
-                                    .document_order(index as u64 * 10 + 1)
-                                    .text_style(TextStyleRefinement {
-                                        color: Some(if *is_error {
-                                            theme.danger
-                                        } else {
-                                            theme.foreground
-                                        }),
-                                        ..Default::default()
-                                    }),
-                            ),
-                    )
-                })
-                .when(*is_error, |el| el.border_l_2().border_color(colour))
+            });
+            let copy = links.copy.clone();
+            ui::lane(
+                Node::Tool(ui::tool_state(*done, *is_error)),
+                v_flex().py_0p5().child(ui::tool_row(
+                    ui::ToolCallView {
+                        index,
+                        name,
+                        args,
+                        output,
+                        is_error: *is_error,
+                        done: *done,
+                        out_of_context,
+                        expanded: tool_expanded,
+                        copied: links.copied == Some(index),
+                    },
+                    docs,
+                    theme,
+                    tools,
+                    move |window, cx| toggle_tool(index, window, cx),
+                    move |text, window, cx| copy(index, text, window, cx),
+                )),
+                theme,
+            )
         }
         ChatItem::Reduction {
             entry,
@@ -607,42 +613,21 @@ fn render_item(
             after,
             active,
             summary,
-        } => {
-            let entry = *entry;
-            let active = *active;
-            v_flex()
-                .px_2()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(theme.tokens.title_bar)
-                        .child(Label::new(if active { "context reduced" } else { "reduction undone" }).text_color(theme.accent))
-                        .child(
-                            Label::new(format!("{mode} · {trigger} · {covers} entries · ~{before} → ~{after} tokens"))
-                                .text_color(theme.muted_foreground)
-                                .text_size(theme.font_size * 0.85),
-                        )
-                        .when(active, |el| {
-                            el.child(
-                                Button::new(("undo-reduction", index))
-                                    .label("undo")
-                                    .small()
-                                    .tooltip("Bring the originals back into the model's context")
-                                    .on_click(move |_, window, cx| restore(entry, window, cx)),
-                            )
-                        }),
-                )
-                .when_some(summary.clone().filter(|_| active), |el, summary| {
-                    el.child(
-                        div().px_2().text_color(theme.muted_foreground).text_size(theme.font_size * 0.85).child(summary),
-                    )
-                })
-        }
+        } => ui::reduction_seam(
+            ui::ReductionView {
+                entry: *entry,
+                index,
+                mode,
+                trigger,
+                covers: *covers,
+                before: *before,
+                after: *after,
+                active: *active,
+                summary: summary.as_deref(),
+            },
+            theme,
+            restore,
+        ),
         ChatItem::Attachment {
             entry,
             label,
@@ -666,9 +651,9 @@ fn render_item(
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(" · ");
-            v_flex()
-                .px_2()
-                .child(
+            ui::lane(
+                Node::Document,
+                v_flex().px_2().py_0p5().child(
                     h_flex()
                         .gap_2()
                         .items_center()
@@ -677,7 +662,7 @@ fn render_item(
                         .rounded_md()
                         .border_1()
                         .border_color(theme.border)
-                        .child(Label::new(title).text_color(theme.accent))
+                        .child(Label::new(title).text_color(theme.muted_foreground))
                         .child(crate::hints::tip(
                             div()
                                 .id(("attachment-label", index))
@@ -716,7 +701,9 @@ fn render_item(
                                     .text_size(theme.font_size * 0.85),
                             )
                         }),
-                )
+                ),
+                theme,
+            )
         }
         ChatItem::Stats {
             date,
@@ -726,27 +713,41 @@ fn render_item(
             stream_ms,
         } => {
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            div()
-                .px_2()
-                .text_color(theme.muted_foreground)
-                .text_size(theme.font_size * 0.8)
-                .child(crate::session::stats_label(
-                    date,
-                    time,
-                    *duration_ms,
-                    *tokens,
-                    *stream_ms,
-                    &today,
-                ))
+            ui::lane(
+                Node::None,
+                div().px_2().pt_1().child(
+                    div()
+                        .pt_1()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .text_color(theme.muted_foreground)
+                        .text_size(theme.font_size * 0.8)
+                        .child(crate::session::stats_label(
+                            date,
+                            time,
+                            *duration_ms,
+                            *tokens,
+                            *stream_ms,
+                            &today,
+                        )),
+                ),
+                theme,
+            )
         }
-        ChatItem::Error { message } => v_flex().px_2().child(
-            div()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .bg(theme.danger.opacity(0.2))
-                .text_color(theme.danger)
-                .child(message.clone()),
+        ChatItem::Error { message } => ui::lane(
+            Node::Failure,
+            v_flex().py_1().child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(theme.danger.opacity(0.4))
+                    .bg(theme.danger.opacity(0.15))
+                    .text_color(theme.danger)
+                    .child(message.clone()),
+            ),
+            theme,
         ),
     }
 }
@@ -859,19 +860,6 @@ fn docs_result(
         .children(lines)
 }
 
-/// The command a tool call ran, as text: a shell command as typed, a string as it is, other
-/// arguments as compact JSON.
-fn command_text(args: &Value) -> String {
-    match args {
-        Value::String(s) => s.clone(),
-        Value::Object(o) => match o.get("command").and_then(Value::as_str) {
-            Some(command) => command.to_owned(),
-            None => serde_json::to_string(args).unwrap_or_default(),
-        },
-        _ => String::new(),
-    }
-}
-
 impl Focusable for TranscriptPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -939,7 +927,7 @@ impl Render for TranscriptPanel {
         let (tool_family, tool_size) = ui.text(Slot::Tools, &theme);
         let (prompt_family, prompt_size) = ui.text(Slot::Prompt, &theme);
         let tool_style = ToolStyle {
-            family: tool_family,
+            family: tool_family.clone(),
             size: tool_size,
             max_chars: ui.tool_output_chars,
         };
@@ -958,25 +946,40 @@ impl Render for TranscriptPanel {
             )
         };
 
-        // Tell the scroller about new content before rendering it: an append
-        // keeps tail-following, a shrink (a branch switch, a fresh session)
-        // resets the anchor, and an unchanged count still remeasures — a
-        // streaming delta grows the last row's height without changing how
-        // many rows there are, and a stale cached height is exactly the
-        // "scrolling feels broken" bug this fixes.
-        let new_len = items.len();
-        if new_len > self.last_item_count {
-            let grew_by = new_len - self.last_item_count;
-            self.scroller.update(cx, |state, cx| {
-                state.append(grew_by, cx);
-            });
-        } else if new_len < self.last_item_count {
+        // Tell the scroller about new content before rendering it. An append keeps
+        // tail-following; a shrink (a branch switch, a fresh session) resets the anchor; and a
+        // row whose content changed is measured again on its own — a streaming delta grows
+        // one row's height without changing how many rows there are, and measuring every row
+        // for it (with a proportional anchor) is both slow and what moves a transcript the
+        // person has scrolled up in.
+        let signs: Vec<u64> = items.iter().map(crate::transcript_ui::row_sign).collect();
+        let (old_len, new_len) = (self.row_signs.len(), signs.len());
+        let layout_key = format!(
+            "{body_family:?}{body_size:?}{tool_family:?}{tool_size:?}{}{}",
+            ui.tool_output_chars, ui.expand_thinking
+        );
+        if new_len < old_len {
+            self.expanded_tools.clear();
+            self.expanded_thinking.clear();
             self.scroller
                 .update(cx, |state, cx| state.reset(new_len, cx));
         } else {
-            self.scroller.update(cx, |state, cx| state.remeasure(cx));
+            let changed = crate::transcript_ui::changed_rows(&self.row_signs, &signs);
+            let style_changed = layout_key != self.layout_key;
+            self.scroller.update(cx, |state, cx| {
+                for range in changed {
+                    state.remeasure_items(range, cx);
+                }
+                if new_len > old_len {
+                    state.append(new_len - old_len, cx);
+                }
+                if style_changed {
+                    state.remeasure(cx);
+                }
+            });
         }
-        self.last_item_count = new_len;
+        self.layout_key = layout_key;
+        self.row_signs = signs;
 
         let transcript = if items.is_empty() {
             v_flex()
@@ -992,16 +995,37 @@ impl Render for TranscriptPanel {
         } else {
             let render_theme = theme.clone();
             let expanded_thinking = self.expanded_thinking.clone();
+            let expanded_tools = self.expanded_tools.clone();
             let (open_thinking, dim_reduced) = (ui.expand_thinking, ui.dim_reduced);
             let tool_style = tool_style.clone();
             let weak_self = self.weak_self.clone();
             let weak_app = self.app.clone();
-            let toggle_thinking = move |index: usize, _window: &mut Window, cx: &mut App| {
+            let toggle_thinking = {
+                let weak_self = weak_self.clone();
+                move |index: usize, _window: &mut Window, cx: &mut App| {
+                    if let Some(panel) = weak_self.upgrade() {
+                        panel.update(cx, |panel, cx| {
+                            if !panel.expanded_thinking.remove(&index) {
+                                panel.expanded_thinking.insert(index);
+                            }
+                            // Its height changed: this row, not the whole transcript.
+                            panel.scroller.update(cx, |state, cx| {
+                                state.remeasure_items(index..index + 1, cx);
+                            });
+                            cx.notify();
+                        });
+                    }
+                }
+            };
+            let toggle_tool = move |index: usize, _window: &mut Window, cx: &mut App| {
                 if let Some(panel) = weak_self.upgrade() {
                     panel.update(cx, |panel, cx| {
-                        if !panel.expanded_thinking.remove(&index) {
-                            panel.expanded_thinking.insert(index);
+                        if !panel.expanded_tools.remove(&index) {
+                            panel.expanded_tools.insert(index);
                         }
+                        panel.scroller.update(cx, |state, cx| {
+                            state.remeasure_items(index..index + 1, cx);
+                        });
                         cx.notify();
                     });
                 }
@@ -1077,19 +1101,19 @@ impl Render for TranscriptPanel {
                     let row = render_item(
                         index,
                         &items[index],
+                        index.checked_sub(1).map(|i| &items[i]),
+                        hidden.contains(&index),
                         &render_theme,
                         &tool_style,
                         // The default flips on the choice: a click toggles either way.
                         expanded_thinking.contains(&index) != open_thinking,
+                        expanded_tools.contains(&index),
                         toggle_thinking.clone(),
+                        toggle_tool.clone(),
                         restore.clone(),
                         detach.clone(),
                         &links,
                     );
-                    let row = match entry_background(&items[index], &render_theme) {
-                        Some(background) => row.bg(background).px_2().py_2(),
-                        None => row.px_2().py_1(),
-                    };
                     // What a reduction has taken out of the model's context stays on screen,
                     // dimmed: the log keeps everything, and so does the transcript.
                     if dim_reduced && hidden.contains(&index) {
@@ -1099,8 +1123,8 @@ impl Render for TranscriptPanel {
                     }
                 },
             )
-            // Entries touch: each has its own background, and the gap between rows is a hair.
-            .with_row_style(gpui_kit::StyleRefinement::default().px_0().pb_0p5())
+            // Rows touch: the lane's line runs through them, and each row pads itself.
+            .with_row_style(gpui_kit::StyleRefinement::default().px_0().pb_0())
             .with_bottom_fade(theme.background)
             .into_any_element()
         };

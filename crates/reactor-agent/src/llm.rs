@@ -850,6 +850,13 @@ impl<L: Llm> LlmSummarizer<L> {
                 .usage
                 .map(|u| format!(", {} output tokens", u.output_tokens))
                 .unwrap_or_default();
+            // The provider's filter stopped it: the same text would be stopped again, and it is the
+            // text (a sample's strings, a dump) that is likely to be what tripped it.
+            if reply.stop_kind() == crate::classify::StopKind::Filtered {
+                return Err(Error::Blocked(format!(
+                    "the provider's filter stopped the summary ({what}{cost}). The same text would be stopped again"
+                )));
+            }
             return Err(Error::Model(format!(
                 "the summarizer returned {what} (stop: {}{cost}). If the model has a small context window, the text to summarize may not have fitted: set the window and reserve in Settings → Context",
                 reply.stop.as_deref().unwrap_or("unknown")

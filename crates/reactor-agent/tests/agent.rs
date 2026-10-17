@@ -3790,3 +3790,142 @@ async fn the_check_is_made_the_main_models_way_too_with_its_tools_and_none_calle
             .all(|q| q.no_tools && q.system == "THE MAIN SYSTEM PROMPT" && !q.tools.is_empty())
     );
 }
+
+// -- a reply the provider's filter stopped ---------------------------------------------------------------------
+
+fn filtered(blocks: Vec<Block>) -> Result<Reply> {
+    Ok(Reply {
+        blocks,
+        usage: None,
+        stop: Some("contentfilter".into()),
+    })
+}
+
+#[tokio::test]
+async fn a_reply_the_filter_stopped_before_it_said_anything_ends_the_turn_and_is_not_retried() {
+    for empty in [
+        filtered(vec![]),
+        filtered(vec![Block::Thinking {
+            text: "let me look at the sample".into(),
+            signature: None,
+        }]),
+    ] {
+        let r = rig(
+            vec![empty, ScriptedLlm::say("never")],
+            Sum::says("-"),
+            100_000,
+        );
+        let e = run(&r, "take apart this sample").await.unwrap_err();
+        assert!(matches!(e, Error::Blocked(_)), "{e}");
+        assert!(
+            e.to_string().contains("filter stopped the reply")
+                && e.to_string().contains("not retried"),
+            "{e}"
+        );
+        assert_eq!(
+            r.llm.requests().len(),
+            1,
+            "the same request would be stopped again"
+        );
+        assert_eq!(assistants(&r), 0, "and an empty reply is not recorded");
+    }
+}
+
+#[tokio::test]
+async fn what_a_reply_said_before_the_filter_stopped_it_is_kept_and_said_to_be_cut() {
+    let mut r = rig(
+        vec![filtered(vec![Block::Text {
+            text: "The unpacker reads the key from".into(),
+        }])],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "what does it do").await.unwrap();
+    assert_eq!(assistants(&r), 1);
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("filter stopped the reply") && n.contains("kept"))
+    );
+}
+
+#[tokio::test]
+async fn a_tool_call_in_a_reply_the_filter_stopped_is_not_run_and_the_model_is_told() {
+    let mut r = rig(
+        vec![
+            filtered(vec![Block::ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "echo half"}),
+            }]),
+            ScriptedLlm::say("a different approach"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    let out = run(&r, "do the step").await.unwrap();
+    assert_eq!(out.tool_calls, 0);
+    let res = results(&r);
+    assert_eq!(res.len(), 1, "it was answered, so the log replays");
+    assert!(
+        res[0].contains("not run: the provider's filter stopped your reply"),
+        "{res:?}"
+    );
+    assert_eq!(r.llm.requests().len(), 2, "and the model asked again");
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("filter stopped the reply in the middle of a tool call"))
+    );
+}
+
+#[tokio::test]
+async fn replies_the_filter_keeps_stopping_in_a_tool_call_end_the_turn_as_blocked() {
+    let call = |id: &str| {
+        filtered(vec![Block::ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: json!({"command": "echo half"}),
+        }])
+    };
+    let r = rig(
+        vec![
+            call("c1"),
+            call("c2"),
+            call("c3"),
+            ScriptedLlm::say("never"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "do the step").await.unwrap_err();
+    assert!(matches!(e, Error::Blocked(_)), "{e}");
+    assert!(
+        e.to_string()
+            .contains("3 replies in a row were stopped by the provider's filter"),
+        "{e}"
+    );
+    assert_eq!(results(&r).len(), 3, "every call still has its result");
+}
+
+#[tokio::test]
+async fn a_summary_the_filter_stopped_is_blocked_not_a_model_that_wrote_nothing() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([filtered(vec![]), filtered(vec![])]));
+    let e = LlmSummarizer::new(llm.clone())
+        .summarize(summary_request())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Blocked(_)), "{e}");
+    assert!(e.to_string().contains("filter stopped the summary"), "{e}");
+
+    // The main model gets a try when the configured summarizer's filter stopped it.
+    let cheap = Arc::new(ScriptedLlm::new([filtered(vec![])]).named("cheap"));
+    let main = Arc::new(ScriptedLlm::new([ScriptedLlm::say(NOTES)]).named("main"));
+    let notes = LlmSummarizer::new(cheap)
+        .with_fallback(main)
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(notes, NOTES);
+}

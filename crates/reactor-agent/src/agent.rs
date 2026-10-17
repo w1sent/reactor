@@ -1162,6 +1162,14 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                         }
                         continue;
                     }
+                    // The provider's filter (or a model's refusal) stopped the reply before it
+                    // said or did anything. There is nothing to keep, and the same request would
+                    // be stopped again, so it is not sent again: like a blocked request.
+                    if reply.stop_kind() == StopKind::Filtered && !reply.has_output() {
+                        return Err(Error::Blocked(
+                            "the provider's filter stopped the reply before it said anything. The same request would be stopped again, so it was not retried. Rephrase it, or choose another model.".into(),
+                        ));
+                    }
                     return Ok((reply, estimated, fixed));
                 }
                 Err(Error::Overflow(why)) => {
@@ -1284,29 +1292,51 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     stop: reply.stop.clone(),
                 })?;
 
-                // A reply the output limit cut off may hold a tool call whose arguments are
-                // unfinished: none of its calls is run. Each is answered, so the log stays
-                // valid, and the model is told why and asks again, smaller.
-                if reply.stop_kind() == StopKind::Length && !calls.is_empty() {
+                // A reply the output limit cut off, or the provider's filter stopped, may hold a
+                // tool call whose arguments are unfinished: none of its calls is run. Each is
+                // answered, so the log stays valid, and the model is told why and asks again.
+                let stopped = reply.stop_kind();
+                let by_filter = stopped == StopKind::Filtered;
+                if matches!(stopped, StopKind::Length | StopKind::Filtered) && !calls.is_empty() {
                     cut_calls += 1;
                     self.fill_results(
                         &calls,
-                        "not run: your reply was cut off by the output limit before this call was complete. Make a smaller call, or split the work over several.",
+                        if by_filter {
+                            "not run: the provider's filter stopped your reply before this call was complete. Take a different approach to the step."
+                        } else {
+                            "not run: your reply was cut off by the output limit before this call was complete. Make a smaller call, or split the work over several."
+                        },
                     )?;
                     if cut_calls >= MAX_CUT_CALLS {
-                        return Err(Error::Model(format!(
-                            "stopped: {MAX_CUT_CALLS} replies in a row were cut off by the output limit in the middle of a tool call. Raise the output limit, or ask for a smaller step."
-                        )));
+                        return Err(if by_filter {
+                            Error::Blocked(format!(
+                                "stopped: {MAX_CUT_CALLS} replies in a row were stopped by the provider's filter in the middle of a tool call. Rephrase the request, or choose another model."
+                            ))
+                        } else {
+                            Error::Model(format!(
+                                "stopped: {MAX_CUT_CALLS} replies in a row were cut off by the output limit in the middle of a tool call. Raise the output limit, or ask for a smaller step."
+                            ))
+                        });
                     }
                     self.emit(Event::Notice(
-                        "the reply was cut off by the output limit in the middle of a tool call; the call was not run".into(),
+                        if by_filter {
+                            "the provider's filter stopped the reply in the middle of a tool call; the call was not run"
+                        } else {
+                            "the reply was cut off by the output limit in the middle of a tool call; the call was not run"
+                        }
+                        .into(),
                     ));
                     continue;
                 }
                 cut_calls = 0;
-                if reply.stop_kind() == StopKind::Length {
+                if stopped == StopKind::Length {
                     self.emit(Event::Notice(
                         "the reply was cut off by the output limit".into(),
+                    ));
+                } else if by_filter {
+                    // What it said before the filter stopped it is kept.
+                    self.emit(Event::Notice(
+                        "the provider's filter stopped the reply; what it said is kept".into(),
                     ));
                 }
 

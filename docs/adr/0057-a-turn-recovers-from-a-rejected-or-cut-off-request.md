@@ -53,6 +53,16 @@ a thinking one look the same until then. Both waits end when the turn is cancell
 **A blocked request is not retried,** and the message says it was not and what to do. The
 same request would be blocked again, and a retry costs a full input.
 
+**A reply the provider's filter stopped is treated the same way.** Every provider that has one
+reports it as a finish reason of its own (a refusal, a safety stop, `content_filter`), which rig
+reads as one thing. Stopped before the reply said or did anything, it ends the turn as blocked,
+unrecorded and not retried. Stopped partway, what it said is kept and a notice says it was
+stopped. A tool call in it is not run, since its arguments may be unfinished: it is answered
+`not run`, the model is told, and three such replies in a row end the turn as blocked. A summary
+the filter stopped is blocked too, which sends the reduction to the main model and then to a
+fade. Analysing malware puts text in front of a filter that the same model would not see
+elsewhere, so this is a case to expect rather than an error to be surprised by.
+
 **A reduction can be cancelled.** A summarizer that never answers used to hold the turn with
 no way out. Nothing is written until the summary is in, so cancelling leaves the log as it was.
 
@@ -99,8 +109,6 @@ really serves. What they share is that every recovery is bounded and none is sil
 - A reply that *succeeds* with more input than the window (a provider that silently accepts an
   overflow) is not detected as one; the calibration from reported usage catches it on the next
   request instead.
-- A summary request that is blocked falls back to the main model, not yet to a fade, which
-  needs no model ([ADR-0058](0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)).
 - The summarizer is assumed to have the main model's window. A summarizer setting that names
   a model with another window would need a window of its own.
 

@@ -148,7 +148,30 @@ pub fn marker(entry: EntryId, first: u64, last: u64) -> String {
     } else {
         format!("{{\"id\": {entry}}}")
     };
-    format!("\n… [output truncated; the rest: history_read {call}] …\n")
+    format!("{MARKER_OPEN}{call}{MARKER_CLOSE}")
+}
+
+const MARKER_OPEN: &str = "\n… [output truncated; the rest: history_read ";
+const MARKER_CLOSE: &str = "] …\n";
+
+/// A view [`view`] made, taken apart: what precedes the marker, the entry and the lines
+/// (`first..=last`) it names, what follows. `None` when `text` has no marker with a line range.
+/// A frontend that cuts the view further uses it to keep the marker true.
+pub fn split_marker(text: &str) -> Option<(&str, EntryId, u64, u64, &str)> {
+    let open = text.find(MARKER_OPEN)?;
+    let body = open + MARKER_OPEN.len();
+    let close = body + text[body..].find(MARKER_CLOSE)?;
+    let call: Value = serde_json::from_str(&text[body..close]).ok()?;
+    let entry = call.get("id")?.as_u64()?;
+    let first = call.get("offset")?.as_u64()?;
+    let last = first + call.get("limit")?.as_u64()?.saturating_sub(1);
+    Some((
+        &text[..open],
+        entry,
+        first,
+        last,
+        &text[close + MARKER_CLOSE.len()..],
+    ))
 }
 
 /// The model-visible view of an output (`text` may already be a head-and-tail composite

@@ -24,6 +24,8 @@ use gpui_kit::component::{Icon, Sizable as _, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use reactor_agent::truncate;
+
 use crate::panels::ToolStyle;
 use crate::session::ChatItem;
 
@@ -355,9 +357,24 @@ pub fn lines_label(n: usize) -> String {
 }
 
 /// Output cut to `max` bytes on a character boundary, with a note saying where the rest is.
+///
+/// A result the loop already cut carries its own marker, the `history_read` call for the rest.
+/// That is kept, as a head and a tail of the same shares around it, and its lines are made to
+/// match what is left, so the call still reads everything that is not on screen.
 pub fn cut_output(output: &str, max: usize) -> String {
     if output.len() <= max {
         return output.to_owned();
+    }
+    if let Some((head, entry, first, last, tail)) = truncate::split_marker(output) {
+        let whole = whole_lines(last, tail);
+        let room = max.saturating_sub(truncate::marker(entry, first, last).len());
+        let head = truncate::head(head, room / 4);
+        let tail = truncate::tail(tail, room - head.len());
+        let first = head.matches('\n').count() as u64 + 1;
+        let last = (whole + 1)
+            .saturating_sub(tail.lines().count() as u64)
+            .min(whole);
+        return format!("{head}{}{tail}", truncate::marker(entry, first, last));
     }
     let mut end = max;
     while !output.is_char_boundary(end) {
@@ -367,6 +384,28 @@ pub fn cut_output(output: &str, max: usize) -> String {
         "{}\n… truncated (the whole output is in the session log)",
         &output[..end]
     )
+}
+
+/// Lines in the whole output a marker stands for: its last hidden line, and the tail after it
+/// that starts on that line.
+fn whole_lines(last: u64, tail: &str) -> u64 {
+    last + (tail.lines().count() as u64).saturating_sub(1)
+}
+
+/// The footer's counts for a tool row: the lines on screen and the lines there are. For a
+/// result the loop cut, `shown` leaves out the marker and `total` is the stored output's, which
+/// the marker's range gives; otherwise both are counted in the text.
+pub fn line_counts(output: &str, drawn: &str) -> (usize, usize) {
+    match (
+        truncate::split_marker(output),
+        truncate::split_marker(drawn),
+    ) {
+        (Some((_, _, _, last, tail)), Some((head, _, _, _, drawn_tail))) => (
+            head.lines().count() + drawn_tail.lines().count(),
+            whole_lines(last, tail) as usize,
+        ),
+        _ => (drawn.lines().count(), output.lines().count()),
+    }
 }
 
 /// What a tool call row draws.
@@ -544,8 +583,7 @@ pub fn tool_row(
         };
         let shell = is_shell(v.args);
         let cut = cut_output(v.output, tools.max_chars);
-        let shown = cut.lines().count();
-        let total = v.output.lines().count();
+        let (shown, total) = line_counts(v.output, &cut);
         let footer = format!(
             "{}{}",
             if shown < total {
@@ -796,6 +834,31 @@ mod tests {
         assert!(cut.starts_with("aéa"));
         assert!(cut.contains("truncated"));
         assert_eq!(cut_output("short", 100), "short");
+    }
+
+    #[test]
+    fn a_cut_the_loop_made_keeps_its_marker_and_its_lines_true() {
+        use reactor_agent::truncate::{Whole, split_marker, view};
+        let text: String = (1..=400).map(|n| format!("line {n:03}\n")).collect();
+        let whole = Whole {
+            entry: 7,
+            lines: 400,
+        };
+        let seen = view(&text, whole, reactor_agent::truncate::Limit::new(2048));
+        let cut = cut_output(&seen, 600);
+        assert!(!cut.contains("session log"));
+        assert!(cut.len() <= 600 + 16);
+        let (head, entry, first, last, tail) = split_marker(&cut).expect("the marker is kept");
+        assert_eq!(entry, 7);
+        // What is not on screen is exactly what the call reads: no gap at either end.
+        assert_eq!(first, head.lines().count() as u64 + 1);
+        assert_eq!(last, 400 - tail.lines().count() as u64 + 1);
+        assert!(tail.ends_with("line 400\n"));
+        // The footer counts the stored output, not the view of it.
+        let (shown, total) = super::line_counts(&seen, &cut);
+        assert_eq!(total, 400);
+        assert_eq!(shown, head.lines().count() + tail.lines().count());
+        assert_eq!(super::line_counts("a\nb\n", "a\nb\n"), (2, 2));
     }
 
     #[test]

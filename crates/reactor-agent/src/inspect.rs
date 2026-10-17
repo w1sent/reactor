@@ -269,6 +269,9 @@ pub struct ContextPreview {
     pub total_tokens: u64,
     /// Real tokens per estimated token, as the provider reported.
     pub calibration: f64,
+    /// Things worth the person's notice about the request, such as the fixed part of it being
+    /// most of what the window leaves.
+    pub warnings: Vec<String>,
 }
 
 impl ContextPreview {

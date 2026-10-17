@@ -390,6 +390,7 @@ mod usage {
             ],
             total_tokens: 72,
             calibration: 1.0,
+            warnings: vec![],
         };
         assert_eq!(
             p.by_kind(),
@@ -412,6 +413,7 @@ mod usage {
             ],
             total_tokens: 77,
             calibration: 1.0,
+            warnings: vec![],
         };
         let kinds = p.by_kind();
         assert_eq!(

@@ -223,6 +223,8 @@ fn reduction(covers: Vec<u64>, summary: Option<&str>, stubs: Vec<Stub>) -> Kind 
         stubs,
         before_tokens: 100,
         after_tokens: 10,
+        masks: vec![],
+        after: None,
     })
 }
 
@@ -261,6 +263,7 @@ fn a_reduction_replaces_its_range_with_one_message_at_the_first_hidden_position(
                 what: "tool result".into(),
                 detail: "bash strings x".into(),
                 bytes: 14,
+                text: None,
             }],
         ))
         .unwrap();
@@ -289,9 +292,12 @@ fn the_rendering_of_a_reduction_is_deterministic() {
             what: "tool result".into(),
             detail: "bash ls".into(),
             bytes: 9,
+            text: None,
         }],
         before_tokens: 0,
         after_tokens: 0,
+        masks: vec![],
+        after: None,
     };
     assert_eq!(
         context::render_reduction(&r),

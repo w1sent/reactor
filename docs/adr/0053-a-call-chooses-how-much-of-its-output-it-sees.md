@@ -1,5 +1,10 @@
 # A call chooses how much of its output it sees, and the cut says how to read the rest
 
+> **Amended by [ADR-0058](0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md) (built):**
+> unset, the default of `toolOutput.maxInlineBytes` follows the window — a twentieth of it
+> (a fifth of its token count, in bytes), between 2 KiB and 32 KiB — and a limit the person set is theirs whatever the window. The 32 KiB
+> below is what a large window gets.
+
 [ADR-0041](0041-the-agent-loop-owns-the-message-list.md) bounded every tool result to a
 fixed 32 KiB, its head and its tail, with a marker naming the entry that holds the whole.
 Two things were missing. The agent could not say beforehand that it wanted more, or less:

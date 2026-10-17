@@ -989,6 +989,30 @@ fn context_page(app: &Entity<ReactorApp>) -> SettingPage {
         .item(number!("Reserve (tokens)", 0.0, 1_000_000.0, 500.0, reserve, |c: crate::backend::ContextView| c.reserve as f64, |v: f64| v.round() as u64, |v: u64| v as f64))
         .item(number!("Reduce at (%)", 1.0, 100.0, 1.0, pct, |c: crate::backend::ContextView| (c.pct * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
         .item(number!("Keep after reducing (%)", 1.0, 99.0, 1.0, keep, |c: crate::backend::ContextView| (c.keep * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
+        .item(number!("Mask old tool output down to (%)", 1.0, 99.0, 1.0, mask_target, |c: crate::backend::ContextView| (c.mask_target * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
+        .item(number!("Never mask the newest (% of window)", 0.0, 99.0, 1.0, protect, |c: crate::backend::ContextView| (c.protect * 100.0).round(), |v: f64| v / 100.0, |v: f64| (v * 100.0).round()))
+        .item({
+            let (g, st, d, r) = (app.clone(), app.clone(), app.clone(), app.clone());
+            SettingItem::new(
+                "Check each summary for what it left out (one more call)",
+                SettingField::<bool>::switch(
+                    move |cx| match layer(&g, cx).verify {
+                        Some(v) => v,
+                        None => now(&g, cx).map(|c| c.verify).unwrap_or(false),
+                    },
+                    move |v, cx| {
+                        st.update(cx, |app, cx| app.context_edit(|l| l.verify = Some(v), cx));
+                    },
+                )
+                .default_value(false)
+                .on_reset(
+                    move |cx| layer(&d, cx).verify.is_some(),
+                    move |_, cx| {
+                        r.update(cx, |app, cx| app.context_edit(|l| l.verify = None, cx));
+                    },
+                ),
+            )
+        })
         .item(SettingItem::new(
             "Summarizer (provider/name)",
             SettingField::<SharedString>::input(
@@ -1021,7 +1045,7 @@ fn context_page(app: &Entity<ReactorApp>) -> SettingPage {
             .group(scope_group)
             .group(budget),
         "context-info",
-        "The context window is not asked of the provider: set it for your model (REactor guesses 200,000 for anthropic, 1,000,000 for gemini, 32,000 for ollama, 128,000 otherwise). Usable context is the window minus the reserve. A reduction starts once the context passes 'Reduce at' of that and goes down to 'Keep', keeping the newest work. A field that is not set here shows what this session uses now; reset clears it, so the session uses the default and the default the built-in value. Default values are saved in ~/.reactor/settings.json; a session's own are kept in the session.",
+        "The context window is not asked of the provider: set it for your model (REactor guesses 200,000 for anthropic, 1,000,000 for gemini, 32,000 for ollama, 128,000 otherwise). Usable context is the window minus the reserve. A reduction starts once the context passes 'Reduce at' of that. First, old tool output is shown as a stub (the original is kept and `history_read` reads it) down to 'Mask old tool output down to', sparing the newest part of the window; only if that is not enough is the older work summarized, down to 'Keep', keeping the newest work. A summary can be checked for what it left out by asking the model once more; a reduction you ask for does that whatever this says. A field that is not set here shows what this session uses now; reset clears it, so the session uses the default and the default the built-in value. Default values are saved in ~/.reactor/settings.json; a session's own are kept in the session.",
     )
 }
 
@@ -1456,15 +1480,29 @@ fn tools_page(app: &Entity<ReactorApp>) -> SettingPage {
     let group = SettingGroup::new()
         .item(count_field(
             app,
-            "Tool output shown before it is cut (KiB)",
+            // 32 is what a large window shows; in a smaller one the default is a twentieth of
+            // the window, and only a value other than 32 pins it.
+            "Tool output shown before it is cut (KiB; 32 follows the window)",
             &["truncate", "limit", "output"],
             (1.0, 1024.0),
-            |s| s.tool_output.max_inline_bytes / 1024,
-            |s, n| s.tool_output.max_inline_bytes = n.clamp(1, 1024) * 1024,
+            |s| {
+                s.tool_output
+                    .max_inline_bytes
+                    .unwrap_or(reactor_context::settings::ToolOutputSettings::DEFAULT_BYTES)
+                    / 1024
+            },
+            |s, n| {
+                let bytes = n.clamp(1, 1024) * 1024;
+                s.tool_output.max_inline_bytes = (bytes
+                    != reactor_context::settings::ToolOutputSettings::DEFAULT_BYTES)
+                    .then_some(bytes);
+            },
         ))
         .item(count_field(
             app,
-            "Load a group of tools on demand above (tokens)",
+            // 1000 is what a large window gets; in a smaller one the default is a hundredth of
+            // the window, and only a value other than 1000 pins it.
+            "Load a group of tools on demand above (tokens; 1000 follows the window)",
             &[
                 "tool",
                 "search",
@@ -1476,10 +1514,16 @@ fn tools_page(app: &Entity<ReactorApp>) -> SettingPage {
                 "definitions",
             ],
             (0.0, 100_000.0),
-            |s| s.tool_search.defer_over_tokens,
+            |s| {
+                s.tool_search
+                    .defer_over_tokens
+                    .unwrap_or(reactor_context::settings::ToolSearchSettings::DEFAULT_TOKENS)
+            },
             |s, n| {
-                s.tool_search.defer_over_tokens =
-                    n.min(reactor_context::settings::ToolSearchSettings::MAX_TOKENS)
+                let n = n.min(reactor_context::settings::ToolSearchSettings::MAX_TOKENS);
+                s.tool_search.defer_over_tokens = (n
+                    != reactor_context::settings::ToolSearchSettings::DEFAULT_TOKENS)
+                    .then_some(n);
             },
         ))
         .item(actions(

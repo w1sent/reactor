@@ -162,9 +162,7 @@ async fn run(args: Args) -> Result<(), String> {
 
     let (agent, mut events) = Agent::new(
         llm,
-        LlmSummarizer {
-            llm: summarizer_llm,
-        },
+        LlmSummarizer::new(summarizer_llm),
         store,
         Tools::standard(args.cwd.clone()),
         cfg,
@@ -276,7 +274,7 @@ where
                     Err(e) => println!("{e}"),
                 }
             } else {
-                match agent.reduce_now(mode).await {
+                match agent.reduce_now(mode, None).await {
                     Ok(id) => println!("reduced (#{id}); /undo restores it"),
                     Err(e) => println!("{e}"),
                 }

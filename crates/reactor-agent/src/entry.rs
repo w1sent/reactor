@@ -132,6 +132,15 @@ pub struct Usage {
     pub output_tokens: u64,
     #[serde(default)]
     pub cached_input_tokens: u64,
+    /// What the loop estimated the fixed part of that request to be (system prompt and tool
+    /// definitions), so that a later count can allow for the fixed part having changed since.
+    /// Zero for a reply that did not record it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fixed_estimate: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Where the whole of a truncated tool output lives, and how big it was.
@@ -172,6 +181,22 @@ pub struct Stub {
     /// The tool name and a digest of its arguments, or the first words of a message.
     pub detail: String,
     pub bytes: u64,
+    /// The whole of what a person said, when a fade keeps it: their words are the one thing a
+    /// reduction should not turn into a hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// A tool result that is shown in the context as a stub instead of in full, in place
+/// ([ADR-0058](../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md)).
+/// The result is still in the log, whole, and `history_read` reaches it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mask {
+    pub entry: EntryId,
+    /// What stands in for the result: where to read it, and the start and end of it.
+    pub stub: String,
+    /// What the result was, in bytes.
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -189,6 +214,21 @@ pub struct Reduction {
     pub stubs: Vec<Stub>,
     pub before_tokens: u64,
     pub after_tokens: u64,
+    /// Tool results shown as stubs in place (a *mask*). A reduction with masks hides nothing:
+    /// its `covers` are empty and it has no stand-in message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<Mask>,
+    /// The stand-in goes right after this entry — the person's last message, kept in view when
+    /// the reduction covers work after it — and not at the first entry it covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<EntryId>,
+}
+
+impl Reduction {
+    /// Whether this only masks tool results in place.
+    pub fn is_mask(&self) -> bool {
+        self.covers.is_empty() && !self.masks.is_empty()
+    }
 }
 
 impl Kind {

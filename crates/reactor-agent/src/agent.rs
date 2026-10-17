@@ -10,6 +10,10 @@
 //!   overflow the window inside one turn is reduced before the next request goes out.
 //!   There is no turn to park and nothing to restart: no synthetic "continue" message
 //!   is ever sent.
+//! - **Reduction is a ladder** ([ADR-0058]): old tool output is cut down to stubs when that
+//!   alone is enough; else the older work is summarized; if the summary cannot be had, it is
+//!   faded with no model; and if nothing older is left, the biggest results are cut. Each
+//!   stage writes one entry and loses nothing.
 //! - **Two loop invariants** survive from ADR-0025 as rules rather than an extension's
 //!   edge cases: reductions that do not get the context to fit stop the turn after a
 //!   budget of attempts, and a *failed* reduction stops it at once — the context did
@@ -19,9 +23,12 @@
 //!   mid-batch, so a session can always be resumed and its history always replays.
 //!
 //! [ADR-0037]: ../../../docs/adr/0037-context-reduction-is-one-budget-manager.md
+//! [ADR-0058]: ../../../docs/adr/0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md
+//! [ADR-0057]: ../../../docs/adr/0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use reactor_context::settings::Settings;
 use reactor_context::{identity, manifest, reporting, scenario};
@@ -32,7 +39,11 @@ use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use crate::budget::{self, BudgetConfig, Plan, Summarizer, context_tokens, needs_reduction, plan};
+use crate::budget::{
+    self, BudgetConfig, Plan, Replay, Summarizer, SummaryRequest, context_tokens, default_output,
+    plan,
+};
+use crate::classify::StopKind;
 use crate::context::{
     self, Item, KEY_IDENTITY, KEY_REPORTING, KEY_SCENARIO, Msg, SessionState, Source,
     estimate_tokens, msg_tokens, project, save_state,
@@ -41,12 +52,41 @@ use crate::deferral::{self, Candidate};
 use crate::entry::{Attachment, EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
 use crate::inspect::ContextPreview;
-use crate::llm::{Delta, Llm, LlmRequest, ToolSpec};
+use crate::llm::{Delta, Llm, LlmRequest, Reply, ToolSpec, backoff, complete_watched};
 use crate::prompt::{self, RegistryView};
 use crate::skills::{self, Skill};
 use crate::store::Store;
 use crate::tools::{ToolCtx, ToolOutput, Tools};
 use crate::truncate;
+
+/// Replies in a row cut off in the middle of a tool call before the turn stops.
+const MAX_CUT_CALLS: usize = 3;
+
+/// The last tool call of a turn, with its result, and how many times in a row it has come out
+/// the same. A call is "the same" only if its result is too, so polling something whose output
+/// changes is not a loop.
+#[derive(Default)]
+struct Repeats {
+    last: Option<u64>,
+    count: usize,
+}
+
+impl Repeats {
+    /// Note a call and what it gave; how many times in a row that now is.
+    fn note(&mut self, name: &str, args: &Value, result: &str) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (name, args.to_string(), result).hash(&mut h);
+        let sig = h.finish();
+        if self.last == Some(sig) {
+            self.count += 1;
+        } else {
+            self.last = Some(sig);
+            self.count = 1;
+        }
+        self.count
+    }
+}
 
 /// What a frontend watches. Sent as things happen; never required for correctness.
 #[derive(Debug, Clone, PartialEq)]
@@ -98,7 +138,18 @@ pub struct AgentConfig {
     pub max_reductions_in_a_row: usize,
     /// A backstop on model round trips in one turn.
     pub max_rounds: usize,
+    /// The same tool call, with the same result, this many times in a row ends the turn: the
+    /// model is going round in circles. Zero turns it off.
+    pub max_repeats: usize,
+    /// The longest a reply may be. Unset, it is a quarter of the window, at most 32k, and
+    /// always cut to the room the window has left ([ADR-0057]).
     pub max_tokens: Option<u64>,
+    /// How long the model may say nothing before the call is given up on (zero: never).
+    pub idle_timeout: Duration,
+    /// How many times a failure worth another go (a busy server, a dropped stream) is retried.
+    pub transient_retries: usize,
+    /// The wait before the first retry; each doubles it.
+    pub retry_delay: Duration,
     /// What the catalogue says now. Replaceable, so the loop can be tested without probing.
     pub registry: Arc<dyn Fn() -> RegistryView + Send + Sync>,
     /// The user's embedding model, if they chose one: it lets `docs_search` ask by meaning.
@@ -120,7 +171,11 @@ impl AgentConfig {
             budget: BudgetConfig::new(window),
             max_reductions_in_a_row: 3,
             max_rounds: 200,
+            max_repeats: 5,
             max_tokens: None,
+            idle_timeout: Duration::from_secs(300),
+            transient_retries: 3,
+            retry_delay: Duration::from_secs(1),
             registry,
             embedder: Default::default(),
             mcp: None,
@@ -173,7 +228,10 @@ pub struct Measure {
     /// The projected messages.
     pub messages: u64,
     pub total: u64,
-    /// Real tokens per estimated token, as learned from the provider (1.0 until it reports).
+    /// What the provider would count: its last count plus an estimate of what has come since,
+    /// else the estimate at the learned ratio.
+    pub real: u64,
+    /// Real tokens per estimated token (1.0 until a provider reports).
     pub calibration: f64,
 }
 
@@ -222,6 +280,8 @@ pub struct ReductionInfo {
     pub after_tokens: u64,
     pub summary: Option<String>,
     pub stubs: usize,
+    /// Tool results this reduction shows as stubs in place.
+    pub masks: usize,
 }
 
 /// What a session command did, for the frontend to show and act on.
@@ -246,6 +306,8 @@ pub struct Agent<L: Llm, S: Summarizer> {
     /// What the last request left for `tool_search`: the tool needs it to answer, and it is
     /// what that request's model call was shown.
     deferred: Mutex<Arc<Vec<ToolSpec>>>,
+    /// The warning that the fixed part of a request is most of the window has been given.
+    warned_fixed: std::sync::atomic::AtomicBool,
 }
 
 impl<L: Llm, S: Summarizer> Agent<L, S> {
@@ -274,6 +336,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 ratio: Mutex::new(1.0),
                 authored_skills,
                 deferred: Mutex::new(Arc::new(Vec::new())),
+                warned_fixed: std::sync::atomic::AtomicBool::new(false),
             },
             rx,
         )
@@ -342,7 +405,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     fn definitions(&self, g: &Gathered) -> deferral::Plan {
         let mut candidates: Vec<Candidate> = self
             .tools
-            .specs_limited(&g.state, default_limit(&g.settings))
+            .specs_limited(&g.state, self.output_limit(&g.settings))
             .into_iter()
             .map(|spec| Candidate {
                 origin: crate::inspect::Origin::ToolDefinition,
@@ -366,7 +429,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         deferral::plan(
             candidates,
             &g.state.loaded,
-            g.settings.tool_search.defer_over_tokens,
+            self.defer_threshold(&g.settings),
         )
     }
 
@@ -437,6 +500,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 messages,
                 tools,
                 max_tokens: self.cfg.max_tokens,
+                num_ctx: None,
+                no_tools: false,
             },
             fixed,
             items,
@@ -601,10 +666,21 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 .filter(|s| s.section != Section::System)
                 .map(|s| s.tokens)
                 .sum::<u64>();
+        // What every request carries whatever the work: the prompt and the tool definitions.
+        let fixed = system_tokens
+            + segments
+                .iter()
+                .filter(|s| s.section == Section::Tools)
+                .map(|s| s.tokens)
+                .sum::<u64>();
+        let warnings = budget::fixed_warning(fixed, &self.scaled_budget())
+            .into_iter()
+            .collect();
         Ok(ContextPreview {
             segments,
             total_tokens,
             calibration: *self.ratio.lock().unwrap(),
+            warnings,
         })
     }
 
@@ -617,7 +693,11 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         let global = self.settings().context;
         let session = SessionState::load(&self.store.lock().unwrap()).context;
         let eff = session.over(&global);
-        let base = self.cfg.budget;
+        let base = match eff.window {
+            // A reserve that was only the default follows the window it was the default of.
+            Some(w) if w != self.cfg.budget.window => self.cfg.budget.rebased(w),
+            _ => self.cfg.budget,
+        };
         BudgetConfig {
             window: eff.window.unwrap_or(base.window),
             reserve: eff.reserve.unwrap_or(base.reserve),
@@ -630,6 +710,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 _ => base.mode,
             },
             summary_tokens: base.summary_tokens,
+            mask_target: eff.mask_target.unwrap_or(base.mask_target),
+            protect: eff.protect.unwrap_or(base.protect),
+            verify: eff.verify.unwrap_or(base.verify),
         }
     }
 
@@ -674,41 +757,127 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         self.effective_budget().scaled(*self.ratio.lock().unwrap())
     }
 
+    /// What the request costs in real tokens: the count the provider last gave for the start of
+    /// it, plus an estimate of what has come since (and of the fixed part having changed), if
+    /// nothing has changed the start since; else an estimate of all of it, at the ratio learned
+    /// from what the providers reported. The count is closer than the estimate, which is off by
+    /// what the tokenizer does to hex and code, and it is there from the first request of a
+    /// resumed session ([ADR-0058]).
+    pub fn real_tokens(&self, fixed: u64, items: &[Item]) -> u64 {
+        let ema = *self.ratio.lock().unwrap();
+        let anchor = context::usage_anchor(&self.store.lock().unwrap(), items, &self.llm.name());
+        match anchor {
+            Some(a) if a.index < items.len() => {
+                let trailing: u64 = items[a.index + 1..]
+                    .iter()
+                    .map(|i| msg_tokens(&i.msg))
+                    .sum();
+                // The fixed part may have changed since: tools switched on, a block grown.
+                let drift = if a.fixed > 0 {
+                    fixed as i64 - a.fixed as i64
+                } else {
+                    0
+                };
+                a.tokens + ((trailing as i64 + drift).max(0) as f64 * ema) as u64
+            }
+            _ => (context_tokens(fixed, items) as f64 * ema) as u64,
+        }
+    }
+
+    /// Real tokens per estimated token for this request, from [`Agent::real_tokens`].
+    fn ratio_for(&self, fixed: u64, items: &[Item]) -> f64 {
+        let est = context_tokens(fixed, items).max(1);
+        (self.real_tokens(fixed, items) as f64 / est as f64).clamp(0.25, 4.0)
+    }
+
+    /// The budget in the units this request's estimates are in.
+    fn scaled_budget_for(&self, fixed: u64, items: &[Item]) -> BudgetConfig {
+        self.effective_budget().scaled(self.ratio_for(fixed, items))
+    }
+
     /// A person asking to reduce wants *more* gone than the budget would take: the keep
-    /// window shrinks to the latest work (the last message and what followed it).
-    fn manual_budget(&self) -> BudgetConfig {
+    /// window shrinks to the latest group of work. Their last message stays in view.
+    fn manual_budget(&self, fixed: u64, items: &[Item]) -> BudgetConfig {
         BudgetConfig {
             keep: 0.0,
-            ..self.scaled_budget()
+            ..self.scaled_budget_for(fixed, items)
         }
     }
 
     /// What a reduction would do right now, without doing it.
     pub async fn preview(&self, mode: Mode) -> Result<Plan> {
         let (_, fixed, items) = self.build().await?;
-        plan(fixed, &items, &self.manual_budget(), mode)
+        plan(fixed, &items, &self.manual_budget(fixed, &items), mode)
             .map_err(|n| Error::Reduction(n.to_string()))
     }
 
     /// Reduce now, at a person's request. A manual reduction means *summarize* in every
     /// mode but `fade` (a manual fade exists for a burst of dumps that should just go).
-    pub async fn reduce_now(&self, mode: Mode) -> Result<EntryId> {
-        let (_, fixed, items) = self.build().await?;
-        let p = plan(fixed, &items, &self.manual_budget(), mode)
+    ///
+    /// `focus` is what the person wants the summary to keep ("the C2 findings"); a fade has no
+    /// summary and ignores it.
+    pub async fn reduce_now(&self, mode: Mode, focus: Option<&str>) -> Result<EntryId> {
+        let (base, fixed, items) = self.build().await?;
+        let mut p = plan(fixed, &items, &self.manual_budget(fixed, &items), mode)
             .map_err(|n| Error::Reduction(n.to_string()))?;
-        self.carry_out(&items, &p, Trigger::Manual).await
+        p.focus = focus
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(str::to_string);
+        self.carry_out(
+            &base,
+            &items,
+            &p,
+            Trigger::Manual,
+            &CancellationToken::new(),
+        )
+        .await
     }
 
-    async fn carry_out(&self, items: &[Item], p: &Plan, trigger: Trigger) -> Result<EntryId> {
+    /// Say how big the summarizer's window is, and how much transcript fits in it.
+    fn size_summary(&self, req: &mut SummaryRequest) {
+        req.window = self.effective_budget().window;
+        // In estimated tokens, leaving a quarter for the instructions, the notes and the
+        // estimate being low.
+        req.input_cap = (self.scaled_budget().window as f64 * 0.75) as u64;
+    }
+
+    async fn carry_out(
+        &self,
+        base: &LlmRequest,
+        items: &[Item],
+        p: &Plan,
+        trigger: Trigger,
+        cancel: &CancellationToken,
+    ) -> Result<EntryId> {
         let prepared = budget::prepare(
             &self.store.lock().unwrap(),
             items,
             p,
             trigger,
-            self.cfg.budget.summary_tokens,
+            p.summary_tokens,
         )?;
+        // Nothing is written until the summary is in, so giving up on it midway leaves the
+        // log as it was.
         let summary = match &prepared.request {
-            Some(req) => Some(budget::summarize(&self.summarizer, req.clone()).await?),
+            Some(req) => {
+                let mut req = req.clone();
+                self.size_summary(&mut req);
+                // A person who asked for a reduction by hand gets the second look.
+                req.verify = trigger == Trigger::Manual || self.effective_budget().verify;
+                // What the main model was sent up to the end of the range, for a summarizer
+                // that is the main model to begin its request the same way.
+                req.replay = Some(Replay {
+                    system: base.system.clone(),
+                    tools: base.tools.clone(),
+                    messages: items[..p.keep_from].iter().map(|i| i.msg.clone()).collect(),
+                    model: self.llm.name(),
+                });
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(Error::Cancelled),
+                    r = budget::summarize(&self.summarizer, req) => Some(r?),
+                }
+            }
             None => None,
         };
         let id = budget::commit(&mut self.store.lock().unwrap(), prepared, summary)?;
@@ -726,25 +895,123 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         Ok(id)
     }
 
+    /// Count one more reduction in a row, or stop: they are not getting the context to fit.
+    fn count_attempt(&self, in_a_row: &mut usize) -> Result<()> {
+        if *in_a_row >= self.cfg.max_reductions_in_a_row {
+            return Err(Error::ReductionBudget {
+                attempts: *in_a_row,
+            });
+        }
+        *in_a_row += 1;
+        Ok(())
+    }
+
+    /// Which tool results a masking pass would show as stubs.
+    fn masks(
+        &self,
+        fixed: u64,
+        items: &[Item],
+        opts: &budget::MaskOptions,
+    ) -> Option<budget::MaskPlan> {
+        budget::plan_mask(&self.store.lock().unwrap(), fixed, items, opts)
+    }
+
+    /// Show those tool results as stubs. One entry in the log; the results stay in it, whole.
+    fn apply_mask(&self, m: budget::MaskPlan, trigger: Trigger) -> Result<EntryId> {
+        let (before, after) = (m.before_tokens, m.after_tokens);
+        let id = budget::commit_mask(&mut self.store.lock().unwrap(), m, trigger)?;
+        self.emit(Event::Reduced {
+            entry: id,
+            mode: Mode::Fade,
+            trigger,
+            before_tokens: before,
+            after_tokens: after,
+        });
+        self.emit(Event::Appended(id));
+        Ok(id)
+    }
+
+    /// The summarizer could not be had: drop the older entries to stubs instead. That needs
+    /// no model, and shrinks the context just the same, so the turn can go on (ADR-0058).
+    async fn fade_instead(
+        &self,
+        base: &LlmRequest,
+        items: &[Item],
+        fixed: u64,
+        cfg: &BudgetConfig,
+        cancel: &CancellationToken,
+        why: Error,
+    ) -> Result<()> {
+        let Ok(p) = plan(fixed, items, cfg, Mode::Fade) else {
+            return Err(why);
+        };
+        self.emit(Event::Notice(format!(
+            "summarizing failed ({}); the older entries were dropped to stubs instead. Nothing is lost: `history_read` reaches every one.",
+            why.to_string().lines().next().unwrap_or("").chars().take(160).collect::<String>()
+        )));
+        match self
+            .carry_out(base, items, &p, Trigger::Budget, cancel)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            // The summarizer's failure is the one to report: it is why this happened.
+            Err(_) => Err(why),
+        }
+    }
+
     /// Reduce until the context fits. Called before every request and after every tool
     /// result. `in_a_row` counts reductions that did not by themselves get it to fit.
-    async fn ensure_fits(&self, in_a_row: &mut usize, outcome: &mut Outcome) -> Result<()> {
+    ///
+    /// A ladder, cheapest first (ADR-0058): mask old tool output when that alone is enough;
+    /// else summarize (and fade the tool output); if the summary cannot be had, fade the
+    /// range with no model; and if nothing older is left, cut the biggest results, the
+    /// newest too.
+    async fn ensure_fits(
+        &self,
+        in_a_row: &mut usize,
+        outcome: &mut Outcome,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
         loop {
-            let (_, fixed, items) = self.build().await?;
-            let cfg = self.scaled_budget();
-            if !needs_reduction(fixed, &items, &cfg) {
+            let (base, fixed, items) = self.build().await?;
+            let cfg = self.scaled_budget_for(fixed, &items);
+            // Whether it is time is a question of real tokens against the real threshold: no
+            // ratio in between, which is clamped and could hide a count far from the estimate.
+            if self.real_tokens(fixed, &items) <= self.effective_budget().trigger() {
                 *in_a_row = 0;
                 return Ok(());
             }
+
+            // 1. Mask. Only in `auto`: `compact` asks for summaries and `fade` for the
+            // range to go.
+            if cfg.mode == Mode::Auto
+                && let Some(m) = self.masks(fixed, &items, &budget::MaskOptions::proactive(&cfg))
+            {
+                self.count_attempt(in_a_row)?;
+                self.apply_mask(m, Trigger::Budget)?;
+                outcome.reductions += 1;
+                continue;
+            }
+
             let p = match plan(fixed, &items, &cfg, cfg.mode) {
                 Ok(p) => p,
                 Err(nothing) => {
                     // Over the trigger with nothing older to reduce: fine while there is
-                    // still room, fatal once there is not.
+                    // still room, and once there is not, cut what is big.
                     let used = context_tokens(fixed, &items);
                     if used > cfg.hard() {
+                        // 4. The last resort.
+                        if let Some(m) =
+                            self.masks(fixed, &items, &budget::MaskOptions::last_resort(&cfg))
+                        {
+                            self.count_attempt(in_a_row)?;
+                            self.apply_mask(m, Trigger::Budget)?;
+                            outcome.reductions += 1;
+                            continue;
+                        }
                         return Err(Error::Reduction(format!(
-                            "the context is full ({used} of {} tokens) and {nothing}",
+                            "the context is full ({used} of {} tokens) and {nothing}; nothing in it is big enough to cut down",
                             cfg.hard()
                         )));
                     }
@@ -752,14 +1019,207 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     return Ok(());
                 }
             };
-            if *in_a_row >= self.cfg.max_reductions_in_a_row {
-                return Err(Error::ReductionBudget {
-                    attempts: *in_a_row,
-                });
+            self.count_attempt(in_a_row)?;
+            // 2. Summarize; 3. if that cannot be done, fade.
+            match self
+                .carry_out(&base, &items, &p, Trigger::Budget, cancel)
+                .await
+            {
+                Ok(_) => {}
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(why) if p.needs_summarizer() => {
+                    self.fade_instead(&base, &items, fixed, &cfg, cancel, why)
+                        .await?;
+                }
+                Err(e) => return Err(e),
             }
-            *in_a_row += 1;
-            self.carry_out(&items, &p, Trigger::Budget).await?;
             outcome.reductions += 1;
+        }
+    }
+
+    /// What a group of tools may cost before it is left for `tool_search`: the person's setting,
+    /// or a hundredth of the window (ADR-0058).
+    fn defer_threshold(&self, settings: &Settings) -> usize {
+        settings
+            .tool_search
+            .for_window(self.effective_budget().window)
+    }
+
+    /// The same, for a frontend to say.
+    pub fn deferral_threshold(&self) -> usize {
+        self.defer_threshold(&self.settings())
+    }
+
+    /// The output limit a call gets when it does not ask for one: the person's setting, or
+    /// a share of the window (ADR-0058).
+    fn output_limit(&self, settings: &Settings) -> truncate::Limit {
+        truncate::Limit::new(
+            settings
+                .tool_output
+                .for_window(self.effective_budget().window),
+        )
+    }
+
+    // -- asking the model -----------------------------------------------------------------------
+
+    /// Say, once, that the fixed part of a request is most of what the window leaves. The work
+    /// goes on: a small window should work, with less room.
+    fn note_cramped(&self, fixed: u64) {
+        if let Some(w) = budget::fixed_warning(fixed, &self.scaled_budget())
+            && !self
+                .warned_fixed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.emit(Event::Notice(w));
+        }
+    }
+
+    /// Set a request's reply limit and window. Returns whether the limit had to be cut to
+    /// the room the window leaves, which a reduction can widen.
+    fn size_request(&self, req: &mut LlmRequest, fixed: u64, items: &[Item], boost: bool) -> bool {
+        let b = self.effective_budget();
+        let used = self.real_tokens(fixed, items);
+        let mut want = self
+            .cfg
+            .max_tokens
+            .unwrap_or_else(|| default_output(b.window));
+        if boost {
+            want = (want + want / 2).min(60_000).max(want);
+        }
+        let room = b.window.saturating_sub(used + 512 + b.window / 50).max(256);
+        req.max_tokens = Some(want.min(room));
+        req.num_ctx = Some(b.window);
+        room < want
+    }
+
+    /// Reduce now, down to a smaller keep window than the budget aims at. For the moment a
+    /// request has been rejected or has no room for its reply: the budget's own estimate was
+    /// not enough. Whether anything older could be reduced.
+    async fn force_reduce(&self, cancel: &CancellationToken, keep_scale: f64) -> Result<bool> {
+        let (base, fixed, items) = self.build().await?;
+        let mut cfg = self.scaled_budget_for(fixed, &items);
+        cfg.keep *= keep_scale;
+        match plan(fixed, &items, &cfg, cfg.mode) {
+            Ok(p) => {
+                self.carry_out(&base, &items, &p, Trigger::Budget, cancel)
+                    .await?;
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// One answer from the model, recovering from what can be recovered from
+    /// ([ADR-0057]): a request the provider found too long is reduced and sent again, a
+    /// busy or unreachable server is tried again after a pause, a reply that ran out of room
+    /// before saying anything is given more. Each is tried once or a few times, never for ever.
+    /// Returns the reply and the estimate of the request it answers.
+    async fn ask_model(
+        &self,
+        cancel: &CancellationToken,
+        in_a_row: &mut usize,
+        outcome: &mut Outcome,
+    ) -> Result<(Reply, u64, u64)> {
+        let (mut overflowed, mut lengthened, mut tries) = (false, false, 0usize);
+        loop {
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            self.ensure_fits(in_a_row, outcome, cancel).await?;
+            let (mut req, fixed, items) = self.build().await?;
+            let cramped = self.size_request(&mut req, fixed, &items, lengthened);
+            // What the request is estimated at, tools and all, to be set against what the
+            // provider says it was.
+            let estimated: u64 = context_tokens(fixed, &items);
+            self.note_cramped(fixed);
+
+            let on_delta = |d: Delta| {
+                self.emit(match d {
+                    Delta::Text(t) => Event::Text(t),
+                    Delta::Thinking(t) => Event::Thinking(t),
+                    Delta::ToolCall { name } => Event::ToolCallStarted { name },
+                })
+            };
+            let sent = tokio::select! {
+                _ = cancel.cancelled() => return Err(Error::Cancelled),
+                r = complete_watched(&self.llm, req, self.cfg.idle_timeout, on_delta) => r,
+            };
+            match sent {
+                Ok(reply) => {
+                    // Out of room before it said or did anything: thinking took it all.
+                    if reply.stop_kind() == StopKind::Length && !reply.has_output() {
+                        if lengthened {
+                            return Err(Error::Model(
+                                "the model ran out of output room while thinking, twice. Raise the output limit, lower the thinking level, or ask for a smaller step.".into(),
+                            ));
+                        }
+                        lengthened = true;
+                        self.emit(Event::Notice(
+                            "the model ran out of output room while thinking; trying again with more room".into(),
+                        ));
+                        if cramped {
+                            self.force_reduce(cancel, 0.6).await?;
+                        }
+                        continue;
+                    }
+                    // The provider's filter (or a model's refusal) stopped the reply before it
+                    // said or did anything. There is nothing to keep, and the same request would
+                    // be stopped again, so it is not sent again: like a blocked request.
+                    if reply.stop_kind() == StopKind::Filtered && !reply.has_output() {
+                        return Err(Error::Blocked(
+                            "the provider's filter stopped the reply before it said anything. The same request would be stopped again, so it was not retried. Rephrase it, or choose another model.".into(),
+                        ));
+                    }
+                    return Ok((reply, estimated, fixed));
+                }
+                Err(Error::Overflow(why)) => {
+                    let window = self.effective_budget().window;
+                    if overflowed {
+                        return Err(Error::Overflow(format!(
+                            "{why}\n\nReducing the context and asking again did not help. The model's real window may be smaller than the {window} tokens REactor assumes: set it in Settings → Context."
+                        )));
+                    }
+                    overflowed = true;
+                    // The estimate was low, and will be again: believe it less from now on.
+                    {
+                        let mut r = self.ratio.lock().unwrap();
+                        *r = (*r * 1.25).min(4.0);
+                    }
+                    self.emit(Event::Notice(
+                        "the provider rejected the request as too long; reducing the context and trying again".into(),
+                    ));
+                    if !self.force_reduce(cancel, 0.6).await? {
+                        return Err(Error::Overflow(format!(
+                            "{why}\n\nThere is nothing older to reduce: the system prompt, the tools and the current work alone are too big for the window. Set the real window in Settings → Context, switch some tools off, or use a model with a larger window."
+                        )));
+                    }
+                }
+                Err(Error::Transient(why)) => {
+                    if tries >= self.cfg.transient_retries {
+                        return Err(Error::Transient(format!(
+                            "{why} (gave up after {tries} retries)"
+                        )));
+                    }
+                    tries += 1;
+                    let wait = backoff(self.cfg.retry_delay, tries);
+                    self.emit(Event::Notice(format!(
+                        "the model failed ({}); trying again in {}s ({tries}/{})",
+                        why.chars().take(120).collect::<String>(),
+                        wait.as_secs().max(1),
+                        self.cfg.transient_retries
+                    )));
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Err(Error::Cancelled),
+                        _ = tokio::time::sleep(wait) => {}
+                    }
+                }
+                Err(Error::Blocked(why)) => {
+                    return Err(Error::Blocked(format!(
+                        "the provider blocked this request: {why}\n\nThe same request would be blocked again, so it was not retried. Rephrase it, or choose another model."
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 
@@ -769,6 +1229,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub async fn prompt(&self, text: &str, cancel: CancellationToken) -> Result<Outcome> {
         let mut outcome = Outcome::default();
         let mut in_a_row = 0usize;
+        // Replies in a row that were cut off by the output limit in the middle of a tool call.
+        let mut cut_calls = 0usize;
+        let mut repeats = Repeats::default();
         let mut next: String = text.to_string();
 
         // A scenario moved on by hand is waiting to hear what the phase it left concluded:
@@ -800,24 +1263,16 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 if cancel.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                self.ensure_fits(&mut in_a_row, &mut outcome).await?;
-                let (req, _, _) = self.build().await?;
-                let estimated: u64 = context_tokens(0, &project(&self.store.lock().unwrap()))
-                    + estimate_tokens(&req.system);
-
-                let mut on_delta = |d: Delta| {
-                    self.emit(match d {
-                        Delta::Text(t) => Event::Text(t),
-                        Delta::Thinking(t) => Event::Thinking(t),
-                        Delta::ToolCall { name } => Event::ToolCallStarted { name },
-                    })
-                };
-                let reply = tokio::select! {
-                    _ = cancel.cancelled() => return Err(Error::Cancelled),
-                    r = self.llm.complete(req, &mut on_delta) => r?,
-                };
+                let (reply, estimated, fixed) =
+                    self.ask_model(&cancel, &mut in_a_row, &mut outcome).await?;
                 outcome.rounds += 1;
-                if let Some(u) = reply.usage {
+                // The fixed part is kept with the count, so a later count can allow for it having
+                // changed.
+                let usage = reply.usage.map(|mut u| {
+                    u.fixed_estimate = fixed;
+                    u
+                });
+                if let Some(u) = usage {
                     self.emit(Event::Usage(u));
                     if u.input_tokens > 0 && estimated > 0 {
                         // Fold in what the provider actually counted.
@@ -833,9 +1288,57 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 self.append(Kind::Assistant {
                     blocks: reply.blocks.clone(),
                     model: Some(self.llm.name()),
-                    usage: reply.usage,
+                    usage,
                     stop: reply.stop.clone(),
                 })?;
+
+                // A reply the output limit cut off, or the provider's filter stopped, may hold a
+                // tool call whose arguments are unfinished: none of its calls is run. Each is
+                // answered, so the log stays valid, and the model is told why and asks again.
+                let stopped = reply.stop_kind();
+                let by_filter = stopped == StopKind::Filtered;
+                if matches!(stopped, StopKind::Length | StopKind::Filtered) && !calls.is_empty() {
+                    cut_calls += 1;
+                    self.fill_results(
+                        &calls,
+                        if by_filter {
+                            "not run: the provider's filter stopped your reply before this call was complete. Take a different approach to the step."
+                        } else {
+                            "not run: your reply was cut off by the output limit before this call was complete. Make a smaller call, or split the work over several."
+                        },
+                    )?;
+                    if cut_calls >= MAX_CUT_CALLS {
+                        return Err(if by_filter {
+                            Error::Blocked(format!(
+                                "stopped: {MAX_CUT_CALLS} replies in a row were stopped by the provider's filter in the middle of a tool call. Rephrase the request, or choose another model."
+                            ))
+                        } else {
+                            Error::Model(format!(
+                                "stopped: {MAX_CUT_CALLS} replies in a row were cut off by the output limit in the middle of a tool call. Raise the output limit, or ask for a smaller step."
+                            ))
+                        });
+                    }
+                    self.emit(Event::Notice(
+                        if by_filter {
+                            "the provider's filter stopped the reply in the middle of a tool call; the call was not run"
+                        } else {
+                            "the reply was cut off by the output limit in the middle of a tool call; the call was not run"
+                        }
+                        .into(),
+                    ));
+                    continue;
+                }
+                cut_calls = 0;
+                if stopped == StopKind::Length {
+                    self.emit(Event::Notice(
+                        "the reply was cut off by the output limit".into(),
+                    ));
+                } else if by_filter {
+                    // What it said before the filter stopped it is kept.
+                    self.emit(Event::Notice(
+                        "the provider's filter stopped the reply; what it said is kept".into(),
+                    ));
+                }
 
                 if calls.is_empty() {
                     // The turn has settled. Level-2 reporting may send it back.
@@ -882,7 +1385,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     )));
                 }
                 outcome.tool_calls += calls.len();
-                self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome)
+                self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome, &mut repeats)
                     .await?;
             }
         }
@@ -968,8 +1471,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         cancel: &CancellationToken,
         in_a_row: &mut usize,
         outcome: &mut Outcome,
+        repeats: &mut Repeats,
     ) -> Result<()> {
-        let default = default_limit(&self.settings());
+        let default = self.output_limit(&self.settings());
         for (i, (id, name, args)) in calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 self.fill_results(&calls[i..], "not run: the turn was cancelled")?;
@@ -1017,12 +1521,28 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             };
             let is_error = out.is_error;
             let kind = self.finalize(id, name, out, limit)?;
+            let seen = match &kind {
+                Kind::ToolResult { content, .. } => repeats.note(name, args, content),
+                _ => 0,
+            };
             let entry = self.append(kind)?;
             self.emit(Event::ToolEnd {
                 id: id.clone(),
                 entry,
                 is_error,
             });
+
+            // The same call, giving the same result, again and again: nothing is going to change.
+            if self.cfg.max_repeats > 0 && seen >= self.cfg.max_repeats {
+                self.fill_results(
+                    &calls[i + 1..],
+                    "not run: the turn was stopped because the same call kept giving the same result",
+                )?;
+                return Err(Error::Model(format!(
+                    "stopped: `{name}` was called {seen} times in a row with the same arguments ({}) and gave the same result each time. Say what to try instead, or ask for something different.",
+                    args.to_string().chars().take(120).collect::<String>()
+                )));
+            }
 
             // Reporting asks the filesystem, after every tool call, whether anything was written up.
             {
@@ -1038,7 +1558,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             }
 
             // The boundary check: a dump can overflow the window inside one turn.
-            if let Err(e) = self.ensure_fits(in_a_row, outcome).await {
+            if let Err(e) = self.ensure_fits(in_a_row, outcome, cancel).await {
                 self.fill_results(
                     &calls[i + 1..],
                     "not run: context reduction failed, so the turn stopped",
@@ -1193,7 +1713,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             fixed,
             messages,
             total: fixed + messages,
-            calibration: *self.ratio.lock().unwrap(),
+            real: self.real_tokens(fixed, &items),
+            calibration: self.ratio_for(fixed, &items),
         })
     }
 
@@ -1212,6 +1733,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     after_tokens: r.after_tokens,
                     summary: r.summary.clone(),
                     stubs: r.stubs.len(),
+                    masks: r.masks.len(),
                 }),
                 _ => None,
             })
@@ -1238,9 +1760,4 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub fn context(&self) -> Vec<Item> {
         project(&self.store.lock().unwrap())
     }
-}
-
-/// The output limit a call gets when it does not ask for one.
-fn default_limit(settings: &Settings) -> truncate::Limit {
-    truncate::Limit::new(settings.tool_output.max_inline_bytes)
 }

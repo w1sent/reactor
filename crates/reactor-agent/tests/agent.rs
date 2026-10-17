@@ -25,6 +25,8 @@ use tokio_util::sync::CancellationToken;
 struct Sum {
     answer: std::result::Result<String, String>,
     seen: Mutex<Vec<SummaryRequest>>,
+    /// Never answers.
+    hang: bool,
 }
 
 impl Sum {
@@ -32,12 +34,21 @@ impl Sum {
         Arc::new(Sum {
             answer: Ok(t.into()),
             seen: Mutex::new(vec![]),
+            hang: false,
         })
     }
     fn fails(t: &str) -> Arc<Self> {
         Arc::new(Sum {
             answer: Err(t.into()),
             seen: Mutex::new(vec![]),
+            hang: false,
+        })
+    }
+    fn hangs() -> Arc<Self> {
+        Arc::new(Sum {
+            answer: Ok(String::new()),
+            seen: Mutex::new(vec![]),
+            hang: true,
         })
     }
 }
@@ -45,6 +56,9 @@ impl Sum {
 impl Summarizer for Sum {
     async fn summarize(&self, req: SummaryRequest) -> Result<String> {
         self.seen.lock().unwrap().push(req);
+        if self.hang {
+            std::future::pending::<()>().await;
+        }
         self.answer.clone().map_err(Error::Model)
     }
 }
@@ -86,10 +100,7 @@ fn rig_with(
     let store = Store::create(&case, "s").unwrap();
     let paths = Paths::new(root.join("cfg"), Shipped::Embedded);
     let mut cfg = AgentConfig::new(cwd.clone(), paths, window);
-    cfg.registry = registry(
-        "## Available tools (this machine)\n\nsh   shell",
-        &["sh"],
-    );
+    cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
     cfg.scenarios_dir = root.join("scenarios");
     cfg.budget.reserve = 100;
     tweak(&mut cfg);
@@ -889,7 +900,9 @@ fn detached(cfg: &mut AgentConfig) {
     std::fs::create_dir_all(&cfg.paths.config_dir).unwrap();
     std::fs::write(
         cfg.paths.config_dir.join("settings.json"),
-        r#"{"memory":{"caseGraph":false}}"#,
+        // The output limit is pinned too: these tests fill a small window with big dumps, and
+        // the limit that follows a small window would cut them down before they could.
+        r#"{"memory":{"caseGraph":false},"toolOutput":{"maxInlineBytes":32768}}"#,
     )
     .unwrap();
 }
@@ -913,7 +926,11 @@ async fn a_dump_that_overflows_inside_a_turn_is_reduced_at_the_tool_result_bound
         ],
         Sum::says("EARLIER: looked at two dumps; nothing found"),
         SMALL,
-        detached,
+        // `compact` asks for summaries; in `auto` the dumps would just be masked.
+        |c| {
+            detached(c);
+            c.budget.mode = Mode::Compact;
+        },
     );
     run(&r, "first, an older question about the sample")
         .await
@@ -965,9 +982,10 @@ async fn a_dump_that_overflows_inside_a_turn_is_reduced_at_the_tool_result_bound
 }
 
 #[tokio::test]
-async fn a_failed_reduction_stops_the_turn_and_still_records_every_call_a_result() {
-    // ADR-0037 invariant: never continue after a failed reduction.
-    let r = rig(
+async fn a_summarizer_that_fails_is_replaced_by_a_fade_and_the_turn_goes_on() {
+    // ADR-0058: a context that did not shrink must not be continued on -- and a fade, which
+    // needs no model, shrinks it. So the summarizer's failure no longer ends the turn.
+    let mut r = rig_with(
         vec![
             ScriptedLlm::say("noted"),
             ScriptedLlm::call(
@@ -978,60 +996,120 @@ async fn a_failed_reduction_stops_the_turn_and_still_records_every_call_a_result
                         "bash",
                         json!({"command": "for i in $(seq 1 300); do echo \"padding line number $i to fill the context up\"; done"}),
                     ),
-                    ("2", "bash", json!({"command": "echo never runs"})),
+                    ("2", "bash", json!({"command": "echo second call runs"})),
                 ],
             ),
-            ScriptedLlm::say("must not be reached"),
+            ScriptedLlm::say("finished"),
         ],
         Sum::fails("429 rate limited"),
         SMALL,
+        |c| {
+            detached(c);
+            c.budget.mode = Mode::Compact;
+        },
     );
     run(&r, "an older question, so there is something to reduce")
         .await
         .unwrap();
-    let err = run(&r, "now dump").await.unwrap_err();
+    run(&r, "now dump").await.unwrap();
 
-    assert!(matches!(err, Error::Reduction(_)), "{err}");
-    assert!(err.to_string().contains("429 rate limited"));
-    assert_eq!(
-        r.llm.requests().len(),
-        2,
-        "no request was made on a context that did not shrink"
+    let events = drain(&mut r.events);
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("summarizing failed") && n.contains("429 rate limited")),
+        "{:?}",
+        notices(&events)
     );
-    // Both calls of the recorded reply have results, the second saying why it did not run.
+    // Both calls of the reply have results, and the second really ran.
     let res = results(&r);
     assert_eq!(res.len(), 2);
-    assert!(res[1].contains("not run: context reduction failed"));
+    assert!(res[1].contains("second call runs"), "{res:?}");
+    // What was recorded is a fade: it needs no model, and it kept what the person said.
+    let store = r.agent.store();
+    let store = store.lock().unwrap();
+    let fade = store
+        .all()
+        .iter()
+        .find_map(|e| match &e.kind {
+            Kind::Reduction(red) if red.mode == Mode::Fade && !red.stubs.is_empty() => Some(red),
+            _ => None,
+        })
+        .expect("a fade was recorded");
+    assert!(
+        fade.stubs.iter().any(|s| s
+            .text
+            .as_deref()
+            .is_some_and(|t| t.contains("an older question, so there is something to reduce"))),
+        "the person's words are kept as they were said"
+    );
 }
 
 #[tokio::test]
-async fn a_reduction_that_does_not_make_the_context_fit_stops_the_turn_instead_of_looping() {
-    // A summarizer whose "summary" is bigger than the window can never help: the loop
-    // must stop rather than reduce forever or send a request that will overflow.
+async fn a_summary_bigger_than_what_it_covers_is_refused_and_a_fade_takes_its_place() {
+    // A summarizer whose "summary" is bigger than the window could never help. It is
+    // refused (it frees nothing), the range is faded instead, and the turn goes on: no
+    // reduction loop, and no request that will overflow.
     let bloat = "x".repeat(24_000);
     let replies = (0..12)
         .map(|i| ScriptedLlm::say(&format!("reply {i}")))
         .collect();
-    let r = rig(replies, Sum::says(&bloat), SMALL);
-    let mut err = None;
+    let r = rig_with(replies, Sum::says(&bloat), SMALL, |c| {
+        c.budget.mode = Mode::Compact;
+    });
     for i in 0..8 {
-        if let Err(e) = run(&r, &format!("question {i}: {}", "y".repeat(4_000))).await {
-            err = Some(e);
-            break;
-        }
+        run(&r, &format!("question {i}: {}", "y".repeat(4_000)))
+            .await
+            .unwrap_or_else(|e| panic!("turn {i}: {e}"));
     }
-    let err = err.expect("the turn must stop once reduction cannot fit the context");
+    let window = r.agent.effective_budget().window;
+    let store = r.agent.store();
+    let store = store.lock().unwrap();
+    let reductions: Vec<_> = store
+        .all()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Reduction(red) => Some(red.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!reductions.is_empty());
     assert!(
-        matches!(err, Error::Reduction(_) | Error::ReductionBudget { .. }),
-        "{err}"
+        reductions
+            .iter()
+            .all(|red| red.mode == Mode::Fade && red.summary.is_none()),
+        "no bloated summary was ever kept"
     );
-    let sent = r.llm.requests().len();
-    assert!(
-        sent <= 3,
-        "no request went out on a context that did not fit ({sent})"
-    );
+    // Every request that was sent fits the window it was sent to.
+    for q in r.llm.requests() {
+        let size: usize = q
+            .messages
+            .iter()
+            .map(|m| match m {
+                Msg::User { text } => text.len(),
+                _ => 0,
+            })
+            .sum::<usize>()
+            + q.system.len();
+        assert!(size as u64 / 4 < window, "{} tokens of {window}", size / 4);
+    }
 }
 
+#[tokio::test]
+async fn a_context_with_nothing_big_enough_to_cut_down_stops_the_turn_saying_so() {
+    // The one thing left is the person's own message, bigger than the window: no reduction
+    // helps, and the turn stops instead of sending a request that will overflow.
+    let r = rig(vec![ScriptedLlm::say("never")], Sum::says("-"), SMALL);
+    let e = run(&r, &"z".repeat(40_000)).await.unwrap_err();
+    assert!(matches!(e, Error::Reduction(_)), "{e}");
+    assert!(
+        e.to_string().contains("the context is full")
+            && e.to_string()
+                .contains("nothing in it is big enough to cut down"),
+        "{e}"
+    );
+    assert!(r.llm.requests().is_empty(), "no request was made");
+}
 #[tokio::test]
 async fn zero_allowed_reductions_in_a_row_means_the_first_one_needed_stops_the_turn() {
     // The guard itself: `max_reductions_in_a_row` is a hard cap on attempts.
@@ -1079,7 +1157,7 @@ async fn a_manual_reduction_previews_then_summarizes_and_can_be_undone() {
         "previewing asks no model"
     );
 
-    let id = r.agent.reduce_now(Mode::Compact).await.unwrap();
+    let id = r.agent.reduce_now(Mode::Compact, None).await.unwrap();
     assert_eq!(r.sum.seen.lock().unwrap().len(), 1);
     let store = r.agent.store();
     assert!(
@@ -1579,6 +1657,8 @@ async fn switching_the_model_takes_effect_on_the_next_call() {
         messages: vec![Msg::User { text: "hi".into() }],
         tools: vec![],
         max_tokens: None,
+        num_ctx: None,
+        ..Default::default()
     };
 
     assert_eq!(
@@ -1709,7 +1789,7 @@ async fn a_frontend_can_measure_list_and_undo_reductions() {
     assert_eq!(before.calibration, 1.0);
     assert!(r.agent.reductions().is_empty());
 
-    let id = r.agent.reduce_now(Mode::Compact).await.unwrap();
+    let id = r.agent.reduce_now(Mode::Compact, None).await.unwrap();
     let after = r.agent.measure().await.unwrap();
     assert!(after.messages < before.messages, "{after:?} vs {before:?}");
     let info = &r.agent.reductions()[0];
@@ -1743,6 +1823,8 @@ async fn an_unconfigured_model_fails_each_call_clearly_instead_of_blocking_the_s
                 messages: vec![],
                 tools: vec![],
                 max_tokens: None,
+                num_ctx: None,
+                ..Default::default()
             },
             &mut |_| {},
         )
@@ -1811,6 +1893,7 @@ fn summary_request() -> SummaryRequest {
         system: "You compress.".into(),
         transcript: "#1 user: hi".into(),
         max_tokens: 1_500,
+        ..Default::default()
     }
 }
 
@@ -1821,7 +1904,7 @@ async fn a_reasoning_model_that_runs_out_of_room_thinking_is_given_more_and_the_
         thinking_only(),
         ScriptedLlm::say("The notes."),
     ]));
-    let notes = LlmSummarizer { llm: llm.clone() }
+    let notes = LlmSummarizer::new(llm.clone())
         .summarize(summary_request())
         .await
         .unwrap();
@@ -1847,7 +1930,7 @@ async fn a_reasoning_model_that_runs_out_of_room_thinking_is_given_more_and_the_
 async fn a_summarizer_that_never_writes_notes_fails_saying_why() {
     use reactor_agent::llm::LlmSummarizer;
     let llm = Arc::new(ScriptedLlm::new([thinking_only(), thinking_only()]));
-    let e = LlmSummarizer { llm }
+    let e = LlmSummarizer::new(llm)
         .summarize(summary_request())
         .await
         .unwrap_err()
@@ -1862,7 +1945,7 @@ async fn a_summarizer_that_never_writes_notes_fails_saying_why() {
         usage: None,
         stop: Some("stop".into()),
     })]));
-    let e = LlmSummarizer { llm: empty }
+    let e = LlmSummarizer::new(empty)
         .summarize(summary_request())
         .await
         .unwrap_err()
@@ -2101,4 +2184,1748 @@ async fn something_given_is_in_the_next_request_until_it_is_detached() {
     // The log keeps it.
     assert!(kinds(&r).contains(&"attachment"));
     assert!(kinds(&r).contains(&"detach"));
+}
+
+// -- a turn recovers from a rejected or cut-off request (ADR-0057) -------------------------------
+
+fn cut_call(id: &str) -> Result<Reply> {
+    Ok(Reply {
+        blocks: vec![Block::ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: json!({"command": "echo half a comma"}),
+        }],
+        usage: None,
+        stop: Some("length".into()),
+    })
+}
+
+fn no_waiting(cfg: &mut AgentConfig) {
+    cfg.retry_delay = std::time::Duration::ZERO;
+}
+
+fn assistants(r: &Rig) -> usize {
+    r.agent
+        .store()
+        .lock()
+        .unwrap()
+        .all()
+        .iter()
+        .filter(|e| matches!(e.kind, Kind::Assistant { .. }))
+        .count()
+}
+
+fn notices(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notice(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A session with enough older turns that a reduction has something to take.
+async fn with_history(r: &Rig) {
+    for i in 0..8 {
+        run(
+            r,
+            &format!("older question {i}: {}", "padding ".repeat(500)),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_reply_cut_off_in_a_tool_call_runs_none_of_it_and_the_model_is_told() {
+    let mut r = rig(
+        vec![cut_call("c1"), ScriptedLlm::say("a smaller step, then")],
+        Sum::says("-"),
+        100_000,
+    );
+    let out = run(&r, "do the thing").await.unwrap();
+
+    assert_eq!(out.tool_calls, 0, "the half-made call was not run");
+    let res = results(&r);
+    assert_eq!(res.len(), 1, "but it was answered, so the log replays");
+    assert!(
+        res[0].contains("not run: your reply was cut off"),
+        "{res:?}"
+    );
+    assert_eq!(r.llm.requests().len(), 2, "and the model asked again");
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("cut off by the output limit")),
+    );
+}
+
+#[tokio::test]
+async fn replies_cut_off_in_a_tool_call_again_and_again_stop_the_turn() {
+    let r = rig(
+        vec![
+            cut_call("c1"),
+            cut_call("c2"),
+            cut_call("c3"),
+            ScriptedLlm::say("never reached"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "do the thing").await.unwrap_err();
+    assert!(
+        e.to_string().contains("3 replies in a row were cut off"),
+        "{e}"
+    );
+    assert_eq!(results(&r).len(), 3, "every call still has its result");
+    assert_eq!(r.llm.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn text_cut_off_by_the_output_limit_is_kept_and_said_to_be_cut() {
+    let mut r = rig(
+        vec![Ok(Reply {
+            blocks: vec![Block::Text {
+                text: "The binary is packed with UPX and the unpack stub".into(),
+            }],
+            usage: None,
+            stop: Some("length".into()),
+        })],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "what is it").await.unwrap();
+    assert_eq!(assistants(&r), 1, "what it said is kept");
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("cut off by the output limit"))
+    );
+}
+
+#[tokio::test]
+async fn a_reply_that_ran_out_of_room_thinking_is_tried_again_once_with_more_room() {
+    let mut r = rig(
+        vec![thinking_only(), ScriptedLlm::say("the answer")],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "work it out").await.unwrap();
+
+    let seen = r.llm.requests();
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen[1].max_tokens > seen[0].max_tokens,
+        "{:?} then {:?}",
+        seen[0].max_tokens,
+        seen[1].max_tokens
+    );
+    assert_eq!(
+        assistants(&r),
+        1,
+        "the reply that said nothing is not in the log"
+    );
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("ran out of output room while thinking"))
+    );
+}
+
+#[tokio::test]
+async fn thinking_that_runs_out_of_room_twice_ends_the_turn_and_says_so() {
+    let r = rig(
+        vec![thinking_only(), thinking_only(), ScriptedLlm::say("never")],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "work it out").await.unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("ran out of output room while thinking"),
+        "{e}"
+    );
+    assert_eq!(r.llm.requests().len(), 2, "one more try, not a loop");
+}
+
+#[tokio::test]
+async fn a_request_the_provider_finds_too_long_is_reduced_and_sent_again() {
+    let mut r = rig(
+        (0..8)
+            .map(|_| ScriptedLlm::say("noted"))
+            .chain([
+                Err(Error::Overflow("prompt is too long: 30001 > 20000".into())),
+                ScriptedLlm::say("answered"),
+            ])
+            .collect(),
+        Sum::says("notes on the older turns"),
+        20_000,
+    );
+    with_history(&r).await;
+    drain(&mut r.events);
+    let before = r.agent.measure().await.unwrap().calibration;
+
+    run(&r, "and now?").await.unwrap();
+
+    let events = drain(&mut r.events);
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Reduced { .. })),
+        "the history was reduced"
+    );
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|n| n.contains("rejected the request as too long")),
+    );
+    let seen = r.llm.requests();
+    let (rejected, retried) = (&seen[seen.len() - 2], &seen[seen.len() - 1]);
+    let size = |q: &reactor_agent::llm::LlmRequest| {
+        q.messages
+            .iter()
+            .map(|m| match m {
+                Msg::User { text } => text.len(),
+                _ => 0,
+            })
+            .sum::<usize>()
+    };
+    assert!(
+        size(retried) < size(rejected),
+        "the second request is smaller: {} then {}",
+        size(rejected),
+        size(retried)
+    );
+    assert!(
+        r.agent.measure().await.unwrap().calibration > before,
+        "and the estimate is trusted less from now on"
+    );
+}
+
+#[tokio::test]
+async fn a_second_rejection_gives_up_and_names_the_window() {
+    let r = rig(
+        (0..8)
+            .map(|_| ScriptedLlm::say("noted"))
+            .chain([
+                Err(Error::Overflow("prompt is too long".into())),
+                Err(Error::Overflow("prompt is too long".into())),
+                ScriptedLlm::say("never"),
+            ])
+            .collect(),
+        Sum::says("notes"),
+        20_000,
+    );
+    with_history(&r).await;
+    let e = run(&r, "and now?").await.unwrap_err();
+    assert!(matches!(e, Error::Overflow(_)), "{e}");
+    assert!(
+        e.to_string().contains("real window") && e.to_string().contains("20000"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_with_nothing_older_to_reduce_says_what_to_do_about_it() {
+    let r = rig(
+        vec![Err(Error::Overflow("prompt is too long".into()))],
+        Sum::says("-"),
+        20_000,
+    );
+    let e = run(&r, "the very first question").await.unwrap_err();
+    assert!(matches!(e, Error::Overflow(_)), "{e}");
+    assert!(e.to_string().contains("nothing older to reduce"), "{e}");
+    assert_eq!(
+        r.llm.requests().len(),
+        1,
+        "no retry on a request that cannot shrink"
+    );
+}
+
+#[tokio::test]
+async fn a_busy_server_is_tried_again_and_the_turn_goes_on() {
+    let mut r = rig_with(
+        vec![
+            Err(Error::Transient("503 service unavailable".into())),
+            Err(Error::Transient("connection reset".into())),
+            ScriptedLlm::say("back"),
+        ],
+        Sum::says("-"),
+        100_000,
+        no_waiting,
+    );
+    run(&r, "hello").await.unwrap();
+    assert_eq!(r.llm.requests().len(), 3);
+    assert_eq!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .filter(|n| n.contains("trying again"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_stays_down_is_given_up_on_after_the_retries() {
+    let r = rig_with(
+        (0..6)
+            .map(|_| Err(Error::Transient("503".into())))
+            .collect(),
+        Sum::says("-"),
+        100_000,
+        |c| {
+            no_waiting(c);
+            c.transient_retries = 2;
+        },
+    );
+    let e = run(&r, "hello").await.unwrap_err();
+    assert!(matches!(e, Error::Transient(_)), "{e}");
+    assert!(e.to_string().contains("gave up after 2 retries"), "{e}");
+    assert_eq!(r.llm.requests().len(), 3, "the first try and two more");
+}
+
+#[tokio::test]
+async fn a_request_the_provider_blocked_is_not_sent_again() {
+    let r = rig_with(
+        vec![
+            Err(Error::Blocked(
+                "This request was flagged for cyber policy.".into(),
+            )),
+            ScriptedLlm::say("never"),
+        ],
+        Sum::says("-"),
+        100_000,
+        no_waiting,
+    );
+    let e = run(&r, "take apart this sample").await.unwrap_err();
+    assert!(matches!(e, Error::Blocked(_)), "{e}");
+    assert!(e.to_string().contains("was not retried"), "{e}");
+    assert_eq!(r.llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn an_error_with_no_recovery_is_passed_on_as_it_is() {
+    let r = rig_with(
+        vec![Err(Error::Model("invalid api key".into()))],
+        Sum::says("-"),
+        100_000,
+        no_waiting,
+    );
+    let e = run(&r, "hello").await.unwrap_err();
+    assert_eq!(e.to_string(), "invalid api key");
+    assert_eq!(r.llm.requests().len(), 1, "and not tried again");
+}
+
+// -- every request says how long the reply may be and how big the window is --------------------------
+
+#[tokio::test]
+async fn every_request_carries_a_reply_limit_and_the_window_it_is_sized_for() {
+    let r = rig(vec![ScriptedLlm::say("hi")], Sum::says("-"), 100_000);
+    run(&r, "hello").await.unwrap();
+    let q = &r.llm.requests()[0];
+    assert_eq!(q.max_tokens, Some(25_000), "a quarter of the window");
+    assert_eq!(q.num_ctx, Some(100_000));
+}
+
+#[tokio::test]
+async fn a_reply_limit_is_cut_to_the_room_the_window_has_left() {
+    let r = rig_with(vec![ScriptedLlm::say("hi")], Sum::says("-"), 20_000, |c| {
+        c.max_tokens = Some(50_000)
+    });
+    run(&r, "hello").await.unwrap();
+    let limit = r.llm.requests()[0].max_tokens.unwrap();
+    assert!(
+        (256..20_000).contains(&limit),
+        "asked for 50k in a window of 20k, got {limit}"
+    );
+}
+
+// -- a reduction can be given up on, and a stalled summarizer does not hold the turn ------------------
+
+#[tokio::test]
+async fn a_turn_can_be_cancelled_while_a_reduction_waits_for_its_summary() {
+    let r = rig(
+        (0..9).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::hangs(),
+        20_000,
+    );
+    // Reductions happen as the history grows; the summarizer never answers.
+    let token = CancellationToken::new();
+    let t2 = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        t2.cancel();
+    });
+    let started = std::time::Instant::now();
+    let mut ended = None;
+    for i in 0..9 {
+        if let Err(e) = r
+            .agent
+            .prompt(
+                &format!("question {i}: {}", "padding ".repeat(900)),
+                token.clone(),
+            )
+            .await
+        {
+            ended = Some(e);
+            break;
+        }
+    }
+    assert!(matches!(ended, Some(Error::Cancelled)), "{ended:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the wait for the summary ended with the cancel"
+    );
+    assert!(
+        !kinds(&r).contains(&"reduction"),
+        "and nothing was written for a summary that never came"
+    );
+}
+
+// -- windows from 16k to 100k all work -----------------------------------------------------------------
+
+#[tokio::test]
+async fn windows_from_16k_to_100k_all_run_a_long_session_without_the_context_filling_up() {
+    for window in [16_000u64, 20_000, 32_000, 50_000, 100_000] {
+        let r = rig_with(
+            (0..40).map(|_| ScriptedLlm::say("noted")).collect(),
+            Sum::says("notes on what came before"),
+            window,
+            |c| c.budget = reactor_agent::budget::BudgetConfig::new(window),
+        );
+        for i in 0..14 {
+            let e = run(
+                &r,
+                &format!("question {i}: {}", "padding text ".repeat(450)),
+            )
+            .await;
+            assert!(e.is_ok(), "window {window}, turn {i}: {:?}", e.err());
+        }
+        let m = r.agent.measure().await.unwrap();
+        let hard = r.agent.effective_budget().hard();
+        assert!(
+            m.total <= hard,
+            "window {window}: {} tokens in a budget of {hard}",
+            m.total
+        );
+    }
+}
+
+// -- the summarizer asks again, smaller, when its own window is overrun ---------------------------------
+
+fn big_parts(n: usize) -> Vec<reactor_agent::budget::TranscriptPart> {
+    use reactor_agent::budget::{PartKind, TranscriptPart};
+    (0..n)
+        .map(|i| TranscriptPart {
+            label: format!("#{i} tool result: strings"),
+            body: format!("line {i} ").repeat(1_500),
+            kind: PartKind::Result,
+        })
+        .collect()
+}
+
+fn big_request(n: usize) -> SummaryRequest {
+    let parts = big_parts(n);
+    SummaryRequest {
+        system: "You compress.".into(),
+        transcript: reactor_agent::budget::render_parts(&parts, 6_000),
+        max_tokens: 1_500,
+        parts,
+        ..Default::default()
+    }
+}
+
+fn user_len(q: &reactor_agent::llm::LlmRequest) -> usize {
+    match &q.messages[0] {
+        Msg::User { text } => text.len(),
+        _ => 0,
+    }
+}
+
+fn quick(
+    s: reactor_agent::llm::LlmSummarizer<Arc<ScriptedLlm>>,
+) -> reactor_agent::llm::LlmSummarizer<Arc<ScriptedLlm>> {
+    reactor_agent::llm::LlmSummarizer {
+        retry_delay: std::time::Duration::ZERO,
+        ..s
+    }
+}
+
+#[tokio::test]
+async fn a_summarizer_whose_window_is_overrun_is_asked_again_with_less() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([
+        Err(Error::Overflow("prompt is too long".into())),
+        Err(Error::Overflow("prompt is too long".into())),
+        ScriptedLlm::say("The notes."),
+    ]));
+    let notes = quick(LlmSummarizer::new(llm.clone()))
+        .summarize(big_request(24))
+        .await
+        .unwrap();
+    assert_eq!(notes, "The notes.");
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 3);
+    assert!(
+        user_len(&seen[1]) < user_len(&seen[0]) && user_len(&seen[2]) < user_len(&seen[1]),
+        "smaller each time: {} {} {}",
+        user_len(&seen[0]),
+        user_len(&seen[1]),
+        user_len(&seen[2])
+    );
+}
+
+#[tokio::test]
+async fn a_summarizer_that_never_fits_gives_up_after_three_smaller_tries_saying_so() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new(
+        (0..6).map(|_| Err(Error::Overflow("prompt is too long".into()))),
+    ));
+    let e = quick(LlmSummarizer::new(llm.clone()))
+        .summarize(big_request(24))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Overflow(_)), "{e}");
+    assert!(e.to_string().contains("a third of its size"), "{e}");
+    assert_eq!(llm.requests().len(), 4, "the first try and three smaller");
+}
+
+#[tokio::test]
+async fn a_transcript_over_the_summarizers_cap_is_cut_before_it_is_sent() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say("The notes.")]));
+    let mut req = big_request(24);
+    req.input_cap = 3_000;
+    let whole = req.transcript.len();
+    quick(LlmSummarizer::new(llm.clone()))
+        .summarize(req)
+        .await
+        .unwrap();
+    let sent = user_len(&llm.requests()[0]);
+    assert!(sent < whole / 4, "{whole} bytes cut to {sent}");
+    assert!(
+        sent / 4 <= 3_000,
+        "and within the cap: about {} tokens",
+        sent / 4
+    );
+}
+
+#[tokio::test]
+async fn a_summarizer_in_a_small_window_is_told_the_window_and_leaves_room_to_answer() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say("The notes.")]));
+    let mut req = summary_request();
+    req.window = 8_000;
+    quick(LlmSummarizer::new(llm.clone()))
+        .summarize(req)
+        .await
+        .unwrap();
+    let q = &llm.requests()[0];
+    assert_eq!(q.num_ctx, Some(8_000));
+    assert!(q.max_tokens.unwrap() <= 4_000, "{:?}", q.max_tokens);
+}
+
+#[tokio::test]
+async fn a_busy_summarizer_is_asked_again_after_a_pause() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([
+        Err(Error::Transient("503".into())),
+        ScriptedLlm::say("The notes."),
+    ]));
+    let notes = quick(LlmSummarizer::new(llm.clone()))
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(notes, "The notes.");
+    assert_eq!(llm.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_summarizer_that_fails_is_replaced_by_the_main_model_once() {
+    use reactor_agent::llm::LlmSummarizer;
+    let cheap =
+        Arc::new(ScriptedLlm::new([Err(Error::Model("quota exceeded".into()))]).named("cheap"));
+    let main =
+        Arc::new(ScriptedLlm::new([ScriptedLlm::say("Notes from the main model.")]).named("main"));
+    let notes = quick(LlmSummarizer::new(cheap.clone()).with_fallback(main.clone()))
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(notes, "Notes from the main model.");
+    assert_eq!((cheap.requests().len(), main.requests().len()), (1, 1));
+}
+
+#[tokio::test]
+async fn the_main_model_is_not_asked_again_when_it_is_the_one_that_failed() {
+    use reactor_agent::llm::LlmSummarizer;
+    let same = Arc::new(ScriptedLlm::new([
+        Err(Error::Model("down".into())),
+        ScriptedLlm::say("never"),
+    ]));
+    let e = quick(LlmSummarizer::new(same.clone()).with_fallback(same.clone()))
+        .summarize(summary_request())
+        .await
+        .unwrap_err();
+    assert_eq!(e.to_string(), "down");
+    assert_eq!(same.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn when_both_fail_the_error_names_both() {
+    use reactor_agent::llm::LlmSummarizer;
+    let cheap =
+        Arc::new(ScriptedLlm::new([Err(Error::Model("quota exceeded".into()))]).named("cheap"));
+    let main =
+        Arc::new(ScriptedLlm::new([Err(Error::Model("invalid api key".into()))]).named("main"));
+    let e = quick(LlmSummarizer::new(cheap).with_fallback(main))
+        .summarize(summary_request())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("quota exceeded") && e.contains("invalid api key"),
+        "{e}"
+    );
+}
+
+// -- the ladder through the loop (ADR-0058) -----------------------------------------------------------
+
+fn dump_cmd(tag: &str) -> String {
+    format!("for i in $(seq 1 150); do echo \"{tag} line $i padding to fill the context\"; done")
+}
+
+#[tokio::test]
+async fn old_tool_output_is_masked_with_no_summary_when_that_is_enough() {
+    let mut replies = Vec::new();
+    for n in 0..7 {
+        replies.push(bash_call(&format!("d{n}"), &dump_cmd(&format!("DUMP{n}"))));
+    }
+    replies.push(ScriptedLlm::say("done reading"));
+    let mut r = rig_with(replies, Sum::says("never asked"), 12_000, detached);
+    let out = run(&r, "read the dumps one by one").await.unwrap();
+
+    assert!(out.reductions >= 1, "{out:?}");
+    assert!(
+        r.sum.seen.lock().unwrap().is_empty(),
+        "no summarizer call: the old output was simply cut down"
+    );
+    let events = drain(&mut r.events);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Reduced {
+            mode: Mode::Fade,
+            ..
+        }
+    )));
+
+    // The last request shows the oldest dumps as stubs and the newest in full.
+    let last = r.llm.requests().last().unwrap().clone();
+    let shown: Vec<&str> = last
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Msg::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 7, "every call still has its result in view");
+    assert!(
+        shown[0].starts_with("[masked: #"),
+        "{}",
+        &shown[0][..80.min(shown[0].len())]
+    );
+    assert!(shown[0].contains("DUMP0 line 1 ") && shown[0].contains("history_read"));
+    assert!(
+        shown[6].contains("DUMP6 line 75 padding"),
+        "the newest is whole: the model has read it"
+    );
+
+    // It is listed as a mask, and undoing it brings exactly its results back.
+    let masks = r.agent.reductions();
+    let masked = masks
+        .iter()
+        .find(|m| m.masks > 0 && m.covers == 0)
+        .expect("a mask in force");
+    let entries: Vec<u64> = {
+        let store = r.agent.store();
+        let store = store.lock().unwrap();
+        match &store.get(masked.entry).unwrap().kind {
+            Kind::Reduction(red) => red.masks.iter().map(|m| m.entry).collect(),
+            _ => panic!(),
+        }
+    };
+    assert!(!entries.is_empty());
+    let shown = |agent: &reactor_agent::agent::Agent<Arc<ScriptedLlm>, Arc<Sum>>| -> Vec<String> {
+        agent
+            .context()
+            .into_iter()
+            .filter_map(|i| match (i.source, i.msg) {
+                (reactor_agent::context::Source::Entry(id), Msg::ToolResult { content, .. })
+                    if entries.contains(&id) =>
+                {
+                    Some(content)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(shown(&r.agent).iter().all(|c| c.starts_with("[masked: ")));
+    r.agent.restore(masked.entry).unwrap();
+    let back = shown(&r.agent);
+    assert_eq!(back.len(), entries.len());
+    assert!(
+        back.iter()
+            .all(|c| !c.starts_with("[masked: ") && c.len() > 5_000),
+        "whole again"
+    );
+}
+
+#[tokio::test]
+async fn one_prompt_that_drives_a_long_turn_is_reduced_inside_it_and_the_task_stays_in_front() {
+    // Before the cut could fall inside a turn, nothing after the person's last message could be
+    // reduced, and a long run of tool calls filled the window with nothing to take out.
+    let mut replies = Vec::new();
+    for n in 0..9 {
+        replies.push(bash_call(&format!("d{n}"), &dump_cmd(&format!("STEP{n}"))));
+    }
+    replies.push(ScriptedLlm::say("found it"));
+    let r = rig_with(
+        replies,
+        Sum::says("EARLIER: read the first steps; nothing yet"),
+        8_000,
+        |c| {
+            detached(c);
+            // Summaries, not masks, so the cut itself is what is under test.
+            c.budget.mode = Mode::Compact;
+        },
+    );
+    let out = run(&r, "INVESTIGATE EVERYTHING in this sample")
+        .await
+        .unwrap();
+    assert!(out.reductions >= 1, "{out:?}");
+
+    // The reduction kept the task out of what it covers, and anchored itself behind it.
+    let task = {
+        let store = r.agent.store();
+        let store = store.lock().unwrap();
+        store
+            .all()
+            .iter()
+            .find(|e| matches!(&e.kind, Kind::User { text } if text.contains("INVESTIGATE")))
+            .unwrap()
+            .id
+    };
+    let store = r.agent.store();
+    let anchored: Vec<_> = store
+        .lock()
+        .unwrap()
+        .all()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Reduction(red) => Some((red.after, red.covers.contains(&task))),
+            _ => None,
+        })
+        .collect();
+    assert!(!anchored.is_empty());
+    assert!(
+        anchored
+            .iter()
+            .all(|(after, covers_task)| *after == Some(task) && !covers_task),
+        "{anchored:?}"
+    );
+
+    // In the request, the task comes first and the stand-in is right behind it.
+    let q = r.llm.requests().last().unwrap().clone();
+    assert!(
+        matches!(&q.messages[0], Msg::User { text } if text.contains("INVESTIGATE EVERYTHING"))
+    );
+    assert!(
+        matches!(&q.messages[1], Msg::User { text } if text.contains("EARLIER: read the first steps")),
+        "{:?}",
+        q.messages[1]
+    );
+}
+
+#[tokio::test]
+async fn a_dump_that_alone_overflows_the_window_is_cut_to_what_fits_and_still_read() {
+    // Nothing older to reduce, and the result just arrived: it is the one thing left to cut,
+    // and it is cut to the room there is -- the start and the end, not a token's worth.
+    let r = rig_with(
+        vec![
+            bash_call(
+                "1",
+                "for i in $(seq 1 600); do echo \"huge dump line number $i of a very long listing\"; done",
+            ),
+            ScriptedLlm::say("read what I could"),
+        ],
+        Sum::says("never"),
+        SMALL,
+        detached,
+    );
+    run(&r, "dump it").await.unwrap();
+
+    let second = &r.llm.requests()[1];
+    let Some(Msg::ToolResult { content, .. }) = second
+        .messages
+        .iter()
+        .find(|m| matches!(m, Msg::ToolResult { .. }))
+    else {
+        panic!("{:?}", second.messages)
+    };
+    assert!(
+        content.starts_with("[masked: #"),
+        "{}",
+        &content[..60.min(content.len())]
+    );
+    assert!(
+        content.contains("huge dump line number 1 ")
+            && content.contains("huge dump line number 600 "),
+        "both ends survive"
+    );
+    assert!(
+        content.len() > 1_000,
+        "and more than a stub's worth: {} bytes",
+        content.len()
+    );
+    // Whole in the log.
+    assert!(results(&r)[0].len() > 10_000);
+}
+
+#[tokio::test]
+async fn masking_is_for_auto_only() {
+    for mode in [Mode::Compact, Mode::Fade] {
+        let mut replies: Vec<_> = (0..7)
+            .map(|n| bash_call(&format!("d{n}"), &dump_cmd(&format!("DUMP{n}"))))
+            .collect();
+        replies.push(ScriptedLlm::say("done"));
+        let r = rig_with(replies, Sum::says("EARLIER notes"), 12_000, |c| {
+            detached(c);
+            c.budget.mode = mode;
+        });
+        run(&r, "read the dumps").await.unwrap();
+        let store = r.agent.store();
+        let store = store.lock().unwrap();
+        assert!(
+            store
+                .all()
+                .iter()
+                .all(|e| !matches!(&e.kind, Kind::Reduction(red) if red.is_mask())),
+            "{mode:?}: the person asked for {}",
+            if mode == Mode::Fade {
+                "the range to go"
+            } else {
+                "summaries"
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn notes_that_ignore_the_headings_are_asked_for_once_more() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([
+        ScriptedLlm::say("just some loose notes"),
+        ScriptedLlm::say("## Goal\nfind the C2\n## Established\nit is 10.1.2.3\n## Next\nconfirm"),
+    ]));
+    let mut req = summary_request();
+    req.template = true;
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert!(notes.contains("## Established"));
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 2);
+    let Msg::User { text } = &seen[1].messages[0] else {
+        panic!()
+    };
+    assert!(
+        text.ends_with(reactor_agent::budget::SUMMARY_REMINDER),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn notes_that_ignore_the_headings_twice_are_taken_as_they_are() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([
+        ScriptedLlm::say("loose notes"),
+        ScriptedLlm::say("still loose, but useful: the key is 0x5a"),
+    ]));
+    let mut req = summary_request();
+    req.template = true;
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert!(
+        notes.contains("0x5a"),
+        "a small model that cannot follow a template is not failed for it"
+    );
+    assert_eq!(llm.requests().len(), 2);
+
+    // And a request that does not ask for headings is not held to them.
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say("loose notes")]));
+    LlmSummarizer::new(llm.clone())
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn the_mask_settings_layer_like_the_others() {
+    use reactor_context::settings::ContextSettings;
+    let r = rig(vec![], Sum::says("-"), 50_000);
+    let base = r.agent.effective_budget();
+    assert_eq!((base.mask_target, base.protect), (0.6, 0.15));
+
+    std::fs::create_dir_all(r.root.join("cfg")).unwrap();
+    std::fs::write(
+        r.root.join("cfg/settings.json"),
+        r#"{"context": {"maskTarget": 0.5, "protect": 0.1}}"#,
+    )
+    .unwrap();
+    let eff = r.agent.effective_budget();
+    assert_eq!(
+        (eff.mask_target, eff.protect),
+        (0.5, 0.1),
+        "the global layer"
+    );
+
+    r.agent
+        .set_session_context(&ContextSettings {
+            protect: Some(0.3),
+            ..Default::default()
+        })
+        .unwrap();
+    let eff = r.agent.effective_budget();
+    assert_eq!(
+        (eff.mask_target, eff.protect),
+        (0.5, 0.3),
+        "the session wins field by field"
+    );
+}
+
+// -- the summary request begins as the main request did (ADR-0058) ---------------------------------------
+
+fn main_replay(model: &str) -> reactor_agent::budget::Replay {
+    use reactor_agent::llm::ToolSpec;
+    reactor_agent::budget::Replay {
+        system: "THE MAIN SYSTEM PROMPT".into(),
+        tools: vec![ToolSpec {
+            name: "bash".into(),
+            description: "run a command".into(),
+            parameters: json!({"type": "object"}),
+        }],
+        messages: vec![
+            Msg::User {
+                text: "the task".into(),
+            },
+            Msg::Assistant {
+                blocks: vec![Block::Text {
+                    text: "looking".into(),
+                }],
+            },
+        ],
+        model: model.into(),
+    }
+}
+
+fn main_llm(replies: impl IntoIterator<Item = Result<Reply>>) -> Arc<ScriptedLlm> {
+    Arc::new(ScriptedLlm::new(replies).named("main"))
+}
+
+const NOTES: &str = "## Goal\nfind the C2\n## Established\nit is 10.1.2.3\n## Next\nconfirm";
+
+#[tokio::test]
+async fn a_summarizer_that_is_the_main_model_asks_the_way_the_main_request_was_made() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = main_llm([ScriptedLlm::say(NOTES)]);
+    let mut req = summary_request();
+    req.replay = Some(main_replay("main"));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert_eq!(notes, NOTES);
+
+    let q = &llm.requests()[0];
+    let replay = main_replay("main");
+    assert_eq!(
+        q.system, replay.system,
+        "the main request's own system prompt"
+    );
+    assert_eq!(q.tools, replay.tools, "and its tools");
+    assert_eq!(
+        q.messages[..2],
+        replay.messages[..],
+        "and its messages, as they were sent"
+    );
+    assert_eq!(q.messages.len(), 3);
+    let Msg::User { text } = &q.messages[2] else {
+        panic!()
+    };
+    assert!(
+        text.contains("Everything above is the part of the session to be summarized")
+            && text.contains("Do not call any tool"),
+        "{text}"
+    );
+    assert!(
+        text.contains("You compress."),
+        "the instruction is the last message"
+    );
+    assert!(q.no_tools, "and the model is told not to call one");
+}
+
+#[tokio::test]
+async fn another_model_than_the_main_one_gets_the_transcript_on_its_own() {
+    use reactor_agent::llm::LlmSummarizer;
+    let cheap = Arc::new(ScriptedLlm::new([ScriptedLlm::say(NOTES)]).named("cheap"));
+    let mut req = summary_request();
+    req.replay = Some(main_replay("main"));
+    LlmSummarizer::new(cheap.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    let q = &cheap.requests()[0];
+    assert!(
+        q.system.starts_with("You compress."),
+        "its own prompt: {}",
+        q.system
+    );
+    assert!(q.tools.is_empty() && !q.no_tools);
+    assert_eq!(q.messages.len(), 1, "the transcript, as one message");
+}
+
+#[tokio::test]
+async fn a_request_too_big_to_replay_is_asked_the_other_way_without_trying() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = main_llm([ScriptedLlm::say(NOTES)]);
+    let mut req = summary_request();
+    req.replay = Some(main_replay("main"));
+    req.input_cap = 5; // far less than the replay comes to
+    LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    let q = &llm.requests()[0];
+    assert!(
+        q.tools.is_empty() && !q.no_tools,
+        "no request was wasted on the replay"
+    );
+    assert_eq!(llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn a_replay_the_provider_rejects_as_too_long_falls_back_to_the_shrinking_way() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = main_llm([
+        Err(Error::Overflow("prompt is too long".into())),
+        ScriptedLlm::say(NOTES),
+    ]);
+    let mut req = big_request(6);
+    req.replay = Some(main_replay("main"));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert_eq!(notes, NOTES);
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].no_tools, "first the main model's way");
+    assert!(
+        !seen[1].no_tools && seen[1].tools.is_empty(),
+        "then the transcript alone"
+    );
+    assert!(
+        user_len(&seen[1]) > 1_000,
+        "and at its full size: the rejection of the replay does not count as one of the three cuts"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_that_calls_a_tool_or_says_nothing_is_not_notes_and_is_asked_again_the_other_way() {
+    use reactor_agent::llm::LlmSummarizer;
+    for first in [
+        ScriptedLlm::call("", &[("c1", "bash", json!({"command": "ls"}))]),
+        Ok(Reply {
+            blocks: vec![],
+            usage: None,
+            stop: Some("stop".into()),
+        }),
+    ] {
+        let llm = main_llm([first, ScriptedLlm::say(NOTES)]);
+        let mut req = summary_request();
+        req.replay = Some(main_replay("main"));
+        let notes = LlmSummarizer::new(llm.clone())
+            .summarize(req)
+            .await
+            .unwrap();
+        assert_eq!(notes, NOTES);
+        let seen = llm.requests();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].no_tools && !seen[1].no_tools);
+    }
+}
+
+#[tokio::test]
+async fn the_reminder_and_the_extra_room_work_inside_the_replay_too() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = main_llm([
+        thinking_only(),
+        ScriptedLlm::say("loose notes"),
+        ScriptedLlm::say(NOTES),
+    ]);
+    let mut req = summary_request();
+    req.template = true;
+    req.replay = Some(main_replay("main"));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert_eq!(notes, NOTES);
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 3);
+    assert!(
+        seen.iter().all(|q| q.no_tools),
+        "all three the main model's way"
+    );
+    assert!(
+        seen[1].max_tokens > seen[0].max_tokens,
+        "more room after the thinking"
+    );
+    let Msg::User { text } = seen[2].messages.last().unwrap() else {
+        panic!()
+    };
+    assert!(
+        text.ends_with(reactor_agent::budget::SUMMARY_REMINDER),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn the_loop_gives_the_summarizer_what_the_main_model_was_sent() {
+    let r = rig(
+        (0..9).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::says("## Goal\nread\n## Established\nnothing\n## Next\nmore"),
+        9_000,
+    );
+    with_history(&r).await;
+    let seen = r.sum.seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "the history was reduced");
+    let first = &r.llm.requests()[0];
+    let replay = seen[0].replay.clone().expect("a replay was offered");
+    assert_eq!(replay.model, "scripted");
+    assert_eq!(replay.system, first.system, "the same system prompt");
+    assert_eq!(
+        replay.tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
+        first.tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
+        "the same tools"
+    );
+    assert!(replay.messages.len() >= 2);
+    assert_eq!(
+        replay.messages[0], first.messages[0],
+        "and the same messages, from the first"
+    );
+}
+
+// -- the output limit follows the window --------------------------------------------------------------------
+
+fn shown_size(window: u64, settings: Option<&'static str>) -> usize {
+    let tweak = move |c: &mut AgentConfig| {
+        c.budget = reactor_agent::budget::BudgetConfig::new(window);
+        if let Some(json) = settings {
+            std::fs::create_dir_all(&c.paths.config_dir).unwrap();
+            std::fs::write(c.paths.config_dir.join("settings.json"), json).unwrap();
+        }
+    };
+    let r = rig_with(
+        vec![
+            bash_call("1", "head -c 60000 /dev/zero | tr '\\0' 'x'"),
+            ScriptedLlm::say("seen"),
+        ],
+        Sum::says("-"),
+        window,
+        tweak,
+    );
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(run(&r, "print a lot")).unwrap();
+    results(&r)[0].len()
+}
+
+#[test]
+fn what_the_model_sees_of_one_result_is_a_twentieth_of_the_window_unless_it_was_set() {
+    // Four bytes a token, so a fifth of the window in bytes: 3.2 KB, 20 KB and 32 KiB.
+    for (window, limit) in [
+        (16_000u64, 3_200usize),
+        (100_000, 20_000),
+        (200_000, 32 * 1024),
+    ] {
+        let shown = shown_size(window, None);
+        assert!(
+            (limit * 9 / 10..=limit + 1_500).contains(&shown),
+            "window {window}: {shown} bytes shown of a limit of {limit}"
+        );
+    }
+    // A limit that was set is the person's, whatever the window.
+    let set = shown_size(16_000, Some(r#"{"toolOutput":{"maxInlineBytes":8192}}"#));
+    assert!((7_400..=9_700).contains(&set), "{set}");
+}
+
+// -- the same call, again and again ------------------------------------------------------------------------------
+
+fn same_calls(n: usize, cmd: &str) -> Vec<Result<Reply>> {
+    (0..n).map(|i| bash_call(&format!("c{i}"), cmd)).collect()
+}
+
+#[tokio::test]
+async fn the_same_call_with_the_same_result_five_times_in_a_row_ends_the_turn_and_says_so() {
+    let mut replies = same_calls(8, "echo still nothing here");
+    replies.push(ScriptedLlm::say("never reached"));
+    let r = rig(replies, Sum::says("-"), 100_000);
+    let e = run(&r, "look again").await.unwrap_err();
+    assert!(
+        e.to_string().contains("was called 5 times in a row")
+            && e.to_string().contains("still nothing here"),
+        "{e}"
+    );
+    assert_eq!(r.llm.requests().len(), 5, "no sixth request");
+    assert_eq!(results(&r).len(), 5, "and every call has its result");
+}
+
+#[tokio::test]
+async fn the_same_call_that_gives_a_different_result_each_time_is_not_a_loop() {
+    // Waiting on something by asking again is not going round in circles.
+    let mut replies = same_calls(8, "cat /proc/sys/kernel/random/uuid");
+    replies.push(ScriptedLlm::say("done waiting"));
+    let r = rig(replies, Sum::says("-"), 100_000);
+    run(&r, "poll it").await.unwrap();
+    assert_eq!(results(&r).len(), 8);
+}
+
+#[tokio::test]
+async fn another_call_in_between_starts_the_count_again() {
+    let mut replies = Vec::new();
+    for round in 0..3 {
+        for i in 0..4 {
+            replies.push(bash_call(&format!("a{round}-{i}"), "echo same"));
+        }
+        replies.push(bash_call(&format!("b{round}"), "echo different"));
+    }
+    replies.push(ScriptedLlm::say("done"));
+    let r = rig(replies, Sum::says("-"), 100_000);
+    run(&r, "alternate").await.unwrap();
+}
+
+#[tokio::test]
+async fn six_identical_calls_in_one_reply_stop_at_the_fifth_and_the_sixth_is_answered_unrun() {
+    let calls: Vec<(String, &str, serde_json::Value)> = (0..6)
+        .map(|i| (format!("c{i}"), "bash", json!({"command": "echo same"})))
+        .collect();
+    let refs: Vec<(&str, &str, serde_json::Value)> = calls
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), *b, c.clone()))
+        .collect();
+    let r = rig(
+        vec![ScriptedLlm::call("", &refs), ScriptedLlm::say("never")],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "go").await.unwrap_err();
+    assert!(e.to_string().contains("5 times in a row"), "{e}");
+    let res = results(&r);
+    assert_eq!(res.len(), 6);
+    assert!(res[5].contains("not run: the turn was stopped"), "{res:?}");
+}
+
+#[tokio::test]
+async fn the_detector_can_be_turned_off() {
+    let mut replies = same_calls(8, "echo again");
+    replies.push(ScriptedLlm::say("done"));
+    let r = rig_with(replies, Sum::says("-"), 100_000, |c| c.max_repeats = 0);
+    run(&r, "go").await.unwrap();
+    assert_eq!(results(&r).len(), 8);
+}
+
+// -- Part D: the count, the focus, the second look, the threshold, the warning ---------------------------------
+
+fn counted(text: &str, input: u64) -> Result<Reply> {
+    Ok(Reply {
+        blocks: vec![Block::Text { text: text.into() }],
+        usage: Some(reactor_agent::entry::Usage {
+            input_tokens: input,
+            output_tokens: 100,
+            ..Default::default()
+        }),
+        stop: Some("stop".into()),
+    })
+}
+
+#[tokio::test]
+async fn what_the_provider_counted_decides_when_to_reduce_not_the_estimate() {
+    // The estimate of this session is a few thousand tokens. The provider says the last request
+    // was 16,800 of a window of 20,000 (trigger: 16,915): the next message crosses it.
+    let r = rig(
+        vec![
+            ScriptedLlm::say("a"),
+            counted("b", 16_800),
+            ScriptedLlm::say("c"),
+        ],
+        Sum::says("## Goal\nx\n## Established\ny\n## Next\nz"),
+        20_000,
+    );
+    run(&r, &format!("first: {}", "padding ".repeat(300)))
+        .await
+        .unwrap();
+    run(&r, &format!("second: {}", "padding ".repeat(300)))
+        .await
+        .unwrap();
+    assert!(r.sum.seen.lock().unwrap().is_empty(), "nothing yet");
+    let m = r.agent.measure().await.unwrap();
+    assert!(
+        m.real >= 16_900,
+        "the count plus what came after: {}",
+        m.real
+    );
+    assert!(
+        m.real > m.total * 3 / 2,
+        "{} against an estimate of {}",
+        m.real,
+        m.total
+    );
+
+    let out = run(&r, &format!("third: {}", "padding ".repeat(300)))
+        .await
+        .unwrap();
+    assert!(
+        out.reductions >= 1,
+        "the count said the window was nearly full: {out:?}"
+    );
+    assert!(!r.sum.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_count_is_there_when_a_session_is_reopened_and_the_estimate_alone_would_not_be() {
+    let r = rig(vec![counted("a", 12_000)], Sum::says("-"), 20_000);
+    run(&r, "hello").await.unwrap();
+    let before = r.agent.measure().await.unwrap();
+    assert!(before.real >= 12_100);
+
+    // A new Agent over the same log, as when a window is reopened: its learned ratio starts at 1.
+    let case = r.agent.store().lock().unwrap().case().clone();
+    let Rig {
+        _dir: dir, agent, ..
+    } = r;
+    drop(agent);
+    let reopened = Store::open(&case, "s").unwrap();
+    let paths = Paths::new(dir.path().join("cfg"), Shipped::Embedded);
+    let mut cfg = AgentConfig::new(dir.path().join("work"), paths, 20_000);
+    cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
+    cfg.budget.reserve = 100;
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let (agent, _ev) = Agent::new(
+        llm,
+        Sum::says("-"),
+        reopened,
+        Tools::standard(dir.path().join("work")),
+        cfg,
+    );
+    let after = agent.measure().await.unwrap();
+    assert!(after.calibration > 1.5, "{}", after.calibration);
+    assert!(after.real >= 12_100, "{}", after.real);
+}
+
+#[tokio::test]
+async fn a_reply_records_the_fixed_part_of_the_request_it_answered() {
+    let r = rig(vec![counted("a", 3_000)], Sum::says("-"), 20_000);
+    run(&r, "hello").await.unwrap();
+    let store = r.agent.store();
+    let store = store.lock().unwrap();
+    let usage = store
+        .all()
+        .iter()
+        .find_map(|e| match &e.kind {
+            Kind::Assistant { usage, .. } => *usage,
+            _ => None,
+        })
+        .unwrap();
+    assert!(usage.fixed_estimate > 100, "{usage:?}");
+    assert_eq!(usage.input_tokens, 3_000);
+}
+
+#[tokio::test]
+async fn a_reduction_asked_for_with_a_focus_tells_the_summarizer_to_keep_it() {
+    let r = rig(
+        (0..9).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::says("## Goal\nx\n## Established\ny\n## Next\nz"),
+        60_000,
+    );
+    for i in 0..4 {
+        run(&r, &format!("question {i}: {}", "padding ".repeat(300)))
+            .await
+            .unwrap();
+    }
+    r.agent
+        .reduce_now(Mode::Compact, Some("  the C2 address and the XOR key  "))
+        .await
+        .unwrap();
+    let seen = r.sum.seen.lock().unwrap().clone();
+    assert!(
+        seen[0]
+            .system
+            .contains("keep this in particular, in full: the C2 address and the XOR key"),
+        "{}",
+        seen[0].system
+    );
+
+    // Without one, nothing is added; and a blank one is none.
+    r.agent.reduce_now(Mode::Compact, None).await.ok();
+    r.agent.reduce_now(Mode::Compact, Some("   ")).await.ok();
+    for later in &r.sum.seen.lock().unwrap()[1..] {
+        assert!(!later.system.contains("in particular"), "{}", later.system);
+    }
+}
+
+#[tokio::test]
+async fn a_fade_has_no_summary_so_a_focus_is_not_asked_of_anyone() {
+    let r = rig(
+        (0..5).map(|_| ScriptedLlm::say("noted")).collect(),
+        Sum::says("-"),
+        60_000,
+    );
+    for i in 0..3 {
+        run(&r, &format!("question {i}: {}", "padding ".repeat(300)))
+            .await
+            .unwrap();
+    }
+    r.agent
+        .reduce_now(Mode::Fade, Some("the C2 findings"))
+        .await
+        .unwrap();
+    assert!(r.sum.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_reduction_by_hand_checks_its_summary_and_one_by_the_budget_does_not_unless_asked() {
+    let mk = |settings: Option<&'static str>| {
+        rig_with(
+            (0..12).map(|_| ScriptedLlm::say("noted")).collect(),
+            Sum::says("## Goal\nx\n## Established\ny\n## Next\nz"),
+            9_000,
+            move |c: &mut AgentConfig| {
+                if let Some(json) = settings {
+                    std::fs::create_dir_all(&c.paths.config_dir).unwrap();
+                    std::fs::write(c.paths.config_dir.join("settings.json"), json).unwrap();
+                }
+            },
+        )
+    };
+    // By the budget, nothing asked: no second look.
+    let r = mk(None);
+    with_history(&r).await;
+    let seen = r.sum.seen.lock().unwrap().clone();
+    assert!(!seen.is_empty() && seen.iter().all(|q| !q.verify));
+    // By hand: always.
+    drop(seen);
+    r.agent.reduce_now(Mode::Compact, None).await.ok();
+    assert!(r.sum.seen.lock().unwrap().last().unwrap().verify);
+    // By the budget, with the setting on: the second look.
+    let r = mk(Some(r#"{"context":{"verify":true}}"#));
+    with_history(&r).await;
+    assert!(r.sum.seen.lock().unwrap().iter().all(|q| q.verify));
+}
+
+#[tokio::test]
+async fn the_deferral_threshold_follows_the_window_unless_it_was_set() {
+    let at = |window: u64, settings: Option<&'static str>| {
+        let r = rig_with(
+            vec![],
+            Sum::says("-"),
+            window,
+            move |c: &mut AgentConfig| {
+                c.budget = reactor_agent::budget::BudgetConfig::new(window);
+                if let Some(json) = settings {
+                    std::fs::create_dir_all(&c.paths.config_dir).unwrap();
+                    std::fs::write(c.paths.config_dir.join("settings.json"), json).unwrap();
+                }
+            },
+        );
+        r.agent.deferral_threshold()
+    };
+    assert_eq!(at(200_000, None), 1_000, "what it always was");
+    assert_eq!(at(100_000, None), 1_000);
+    assert_eq!(at(32_000, None), 320);
+    assert_eq!(at(8_000, None), 250);
+    assert_eq!(
+        at(8_000, Some(r#"{"toolSearch":{"deferOverTokens":4000}}"#)),
+        4_000
+    );
+}
+
+#[tokio::test]
+async fn a_window_the_fixed_part_fills_is_told_so_once_and_the_work_goes_on() {
+    let mut r = rig(
+        vec![ScriptedLlm::say("a"), ScriptedLlm::say("b")],
+        Sum::says("-"),
+        4_000,
+    );
+    run(&r, "hello").await.unwrap();
+    run(&r, "and again").await.unwrap();
+    let said: Vec<String> = notices(&drain(&mut r.events))
+        .into_iter()
+        .filter(|n| n.contains("fixed part of every request"))
+        .collect();
+    assert_eq!(said.len(), 1, "once, not on every request: {said:?}");
+
+    // The preview carries it too.
+    let p = r.agent.context_preview().await.unwrap();
+    assert_eq!(p.warnings.len(), 1);
+
+    // A roomy window has nothing to say.
+    let roomy = rig(vec![], Sum::says("-"), 100_000);
+    assert!(
+        roomy
+            .agent
+            .context_preview()
+            .await
+            .unwrap()
+            .warnings
+            .is_empty()
+    );
+}
+
+// -- the second look at a summary ---------------------------------------------------------------------------------
+
+fn verifying(req: SummaryRequest) -> SummaryRequest {
+    SummaryRequest {
+        verify: true,
+        template: true,
+        ..req
+    }
+}
+
+#[tokio::test]
+async fn a_summary_that_is_checked_is_replaced_by_the_better_one_the_model_writes() {
+    use reactor_agent::llm::LlmSummarizer;
+    let first = "## Goal\nfind the C2\n## Established\nit is 10.1.2.3\n## Next\nconfirm";
+    let better = "## Goal\nfind the C2\n## Established\nit is 10.1.2.3, port 4443, XOR key 0x5a\n## Next\nconfirm";
+    let llm = Arc::new(ScriptedLlm::new([
+        ScriptedLlm::say(first),
+        ScriptedLlm::say(better),
+    ]));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(verifying(summary_request()))
+        .await
+        .unwrap();
+    assert_eq!(notes, better);
+    let seen = llm.requests();
+    assert_eq!(seen.len(), 2);
+    // The second request is the first, then the notes as the model's own words, then the question.
+    assert_eq!(seen[1].system, seen[0].system);
+    assert_eq!(
+        seen[1].messages[..seen[0].messages.len()],
+        seen[0].messages[..]
+    );
+    let n = seen[1].messages.len();
+    assert!(
+        matches!(&seen[1].messages[n - 2], Msg::Assistant { blocks } if blocks == &vec![Block::Text { text: first.into() }])
+    );
+    assert!(
+        matches!(&seen[1].messages[n - 1], Msg::User { text } if text == reactor_agent::budget::SUMMARY_VERIFY)
+    );
+}
+
+#[tokio::test]
+async fn a_check_that_fails_or_loses_the_notes_leaves_them_as_they_were() {
+    use reactor_agent::llm::LlmSummarizer;
+    let first = "## Goal\nfind the C2 and the key\n## Established\nit is 10.1.2.3 and the XOR key is 0x5a\n## Next\nconfirm both";
+    for second in [
+        Err(Error::Model("quota".into())),
+        ScriptedLlm::say(""),
+        ScriptedLlm::say("## Goal\nshort\n## Established\nx\n## Next\ny"),
+        ScriptedLlm::say(
+            "the same, but without headings, as one long paragraph about the sample and its key",
+        ),
+    ] {
+        let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say(first), second]));
+        let notes = LlmSummarizer::new(llm.clone())
+            .summarize(verifying(summary_request()))
+            .await
+            .unwrap();
+        assert_eq!(notes, first);
+        assert_eq!(llm.requests().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn a_summary_that_is_not_asked_to_be_checked_is_not() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([ScriptedLlm::say(NOTES)]));
+    LlmSummarizer::new(llm.clone())
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn the_check_is_made_the_main_models_way_too_with_its_tools_and_none_called() {
+    use reactor_agent::llm::LlmSummarizer;
+    let better =
+        "## Goal\nfind the C2\n## Established\nit is 10.1.2.3 and port 4443\n## Next\nconfirm";
+    let llm = main_llm([ScriptedLlm::say(NOTES), ScriptedLlm::say(better)]);
+    let mut req = verifying(summary_request());
+    req.replay = Some(main_replay("main"));
+    let notes = LlmSummarizer::new(llm.clone())
+        .summarize(req)
+        .await
+        .unwrap();
+    assert_eq!(notes, better);
+    let seen = llm.requests();
+    assert!(
+        seen.iter()
+            .all(|q| q.no_tools && q.system == "THE MAIN SYSTEM PROMPT" && !q.tools.is_empty())
+    );
+}
+
+// -- a reply the provider's filter stopped ---------------------------------------------------------------------
+
+fn filtered(blocks: Vec<Block>) -> Result<Reply> {
+    Ok(Reply {
+        blocks,
+        usage: None,
+        stop: Some("contentfilter".into()),
+    })
+}
+
+#[tokio::test]
+async fn a_reply_the_filter_stopped_before_it_said_anything_ends_the_turn_and_is_not_retried() {
+    for empty in [
+        filtered(vec![]),
+        filtered(vec![Block::Thinking {
+            text: "let me look at the sample".into(),
+            signature: None,
+        }]),
+    ] {
+        let r = rig(
+            vec![empty, ScriptedLlm::say("never")],
+            Sum::says("-"),
+            100_000,
+        );
+        let e = run(&r, "take apart this sample").await.unwrap_err();
+        assert!(matches!(e, Error::Blocked(_)), "{e}");
+        assert!(
+            e.to_string().contains("filter stopped the reply")
+                && e.to_string().contains("not retried"),
+            "{e}"
+        );
+        assert_eq!(
+            r.llm.requests().len(),
+            1,
+            "the same request would be stopped again"
+        );
+        assert_eq!(assistants(&r), 0, "and an empty reply is not recorded");
+    }
+}
+
+#[tokio::test]
+async fn what_a_reply_said_before_the_filter_stopped_it_is_kept_and_said_to_be_cut() {
+    let mut r = rig(
+        vec![filtered(vec![Block::Text {
+            text: "The unpacker reads the key from".into(),
+        }])],
+        Sum::says("-"),
+        100_000,
+    );
+    run(&r, "what does it do").await.unwrap();
+    assert_eq!(assistants(&r), 1);
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("filter stopped the reply") && n.contains("kept"))
+    );
+}
+
+#[tokio::test]
+async fn a_tool_call_in_a_reply_the_filter_stopped_is_not_run_and_the_model_is_told() {
+    let mut r = rig(
+        vec![
+            filtered(vec![Block::ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "echo half"}),
+            }]),
+            ScriptedLlm::say("a different approach"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    let out = run(&r, "do the step").await.unwrap();
+    assert_eq!(out.tool_calls, 0);
+    let res = results(&r);
+    assert_eq!(res.len(), 1, "it was answered, so the log replays");
+    assert!(
+        res[0].contains("not run: the provider's filter stopped your reply"),
+        "{res:?}"
+    );
+    assert_eq!(r.llm.requests().len(), 2, "and the model asked again");
+    assert!(
+        notices(&drain(&mut r.events))
+            .iter()
+            .any(|n| n.contains("filter stopped the reply in the middle of a tool call"))
+    );
+}
+
+#[tokio::test]
+async fn replies_the_filter_keeps_stopping_in_a_tool_call_end_the_turn_as_blocked() {
+    let call = |id: &str| {
+        filtered(vec![Block::ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: json!({"command": "echo half"}),
+        }])
+    };
+    let r = rig(
+        vec![
+            call("c1"),
+            call("c2"),
+            call("c3"),
+            ScriptedLlm::say("never"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    let e = run(&r, "do the step").await.unwrap_err();
+    assert!(matches!(e, Error::Blocked(_)), "{e}");
+    assert!(
+        e.to_string()
+            .contains("3 replies in a row were stopped by the provider's filter"),
+        "{e}"
+    );
+    assert_eq!(results(&r).len(), 3, "every call still has its result");
+}
+
+#[tokio::test]
+async fn a_summary_the_filter_stopped_is_blocked_not_a_model_that_wrote_nothing() {
+    use reactor_agent::llm::LlmSummarizer;
+    let llm = Arc::new(ScriptedLlm::new([filtered(vec![]), filtered(vec![])]));
+    let e = LlmSummarizer::new(llm.clone())
+        .summarize(summary_request())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Blocked(_)), "{e}");
+    assert!(e.to_string().contains("filter stopped the summary"), "{e}");
+
+    // The main model gets a try when the configured summarizer's filter stopped it.
+    let cheap = Arc::new(ScriptedLlm::new([filtered(vec![])]).named("cheap"));
+    let main = Arc::new(ScriptedLlm::new([ScriptedLlm::say(NOTES)]).named("main"));
+    let notes = LlmSummarizer::new(cheap)
+        .with_fallback(main)
+        .summarize(summary_request())
+        .await
+        .unwrap();
+    assert_eq!(notes, NOTES);
 }

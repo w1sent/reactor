@@ -227,9 +227,8 @@ impl Backend {
         cfg.skills_dir = find_bundled("skills");
         let (agent, mut events) = Agent::new(
             llm.clone(),
-            LlmSummarizer {
-                llm: summarizer.clone(),
-            },
+            // If the model named for summaries fails, the main one is asked instead.
+            LlmSummarizer::new(summarizer.clone()).with_fallback(llm.clone()),
             store,
             Tools::standard(opts.cwd.clone()),
             cfg,
@@ -775,13 +774,11 @@ impl Backend {
             if let Ok(m) = agent.measure().await {
                 // What the request is made of, for the usage bar. If it cannot be taken
                 // apart the bar is simply not drawn; the numbers above it still are.
-                let usage = agent
-                    .context_preview()
-                    .await
-                    .map(|p| p.by_kind())
-                    .unwrap_or_default();
+                let preview = agent.context_preview().await.ok();
+                let usage = preview.as_ref().map(|p| p.by_kind()).unwrap_or_default();
+                let warnings = preview.map(|p| p.warnings).unwrap_or_default();
                 let _ = tx.send(UiEvent::Context(context_view(
-                    &agent, model, window, m.total, usage,
+                    &agent, model, window, m.real, usage, warnings,
                 )));
             }
         });
@@ -810,11 +807,14 @@ impl Backend {
         });
     }
 
-    pub fn reduce_now(&self, mode: Mode) {
+    pub fn reduce_now(&self, mode: Mode, focus: Option<String>) {
         let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
         self.runtime.spawn(async move {
             let _ = tx.send(UiEvent::Reduced(
-                agent.reduce_now(mode).await.map_err(|e| e.to_string()),
+                agent
+                    .reduce_now(mode, focus.as_deref())
+                    .await
+                    .map_err(|e| e.to_string()),
             ));
         });
         self.refresh_context();
@@ -1069,7 +1069,8 @@ pub(crate) fn first_words(text: &str, n: usize) -> String {
 #[derive(Debug, Clone)]
 pub struct ContextView {
     pub model: String,
-    /// Estimated tokens in the next request.
+    /// Tokens in the next request: the provider's last count plus an estimate of what has come
+    /// since, else an estimate at the ratio learned from what it reported.
     pub used: u64,
     pub window: u64,
     pub hard: u64,
@@ -1077,8 +1078,15 @@ pub struct ContextView {
     pub mode: String,
     pub pct: f64,
     pub keep: f64,
+    pub mask_target: f64,
+    pub protect: f64,
+    /// Whether a summary is checked for what it left out.
+    pub verify: bool,
     pub reserve: u64,
     pub summarizer: Option<String>,
+    /// Things the person should know about the request: the fixed part of it being most of
+    /// the window, say.
+    pub warnings: Vec<String>,
     /// Where each setting comes from: this session, or the default.
     pub origins: Vec<(String, Origin)>,
     pub reductions: Vec<reactor_agent::agent::ReductionInfo>,
@@ -1100,6 +1108,7 @@ pub fn context_view(
     _default_window: u64,
     used: u64,
     usage: Vec<(reactor_agent::inspect::Kind, u64)>,
+    warnings: Vec<String>,
 ) -> ContextView {
     let b = agent.effective_budget();
     let (global, session) = agent.context_layers();
@@ -1117,6 +1126,9 @@ pub fn context_view(
         .into(),
         pct: b.pct,
         keep: b.keep,
+        mask_target: b.mask_target,
+        protect: b.protect,
+        verify: b.verify,
         reserve: b.reserve,
         summarizer: session.over(&global).summarizer,
         origins: session
@@ -1126,6 +1138,7 @@ pub fn context_view(
             .collect(),
         reductions: agent.reductions(),
         usage,
+        warnings,
     }
 }
 

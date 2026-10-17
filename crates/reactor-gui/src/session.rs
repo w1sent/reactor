@@ -699,9 +699,12 @@ mod tests {
                     what: "assistant message".into(),
                     detail: "old answer".into(),
                     bytes: 10,
+                    text: None,
                 }],
                 before_tokens: 900,
                 after_tokens: 300,
+                masks: vec![],
+                after: None,
             }))
             .unwrap();
 

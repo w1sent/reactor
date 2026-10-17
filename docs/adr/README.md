@@ -22,6 +22,10 @@ which are marked † for that; what they decided about behaviour stands.
 ADR **0053** makes the tool-output bound of 0041 a setting and a per-call choice, and
 marks 0041 † for that.
 
+ADRs **0057–0058** record what the loop does when a request is rejected or a reply is cut off,
+and the shape the budget takes for small windows. They amend 0037, 0041 and 0053, which are
+marked † for that; each says in a note what it changed.
+
 | # | Decision |
 |---|---|
 | †&nbsp;[0001](0001-pi-is-the-only-target-harness.md) | pi is the only target harness |
@@ -60,7 +64,7 @@ marks 0041 † for that.
 | [0034](0034-reactor-cli-becomes-a-rust-library-with-a-binary.md) | The `reactor` CLI becomes a Rust library with a binary over it |
 | [0035](0035-portable-surface-is-machine-facts.md) | The portable surface is machine facts; session state is REactor-native |
 | †&nbsp;[0036](0036-reactor-owns-its-session-store-format.md) | REactor owns its session store format |
-| [0037](0037-context-reduction-is-one-budget-manager.md) | Context reduction is one budget manager with three modes, not two mechanisms |
+| †&nbsp;[0037](0037-context-reduction-is-one-budget-manager.md) | Context reduction is one budget manager with three modes, not two mechanisms |
 | [0038](0038-settings-resolve-global-then-session.md) | Settings resolve global default, then session override |
 | [0039](0039-the-executables-contain-no-python.md) | The REactor executables contain no Python |
 | [0040](0040-reactor-context-is-a-port-verified-against-the-extensions.md) | reactor-context is a port verified against the frozen extensions, not a set of shims |
@@ -76,7 +80,9 @@ marks 0041 † for that.
 | [0050](0050-the-table-viewer-is-a-grid-over-sources.md) | The table viewer is a grid over sources, and SQL is one of them |
 | [0051](0051-the-scenarios-are-compiled-in-and-seeded-by-setup.md) | The scenarios are compiled in and seeded by `reactor setup`, and their absence is said |
 | [0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md) | The window is a rail, a drawer and a workspace, and a session's state sits in its own pane |
-| [0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md) | A call chooses how much of its output it sees, and the cut says how to read the rest |
+| †&nbsp;[0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md) | A call chooses how much of its output it sees, and the cut says how to read the rest |
 | [0054](0054-the-window-s-shortcuts-are-the-person-s-to-choose.md) | The window's shortcuts are the person's to choose, and a panel's shows it before it closes it |
 | [0055](0055-large-tool-groups-are-loaded-on-demand.md) | Large tool groups are loaded on demand, through one tool that lists them |
 | [0056](0056-a-tool-says-what-it-does-and-the-rules-are-one-line-each.md) | A tool's description says what it does, and the rules of use are one line each in the prompt |
+| [0057](0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md) | A turn recovers from a rejected or cut-off request, a bounded number of times, and says what it did |
+| [0058](0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md) | Reduction is a ladder, and the budget follows the window |

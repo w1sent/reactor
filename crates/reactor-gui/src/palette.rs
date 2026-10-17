@@ -178,7 +178,7 @@ pub fn commands() -> Vec<Entry> {
             "Model",
             Optional,
             "Reduce the context now",
-            "/reduce [auto|fade|compact]",
+            "/reduce [auto|fade|compact] [what to keep]",
         ),
         Entry::fixed(
             "undo",
@@ -699,7 +699,17 @@ fn candidates(command: &str, done: &[&str], snapshot: &Snapshot) -> Vec<Param> {
         ("embedding", 0) => choices(&["off", "now"], false, ""),
         ("context", 0) => {
             let mut v = choices(
-                &["mode", "window", "reserve", "pct", "keep", "summarizer"],
+                &[
+                    "mode",
+                    "window",
+                    "reserve",
+                    "pct",
+                    "keep",
+                    "mask",
+                    "protect",
+                    "verify",
+                    "summarizer",
+                ],
                 true,
                 "then a value",
             );
@@ -878,9 +888,42 @@ pub fn slash_query(text: &str) -> Option<&str> {
     (!rest.contains(char::is_whitespace)).then_some(rest)
 }
 
+/// What `/reduce` was given: a mode, if the first word is one, and what is left of it as what
+/// the summary should keep ("the C2 findings"). Without a mode, a reduction by hand summarizes.
+pub fn reduce_args(args: &str) -> (reactor_agent::entry::Mode, Option<String>) {
+    use reactor_agent::entry::Mode;
+    let args = args.trim();
+    let (first, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+    let (mode, focus) = match first {
+        "fade" => (Mode::Fade, rest),
+        "auto" => (Mode::Auto, rest),
+        "compact" => (Mode::Compact, rest),
+        _ => (Mode::Compact, args),
+    };
+    let focus = focus.trim();
+    (mode, (!focus.is_empty()).then(|| focus.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduce_takes_a_mode_then_what_to_keep() {
+        use reactor_agent::entry::Mode;
+        assert_eq!(reduce_args(""), (Mode::Compact, None));
+        assert_eq!(reduce_args("fade"), (Mode::Fade, None));
+        assert_eq!(
+            reduce_args("auto keep the C2 findings"),
+            (Mode::Auto, Some("keep the C2 findings".into()))
+        );
+        assert_eq!(
+            reduce_args("keep the C2 findings"),
+            (Mode::Compact, Some("keep the C2 findings".into())),
+            "no mode named: the whole of it is what to keep"
+        );
+        assert_eq!(reduce_args("  compact   "), (Mode::Compact, None));
+    }
 
     fn titles<'a>(ranked: &[&'a Entry]) -> Vec<&'a str> {
         ranked.iter().map(|e| e.title.as_str()).collect()

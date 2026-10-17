@@ -1365,7 +1365,7 @@ fn budget_popover(app: &Weak, id: &str, idle: bool, cx: &mut App) -> AnyElement 
             .disabled(busy || !idle)
             .on_click(on_session(app, id, move |app, _, cx| {
                 if reduce {
-                    app.reduce_now(mode, cx)
+                    app.reduce_now(mode, None, cx)
                 } else {
                     app.preview_reduction(mode, cx)
                 }
@@ -1380,9 +1380,15 @@ fn budget_popover(app: &Weak, id: &str, idle: bool, cx: &mut App) -> AnyElement 
                 .child(Label::new("Context budget"))
                 .child(crate::hints::info_button(
                     "context-settings-info",
-                    "Change one with /context <mode|window|reserve|pct|keep|summarizer> <value>, or use the mode buttons. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
+                    "Change one with /context <mode|window|reserve|pct|keep|mask|protect|verify|summarizer> <value>, or use the mode buttons. Old tool output is masked (shown as a stub, the original kept) down to \"mask to\" before anything is summarized; \"spare newest\" is the share of the window never masked. \"this session\" values apply to this session only; \"default\" ones come from settings.json.",
                 )),
         )
+        .children(view.warnings.iter().map(|w| {
+            div()
+                .text_size(small(&theme))
+                .text_color(theme.warning)
+                .child(w.clone())
+        }))
         .child(
             h_flex()
                 .gap_2()
@@ -1394,6 +1400,16 @@ fn budget_popover(app: &Weak, id: &str, idle: bool, cx: &mut App) -> AnyElement 
         .child(setting("reserve", view.reserve.to_string(), "reserve"))
         .child(setting("reduce at", format!("{:.0}%", view.pct * 100.0), "pct"))
         .child(setting("keep", format!("{:.0}%", view.keep * 100.0), "keep"))
+        .child(setting(
+            "mask to",
+            format!("{:.0}%", view.mask_target * 100.0),
+            "maskTarget",
+        ))
+        .child(setting(
+            "spare newest",
+            format!("{:.0}%", view.protect * 100.0),
+            "protect",
+        ))
         .child(setting(
             "summarizer",
             view.summarizer
@@ -1512,15 +1528,26 @@ fn budget_popover(app: &Weak, id: &str, idle: bool, cx: &mut App) -> AnyElement 
             h_flex()
                 .justify_between()
                 .items_center()
-                .child(format!(
-                    "#{} {:?} · {} · {} entries · ~{} → ~{}",
-                    r.entry,
-                    r.mode,
-                    crate::backend::trigger_label(r.trigger),
-                    r.covers,
-                    r.before_tokens,
-                    r.after_tokens
-                ))
+                .child(if r.masks > 0 && r.covers == 0 {
+                    format!(
+                        "#{} masked · {} · {} tool results · ~{} → ~{}",
+                        r.entry,
+                        crate::backend::trigger_label(r.trigger),
+                        r.masks,
+                        r.before_tokens,
+                        r.after_tokens
+                    )
+                } else {
+                    format!(
+                        "#{} {:?} · {} · {} entries · ~{} → ~{}",
+                        r.entry,
+                        r.mode,
+                        crate::backend::trigger_label(r.trigger),
+                        r.covers,
+                        r.before_tokens,
+                        r.after_tokens
+                    )
+                })
                 .child(
                     Button::new(("undo", r.entry as usize))
                         .label("undo")

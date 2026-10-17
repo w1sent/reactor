@@ -320,8 +320,10 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
 
 // -- layout -------------------------------------------------------------------------------
 
-/// The ideal distance between two connected nodes, in pixels at zoom 1.
-pub const SPACING: f32 = 190.0;
+/// The space kept between the edges of two nodes joined by a line, in pixels at zoom 1: a
+/// line's label and its arrowhead sit in it. Nodes are different sizes, so it is the edges
+/// that are this far apart, not the centres.
+pub const CLEAR: f32 = 100.0;
 
 fn seed(id: &str) -> (f32, f32) {
     // FNV-1a: a spread that depends only on the id, so a layout is reproducible.
@@ -335,17 +337,34 @@ fn seed(id: &str) -> (f32, f32) {
     (angle.cos() * radius, angle.sin() * radius)
 }
 
-/// How big a node is for laying things out, in pixels at zoom 1: the widest and tallest the
-/// panel draws, so that no two boxes touch.
+/// The usual size of a node, in pixels at zoom 1, for tests: layouts are given the size each
+/// node is drawn at.
+#[cfg(test)]
 pub(super) const NODE_W: f32 = 170.0;
+#[cfg(test)]
 pub(super) const NODE_H: f32 = 44.0;
 /// The space between two groups of nodes that are not connected.
-pub(super) const GAP: f32 = 40.0;
+pub(super) const GAP: f32 = 90.0;
+
+/// How far the edge of a box is from its centre, going out along `u` (a unit vector).
+pub(super) fn reach(size: (f32, f32), u: (f32, f32)) -> f32 {
+    let along = |half: f32, c: f32| {
+        if c.abs() > 1e-6 {
+            half / c.abs()
+        } else {
+            f32::MAX
+        }
+    };
+    along(size.0 / 2.0, u.0).min(along(size.1 / 2.0, u.1))
+}
 
 /// Force-directed layout (Fruchterman–Reingold) of one connected group: connected nodes
-/// pull together, every pair pushes apart. `edges` and `pos` are indices into the group.
+/// pull together, every pair pushes apart. `edges`, `pos` and `sizes` are indices into the
+/// group. The forces act on the space between the *edges* of two boxes, so that a wide node
+/// and a tall one keep as much air round them as two small ones do.
 fn spring(
     pos: &mut [(f32, f32)],
+    sizes: &[(f32, f32)],
     fixed: &[bool],
     edges: &[(usize, usize)],
     ids: &[&str],
@@ -369,8 +388,10 @@ fn spring(
                     let (sx, sy) = seed(&format!("{}{}", ids[a], ids[b]));
                     (dx, dy, d) = (sx, sy, (sx * sx + sy * sy).sqrt().max(0.01));
                 }
-                let f = SPACING * SPACING / d;
-                let (fx, fy) = (dx / d * f, dy / d * f);
+                let u = (dx / d, dy / d);
+                let space = d - reach(sizes[a], u) - reach(sizes[b], u);
+                let f = CLEAR * CLEAR / space.max(1.0);
+                let (fx, fy) = (u.0 * f, u.1 * f);
                 push[a].0 += fx;
                 push[a].1 += fy;
                 push[b].0 -= fx;
@@ -380,8 +401,10 @@ fn spring(
         for &(from, to) in edges {
             let (dx, dy) = (pos[from].0 - pos[to].0, pos[from].1 - pos[to].1);
             let d = (dx * dx + dy * dy).sqrt().max(0.01);
-            let f = d * d / SPACING;
-            let (fx, fy) = (dx / d * f, dy / d * f);
+            let u = (dx / d, dy / d);
+            let space = (d - reach(sizes[from], u) - reach(sizes[to], u)).max(0.0);
+            let f = space * space / CLEAR;
+            let (fx, fy) = (u.0 * f, u.1 * f);
             push[from].0 -= fx;
             push[from].1 -= fy;
             push[to].0 += fx;
@@ -429,9 +452,9 @@ pub(super) fn pack(sizes: &[(f32, f32)], gap: f32) -> Vec<(f32, f32)> {
     out
 }
 
-/// A group laid out alone, waiting to be packed: its nodes, where they are relative to one
-/// another, and the top-left corner of those positions.
-pub(super) type Loose = (Vec<usize>, Vec<(f32, f32)>, (f32, f32));
+/// A group laid out alone, waiting to be packed: its nodes and where their centres are
+/// relative to one another.
+pub(super) type Loose = (Vec<usize>, Vec<(f32, f32)>);
 
 /// Where each node goes.
 ///
@@ -443,7 +466,14 @@ pub(super) type Loose = (Vec<usize>, Vec<(f32, f32)>, (f32, f32));
 /// near what they connect to, so the picture a person has learned does not rearrange
 /// itself when the agent adds something. A new group connected to nothing placed goes in
 /// rows below what is there.
-pub fn layout(model: &Model, known: &HashMap<String, (f32, f32)>) -> Vec<(f32, f32)> {
+///
+/// `sizes` are the whole widths and heights the nodes are drawn at, in the order of the
+/// model's nodes: the room each takes is its own.
+pub fn layout(
+    model: &Model,
+    known: &HashMap<String, (f32, f32)>,
+    sizes: &[(f32, f32)],
+) -> Vec<(f32, f32)> {
     let n = model.nodes.len();
     if n == 0 {
         return Vec::new();
@@ -468,7 +498,7 @@ pub fn layout(model: &Model, known: &HashMap<String, (f32, f32)>) -> Vec<(f32, f
     // out alone, to be packed.
     let mut loose: Vec<Loose> = Vec::new();
     // Where the settled groups are, for putting the loose ones beside them.
-    let mut settled: Vec<(f32, f32)> = Vec::new();
+    let mut settled: Vec<usize> = Vec::new();
     for members in &groups {
         let m = members.len();
         let local = |global: usize| members.binary_search(&global).unwrap();
@@ -483,7 +513,10 @@ pub fn layout(model: &Model, known: &HashMap<String, (f32, f32)>) -> Vec<(f32, f
             .map(|&i| model.nodes[i].id.as_str())
             .collect();
         let fixed_here: Vec<bool> = members.iter().map(|&i| fixed[i]).collect();
-        let spread = SPACING * (m as f32).sqrt();
+        let here: Vec<(f32, f32)> = members.iter().map(|&i| sizes[i]).collect();
+        // One node's share of the plane: its own size and the air round it.
+        let pitch = CLEAR + here.iter().map(|s| (s.0 * s.1).sqrt()).sum::<f32>() / m as f32;
+        let spread = pitch * (m as f32).sqrt();
         let any_fixed = fixed_here.iter().any(|f| *f);
         let mut local_pos: Vec<(f32, f32)> = members
             .iter()
@@ -494,26 +527,22 @@ pub fn layout(model: &Model, known: &HashMap<String, (f32, f32)>) -> Vec<(f32, f
                 let (sx, sy) = seed(&model.nodes[i].id);
                 // Start beside a neighbour that is already placed, else on a disc.
                 match neighbours[i].iter().find(|&&j| fixed[j]) {
-                    Some(&j) => (pos[j].0 + sx * SPACING, pos[j].1 + sy * SPACING),
+                    Some(&j) => (pos[j].0 + sx * pitch, pos[j].1 + sy * pitch),
                     None => (sx * spread * 0.5, sy * spread * 0.5),
                 }
             })
             .collect();
-        spring(&mut local_pos, &fixed_here, &edges, &ids, spread);
+        spring(&mut local_pos, &here, &fixed_here, &edges, &ids, spread);
         if any_fixed {
             for (k, &i) in members.iter().enumerate() {
                 pos[i] = local_pos[k];
             }
-            settled.extend(local_pos);
+            settled.extend(members.iter().copied());
         } else {
-            let mut lo = (f32::MAX, f32::MAX);
-            for p in &local_pos {
-                lo = (lo.0.min(p.0), lo.1.min(p.1));
-            }
-            loose.push((members.clone(), local_pos, lo));
+            loose.push((members.clone(), local_pos));
         }
     }
-    place_loose(&loose, &settled, &mut pos, (NODE_W, NODE_H), GAP);
+    place_loose(&loose, &settled, &mut pos, sizes, GAP);
     pos
 }
 
@@ -556,53 +585,57 @@ pub(super) fn connected_groups(model: &Model) -> (Vec<Vec<usize>>, Vec<usize>, V
 /// Pack groups that were laid out alone: side by side, close, wider than tall. The block goes
 /// centred on the origin if nothing is `settled`, else in rows below what is.
 ///
-/// `node` is the room one node takes and `gap` the space between groups.
+/// `sizes` are the whole sizes of the nodes (all of them, by index; `settled` are indices
+/// whose place is already in `pos`) and `gap` the space between groups.
 pub(super) fn place_loose(
     loose: &[Loose],
-    settled: &[(f32, f32)],
+    settled: &[usize],
     pos: &mut [(f32, f32)],
-    node: (f32, f32),
+    sizes: &[(f32, f32)],
     gap: f32,
 ) {
-    let (node_w, node_h) = node;
     if loose.is_empty() {
         return;
     }
-    // Pack the loose groups: side by side, close, wider than tall.
-    let sizes: Vec<(f32, f32)> = loose
+    // The box round a group of boxes: its top-left and bottom-right corners.
+    let hull = |nodes: &[usize], at: &dyn Fn(usize) -> (f32, f32)| {
+        let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+        for (k, &i) in nodes.iter().enumerate() {
+            let (p, s) = (at(k), sizes[i]);
+            lo = (lo.0.min(p.0 - s.0 / 2.0), lo.1.min(p.1 - s.1 / 2.0));
+            hi = (hi.0.max(p.0 + s.0 / 2.0), hi.1.max(p.1 + s.1 / 2.0));
+        }
+        (lo, hi)
+    };
+    let hulls: Vec<((f32, f32), (f32, f32))> = loose
         .iter()
-        .map(|(_, local_pos, lo)| {
-            let mut hi = (f32::MIN, f32::MIN);
-            for p in local_pos {
-                hi = (hi.0.max(p.0), hi.1.max(p.1));
-            }
-            (hi.0 - lo.0 + node_w, hi.1 - lo.1 + node_h)
-        })
+        .map(|(members, local_pos)| hull(members, &|k| local_pos[k]))
         .collect();
-    let offsets = pack(&sizes, gap);
+    // Pack the loose groups: side by side, close, wider than tall.
+    let boxes: Vec<(f32, f32)> = hulls
+        .iter()
+        .map(|(lo, hi)| (hi.0 - lo.0, hi.1 - lo.1))
+        .collect();
+    let offsets = pack(&boxes, gap);
     // Where the packed block goes: centred on the origin if nothing is placed, else in
     // rows below what is.
     let (block_w, block_h) = offsets
         .iter()
-        .zip(&sizes)
+        .zip(&boxes)
         .fold((0.0f32, 0.0f32), |(w, h), (o, s)| {
             (w.max(o.0 + s.0), h.max(o.1 + s.1))
         });
     let origin = if settled.is_empty() {
         (-block_w / 2.0, -block_h / 2.0)
     } else {
-        let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
-        for p in settled {
-            lo = (lo.0.min(p.0), lo.1.min(p.1));
-            hi = (hi.0.max(p.0), hi.1.max(p.1));
-        }
-        (lo.0 - node_w / 2.0, hi.1 + node_h / 2.0 + gap)
+        let (lo, hi) = hull(settled, &|k| pos[settled[k]]);
+        (lo.0, hi.1 + gap)
     };
-    for ((members, local_pos, lo), (off, _size)) in loose.iter().zip(offsets.iter().zip(&sizes)) {
+    for (((members, local_pos), (lo, _)), off) in loose.iter().zip(&hulls).zip(&offsets) {
         for (k, &i) in members.iter().enumerate() {
             pos[i] = (
-                origin.0 + off.0 + node_w / 2.0 + (local_pos[k].0 - lo.0),
-                origin.1 + off.1 + node_h / 2.0 + (local_pos[k].1 - lo.1),
+                origin.0 + off.0 + (local_pos[k].0 - lo.0),
+                origin.1 + off.1 + (local_pos[k].1 - lo.1),
             );
         }
     }
@@ -1075,20 +1108,26 @@ pub struct Group {
     /// The corners of the box around the members' centres, in world units.
     pub min: (f32, f32),
     pub max: (f32, f32),
-    /// The members' centres, for the outline that wraps them ([`padded_hull`]).
-    pub points: Vec<(f32, f32)>,
+    /// The members' boxes, each a centre and half its size either way, for the outline that
+    /// wraps them ([`padded_hull`]).
+    pub boxes: Vec<Frame>,
 }
 
+/// A node's box: its centre, and half its width and height.
+pub type Frame = ((f32, f32), (f32, f32));
+
 /// A group for each tag that two or more of the shown nodes have, the most shared first, at
-/// most `limit` of them. Boxes may overlap: a node with several tags is in several.
+/// most `limit` of them. Boxes may overlap: a node with several tags is in several. `sizes`
+/// are the whole widths and heights the nodes are drawn at, in the order of the model's nodes.
 pub fn tag_groups(
     model: &Model,
     positions: &HashMap<String, (f32, f32)>,
+    sizes: &[(f32, f32)],
     shown: &[bool],
     limit: usize,
 ) -> Vec<Group> {
-    let mut by_tag: BTreeMap<&str, Vec<(f32, f32)>> = BTreeMap::new();
-    for (node, show) in model.nodes.iter().zip(shown) {
+    let mut by_tag: BTreeMap<&str, Vec<Frame>> = BTreeMap::new();
+    for ((node, show), size) in model.nodes.iter().zip(shown).zip(sizes) {
         if !show {
             continue;
         }
@@ -1096,24 +1135,27 @@ pub fn tag_groups(
             continue;
         };
         for tag in &node.tags {
-            by_tag.entry(tag.as_str()).or_default().push(*p);
+            by_tag
+                .entry(tag.as_str())
+                .or_default()
+                .push((*p, (size.0 / 2.0, size.1 / 2.0)));
         }
     }
     let mut groups: Vec<Group> = by_tag
         .into_iter()
-        .filter(|(_, points)| points.len() >= 2)
-        .map(|(tag, points)| {
+        .filter(|(_, boxes)| boxes.len() >= 2)
+        .map(|(tag, boxes)| {
             let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
-            for p in &points {
+            for (p, _) in &boxes {
                 min = (min.0.min(p.0), min.1.min(p.1));
                 max = (max.0.max(p.0), max.1.max(p.1));
             }
             Group {
                 tag: tag.to_string(),
-                members: points.len(),
+                members: boxes.len(),
                 min,
                 max,
-                points,
+                boxes,
             }
         })
         .collect();
@@ -1159,14 +1201,14 @@ pub fn convex_hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
     lower
 }
 
-/// The outline of a group: the convex hull of the boxes of its nodes (each `half` the size
-/// either way from its centre), standing `pad` off them all round, with rounded corners.
+/// The outline of a group: the convex hull of the boxes of its nodes (each a centre and half
+/// its own size either way from it), standing `pad` off them all round, with rounded corners.
 /// Every corner of every box gets a quarter circle of radius `pad`; the hull of those is the
 /// outline, and it is smooth where a plain hull of the centres would have points.
-pub fn padded_hull(centres: &[(f32, f32)], half: (f32, f32), pad: f32) -> Vec<(f32, f32)> {
+pub fn padded_hull(boxes: &[Frame], pad: f32) -> Vec<(f32, f32)> {
     const STEPS: usize = 6;
-    let mut points = Vec::with_capacity(centres.len() * 4 * (STEPS + 1));
-    for &(cx, cy) in centres {
+    let mut points = Vec::with_capacity(boxes.len() * 4 * (STEPS + 1));
+    for &((cx, cy), half) in boxes {
         for (sx, sy, from_angle) in [
             (1.0f32, 1.0f32, 0.0f32),
             (-1.0, 1.0, 90.0),
@@ -1463,10 +1505,10 @@ mod tests {
         let (_d, case) = case();
         incident(&case);
         let m = model(&case);
-        let first = layout(&m, &HashMap::new());
+        let first = layout(&m, &HashMap::new(), &flat(&m));
         assert_eq!(
             first,
-            layout(&m, &HashMap::new()),
+            layout(&m, &HashMap::new(), &flat(&m)),
             "the same graph, the same picture"
         );
         assert!(first.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
@@ -1475,7 +1517,7 @@ mod tests {
                 let d =
                     ((first[a].0 - first[b].0).powi(2) + (first[a].1 - first[b].1).powi(2)).sqrt();
                 assert!(
-                    d > SPACING * 0.4,
+                    d > CLEAR * 0.4,
                     "{} and {} are {d} apart",
                     label(&m, a),
                     label(&m, b)
@@ -1510,7 +1552,7 @@ mod tests {
         )
         .unwrap();
         let grown = model(&case);
-        let second = layout(&grown, &known);
+        let second = layout(&grown, &known, &flat(&grown));
         for (node, p) in grown.nodes.iter().zip(&second) {
             if let Some(old) = known.get(&node.id) {
                 assert_eq!(p, old, "{} moved", node.label);
@@ -1522,11 +1564,11 @@ mod tests {
             .position(|n| n.label == "asmith")
             .unwrap()];
         assert!(
-            dist(new, at("ws-042")) < SPACING * 2.5,
+            dist(new, at("ws-042")) < (NODE_W + CLEAR) * 2.5,
             "{}",
             dist(new, at("ws-042"))
         );
-        assert!(layout(&Model::default(), &HashMap::new()).is_empty());
+        assert!(layout(&Model::default(), &HashMap::new(), &[]).is_empty());
     }
 
     #[test]
@@ -1718,7 +1760,8 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v))
         .collect();
         let all = vec![true; 4];
-        let groups = tag_groups(&m, &pos, &all, 10);
+        let sizes = vec![(100., 40.); 4];
+        let groups = tag_groups(&m, &pos, &sizes, &all, 10);
         let tags: Vec<&str> = groups.iter().map(|g| g.tag.as_str()).collect();
         // Two nodes each; ties by name.
         assert_eq!(tags, ["c2", "phase.recon"]);
@@ -1731,8 +1774,8 @@ mod tests {
         assert_eq!((c2.min, c2.max), ((-20., 50.), (100., 80.)));
         // A hidden node is not in a box, and a tag shared by one is no group.
         let hide_b = vec![true, false, true, true];
-        assert!(tag_groups(&m, &pos, &hide_b, 10).is_empty());
-        assert_eq!(tag_groups(&m, &pos, &all, 1).len(), 1);
+        assert!(tag_groups(&m, &pos, &sizes, &hide_b, 10).is_empty());
+        assert_eq!(tag_groups(&m, &pos, &sizes, &all, 1).len(), 1);
     }
 
     #[test]
@@ -1813,6 +1856,11 @@ mod tests {
         }
     }
 
+    /// Every node at the usual size.
+    fn flat(m: &Model) -> Vec<(f32, f32)> {
+        vec![(NODE_W, NODE_H); m.nodes.len()]
+    }
+
     fn extent(points: &[(f32, f32)]) -> ((f32, f32), (f32, f32)) {
         let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
         for p in points {
@@ -1828,14 +1876,14 @@ mod tests {
         let mut links: Vec<(usize, usize)> = (0..5).map(|i| (i, i + 1)).collect();
         links.extend([(6, 7), (6, 8), (6, 9)]);
         let m = bare(22, &links);
-        let pos = layout(&m, &HashMap::new());
+        let pos = layout(&m, &HashMap::new(), &flat(&m));
         assert_eq!(pos.len(), 22);
         assert!(pos.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
         let (lo, hi) = extent(&pos);
         let (w, h) = (hi.0 - lo.0 + NODE_W, hi.1 - lo.1 + NODE_H);
         // The whole picture is not much bigger than the nodes in it: nothing flies off.
         let boxes = 22.0 * NODE_W * NODE_H;
-        assert!(w * h < boxes * 12.0, "{w} x {h} for {boxes} of nodes");
+        assert!(w * h < boxes * 14.0, "{w} x {h} for {boxes} of nodes");
         assert!(w.max(h) < 1800.0, "{w} x {h}");
         // Nodes of different groups never overlap.
         let group = |i: usize| match i {
@@ -1854,13 +1902,13 @@ mod tests {
             }
         }
         // And it is the same every time.
-        assert_eq!(pos, layout(&m, &HashMap::new()));
+        assert_eq!(pos, layout(&m, &HashMap::new(), &flat(&m)));
     }
 
     #[test]
     fn a_new_node_with_no_line_is_put_beside_what_is_there_not_far_off() {
         let m = bare(5, &[(0, 1), (1, 2), (2, 3)]);
-        let first = layout(&m, &HashMap::new());
+        let first = layout(&m, &HashMap::new(), &flat(&m));
         let known: HashMap<String, (f32, f32)> = m
             .nodes
             .iter()
@@ -1870,7 +1918,7 @@ mod tests {
         // Node 4 is not connected to anything and has no place yet.
         let mut known = known;
         known.remove("n4");
-        let grown = layout(&m, &known);
+        let grown = layout(&m, &known, &flat(&m));
         for (i, node) in m.nodes.iter().enumerate() {
             if let Some(old) = known.get(&node.id) {
                 assert_eq!(grown[i], *old, "{} moved", node.label);
@@ -2073,10 +2121,15 @@ mod tests {
 
     #[test]
     fn a_padded_hull_is_convex_and_stands_off_every_node_by_the_padding() {
-        let centres = [(0., 0.), (300., 40.), (120., 200.), (150., 90.)];
-        let half = (110., 24.);
+        // Boxes of different sizes: the outline stands off each by its own measure.
+        let boxes: [Frame; 4] = [
+            ((0., 0.), (110., 24.)),
+            ((300., 40.), (60., 24.)),
+            ((120., 200.), (80., 90.)),
+            ((150., 90.), (110., 30.)),
+        ];
         let pad = 40.;
-        let hull = padded_hull(&centres, half, pad);
+        let hull = padded_hull(&boxes, pad);
         assert!(hull.len() > 8, "smooth, not a box: {} corners", hull.len());
         // Convex: the turns are all the same way.
         let n = hull.len();
@@ -2105,7 +2158,7 @@ mod tests {
                 })
                 .fold(f32::MAX, |m, d| m.min(d.abs()))
         };
-        for &(cx, cy) in &centres {
+        for &((cx, cy), half) in &boxes {
             for (sx, sy) in [(1., 1.), (-1., 1.), (-1., -1.), (1., -1.)] {
                 let corner = (cx + sx * half.0, cy + sy * half.1);
                 assert!(
@@ -2116,7 +2169,7 @@ mod tests {
             }
         }
         // One node still has an outline round it.
-        assert!(padded_hull(&[(0., 0.)], half, pad).len() > 8);
-        assert!(padded_hull(&[], half, pad).is_empty());
+        assert!(padded_hull(&[((0., 0.), (50., 20.))], pad).len() > 8);
+        assert!(padded_hull(&[], pad).is_empty());
     }
 }

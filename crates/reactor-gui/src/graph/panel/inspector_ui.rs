@@ -464,7 +464,7 @@ impl GraphPanel {
                 .child("Nothing is related to it yet. Relate to… states a relation.")
                 .into_any_element();
         }
-        let mut column = v_flex().gap_3();
+        let mut column = v_flex().w_full().gap_3();
         for (gi, g) in i.groups.iter().enumerate() {
             column = column.child(self.group(gi, g, theme, cx));
         }
@@ -489,7 +489,7 @@ impl GraphPanel {
             .child(SharedString::from(g.items.len().to_string()));
         // Each element at the other end as the plane draws it: its type's icon and colour,
         // what it says, and its type under that.
-        let mut rows = v_flex().gap_2();
+        let mut rows = v_flex().w_full().gap_2();
         for (ri, r) in g.items.iter().enumerate() {
             let id = r.id.clone();
             let node = self.model.nodes.iter().find(|n| n.id == id);
@@ -515,6 +515,7 @@ impl GraphPanel {
             rows = rows.child(
                 h_flex()
                     .id(SharedString::from(format!("graph-related-{gi}-{ri}")))
+                    .w_full()
                     .gap_2()
                     .items_center()
                     .px_2()
@@ -549,6 +550,8 @@ impl GraphPanel {
                     .children(r.locator.clone().map(|l| {
                         div()
                             .flex_none()
+                            .max_w_1_3()
+                            .truncate()
                             .text_size(small)
                             .text_color(theme.muted_foreground)
                             .child(SharedString::from(l))
@@ -556,6 +559,7 @@ impl GraphPanel {
             );
         }
         v_flex()
+            .w_full()
             .gap_2()
             .child(heading)
             .child(rows)

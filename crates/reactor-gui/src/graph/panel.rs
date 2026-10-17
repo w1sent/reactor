@@ -855,19 +855,19 @@ impl GraphPanel {
                     .filter(|n| !self.positions.contains_key(&n.id))
                     .map(|n| n.id.clone())
                     .collect();
-                let mut placed = model::layout(&self.model, &self.positions);
-                // The layout thinks of nodes as one size; they are as big as what they say.
-                // What is new makes room for itself among what was there, which stays.
+                // Nodes are as big as what they say, and the layout leaves each its room. What
+                // is new makes room for itself among what was there, which stays.
+                let cards = self.cards(false, &self.metrics.get());
+                let sizes: Vec<(f32, f32)> = cards.iter().map(|c| (c.w, c.h)).collect();
+                let mut placed = model::layout(&self.model, &self.positions, &sizes);
                 if !unplaced.is_empty() {
-                    let cards = self.cards(false, &self.metrics.get());
-                    let sizes: Vec<(f32, f32)> = cards.iter().map(|c| (c.w, c.h)).collect();
                     let fixed: Vec<bool> = self
                         .model
                         .nodes
                         .iter()
                         .map(|n| self.positions.contains_key(&n.id))
                         .collect();
-                    model::separate(&mut placed, &sizes, &fixed, node_ui::ROOM);
+                    model::separate(&mut placed, &sizes, &fixed, arrange::MIN_GAP);
                 }
                 // Positions of what is hidden are kept: it comes back where it was.
                 for (n, p) in self.model.nodes.iter().zip(placed) {
@@ -1483,15 +1483,10 @@ impl GraphPanel {
     /// Lay the whole graph out afresh, forgetting where things were -- including where
     /// they were dragged to -- and bring it into view.
     fn relayout(&mut self, cx: &mut Context<Self>) {
-        let mut placed = arrange::layout_as(&self.model, self.layout_kind);
+        // Every arrangement leaves each node the room its own size takes.
         let cards = self.cards(false, &self.metrics.get());
         let sizes: Vec<(f32, f32)> = cards.iter().map(|c| (c.w, c.h)).collect();
-        model::separate(
-            &mut placed,
-            &sizes,
-            &vec![false; sizes.len()],
-            node_ui::ROOM,
-        );
+        let placed = arrange::layout_as(&self.model, self.layout_kind, &sizes);
         self.positions = self
             .model
             .nodes
@@ -1886,13 +1881,13 @@ impl Render for GraphPanel {
         let mut hulls: Vec<Hull> = Vec::new();
         let mut hull_labels = Vec::new();
         if self.show_groups {
-            for g in model::tag_groups(&self.model, &self.positions, &shown, 12) {
+            let sizes: Vec<(f32, f32)> = cards.iter().map(|c| (c.w, c.h)).collect();
+            for g in model::tag_groups(&self.model, &self.positions, &sizes, &shown, 12) {
                 // The same tag is the same colour, whichever other tags are on; one that
                 // was given a colour is drawn in it.
                 let colour = look::tag_colour(&self.vocabulary, &g.tag, theme.is_dark());
-                // Round the boxes of the nodes (the widest a node is drawn, so none pokes
-                // out), standing well off them.
-                let outline: Vec<(f32, f32)> = model::padded_hull(&g.points, (110., 26.), 46.)
+                // Round the boxes of the nodes, each as big as it is drawn, standing well off them.
+                let outline: Vec<(f32, f32)> = model::padded_hull(&g.boxes, 46.)
                     .into_iter()
                     .map(|p| self.to_view(p))
                     .collect();

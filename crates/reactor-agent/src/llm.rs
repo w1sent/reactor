@@ -263,6 +263,7 @@ pub fn usage_of(u: &rig_core::completion::Usage, cache_counted_apart: bool) -> U
         input_tokens: input,
         output_tokens: u.output_tokens,
         cached_input_tokens: u.cached_input_tokens,
+        cache_write_tokens: u.cache_creation_input_tokens,
         fixed_estimate: 0,
     }
 }

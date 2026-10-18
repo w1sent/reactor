@@ -515,3 +515,94 @@ pub fn save_state(store: &mut Store, key: &str, data: Value) -> crate::error::Re
 pub fn hidden_ids(store: &Store) -> HashSet<EntryId> {
     hidden_by(store).into_keys().collect()
 }
+
+/// What the provider's cache did across the replies on a branch, from the usage each reply
+/// recorded ([ADR-0059](../../../docs/adr/0059-the-cache-is-measured-before-it-is-tuned.md)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheReport {
+    /// Replies that recorded a usage.
+    pub replies: usize,
+    /// Everything sent, summed.
+    pub input: u64,
+    /// The part that came from the cache.
+    pub read: u64,
+    /// The part written to it.
+    pub written: u64,
+    /// Replies after the first that read nothing from it: a full-price request.
+    pub cold: usize,
+    /// Of those, the ones that came more than the cache's lifetime after the reply before.
+    pub cold_after_pause: usize,
+}
+
+/// How long the default cache holds a prefix (Anthropic's five minutes).
+const CACHE_LIFETIME_MS: u64 = 5 * 60 * 1000;
+
+impl CacheReport {
+    /// A share of the input that came from the cache, 0 to 1.
+    pub fn hit_share(&self) -> f64 {
+        if self.input == 0 {
+            0.0
+        } else {
+            self.read as f64 / self.input as f64
+        }
+    }
+
+    pub fn as_text(&self) -> String {
+        if self.replies == 0 {
+            return "no reply on this branch has recorded a usage yet".into();
+        }
+        let mut out = format!(
+            "{} replies sent {} input tokens; {} ({:.0}%) came from the provider's cache and {} were written to it.",
+            self.replies,
+            self.input,
+            self.read,
+            self.hit_share() * 100.0,
+            self.written
+        );
+        if self.cold > 0 {
+            out.push_str(&format!(
+                " {} later request{} read nothing from it, {} after a pause longer than five minutes.",
+                self.cold,
+                if self.cold == 1 { "" } else { "s" },
+                self.cold_after_pause
+            ));
+        }
+        if self.read == 0 && self.written == 0 {
+            out.push_str(" Nothing was cached: the provider does not report it, caching is off, or the prompt was under the model's minimum.");
+        }
+        out
+    }
+}
+
+/// The cache's account of the current branch.
+pub fn cache_report(store: &Store) -> CacheReport {
+    cache_report_of(store.branch().into_iter().filter_map(|e| match &e.kind {
+        Kind::Assistant { usage: Some(u), .. } => Some((e.ts, *u)),
+        _ => None,
+    }))
+}
+
+/// The account of replies given as (time in ms, usage), oldest first.
+pub fn cache_report_of(replies: impl IntoIterator<Item = (u64, crate::entry::Usage)>) -> CacheReport {
+    let mut r = CacheReport::default();
+    let mut previous: Option<u64> = None;
+    for (ts, u) in replies {
+        if u.input_tokens == 0 {
+            continue;
+        }
+        r.replies += 1;
+        r.input += u.input_tokens;
+        r.read += u.cached_input_tokens;
+        r.written += u.cache_write_tokens;
+        if let Some(before) = previous
+            && u.cached_input_tokens == 0
+        {
+            r.cold += 1;
+            if ts.saturating_sub(before) > CACHE_LIFETIME_MS {
+                r.cold_after_pause += 1;
+            }
+        }
+        previous = Some(ts);
+    }
+    r
+}

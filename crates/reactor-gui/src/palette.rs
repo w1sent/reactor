@@ -167,6 +167,13 @@ pub fn commands() -> Vec<Entry> {
             "what the model would be sent, and where each piece comes from",
         ),
         Entry::fixed(
+            "cache",
+            "Model",
+            None,
+            "Show what the provider's cache did",
+            "input read from and written to the cache over this branch, and the cold requests",
+        ),
+        Entry::fixed(
             "preview",
             "Model",
             Optional,

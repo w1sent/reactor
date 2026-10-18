@@ -764,3 +764,19 @@ fn the_agents_own_advance_never_leaves_a_summary_pending() {
     let s = sc.state.unwrap();
     assert_eq!((s.step_index, s.pending_summary), (1, None));
 }
+
+#[test]
+fn the_cache_prefix_lifetime_is_one_of_the_two_the_providers_offer() {
+    use reactor_context::settings::{CacheSettings, Settings};
+    let n = |v: serde_json::Value| CacheSettings::normalize(&v);
+    assert_eq!(n(json!({"prefixTtl": "1h"})).prefix_ttl.as_deref(), Some("1h"));
+    assert!(n(json!({"prefixTtl": "1h"})).prefix_one_hour());
+    assert!(!n(json!({"prefixTtl": "5m"})).prefix_one_hour());
+    assert_eq!(n(json!({"prefixTtl": "2h"})).prefix_ttl, None, "no other length");
+    assert_eq!(n(json!({"prefixTtl": 60})).prefix_ttl, None, "and only as text");
+    let s = Settings::from_json(&json!({"cache": {"prefixTtl": "1h"}}));
+    assert!(s.cache.prefix_one_hour());
+    assert!(Settings::default().cache.is_default());
+    let out = serde_json::to_value(Settings::default()).unwrap();
+    assert!(out.get("cache").is_none(), "an unset cache section is not written");
+}

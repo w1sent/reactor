@@ -17,6 +17,14 @@ type GeminiModel = <gemini::Client as CompletionClient>::CompletionModel;
 type OpenRouterModel = <openrouter::Client as CompletionClient>::CompletionModel;
 type OllamaModel = <ollama::Client as CompletionClient>::CompletionModel;
 
+/// What the settings choose about building a provider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Keep the start of the request (system prompt, tool definitions) in the provider's cache for
+    /// an hour, where the provider has such a thing ([ADR-0059](../../../docs/adr/0059-the-cache-is-measured-before-it-is-tuned.md)).
+    pub prefix_one_hour: bool,
+}
+
 /// Any of the wired-up providers.
 #[derive(Clone)]
 pub enum AnyLlm {
@@ -117,6 +125,15 @@ impl AnyLlm {
     /// As [`AnyLlm::from_spec`], with a thinking level (`off`, `low`, `medium`, `high`) sent on
     /// every request. `None` sends nothing.
     pub fn from_spec_thinking(spec: &str, thinking: Option<&str>) -> Result<(AnyLlm, String)> {
+        Self::from_spec_with(spec, thinking, &Options::default())
+    }
+
+    /// As [`AnyLlm::from_spec_thinking`], with the provider options the settings choose.
+    pub fn from_spec_with(
+        spec: &str,
+        thinking: Option<&str>,
+        options: &Options,
+    ) -> Result<(AnyLlm, String)> {
         let (provider, model) = spec.split_once('/').ok_or_else(|| {
             Error::Model(format!(
                 "model must be provider/name, e.g. anthropic/claude-sonnet-5-5 (providers: {})",
@@ -131,10 +148,19 @@ impl AnyLlm {
                     // Anthropic caches nothing unless asked: every request would otherwise pay
                     // in full for a prompt that is the last one plus a few lines. The break
                     // point moves forward as the conversation grows (five minutes by default).
-                    anthropic::Client::from_env()
-                        .map_err(fail)?
-                        .completion_model(model)
-                        .with_automatic_caching(),
+                    {
+                        let m = anthropic::Client::from_env()
+                            .map_err(fail)?
+                            .completion_model(model)
+                            .with_automatic_caching();
+                        // The system prompt and tool definitions change least; an hour keeps
+                        // them across the pauses of a long case (ADR-0059).
+                        if options.prefix_one_hour {
+                            m.with_static_prefix_cache_ttl(anthropic::completion::CacheTtl::OneHour)
+                        } else {
+                            m
+                        }
+                    },
                     spec,
                 )
                 // Its input count leaves the cached part out, which the budget needs in.

@@ -22,6 +22,8 @@ which are marked † for that; what they decided about behaviour stands.
 ADR **0053** makes the tool-output bound of 0041 a setting and a per-call choice, and
 marks 0041 † for that.
 
+ADR **0059** adds `/cache` and an hour-long prefix setting.
+
 ADRs **0057–0058** record what the loop does when a request is rejected or a reply is cut off,
 and the shape the budget takes for small windows. They amend 0037, 0041 and 0053, which are
 marked † for that; each says in a note what it changed.
@@ -86,3 +88,4 @@ marked † for that; each says in a note what it changed.
 | [0056](0056-a-tool-says-what-it-does-and-the-rules-are-one-line-each.md) | A tool's description says what it does, and the rules of use are one line each in the prompt |
 | [0057](0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md) | A turn recovers from a rejected or cut-off request, a bounded number of times, and says what it did |
 | [0058](0058-reduction-is-a-ladder-and-the-budget-follows-the-window.md) | Reduction is a ladder, and the budget follows the window |
+| [0059](0059-the-cache-is-measured-before-it-is-tuned.md) | The cache is measured before it is tuned, and the start of a request can be kept for an hour |

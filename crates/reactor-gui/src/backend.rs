@@ -128,9 +128,20 @@ pub fn find_bundled(sub: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_dir())
 }
 
-fn llm_for(spec: Option<&str>, thinking: Option<&str>) -> (AnyLlm, String, u64) {
+/// What the settings choose about building a provider.
+fn provider_options(settings: &Settings) -> reactor_agent::provider::Options {
+    reactor_agent::provider::Options {
+        prefix_one_hour: settings.cache.prefix_one_hour(),
+    }
+}
+
+fn llm_for(
+    spec: Option<&str>,
+    thinking: Option<&str>,
+    options: &reactor_agent::provider::Options,
+) -> (AnyLlm, String, u64) {
     match spec {
-        Some(spec) => match AnyLlm::from_spec_thinking(spec, thinking) {
+        Some(spec) => match AnyLlm::from_spec_with(spec, thinking, options) {
             Ok((llm, provider)) => (llm, spec.to_string(), default_window(&provider)),
             Err(e) => (AnyLlm::Missing(e.to_string()), String::new(), 128_000),
         },
@@ -180,7 +191,11 @@ impl Backend {
             .or_else(|| settings.default_model.clone())
             .or_else(|| std::env::var("REACTOR_MODEL").ok());
         let (llm, model, window) =
-            llm_for(spec.as_deref(), settings.default_thinking.as_deref());
+            llm_for(
+                spec.as_deref(),
+                settings.default_thinking.as_deref(),
+                &provider_options(&settings),
+            );
         let llm = Switchable::new(llm);
         let summarizer = Switchable::new(llm.current());
 
@@ -675,8 +690,9 @@ impl Backend {
     /// Choose the model, taking effect on the next call.
     pub fn set_model(&self, spec: &str) -> std::result::Result<(), String> {
         let thinking = self.thinking();
-        let (llm, provider) =
-            AnyLlm::from_spec_thinking(spec, thinking.as_deref()).map_err(|e| e.to_string())?;
+        let options = provider_options(&Settings::load(&self.paths));
+        let (llm, provider) = AnyLlm::from_spec_with(spec, thinking.as_deref(), &options)
+            .map_err(|e| e.to_string())?;
         self.llm.set(llm);
         *self.model.lock().unwrap() = spec.to_string();
         *self.default_window.lock().unwrap() = default_window(&provider);
@@ -748,7 +764,11 @@ impl Backend {
     pub fn sync_summarizer(&self) {
         let (global, session) = self.agent.context_layers();
         let spec = session.over(&global).summarizer;
-        match spec.as_deref().map(AnyLlm::from_spec) {
+        let options = provider_options(&Settings::load(&self.paths));
+        match spec
+            .as_deref()
+            .map(|s| AnyLlm::from_spec_with(s, None, &options))
+        {
             Some(Ok((llm, _))) => self.summarizer.set(llm),
             _ => self.summarizer.set(self.llm.current()),
         }

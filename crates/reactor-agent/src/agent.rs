@@ -1699,6 +1699,11 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     .map(|m| m.content);
                 return Ok(result);
             }
+            "cache" => result
+                .notices
+                .push(reactor_context::Notice::info(
+                    context::cache_report(&store).as_text(),
+                )),
             other => return Err(Error::Store(format!("unknown command `{other}`"))),
         }
         Ok(result)

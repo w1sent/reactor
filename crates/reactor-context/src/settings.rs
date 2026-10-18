@@ -252,6 +252,41 @@ impl ContextSettings {
     }
 }
 
+/// How long a provider keeps the start of a request (the system prompt and the tool
+/// definitions) in its cache. Global only: a provider is built once for a session
+/// ([ADR-0059](../../../docs/adr/0059-the-cache-is-measured-before-it-is-tuned.md)).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSettings {
+    /// `"1h"` keeps the start of the request for an hour at about twice the price of a write;
+    /// unset leaves it at the provider's own five minutes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix_ttl: Option<String>,
+}
+
+impl CacheSettings {
+    pub const TTLS: [&'static str; 2] = ["5m", "1h"];
+
+    pub fn is_default(&self) -> bool {
+        *self == CacheSettings::default()
+    }
+
+    pub fn normalize(raw: &Value) -> CacheSettings {
+        CacheSettings {
+            prefix_ttl: raw
+                .get("prefixTtl")
+                .and_then(Value::as_str)
+                .filter(|t| Self::TTLS.contains(t))
+                .map(str::to_string),
+        }
+    }
+
+    /// Whether the start of a request is kept for an hour.
+    pub fn prefix_one_hour(&self) -> bool {
+        self.prefix_ttl.as_deref() == Some("1h")
+    }
+}
+
 /// How much of one tool result the model sees before it is cut to its head and tail
 /// (`reactor-agent`'s `truncate`). A call to a built-in tool may ask for another limit;
 /// this is the one that applies when it does not, and always to MCP tools.
@@ -436,6 +471,8 @@ pub struct Settings {
     pub tool_output: ToolOutputSettings,
     #[serde(skip_serializing_if = "ToolSearchSettings::is_default")]
     pub tool_search: ToolSearchSettings,
+    #[serde(skip_serializing_if = "CacheSettings::is_default")]
+    pub cache: CacheSettings,
     #[serde(skip_serializing_if = "MemorySettings::is_empty")]
     pub memory: MemorySettings,
     #[serde(skip_serializing_if = "EmbeddingSettings::is_empty")]
@@ -461,6 +498,7 @@ impl Default for Settings {
             context: ContextSettings::default(),
             tool_output: ToolOutputSettings::default(),
             tool_search: ToolSearchSettings::default(),
+            cache: CacheSettings::default(),
             memory: MemorySettings::default(),
             embedding: EmbeddingSettings::default(),
             models: Vec::new(),
@@ -555,6 +593,9 @@ impl Settings {
         {
             s.tool_search.defer_over_tokens =
                 Some((n as usize).min(ToolSearchSettings::MAX_TOKENS));
+        }
+        if let Some(c) = root.get("cache") {
+            s.cache = CacheSettings::normalize(c);
         }
         if let Some(m) = root.get("memory") {
             s.memory = MemorySettings::normalize(m);

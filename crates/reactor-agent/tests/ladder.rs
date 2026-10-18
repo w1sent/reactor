@@ -775,6 +775,7 @@ fn replied(s: &mut Store, model: &str, input: u64, output: u64) -> u64 {
             input_tokens: input,
             output_tokens: output,
             cached_input_tokens: 0,
+            cache_write_tokens: 0,
             fixed_estimate: 700,
         }),
         stop: Some("stop".into()),
@@ -881,4 +882,54 @@ fn the_fixed_part_being_most_of_what_the_window_leaves_is_worth_a_warning() {
         .is_none(),
         "no usable budget at all is the budget's to say, not this"
     );
+}
+
+// -- what the provider's cache did (ADR-0059) ---------------------------------------------------------------
+
+use reactor_agent::context::cache_report_of;
+
+fn sent(input: u64, read: u64, written: u64) -> Usage {
+    Usage {
+        input_tokens: input,
+        cached_input_tokens: read,
+        cache_write_tokens: written,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_cache_report_counts_reads_writes_and_the_requests_that_read_nothing() {
+    const MIN: u64 = 60_000;
+    let r = cache_report_of([
+        (0, sent(10_000, 0, 10_000)),
+        (MIN, sent(11_000, 10_000, 1_000)),
+        // Nothing read, a minute later: the prefix changed, not the clock.
+        (2 * MIN, sent(12_000, 0, 12_000)),
+        // Nothing read after twenty minutes: the cache had expired.
+        (22 * MIN, sent(12_500, 0, 12_500)),
+    ]);
+    assert_eq!((r.replies, r.input, r.read, r.written), (4, 45_500, 10_000, 35_500));
+    assert_eq!((r.cold, r.cold_after_pause), (2, 1));
+    assert!((r.hit_share() - 10_000.0 / 45_500.0).abs() < 1e-9);
+}
+
+#[test]
+fn the_first_request_is_not_cold_and_a_reply_with_no_usage_is_not_counted() {
+    let r = cache_report_of([(0, sent(5_000, 0, 5_000)), (1, sent(0, 0, 0))]);
+    assert_eq!((r.replies, r.cold), (1, 0));
+    let none = cache_report_of([]);
+    assert!(none.as_text().contains("no reply"));
+    assert!(
+        cache_report_of([(0, sent(900, 0, 0))])
+            .as_text()
+            .contains("Nothing was cached"),
+        "a report that read and wrote nothing says why that may be"
+    );
+}
+
+#[test]
+fn a_usage_without_a_write_count_reads_as_zero_and_does_not_write_one() {
+    let old: Usage = serde_json::from_str(r#"{"input_tokens":10,"output_tokens":2}"#).unwrap();
+    assert_eq!(old.cache_write_tokens, 0);
+    assert!(!serde_json::to_string(&old).unwrap().contains("cache_write"));
 }

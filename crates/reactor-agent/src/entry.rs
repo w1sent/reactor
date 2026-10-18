@@ -132,6 +132,12 @@ pub struct Usage {
     pub output_tokens: u64,
     #[serde(default)]
     pub cached_input_tokens: u64,
+    /// The part of the input the provider wrote to its cache on this request (Anthropic reports
+    /// it; zero for a provider that does not). A write costs more than a read saves until it is
+    /// read again, so a cache report needs both
+    /// ([ADR-0059](../../../docs/adr/0059-the-cache-is-measured-before-it-is-tuned.md)).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u64,
     /// What the loop estimated the fixed part of that request to be (system prompt and tool
     /// definitions), so that a later count can allow for the fixed part having changed since.
     /// Zero for a reply that did not record it.

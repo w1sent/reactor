@@ -35,6 +35,32 @@ pub struct SessionSummary {
     pub entries: usize,
     /// The first thing the person said, if anything.
     pub first_prompt: Option<String>,
+    /// The session that started this one (a child agent's has its parent's).
+    pub parent: Option<String>,
+}
+
+/// Record that `session` was started by `parent`. Both must exist.
+pub fn set_parent(db: &Db, session: &str, parent: &str) -> Result<()> {
+    let (session, parent) = (session.to_string(), parent.to_string());
+    db.write(move |tx| {
+        let known = |id: &str| -> rusqlite::Result<bool> {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session WHERE id = ?1)",
+                [id],
+                |r| r.get(0),
+            )
+        };
+        if session == parent || !known(&session)? || !known(&parent)? {
+            return Err(Error::Sqlite(format!(
+                "cannot make `{parent}` the parent of `{session}`"
+            )));
+        }
+        tx.execute(
+            "UPDATE session SET parent_session = ?2 WHERE id = ?1",
+            params![session, parent],
+        )?;
+        Ok(())
+    })
 }
 
 /// A new session and its first entry, together or not at all.
@@ -149,7 +175,8 @@ pub fn list(db: &Db) -> Result<Vec<SessionSummary>> {
             "SELECT s.id, s.title, s.created_at,
                     (SELECT count(*) FROM entry e WHERE e.session_id = s.id),
                     (SELECT json_extract(e.body, '$.text') FROM entry e
-                      WHERE e.session_id = s.id AND e.type = 'user' ORDER BY e.id LIMIT 1)
+                      WHERE e.session_id = s.id AND e.type = 'user' ORDER BY e.id LIMIT 1),
+                    s.parent_session
              FROM session s ORDER BY s.created_at DESC, s.id DESC",
         )?;
         let rows = stmt
@@ -160,6 +187,7 @@ pub fn list(db: &Db) -> Result<Vec<SessionSummary>> {
                     created_at: r.get(2)?,
                     entries: r.get::<_, i64>(3)? as usize,
                     first_prompt: r.get(4)?,
+                    parent: r.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

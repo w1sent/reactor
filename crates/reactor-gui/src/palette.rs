@@ -167,6 +167,13 @@ pub fn commands() -> Vec<Entry> {
             "what the model would be sent, and where each piece comes from",
         ),
         Entry::fixed(
+            "children",
+            "Model",
+            Optional,
+            "How child agents run",
+            "/children — shows it — | parallel [on|off] | serial | max <n>",
+        ),
+        Entry::fixed(
             "cache",
             "Model",
             None,

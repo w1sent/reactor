@@ -94,6 +94,13 @@ impl Store {
         }
     }
 
+    /// The next numbered session, started by `parent` (a child agent's).
+    pub fn create_child(case: &Case, parent: &str) -> Result<Store> {
+        let store = Store::create_next(case)?;
+        sessions::set_parent(case.db(), store.session(), parent)?;
+        Ok(store)
+    }
+
     /// Open an existing session.
     pub fn open(case: &Case, session: &str) -> Result<Store> {
         let lock = case.lock_session(session)?;

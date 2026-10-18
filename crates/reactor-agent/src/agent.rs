@@ -1668,6 +1668,78 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         Ok(())
     }
 
+    /// Run one tool call: its tool, or an MCP server's. The limit says how much of the output
+    /// the model will see.
+    async fn call_tool(
+        &self,
+        id: &str,
+        name: &str,
+        args: &Value,
+        cancel: &CancellationToken,
+        default: truncate::Limit,
+    ) -> (ToolOutput, truncate::Limit) {
+        // Our tools take a limit; an MCP tool's parameters are its server's.
+        let ours = self.tools.find(name).is_some();
+        let limit = if ours {
+            truncate::Limit::for_call(args, default)
+        } else {
+            default
+        };
+        let events = self.events.clone();
+        let call_id = id.to_string();
+        let ctx = ToolCtx {
+            cwd: self.cfg.cwd.clone(),
+            cancel: cancel.clone(),
+            emit: Arc::new(move |chunk: &str| {
+                let _ = events.send(Event::ToolOutput {
+                    id: call_id.clone(),
+                    chunk: chunk.to_string(),
+                });
+            }),
+            store: self.store.clone(),
+            paths: self.cfg.paths.clone(),
+            scenarios_dir: self.cfg.scenarios_dir.clone(),
+            model: self.llm.name(),
+            embedder: self.cfg.embedder.get(),
+            limit,
+            deferred: self.deferred.lock().unwrap().clone(),
+            children: self.children.clone(),
+        };
+        let out = match (self.tools.find(name), &self.cfg.mcp) {
+            (Some(tool), _) => tool.call(args.clone(), &ctx).await,
+            // Active or not: deactivating only stops a tool being advertised (ADR-0007).
+            (None, Some(host)) if host.knows(name) => host.call(name, args.clone(), cancel).await,
+            _ => ToolOutput::err(format!("unknown tool `{name}`")),
+        };
+        (out, limit)
+    }
+
+    /// The `agent` calls of a reply that run together, when the settings allow it: the indexes
+    /// of those calls, and how many at once. Children that are started in the background are
+    /// not among them: they return at once.
+    fn parallel_children(&self, calls: &[(String, String, Value)]) -> (Vec<usize>, usize) {
+        let settings = self.settings().children;
+        if !settings.parallel || self.children.is_none() {
+            return (vec![], 1);
+        }
+        let which: Vec<usize> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name, args))| {
+                name == crate::tools::agent::TOOL
+                    && !args
+                        .get("background")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if which.len() < 2 {
+            return (vec![], 1);
+        }
+        (which, settings.max_parallel.max(1))
+    }
+
     async fn run_tools(
         &self,
         calls: &[(String, String, Value)],
@@ -1676,52 +1748,53 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         outcome: &mut Outcome,
         repeats: &mut Repeats,
     ) -> Result<()> {
+        use futures::StreamExt;
         let default = self.output_limit(&self.settings());
+
+        // Children asked for together run together; their results are entered in the order they
+        // were asked for, like every other call's (ADR-0063).
+        let (together, at_once) = self.parallel_children(calls);
+        let mut finished: std::collections::HashMap<usize, (ToolOutput, truncate::Limit)> =
+            Default::default();
+        if !together.is_empty() && !cancel.is_cancelled() {
+            for &i in &together {
+                let (id, name, args) = &calls[i];
+                self.emit(Event::ToolStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    args: args.clone(),
+                });
+            }
+            // Built first and run after: a stream over a borrowing iterator makes the compiler
+            // lose track of lifetimes through the child agent's own turn.
+            let running: Vec<_> = together
+                .iter()
+                .map(|&i| {
+                    let (id, name, args) = &calls[i];
+                    async move { (i, self.call_tool(id, name, args, cancel, default).await) }
+                })
+                .collect();
+            finished = futures::stream::iter(running)
+                .buffer_unordered(at_once)
+                .collect()
+                .await;
+        }
+
         for (i, (id, name, args)) in calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 self.fill_results(&calls[i..], "not run: the turn was cancelled")?;
                 return Err(Error::Cancelled);
             }
-            self.emit(Event::ToolStart {
-                id: id.clone(),
-                name: name.clone(),
-                args: args.clone(),
-            });
-
-            // Our tools take a limit; an MCP tool's parameters are its server's.
-            let ours = self.tools.find(name).is_some();
-            let limit = if ours {
-                truncate::Limit::for_call(args, default)
-            } else {
-                default
-            };
-            let events = self.events.clone();
-            let call_id = id.clone();
-            let ctx = ToolCtx {
-                cwd: self.cfg.cwd.clone(),
-                cancel: cancel.clone(),
-                emit: Arc::new(move |chunk: &str| {
-                    let _ = events.send(Event::ToolOutput {
-                        id: call_id.clone(),
-                        chunk: chunk.to_string(),
+            let (out, limit) = match finished.remove(&i) {
+                Some(done) => done,
+                None => {
+                    self.emit(Event::ToolStart {
+                        id: id.clone(),
+                        name: name.clone(),
+                        args: args.clone(),
                     });
-                }),
-                store: self.store.clone(),
-                paths: self.cfg.paths.clone(),
-                scenarios_dir: self.cfg.scenarios_dir.clone(),
-                model: self.llm.name(),
-                embedder: self.cfg.embedder.get(),
-                limit,
-                deferred: self.deferred.lock().unwrap().clone(),
-                children: self.children.clone(),
-            };
-            let out = match (self.tools.find(name), &self.cfg.mcp) {
-                (Some(tool), _) => tool.call(args.clone(), &ctx).await,
-                // Active or not: deactivating only stops a tool being advertised (ADR-0007).
-                (None, Some(host)) if host.knows(name) => {
-                    host.call(name, args.clone(), cancel).await
+                    self.call_tool(id, name, args, cancel, default).await
                 }
-                _ => ToolOutput::err(format!("unknown tool `{name}`")),
             };
             let is_error = out.is_error;
             let kind = self.finalize(id, name, out, limit)?;
@@ -1914,6 +1987,44 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     .map(|m| m.content);
                 return Ok(result);
             }
+            "children" => {
+                let c = &mut settings.children;
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let mut changed = true;
+                match words.as_slice() {
+                    [] => changed = false,
+                    ["parallel"] | ["parallel", "on"] => c.parallel = true,
+                    ["serial"] | ["parallel", "off"] => c.parallel = false,
+                    ["max", n] => match n.parse::<usize>() {
+                        Ok(n) if n >= 1 => {
+                            c.max_parallel = n.min(reactor_context::settings::ChildrenSettings::MAX)
+                        }
+                        _ => {
+                            return Err(Error::Store(
+                                "children max needs a number of at least 1".into(),
+                            ));
+                        }
+                    },
+                    _ => {
+                        return Err(Error::Store(
+                            "children: parallel [on|off] | serial | max <n>".into(),
+                        ));
+                    }
+                }
+                let line = format!(
+                    "children: {}, at most {} together",
+                    if c.parallel {
+                        "asked for together, they run together"
+                    } else {
+                        "they run one after another"
+                    },
+                    c.max_parallel
+                );
+                if changed {
+                    settings.save(&self.cfg.paths)?;
+                }
+                result.notices.push(reactor_context::Notice::info(line));
+            }
             "cache" => result
                 .notices
                 .push(reactor_context::Notice::info(
@@ -1983,22 +2094,42 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 }
 
 
-// -- children (ADR-0062) -------------------------------------------------------------------------
+// -- children (ADR-0062, ADR-0063) ---------------------------------------------------------------
 
 impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Agent<L, S> {
-    /// Give this agent the `agent` tool. A child is built like its parent, from the same model and
-    /// summarizer, and has the tools the parent has now, without `agent`: a child does not start
-    /// children.
+    /// Give this agent the `agent` and `wait` tools. A child is built like its parent, from the
+    /// same model and summarizer, and has the tools the parent has now, without those two: a
+    /// child does not start children.
     pub fn enable_children(&mut self) {
-        let tools = self.tools.without(crate::tools::agent::TOOL);
+        let tools = self
+            .tools
+            .without(crate::tools::agent::TOOL)
+            .without(crate::tools::agent::WAIT);
         self.children = Some(Arc::new(Spawner {
             llm: self.llm.clone(),
             summarizer: self.summarizer.clone(),
             tools: tools.clone(),
             cfg: self.cfg.clone(),
+            running: Arc::new(Running::default()),
         }));
-        self.tools = tools.with(crate::tools::agent::AgentTool);
+        self.tools = tools
+            .with(crate::tools::agent::AgentTool)
+            .with(crate::tools::agent::WaitTool);
     }
+}
+
+/// The children started in the background: which are running, and the reports of those that
+/// finished and have not been waited for.
+#[derive(Default)]
+struct Running {
+    state: Mutex<RunningState>,
+    changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct RunningState {
+    running: Vec<String>,
+    done: std::collections::VecDeque<(String, ToolOutput)>,
 }
 
 struct Spawner<L, S> {
@@ -2006,60 +2137,82 @@ struct Spawner<L, S> {
     summarizer: S,
     tools: Tools,
     cfg: AgentConfig,
+    running: Arc<Running>,
 }
 
 /// The origin of a session started by another: a state entry of the child's own log.
 pub const KEY_ORIGIN: &str = "origin";
 
-impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::agent::Children
-    for Spawner<L, S>
-{
-    fn run<'a>(
-        &'a self,
-        task: String,
-        tools: Option<Vec<String>>,
-        ctx: &'a ToolCtx,
-    ) -> crate::tools::BoxFut<'a, ToolOutput> {
-        Box::pin(async move {
-            let (case, parent) = {
-                let s = ctx.store.lock().unwrap();
-                (s.case().clone(), s.session().to_string())
-            };
-            let mut store = match Store::create_next(&case) {
-                Ok(s) => s,
-                Err(e) => return ToolOutput::err(format!("could not start a session for it: {e}")),
-            };
-            let child_session = store.session().to_string();
-            let mut unknown = Vec::new();
-            let tools = match tools {
-                Some(names) => {
-                    let (kept, missing) = self.tools.only(&names);
-                    unknown = missing;
-                    if kept.is_empty() {
-                        return ToolOutput::err(format!(
-                            "none of those tools exist here: {}",
-                            names.join(", ")
-                        ));
-                    }
-                    kept
+/// A child that has a session and tools and has not started.
+struct Prepared {
+    store: Store,
+    session: String,
+    tools: Tools,
+    unknown: Vec<String>,
+}
+
+type Emit = Arc<dyn Fn(&str) + Send + Sync>;
+
+impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Spawner<L, S> {
+    fn prepare(
+        &self,
+        request: &crate::tools::agent::ChildRequest,
+        ctx: &ToolCtx,
+    ) -> std::result::Result<Prepared, ToolOutput> {
+        let (case, parent) = {
+            let s = ctx.store.lock().unwrap();
+            (s.case().clone(), s.session().to_string())
+        };
+        let mut unknown = Vec::new();
+        let tools = match &request.tools {
+            Some(names) => {
+                let (kept, missing) = self.tools.only(names);
+                unknown = missing;
+                if kept.is_empty() {
+                    return Err(ToolOutput::err(format!(
+                        "none of those tools exist here: {}",
+                        names.join(", ")
+                    )));
                 }
-                None => self.tools.clone(),
-            };
-            if let Err(e) = store.append(Kind::Custom {
-                key: KEY_ORIGIN.into(),
-                data: serde_json::json!({ "parent": parent, "task": task }),
-            }) {
-                return ToolOutput::err(format!("could not start a session for it: {e}"));
+                kept
             }
-            let (child, mut events) = Agent::new(
-                self.llm.clone(),
-                self.summarizer.clone(),
+            None => self.tools.clone(),
+        };
+        let mut store = Store::create_child(&case, &parent)
+            .map_err(|e| ToolOutput::err(format!("could not start a session for it: {e}")))?;
+        store
+            .append(Kind::Custom {
+                key: KEY_ORIGIN.into(),
+                data: serde_json::json!({ "parent": parent, "task": request.task }),
+            })
+            .map_err(|e| ToolOutput::err(format!("could not start a session for it: {e}")))?;
+        Ok(Prepared {
+            session: store.session().to_string(),
+            store,
+            tools,
+            unknown,
+        })
+    }
+
+    /// Run a prepared child to the end and make its report. Owns everything it needs, so it can
+    /// be run in the background.
+    fn drive(
+        &self,
+        prepared: Prepared,
+        task: String,
+        emit: Emit,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = ToolOutput> + Send + 'static {
+        let (llm, summarizer, cfg) = (self.llm.clone(), self.summarizer.clone(), self.cfg.clone());
+        async move {
+            let Prepared {
                 store,
+                session,
                 tools,
-                self.cfg.clone(),
-            );
+                unknown,
+            } = prepared;
+            let (child, mut events) = Agent::new(llm, summarizer, store, tools, cfg);
             // What the child is doing shows on the parent's tool card as it happens.
-            let emit = ctx.emit.clone();
             let progress = tokio::spawn(async move {
                 while let Some(e) = events.recv().await {
                     match e {
@@ -2069,7 +2222,7 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
                     }
                 }
             });
-            let result = child.prompt(&task, ctx.cancel.clone()).await;
+            let result = child.prompt(&task, cancel).await;
             let (report, usage) = {
                 let store = child.store();
                 let store = store.lock().unwrap();
@@ -2101,7 +2254,7 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
             let _ = progress.await;
             let footer = |rounds: usize, calls: usize| {
                 format!(
-                    "[agent session {child_session}: {rounds} rounds, {calls} tool calls, {} input ({} cached) and {} output tokens]{}",
+                    "[agent session {session}: {rounds} rounds, {calls} tool calls, {} input ({} cached) and {} output tokens]{}",
                     usage.input_tokens,
                     usage.cached_input_tokens,
                     usage.output_tokens,
@@ -2123,10 +2276,109 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
                     )),
                 },
                 Err(Error::Cancelled) => ToolOutput::err(format!(
-                    "cancelled before it finished; what it did is in session {child_session}. {}",
+                    "cancelled before it finished; what it did is in session {session}. {}",
                     footer(0, 0)
                 )),
                 Err(e) => ToolOutput::err(format!("it stopped: {e}. {}", footer(0, 0))),
+            }
+        }
+    }
+}
+
+impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::agent::Children
+    for Spawner<L, S>
+{
+    fn run<'a>(
+        &'a self,
+        request: crate::tools::agent::ChildRequest,
+        ctx: &'a ToolCtx,
+    ) -> crate::tools::BoxFut<'a, ToolOutput> {
+        Box::pin(async move {
+            let max = Settings::load(&self.cfg.paths).children.max_parallel;
+            if request.background && self.running.state.lock().unwrap().running.len() >= max {
+                return ToolOutput::err(format!(
+                    "{max} agents are running in the background already. Wait for one first."
+                ));
+            }
+            let prepared = match self.prepare(&request, ctx) {
+                Ok(p) => p,
+                Err(e) => return e,
+            };
+            if !request.background {
+                return self
+                    .drive(prepared, request.task, ctx.emit.clone(), ctx.cancel.clone())
+                    .await;
+            }
+            // In the background it has no tool card to report to: its progress is its session.
+            let session = prepared.session.clone();
+            self.running
+                .state
+                .lock()
+                .unwrap()
+                .running
+                .push(session.clone());
+            let work = self.drive(
+                prepared,
+                request.task,
+                Arc::new(|_: &str| {}),
+                ctx.cancel.child_token(),
+            );
+            let running = self.running.clone();
+            let id = session.clone();
+            tokio::spawn(async move {
+                let out = work.await;
+                {
+                    let mut s = running.state.lock().unwrap();
+                    s.running.retain(|r| *r != id);
+                    s.done.push_back((id, out));
+                }
+                running.changed.notify_waiters();
+            });
+            ToolOutput::ok(format!(
+                "started in the background as session {session}. Collect its report with `wait`."
+            ))
+        })
+    }
+
+    fn wait<'a>(
+        &'a self,
+        session: Option<String>,
+        ctx: &'a ToolCtx,
+    ) -> crate::tools::BoxFut<'a, ToolOutput> {
+        Box::pin(async move {
+            loop {
+                // Ask to be woken before looking, so a child that finishes in between is not missed.
+                let woken = self.running.changed.notified();
+                tokio::pin!(woken);
+                woken.as_mut().enable();
+                {
+                    let mut s = self.running.state.lock().unwrap();
+                    let at = s.done.iter().position(|(id, _)| match &session {
+                        Some(want) => id == want,
+                        None => true,
+                    });
+                    if let Some(at) = at {
+                        return s.done.remove(at).map(|(_, out)| out).unwrap();
+                    }
+                    let any = match &session {
+                        Some(want) => s.running.contains(want),
+                        None => !s.running.is_empty(),
+                    };
+                    if !any {
+                        return ToolOutput::err(match &session {
+                            Some(want) => format!(
+                                "no agent `{want}` is running or waiting to be collected here"
+                            ),
+                            None => "no agent is running in the background".to_string(),
+                        });
+                    }
+                }
+                tokio::select! {
+                    _ = &mut woken => {}
+                    _ = ctx.cancel.cancelled() => {
+                        return ToolOutput::err("cancelled while waiting; the agents keep their sessions");
+                    }
+                }
             }
         })
     }

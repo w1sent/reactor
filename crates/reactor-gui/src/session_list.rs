@@ -21,6 +21,10 @@ pub struct SessionRow {
     pub open_here: bool,
     /// Another window has it open: it cannot be opened here until that one lets go.
     pub open_elsewhere: bool,
+    /// The session that started it (a child agent's): its row sits under that one.
+    pub parent: Option<String>,
+    /// How many sessions up the list its root is: 0 for a session a person began.
+    pub depth: usize,
 }
 
 /// How a session is named inside its case, for a title or a status line: `#3` for the third
@@ -68,7 +72,7 @@ pub fn local_stamp(rfc3339: &str) -> String {
 /// window, whatever they hold; `current` is the active one among them). Whether another
 /// window has one is asked of the lock it would hold.
 pub fn session_rows(case: &Case, current: &str, open_here: &[String]) -> Vec<SessionRow> {
-    sessions::list(case.db())
+    let rows = sessions::list(case.db())
         .unwrap_or_default()
         .into_iter()
         .filter(|s| open_here.contains(&s.id) || s.first_prompt.is_some())
@@ -87,10 +91,46 @@ pub fn session_rows(case: &Case, current: &str, open_here: &[String]) -> Vec<Ses
                     .unwrap_or_default(),
                 started: local_stamp(&s.created_at),
                 entries: s.entries,
+                parent: s.parent,
+                depth: 0,
                 id: s.id,
             }
         })
-        .collect()
+        .collect();
+    in_hierarchy(rows)
+}
+
+/// The rows with each session's children right under it, newest first among siblings (the order
+/// they came in). A session whose parent is not in the list is a root, so nothing is lost
+/// because its parent was left out.
+pub fn in_hierarchy(rows: Vec<SessionRow>) -> Vec<SessionRow> {
+    let ids: std::collections::HashSet<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let is_root = |r: &SessionRow| r.parent.as_ref().is_none_or(|p| !ids.contains(p));
+    let mut out: Vec<SessionRow> = Vec::with_capacity(rows.len());
+    let mut placed = std::collections::HashSet::new();
+    fn walk(
+        at: &SessionRow,
+        depth: usize,
+        rows: &[SessionRow],
+        out: &mut Vec<SessionRow>,
+        placed: &mut std::collections::HashSet<String>,
+    ) {
+        // A loop in the parent links (it cannot be made, but a file can be edited) ends here.
+        if !placed.insert(at.id.clone()) {
+            return;
+        }
+        out.push(SessionRow {
+            depth,
+            ..at.clone()
+        });
+        for child in rows.iter().filter(|r| r.parent.as_deref() == Some(&at.id)) {
+            walk(child, depth + 1, rows, out, placed);
+        }
+    }
+    for root in rows.iter().filter(|r| is_root(r)) {
+        walk(root, 0, &rows, &mut out, &mut placed);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -146,6 +186,63 @@ mod tests {
         assert!(case.lock_session("a").is_ok());
         drop(held);
         assert!(case.lock_session("c").is_ok());
+    }
+
+    fn row(id: &str, parent: Option<&str>) -> SessionRow {
+        SessionRow {
+            id: id.into(),
+            prompt: String::new(),
+            started: String::new(),
+            entries: 1,
+            current: false,
+            open_here: false,
+            open_elsewhere: false,
+            parent: parent.map(str::to_string),
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn a_child_is_listed_under_its_parent_one_step_in() {
+        // Newest first, as the case lists them: 5 (a child of 2), 4, 3 (a child of 2), 2, 1.
+        let rows = in_hierarchy(vec![
+            row("5", Some("2")),
+            row("4", None),
+            row("3", Some("2")),
+            row("2", None),
+            row("1", None),
+        ]);
+        let shape: Vec<(&str, usize)> = rows.iter().map(|r| (r.id.as_str(), r.depth)).collect();
+        assert_eq!(
+            shape,
+            vec![("4", 0), ("2", 0), ("5", 1), ("3", 1), ("1", 0)],
+            "roots keep their order, each followed by its children in theirs"
+        );
+    }
+
+    #[test]
+    fn a_child_whose_parent_is_not_listed_is_a_root_and_a_loop_does_not_hang() {
+        let rows = in_hierarchy(vec![row("7", Some("gone")), row("8", None)]);
+        assert_eq!(rows.iter().map(|r| r.depth).collect::<Vec<_>>(), vec![0, 0]);
+        let looped = in_hierarchy(vec![row("a", Some("b")), row("b", Some("a"))]);
+        assert!(looped.is_empty(), "a ring has no root, and listing it must still end");
+    }
+
+    #[test]
+    fn a_child_agents_session_knows_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let case = Case::create(dir.path(), None).unwrap();
+        say(&case, "1", Some("triage"));
+        say(&case, "2", Some("list the imports"));
+        sessions::set_parent(case.db(), "2", "1").unwrap();
+        let rows = session_rows(&case, "1", &["1".to_string()]);
+        let by = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(by("2").parent.as_deref(), Some("1"));
+        assert_eq!((by("1").depth, by("2").depth), (0, 1));
+        assert!(
+            sessions::set_parent(case.db(), "1", "1").is_err() && sessions::set_parent(case.db(), "9", "1").is_err(),
+            "not itself, and not a session that is not there"
+        );
     }
 
     #[test]

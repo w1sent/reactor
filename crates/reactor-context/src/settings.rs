@@ -287,6 +287,49 @@ impl CacheSettings {
     }
 }
 
+/// How child agents run when a reply asks for several at once
+/// ([ADR-0063](../../../docs/adr/0063-children-run-in-parallel-in-the-background-and-are-linked-to-their-parent.md)).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildrenSettings {
+    /// Run the `agent` calls of one reply together. Off, they run one after another.
+    pub parallel: bool,
+    /// The most children running together, from this one reply or from the background.
+    pub max_parallel: usize,
+}
+
+impl Default for ChildrenSettings {
+    fn default() -> Self {
+        ChildrenSettings {
+            parallel: true,
+            max_parallel: Self::DEFAULT_MAX,
+        }
+    }
+}
+
+impl ChildrenSettings {
+    pub const DEFAULT_MAX: usize = 4;
+    pub const MAX: usize = 16;
+
+    pub fn is_default(&self) -> bool {
+        *self == ChildrenSettings::default()
+    }
+
+    pub fn normalize(raw: &Value) -> ChildrenSettings {
+        let d = ChildrenSettings::default();
+        ChildrenSettings {
+            parallel: raw
+                .get("parallel")
+                .and_then(Value::as_bool)
+                .unwrap_or(d.parallel),
+            max_parallel: number(raw.get("maxParallel"))
+                .filter(|n| *n >= 1.0 && n.fract() == 0.0)
+                .map(|n| (n as usize).min(Self::MAX))
+                .unwrap_or(d.max_parallel),
+        }
+    }
+}
+
 /// How much of one tool result the model sees before it is cut to its head and tail
 /// (`reactor-agent`'s `truncate`). A call to a built-in tool may ask for another limit;
 /// this is the one that applies when it does not, and always to MCP tools.
@@ -473,6 +516,8 @@ pub struct Settings {
     pub tool_search: ToolSearchSettings,
     #[serde(skip_serializing_if = "CacheSettings::is_default")]
     pub cache: CacheSettings,
+    #[serde(skip_serializing_if = "ChildrenSettings::is_default")]
+    pub children: ChildrenSettings,
     #[serde(skip_serializing_if = "MemorySettings::is_empty")]
     pub memory: MemorySettings,
     #[serde(skip_serializing_if = "EmbeddingSettings::is_empty")]
@@ -499,6 +544,7 @@ impl Default for Settings {
             tool_output: ToolOutputSettings::default(),
             tool_search: ToolSearchSettings::default(),
             cache: CacheSettings::default(),
+            children: ChildrenSettings::default(),
             memory: MemorySettings::default(),
             embedding: EmbeddingSettings::default(),
             models: Vec::new(),
@@ -596,6 +642,9 @@ impl Settings {
         }
         if let Some(c) = root.get("cache") {
             s.cache = CacheSettings::normalize(c);
+        }
+        if let Some(c) = root.get("children") {
+            s.children = ChildrenSettings::normalize(c);
         }
         if let Some(m) = root.get("memory") {
             s.memory = MemorySettings::normalize(m);

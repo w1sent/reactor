@@ -1652,6 +1652,13 @@ impl Render for TreePanel {
                     .px_2()
                     .py_1()
                     .rounded_md()
+                    // A child agent's session sits one step in under the one that started it,
+                    // with a line down its left edge.
+                    .when(s.depth > 0, |el| {
+                        el.ml(px(14. * s.depth as f32))
+                            .border_l_1()
+                            .border_color(theme.border)
+                    })
                     .when(s.current, |el| el.bg(theme.tokens.list_active))
                     .when(selected, |el| {
                         el.bg(theme.info.opacity(0.28))
@@ -1721,17 +1728,20 @@ impl Render for TreePanel {
                         }
                     })
                     .child({
-                        let mut tags: Vec<&str> = Vec::new();
+                        let mut tags: Vec<String> = Vec::new();
+                        if let Some(parent) = &s.parent {
+                            tags.push(format!("agent of {}", crate::session_list::short_id(parent)));
+                        }
                         if s.current {
-                            tags.push("active");
+                            tags.push("active".into());
                         } else if s.open_here {
-                            tags.push("open");
+                            tags.push("open".into());
                         }
                         if is_working {
-                            tags.push("working");
+                            tags.push("working".into());
                         }
                         if s.open_elsewhere {
-                            tags.push("open elsewhere");
+                            tags.push("open elsewhere".into());
                         }
                         let line = format!(
                             "{} · {} entr{} · {}{}",

@@ -4231,3 +4231,203 @@ async fn a_child_that_fails_gives_the_parent_an_error_result_not_a_failed_turn()
     let result = results(&r).pop().unwrap();
     assert!(result.contains("it stopped") && result.contains("the model is down"), "{result}");
 }
+
+// -- children in parallel, in the background, and linked to their parent (ADR-0063) -------------------------
+
+use reactor_agent::llm::{Delta, Llm, LlmRequest};
+
+/// Answers the parent from one script and every child from another, so that children running
+/// together cannot take each other's replies.
+struct Split {
+    parent: ScriptedLlm,
+    child: ScriptedLlm,
+}
+
+impl Llm for Split {
+    async fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> Result<Reply> {
+        if req.tools.iter().any(|t| t.name == "agent") {
+            self.parent.complete(req, on_delta).await
+        } else {
+            self.child.complete(req, on_delta).await
+        }
+    }
+
+    fn name(&self) -> String {
+        "split".into()
+    }
+}
+
+struct SplitRig {
+    _dir: tempfile::TempDir,
+    agent: Agent<Arc<Split>, Arc<Sum>>,
+    llm: Arc<Split>,
+}
+
+fn split_rig(parent: Vec<Result<Reply>>, child: Vec<Result<Reply>>) -> SplitRig {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let case = reactor_db::Case::create(&cwd, None).unwrap();
+    let store = Store::create(&case, "s").unwrap();
+    let paths = Paths::new(dir.path().join("cfg"), Shipped::Embedded);
+    let mut cfg = AgentConfig::new(cwd.clone(), paths, 100_000);
+    cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
+    cfg.scenarios_dir = dir.path().join("scenarios");
+    cfg.budget.reserve = 100;
+    let llm = Arc::new(Split {
+        parent: ScriptedLlm::new(parent),
+        child: ScriptedLlm::new(child),
+    });
+    let (mut agent, _events) = Agent::new(llm.clone(), Sum::says("-"), store, Tools::standard(cwd), cfg);
+    agent.enable_children();
+    SplitRig {
+        _dir: dir,
+        agent,
+        llm,
+    }
+}
+
+fn split_results(r: &SplitRig) -> Vec<String> {
+    r.agent
+        .store()
+        .lock()
+        .unwrap()
+        .all()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn two_agents() -> Result<Reply> {
+    ScriptedLlm::call(
+        "",
+        &[
+            ("a1", "agent", json!({"task": "first"})),
+            ("a2", "agent", json!({"task": "second"})),
+        ],
+    )
+}
+
+#[tokio::test]
+async fn children_asked_for_together_run_together_and_are_entered_in_the_order_they_were_asked() {
+    // Each child waits for a file the other writes. One after another, the first would wait
+    // for ever; together, both get through.
+    let wait_for = |mine: &str, theirs: &str| {
+        bash_call(
+            "b",
+            &format!(
+                "touch {mine}; for i in $(seq 1 100); do [ -f {theirs} ] && exit 0; sleep 0.05; done; echo never met; exit 1"
+            ),
+        )
+    };
+    let r = split_rig(
+        vec![two_agents(), ScriptedLlm::say("both back")],
+        vec![
+            wait_for("one.flag", "two.flag"),
+            wait_for("two.flag", "one.flag"),
+            ScriptedLlm::say("report A"),
+            ScriptedLlm::say("report B"),
+        ],
+    );
+    r.agent
+        .prompt("go", CancellationToken::new())
+        .await
+        .unwrap();
+    let res = split_results(&r);
+    assert_eq!(res.len(), 2);
+    assert!(res.iter().all(|c| c.contains("[agent session ")), "{res:?}");
+    assert!(
+        res.iter().any(|c| c.starts_with("report A")) && res.iter().any(|c| c.starts_with("report B")),
+        "{res:?}"
+    );
+    assert_eq!(r.llm.parent.requests().len(), 2, "the parent asked twice");
+}
+
+#[tokio::test]
+async fn switched_to_serial_they_run_one_after_another_in_order() {
+    let r = split_rig(
+        vec![two_agents(), ScriptedLlm::say("both back")],
+        vec![ScriptedLlm::say("report A"), ScriptedLlm::say("report B")],
+    );
+    let said = r.agent.command("children", "serial").unwrap();
+    assert!(said.notices[0].message.contains("one after another"));
+    assert!(!reactor_context::settings::Settings::load(&r.agent.config().paths).children.parallel);
+    r.agent
+        .prompt("go", CancellationToken::new())
+        .await
+        .unwrap();
+    let res = split_results(&r);
+    assert!(res[0].starts_with("report A") && res[1].starts_with("report B"), "{res:?}");
+    // And back on, with a limit.
+    r.agent.command("children", "parallel on").unwrap();
+    r.agent.command("children", "max 2").unwrap();
+    let s = reactor_context::settings::Settings::load(&r.agent.config().paths).children;
+    assert!(s.parallel && s.max_parallel == 2);
+    assert!(r.agent.command("children", "max zero").is_err());
+}
+
+#[tokio::test]
+async fn a_child_started_in_the_background_is_collected_with_wait() {
+    let r = split_rig(
+        vec![
+            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "enumerate", "background": true}))]),
+            ScriptedLlm::call("", &[("w1", "wait", json!({}))]),
+            ScriptedLlm::say("collected"),
+        ],
+        vec![ScriptedLlm::say("the enumeration")],
+    );
+    r.agent
+        .prompt("go", CancellationToken::new())
+        .await
+        .unwrap();
+    let res = split_results(&r);
+    assert!(res[0].contains("started in the background as session"), "{res:?}");
+    assert!(res[1].starts_with("the enumeration"), "{res:?}");
+}
+
+#[tokio::test]
+async fn wait_names_a_child_or_takes_the_next_and_says_when_there_is_none() {
+    let r = split_rig(
+        vec![
+            ScriptedLlm::call("", &[("w0", "wait", json!({}))]),
+            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "one", "background": true}))]),
+            ScriptedLlm::call("", &[("w1", "wait", json!({"session": "999"}))]),
+            ScriptedLlm::say("done"),
+        ],
+        vec![ScriptedLlm::say("report")],
+    );
+    r.agent
+        .prompt("go", CancellationToken::new())
+        .await
+        .unwrap();
+    let res = split_results(&r);
+    assert!(res[0].contains("no agent is running in the background"), "{res:?}");
+    assert!(res[2].contains("no agent `999`"), "{res:?}");
+}
+
+#[tokio::test]
+async fn a_childs_session_is_linked_to_its_parent() {
+    let r = split_rig(
+        vec![
+            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "list the imports"}))]),
+            ScriptedLlm::say("done"),
+        ],
+        vec![ScriptedLlm::say("three imports")],
+    );
+    r.agent
+        .prompt("go", CancellationToken::new())
+        .await
+        .unwrap();
+    let case = r.agent.store().lock().unwrap().case().clone();
+    let all = reactor_db::sessions::list(case.db()).unwrap();
+    let child = all.iter().find(|s| s.id != "s").unwrap();
+    assert_eq!(child.parent.as_deref(), Some("s"));
+    assert_eq!(all.iter().find(|s| s.id == "s").unwrap().parent, None);
+}

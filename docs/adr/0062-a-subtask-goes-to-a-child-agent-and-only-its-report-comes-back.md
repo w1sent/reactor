@@ -1,5 +1,9 @@
 # A subtask goes to a child agent, and only its report comes back
 
+> **Extended by [ADR-0063](0063-children-run-in-parallel-in-the-background-and-are-linked-to-their-parent.md):**
+> children run in parallel, can be started in the background and waited for, and are linked to
+> their parent. Cost stays per session, as decided there.
+
 Reverse-engineering work is output-heavy: a per-sample enumeration, a query across binaries, a
 batch of carving jobs. Done in the parent's turn it spends the parent's window on bulk output the
 parent needs one paragraph of. This adds one tool that gives such a task to a child, which spends
@@ -32,7 +36,7 @@ is no approval step, because there is no approval model; the parent's call is th
 every other tool call of the parent is. A child's system prompt is made by the same code as any
 ([ADR-0006](0006-registry-injected-into-system-prompt.md)).
 
-**The call waits for the child, and the parent's cancel is the child's.** While it runs, the
+**The call waits for the child (unless it is started in the background, ADR-0063), and the parent's cancel is the child's.** While it runs, the
 parent's tool card shows a line per child tool call and per notice. Interrupting the parent
 cancels the child, which keeps what it did in its log. A child that fails (the model is down, it
 was stopped) is an error *result*: the parent decides what to do, and the turn goes on.
@@ -42,17 +46,11 @@ does; a test rig or a headless caller that does not is not offered a tool it can
 
 ## Not done
 
-- **Children run one after another.** The loop runs a reply's tool calls in order, so two `agent`
-  calls in one reply are two children in sequence. Fan-out in parallel, and a blocking `wait`
-  for a child started earlier, are the next step ([TODO.md](../../TODO.md)).
-- **Cost is attributable, not summed.** Each child's tokens are in its own log and in the footer
-  of the result; the parent's counters do not include them, and a session list that sums sessions
-  would count them as sessions of their own.
-- **No column links a child to its parent.** The `origin` entry does; the session list shows a
-  child as a session. A migration for the link, and nesting it under its parent in the list, are
-  for when the list needs it.
+- **Cost is attributable, not summed, and meant to be.** Each child's tokens are in its own log and
+  in the footer of the result. The parent's counters do not include them.
 - **Findings do not enter the analysis graph by themselves.** The report is for the analyst; the
   graph's tools and pull are how structured findings get in ([ADR-0047](0047-the-analysis-graph-is-the-case-s-model.md)).
+- Running several together, a wait, and a link to the parent are in ADR-0063.
 
 ## Considered and rejected
 

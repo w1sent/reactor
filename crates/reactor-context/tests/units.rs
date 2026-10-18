@@ -780,3 +780,18 @@ fn the_cache_prefix_lifetime_is_one_of_the_two_the_providers_offer() {
     let out = serde_json::to_value(Settings::default()).unwrap();
     assert!(out.get("cache").is_none(), "an unset cache section is not written");
 }
+
+#[test]
+fn children_run_in_parallel_unless_switched_off_and_at_most_so_many_at_once() {
+    use reactor_context::settings::{ChildrenSettings, Settings};
+    let d = ChildrenSettings::default();
+    assert!(d.parallel && d.max_parallel == 4);
+    let n = |v: serde_json::Value| ChildrenSettings::normalize(&v);
+    assert!(!n(json!({"parallel": false})).parallel);
+    assert_eq!(n(json!({"parallel": "no"})).parallel, true, "only a boolean counts");
+    assert_eq!(n(json!({"maxParallel": 2})).max_parallel, 2);
+    assert_eq!(n(json!({"maxParallel": 99})).max_parallel, ChildrenSettings::MAX);
+    assert_eq!(n(json!({"maxParallel": 0})).max_parallel, 4, "at least one, else the default");
+    assert!(!Settings::from_json(&json!({"children": {"parallel": false}})).children.parallel);
+    assert!(serde_json::to_value(Settings::default()).unwrap().get("children").is_none());
+}

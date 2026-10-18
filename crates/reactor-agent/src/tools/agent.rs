@@ -15,17 +15,24 @@ use crate::llm::ToolSpec;
 /// Name of the tool.
 pub const TOOL: &str = "agent";
 
+/// A request to start a child.
+#[derive(Debug, Clone, Default)]
+pub struct ChildRequest {
+    pub task: String,
+    /// The tools it gets: all of the parent's but `agent` and `wait` if `None`.
+    pub tools: Option<Vec<String>>,
+    /// Return at once with the child's session; collect its report with `wait`.
+    pub background: bool,
+}
+
 /// What makes a child. Implemented by the agent that owns the tool, which knows the model, the
 /// summarizer, the tools and the configuration a child is made from.
 pub trait Children: Send + Sync {
-    /// Run `task` in a child restricted to the tools named (all of the parent's but this one if
-    /// `tools` is `None`) and return its report.
-    fn run<'a>(
-        &'a self,
-        task: String,
-        tools: Option<Vec<String>>,
-        ctx: &'a ToolCtx,
-    ) -> BoxFut<'a, ToolOutput>;
+    /// Run a child and return its report, or, in the background, where to wait for it.
+    fn run<'a>(&'a self, request: ChildRequest, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput>;
+
+    /// The report of a child started in the background: the named one, or the next to finish.
+    fn wait<'a>(&'a self, session: Option<String>, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput>;
 }
 
 pub struct AgentTool;
@@ -39,7 +46,8 @@ impl Tool for AgentTool {
                 "type": "object",
                 "properties": {
                     "task": { "type": "string", "description": "What to do and what to report. It does not see this conversation." },
-                    "tools": { "type": "array", "items": { "type": "string" }, "description": "Names of the tools it gets (default: yours)." }
+                    "tools": { "type": "array", "items": { "type": "string" }, "description": "Names of the tools it gets (default: yours)." },
+                    "background": { "type": "boolean", "description": "Return at once with its session; collect the report with `wait`." }
                 },
                 "required": ["task"]
             }),
@@ -47,9 +55,7 @@ impl Tool for AgentTool {
     }
 
     fn guidelines(&self) -> &'static [&'static str] {
-        &[
-            "Give `agent` bulk or output-heavy work and everything it needs in `task`; read its report, not its transcript.",
-        ]
+        &["Give `agent` bulk or output-heavy work and everything it needs in `task`; read its report, not its transcript."]
     }
 
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
@@ -66,7 +72,52 @@ impl Tool for AgentTool {
                     .map(str::to_string)
                     .collect::<Vec<_>>()
             });
-            children.run(task.to_string(), tools, ctx).await
+            let background = args
+                .get("background")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            children
+                .run(
+                    ChildRequest {
+                        task: task.to_string(),
+                        tools,
+                        background,
+                    },
+                    ctx,
+                )
+                .await
+        })
+    }
+}
+
+/// Name of the waiting tool.
+pub const WAIT: &str = "wait";
+
+pub struct WaitTool;
+
+impl Tool for WaitTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: WAIT.into(),
+            description: "Wait for an agent started with `background` and return its report: the one named, or the next to finish.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session `agent` returned. Omit it to take the next to finish." }
+                }
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
+        Box::pin(async move {
+            let Some(children) = ctx.children.as_ref() else {
+                return ToolOutput::err("this session cannot start another agent");
+            };
+            let session = str_arg(&args, "session")
+                .map(|s| s.trim().trim_start_matches('#').to_string())
+                .filter(|s| !s.is_empty());
+            children.wait(session, ctx).await
         })
     }
 }

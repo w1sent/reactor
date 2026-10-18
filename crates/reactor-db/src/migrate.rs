@@ -646,6 +646,12 @@ const MIGRATIONS: &[&str] = &[
       colour TEXT NOT NULL
     );
     "#,
+    // 8: the session that started this one (ADR-0063): a child agent's session points at its
+    // parent's. Empty for a session a person began.
+    r#"
+    ALTER TABLE session ADD COLUMN parent_session TEXT REFERENCES session(id);
+    CREATE INDEX session_parent ON session(parent_session);
+    "#,
 ];
 
 /// The schema version this binary writes.

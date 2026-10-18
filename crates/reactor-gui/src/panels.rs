@@ -937,7 +937,7 @@ impl Render for TranscriptPanel {
                 session.items.clone(),
                 session.hidden.clone(),
                 session.phase,
-                session.follow_up.clone(),
+                session.waiting.clone(),
                 session.last_error.clone(),
                 session
                     .run
@@ -1166,18 +1166,28 @@ impl Render for TranscriptPanel {
         let scheduled_markers: Vec<_> = scheduled
             .iter()
             .enumerate()
-            .map(|(i, text)| {
-                let first = text.lines().next().unwrap_or("");
+            .map(|(i, p)| {
+                let first = p.text.lines().next().unwrap_or("");
                 let shown: String = if first.chars().count() > 90 { first.chars().take(90).chain(std::iter::once('…')).collect() } else { first.to_string() };
+                let (word, tip) = match p.class {
+                    reactor_agent::inbox::Class::Steer => (
+                        "steering",
+                        "Reaches the model at the next step of the turn, after the tool call that is running. Press ↑ in the empty prompt to take it back and change it.",
+                    ),
+                    reactor_agent::inbox::Class::Queue => (
+                        "queued",
+                        "Runs as a prompt of its own once this one is over. Press ↑ in the empty prompt to take it back and change it.",
+                    ),
+                };
                 crate::hints::tip(
                     div().id(("scheduled", i)).px_3().py_1().child(
                         Marker::new()
                             .id(("scheduled-marker", i))
                             .text_color(theme.muted_foreground)
                             .icon(MarkerIcon::new().child(Icon::new(IconName::Clock).small()))
-                            .content(MarkerContent::new().text(format!("scheduled: {shown}"))),
+                            .content(MarkerContent::new().text(format!("{word}: {shown}"))),
                     ),
-                    "Runs right after the current prompt. Press ↑ in the empty prompt to bring it back and change it.",
+                    tip,
                 )
             })
             .collect();
@@ -1387,20 +1397,20 @@ impl Render for TranscriptPanel {
                     .items_center()
                     .child(div().flex_1().font_family(prompt_family).text_size(prompt_size).child(Textarea::new(&self.composer)))
                     // One button: it sends, and while the agent works it interrupts. Enter in
-                    // the prompt still schedules a message to run right after.
+                    // the prompt still steers it, and Ctrl+Enter queues a message for after.
                     .child(if idle {
                         Button::new("send")
-                            .tooltip("Enter sends · Shift+Enter starts a new line · / lists commands · Ctrl+P opens the palette")
+                            .tooltip("Enter sends · Shift+Enter starts a new line · / lists commands · Ctrl+P opens the palette · while the agent works, Enter steers it and Ctrl+Enter queues")
                             .primary()
                             .label("Send")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(app) = this.app.upgrade() {
-                                    app.update(cx, |app, cx| app.send_composer(window, cx));
+                                    app.update(cx, |app, cx| app.send_composer(false, window, cx));
                                 }
                             }))
                     } else {
                         Button::new("interrupt")
-                            .tooltip("Stop the agent. Enter in the prompt schedules a message to run right after instead, and ↑ in the empty prompt brings it back")
+                            .tooltip("Stop the agent. Enter in the prompt steers it at the next step instead, Ctrl+Enter queues a message for after, and ↑ in the empty prompt brings the last one back")
                             .danger()
                             .label("Interrupt")
                             .on_click(cx.listener(|this, _, window, cx| {

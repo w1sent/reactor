@@ -916,6 +916,10 @@ impl ReactorApp {
                 app.push_note("error", note);
             }
             app.start_pump(cx);
+            // Input a closed session had waiting is the first thing it is sent.
+            if app.backend.as_ref().is_some_and(|b| b.has_waiting()) {
+                app.start_waiting(cx);
+            }
             app.start_mcp_watch(cx);
             app.start_notice_clock(cx);
             app.refresh_catalogue(cx);
@@ -1338,13 +1342,9 @@ impl ReactorApp {
                 self.refresh_tree(cx);
                 self.refresh_statuses(cx);
                 backend.refresh_context();
-                // Messages scheduled while it ran go next, oldest first.
-                if ok
-                    && let Some(next) = self.session.update(cx, |s, _| {
-                        (!s.follow_up.is_empty()).then(|| s.follow_up.remove(0))
-                    })
-                {
-                    self.start_turn(next, cx);
+                // Input typed while it ran goes next, oldest first.
+                if ok && backend.has_waiting() {
+                    self.start_waiting(cx);
                 }
             }
             UiEvent::Reduced(result) => {
@@ -1587,8 +1587,9 @@ impl ReactorApp {
                     this.activate_session(&id, window, cx);
                 }
                 match event {
-                    InputEvent::PressEnter { shift, .. } if !*shift => {
-                        this.send_composer(window, cx)
+                    // Ctrl/Cmd+Enter queues a message for after the turn; Enter steers it.
+                    InputEvent::PressEnter { secondary, shift } if !*shift => {
+                        this.send_composer(*secondary, window, cx)
                     }
                     InputEvent::Change => this.refresh_slash(true, cx),
                     _ => {}
@@ -1838,6 +1839,9 @@ impl ReactorApp {
         }
         self.show_transcript(handle, window, cx);
         self.activate_session(&new_id, window, cx);
+        if backend.has_waiting() {
+            self.start_waiting(cx);
+        }
         self.refresh_sessions(cx);
     }
 
@@ -2559,7 +2563,7 @@ impl ReactorApp {
     /// Clears the field *before* sending: gpui-component's textarea can dispatch one
     /// `Enter` to more than one action listener, which reached this function twice for a
     /// single keystroke (the "prompt sent twice" bug). Clearing first makes it idempotent.
-    pub fn send_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn send_composer(&mut self, queue: bool, window: &mut Window, cx: &mut Context<Self>) {
         // A completion is open: Enter takes it rather than sending half a command.
         if self.slash.is_open() {
             self.accept_slash(window, cx);
@@ -2581,7 +2585,20 @@ impl ReactorApp {
             }
             self.run_command(cmd, window, cx);
         } else if self.session.read(cx).phase != AgentPhase::Idle {
-            self.session.update(cx, |s, _| s.follow_up.push(text));
+            // Typed while the agent works: a fact in the log before it is anything else.
+            let class = if queue {
+                reactor_agent::inbox::Class::Queue
+            } else {
+                reactor_agent::inbox::Class::Steer
+            };
+            match self.backend.clone().map(|b| (b.admit(class, &text), b.store())) {
+                Some((Ok(()), store)) => {
+                    self.session
+                        .update(cx, |s, _| s.waiting = reactor_agent::inbox::pending(&store.lock().unwrap()));
+                }
+                Some((Err(e), _)) => self.push_note("error", format!("could not keep that message: {e}")),
+                None => self.push_note("error", "the agent is not running"),
+            }
             cx.notify();
         } else {
             self.start_turn(text, cx);
@@ -2643,8 +2660,9 @@ impl ReactorApp {
         // An empty prompt and a message scheduled to run next: bring the latest one back to
         // change. (Nothing is lost: it leaves the schedule only to sit in the input.)
         if !self.slash.is_open() && self.composer.read(cx).value().is_empty() {
-            let latest = self.session.update(cx, |s, _| s.follow_up.pop());
+            let latest = self.backend.as_ref().and_then(|b| b.withdraw_latest());
             if let Some(text) = latest {
+                self.refresh_waiting(cx);
                 self.show_in_prompt(&text, window, cx);
                 return;
             }
@@ -2675,6 +2693,31 @@ impl ReactorApp {
         if let Some(text) = self.prompt_history.forward() {
             self.show_in_prompt(&text, window, cx);
         }
+    }
+
+    /// The session's waiting input, read again from the log.
+    fn refresh_waiting(&mut self, cx: &mut Context<Self>) {
+        if let Some(backend) = self.backend.clone() {
+            let store = backend.store();
+            self.session
+                .update(cx, |s, _| s.waiting = reactor_agent::inbox::pending(&store.lock().unwrap()));
+        }
+    }
+
+    /// Run the input that is waiting in the log, oldest first: what was typed behind a turn, or
+    /// what a session had waiting when it was closed.
+    fn start_waiting(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        self.session.update(cx, |s, _| {
+            s.phase = AgentPhase::Working;
+            s.last_error = None;
+            s.run = Some(crate::session::Run::new(std::time::Instant::now()));
+        });
+        backend.prompt_waiting();
+        self.tree_panel.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     fn start_turn(&mut self, text: String, cx: &mut Context<Self>) {
@@ -4239,9 +4282,8 @@ impl ReactorApp {
             return;
         };
         backend.cancel();
-        let queued = self
-            .session
-            .update(cx, |s, _| std::mem::take(&mut s.follow_up));
+        let queued = backend.withdraw_all();
+        self.refresh_waiting(cx);
         if !queued.is_empty() {
             let text = queued.join("\n");
             self.composer

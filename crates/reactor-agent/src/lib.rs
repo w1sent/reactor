@@ -16,6 +16,7 @@ pub mod entry;
 pub mod error;
 pub mod eval;
 pub mod history;
+pub mod inbox;
 pub mod inspect;
 pub mod llm;
 pub mod mcp;

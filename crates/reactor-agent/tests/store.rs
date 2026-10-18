@@ -523,3 +523,73 @@ fn sessions_are_numbered_one_two_three_in_a_case_and_older_ids_are_not_counted()
         reactor_agent::entry::Kind::Session { session, .. } if session == "4"
     ));
 }
+
+// -- input waiting for the model (ADR-0061) ---------------------------------------------------
+
+use reactor_agent::inbox::{self, Class, End};
+
+#[test]
+fn admitted_input_waits_in_the_log_and_is_still_there_after_a_reopen() {
+    let (_dir, mut s) = store();
+    user(&mut s, "start");
+    assert!(inbox::admit(&mut s, "a", Class::Steer, "check the imports too").unwrap());
+    assert!(inbox::admit(&mut s, "b", Class::Queue, "then the strings").unwrap());
+    let case = s.case().clone();
+    drop(s);
+
+    let s = Store::open(&case, "s1").unwrap();
+    let waiting = inbox::pending(&s);
+    assert_eq!(
+        waiting.iter().map(|p| (p.item.as_str(), p.class)).collect::<Vec<_>>(),
+        vec![("a", Class::Steer), ("b", Class::Queue)],
+        "oldest first, with the class each was given"
+    );
+    assert_eq!(waiting[0].text, "check the imports too");
+}
+
+#[test]
+fn the_first_admission_of_an_item_wins_even_after_it_was_delivered_or_taken_back() {
+    let (_dir, mut s) = store();
+    assert!(inbox::admit(&mut s, "a", Class::Steer, "first").unwrap());
+    assert!(!inbox::admit(&mut s, "a", Class::Queue, "again").unwrap());
+    assert_eq!(inbox::pending(&s).len(), 1);
+    assert_eq!(inbox::pending(&s)[0].text, "first");
+
+    let u = user(&mut s, "first");
+    inbox::finish(&mut s, "a", End::Delivered(u)).unwrap();
+    assert!(inbox::pending(&s).is_empty());
+    assert!(
+        !inbox::admit(&mut s, "a", Class::Steer, "first").unwrap(),
+        "a submit repeated after delivery is not a second message"
+    );
+
+    assert!(inbox::admit(&mut s, "b", Class::Queue, "later").unwrap());
+    inbox::finish(&mut s, "b", End::Cancelled).unwrap();
+    assert!(inbox::pending(&s).is_empty(), "a tombstone ends it");
+    assert!(!inbox::admit(&mut s, "b", Class::Queue, "later").unwrap());
+}
+
+#[test]
+fn waiting_input_belongs_to_the_branch_it_was_admitted_on() {
+    let (_dir, mut s) = store();
+    let root = user(&mut s, "start");
+    inbox::admit(&mut s, "a", Class::Queue, "on the first branch").unwrap();
+    assert_eq!(inbox::pending(&s).len(), 1);
+    s.set_head(root).unwrap();
+    assert!(inbox::pending(&s).is_empty(), "the other branch does not have it");
+}
+
+#[test]
+fn waiting_input_is_not_a_message_to_the_model_until_it_is_delivered() {
+    let (_dir, mut s) = store();
+    user(&mut s, "start");
+    inbox::admit(&mut s, "a", Class::Steer, "not yet").unwrap();
+    let texts: Vec<_> = project(&s)
+        .into_iter()
+        .filter_map(|i| match i.msg {
+            Msg::User { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["start"]);
+}

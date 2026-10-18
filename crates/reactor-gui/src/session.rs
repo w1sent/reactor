@@ -202,8 +202,9 @@ pub struct Session {
     pub items: Vec<ChatItem>,
     /// Rows a context reduction currently hides from the model — shown dimmed, never removed.
     pub hidden: HashSet<usize>,
-    /// Messages typed while a turn ran; sent, oldest first, as turns end.
-    pub follow_up: Vec<String>,
+    /// Input typed while a turn ran and not yet sent, oldest first: a fact in the log, so it is
+    /// read from the store with everything else ([ADR-0061](../../../docs/adr/0061-typed-input-is-a-fact-in-the-log-before-it-is-sent.md)).
+    pub waiting: Vec<reactor_agent::inbox::Pending>,
     /// The model in use, `provider/name`.
     pub model: Option<String>,
     pub phase: AgentPhase,
@@ -225,6 +226,7 @@ impl Session {
 
     /// Rebuild every row from the store's current branch.
     pub fn rebuild(&mut self, store: &Store) {
+        self.waiting = reactor_agent::inbox::pending(store);
         self.items.clear();
         self.hidden.clear();
         self.card_at.clear();

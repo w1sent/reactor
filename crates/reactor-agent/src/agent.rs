@@ -51,6 +51,7 @@ use crate::context::{
 use crate::deferral::{self, Candidate};
 use crate::entry::{Attachment, EntryId, Kind, Mode, Trigger, Usage};
 use crate::error::{Error, Result};
+use crate::inbox;
 use crate::inspect::ContextPreview;
 use crate::llm::{Delta, Llm, LlmRequest, Reply, ToolSpec, backoff, complete_watched};
 use crate::prompt::{self, RegistryView};
@@ -1318,6 +1319,94 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     /// Run one turn on `text`.
     pub async fn prompt(&self, text: &str, cancel: CancellationToken) -> Result<Outcome> {
+        self.prompt_from(text, None, cancel).await
+    }
+
+    /// Run one turn on the oldest input waiting in the inbox, whatever its class: the turn it was
+    /// waiting for is over. `None` when nothing waits
+    /// ([ADR-0061](../../../docs/adr/0061-typed-input-is-a-fact-in-the-log-before-it-is-sent.md)).
+    pub async fn prompt_pending(&self, cancel: CancellationToken) -> Option<Result<Outcome>> {
+        let first = inbox::pending(&self.store.lock().unwrap()).into_iter().next()?;
+        Some(
+            self.prompt_from(&first.text, Some(first.item.as_str()), cancel)
+                .await,
+        )
+    }
+
+    /// Admit typed input. `false` if `item` was admitted already.
+    pub fn admit(&self, item: &str, class: inbox::Class, text: &str) -> Result<bool> {
+        let before = self.store.lock().unwrap().head();
+        let added = inbox::admit(&mut self.store.lock().unwrap(), item, class, text)?;
+        if added {
+            let head = self.store.lock().unwrap().head();
+            if head != before {
+                self.emit(Event::Appended(head));
+            }
+        }
+        Ok(added)
+    }
+
+    /// What waits, oldest first.
+    pub fn pending_inbox(&self) -> Vec<inbox::Pending> {
+        inbox::pending(&self.store.lock().unwrap())
+    }
+
+    /// Take back one item, or the latest when `item` is `None`. Its text, if it was waiting.
+    pub fn withdraw(&self, item: Option<&str>) -> Result<Option<String>> {
+        let mut store = self.store.lock().unwrap();
+        let waiting = inbox::pending(&store);
+        let Some(p) = (match item {
+            Some(i) => waiting.into_iter().find(|p| p.item == i),
+            None => waiting.into_iter().next_back(),
+        }) else {
+            return Ok(None);
+        };
+        let id = inbox::finish(&mut store, &p.item, inbox::End::Cancelled)?;
+        drop(store);
+        self.emit(Event::Appended(id));
+        Ok(Some(p.text))
+    }
+
+    /// Take back everything that waits, oldest first.
+    pub fn withdraw_all(&self) -> Result<Vec<String>> {
+        let mut texts = Vec::new();
+        for p in self.pending_inbox() {
+            if let Some(t) = self.withdraw(Some(&p.item))? {
+                texts.push(t);
+            }
+        }
+        Ok(texts)
+    }
+
+    /// Deliver the steering input that is waiting: each becomes a user message and the inbox
+    /// says so. How many were delivered.
+    async fn deliver_steers(&self) -> Result<usize> {
+        let steers: Vec<_> = inbox::pending(&self.store.lock().unwrap())
+            .into_iter()
+            .filter(|p| p.class == inbox::Class::Steer)
+            .collect();
+        for p in &steers {
+            self.attach_references(&p.text).await?;
+            let user = self.append(Kind::User {
+                text: p.text.clone(),
+            })?;
+            let end = inbox::finish(
+                &mut self.store.lock().unwrap(),
+                &p.item,
+                inbox::End::Delivered(user),
+            )?;
+            self.emit(Event::Appended(end));
+        }
+        Ok(steers.len())
+    }
+
+    async fn prompt_from(
+        &self,
+        text: &str,
+        from_inbox: Option<&str>,
+        cancel: CancellationToken,
+    ) -> Result<Outcome> {
+        let mut from_inbox = from_inbox;
         let mut outcome = Outcome::default();
         let mut in_a_row = 0usize;
         // Replies in a row that were cut off by the output limit in the middle of a tool call.
@@ -1348,7 +1437,16 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             }
             // What the message names goes along with it, ahead of it, as attachments.
             self.attach_references(&next).await?;
-            self.append(Kind::User { text: next.clone() })?;
+            let user = self.append(Kind::User { text: next.clone() })?;
+            // Input from the inbox is delivered once its message is in the log.
+            if let Some(item) = from_inbox.take() {
+                let end = inbox::finish(
+                    &mut self.store.lock().unwrap(),
+                    item,
+                    inbox::End::Delivered(user),
+                )?;
+                self.emit(Event::Appended(end));
+            }
 
             loop {
                 if cancel.is_cancelled() {
@@ -1432,6 +1530,10 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 }
 
                 if calls.is_empty() {
+                    // Input typed while the reply streamed is the next step, not the next turn.
+                    if self.deliver_steers().await? > 0 {
+                        continue;
+                    }
                     // The turn has settled. Level-2 reporting may send it back.
                     let (state, settings) = (
                         SessionState::load(&self.store.lock().unwrap()),
@@ -1449,6 +1551,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                             // the log as a dead branch, recoverable like everything else.
                             {
                                 let mut store = self.store.lock().unwrap();
+                                // Input still waiting goes with the turn to the new branch.
+                                let waiting = inbox::pending(&store);
                                 let last_user = store
                                     .branch()
                                     .iter()
@@ -1457,6 +1561,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                                     .map(|e| e.id);
                                 if let Some(id) = last_user {
                                     store.set_head(id)?;
+                                    for p in &waiting {
+                                        inbox::admit(&mut store, &p.item, p.class, &p.text)?;
+                                    }
                                 }
                             }
                             next = self.tracker.lock().unwrap().demand(&settings.reporting);
@@ -1478,6 +1585,8 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 outcome.tool_calls += calls.len();
                 self.run_tools(&calls, &cancel, &mut in_a_row, &mut outcome, &mut repeats)
                     .await?;
+                // A step boundary: the calls have settled and the next request has not been made.
+                self.deliver_steers().await?;
             }
         }
         self.emit(Event::Finished);

@@ -4009,3 +4009,127 @@ async fn a_summary_the_filter_stopped_is_blocked_not_a_model_that_wrote_nothing(
         .unwrap();
     assert_eq!(notes, NOTES);
 }
+
+// -- typed input waits in the log and is delivered by its class (ADR-0061) ------------------------------------
+
+use reactor_agent::inbox::Class;
+
+fn user_texts(req: &reactor_agent::llm::LlmRequest) -> Vec<String> {
+    req.messages
+        .iter()
+        .filter_map(|m| match m {
+            Msg::User { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_steer_is_delivered_after_the_tool_call_settles_and_before_the_next_request() {
+    let r = rig(
+        vec![bash_call("c1", "echo one"), ScriptedLlm::say("done")],
+        Sum::says("-"),
+        100_000,
+    );
+    assert!(r.agent.admit("s1", Class::Steer, "also look at the imports").unwrap());
+    run(&r, "start").await.unwrap();
+    let reqs = r.llm.requests();
+    assert_eq!(reqs.len(), 2, "the turn went on; nothing was interrupted");
+    assert_eq!(user_texts(&reqs[0]), vec!["start"], "the first request did not have it");
+    assert_eq!(
+        user_texts(&reqs[1]),
+        vec!["start", "also look at the imports"],
+        "the second did, after the result of the call in flight"
+    );
+    assert!(r.agent.pending_inbox().is_empty());
+}
+
+#[tokio::test]
+async fn a_steer_that_arrives_with_the_final_answer_gets_one_more_round_not_a_new_turn() {
+    let r = rig(
+        vec![ScriptedLlm::say("all done"), ScriptedLlm::say("and the imports")],
+        Sum::says("-"),
+        100_000,
+    );
+    r.agent.admit("s1", Class::Steer, "what about the imports?").unwrap();
+    let out = run(&r, "go").await.unwrap();
+    assert_eq!(out.rounds, 2);
+    assert!(r.agent.pending_inbox().is_empty());
+}
+
+#[tokio::test]
+async fn a_queued_message_waits_for_the_turn_to_end_and_then_runs_as_a_turn_of_its_own() {
+    let r = rig(
+        vec![
+            bash_call("c1", "echo one"),
+            ScriptedLlm::say("first done"),
+            ScriptedLlm::say("second done"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    r.agent.admit("q1", Class::Queue, "now the strings").unwrap();
+    run(&r, "start").await.unwrap();
+    assert!(
+        r.llm.requests().iter().all(|q| !user_texts(q).contains(&"now the strings".to_string())),
+        "not seen by the turn it waited behind"
+    );
+    assert_eq!(r.agent.pending_inbox().len(), 1, "and still waiting");
+
+    let out = r
+        .agent
+        .prompt_pending(CancellationToken::new())
+        .await
+        .expect("something was waiting")
+        .unwrap();
+    assert_eq!(out.rounds, 1);
+    assert!(r.agent.pending_inbox().is_empty());
+    assert!(user_texts(r.llm.requests().last().unwrap()).contains(&"now the strings".to_string()));
+    assert!(
+        r.agent.prompt_pending(CancellationToken::new()).await.is_none(),
+        "nothing left to run"
+    );
+}
+
+#[tokio::test]
+async fn taking_input_back_is_a_tombstone_and_it_is_never_sent() {
+    let r = rig(vec![ScriptedLlm::say("done")], Sum::says("-"), 100_000);
+    r.agent.admit("a", Class::Steer, "first thought").unwrap();
+    r.agent.admit("b", Class::Queue, "second thought").unwrap();
+    assert_eq!(r.agent.withdraw(None).unwrap().as_deref(), Some("second thought"), "the latest");
+    assert_eq!(r.agent.withdraw(Some("zzz")).unwrap(), None, "an unknown item is nothing");
+    assert_eq!(r.agent.withdraw_all().unwrap(), vec!["first thought".to_string()]);
+    run(&r, "go").await.unwrap();
+    assert!(user_texts(&r.llm.requests()[0]) == vec!["go"]);
+    // The entries are still in the log: nothing was deleted.
+    let n = r
+        .agent
+        .store()
+        .lock()
+        .unwrap()
+        .all()
+        .iter()
+        .filter(|e| matches!(&e.kind, Kind::Custom { key, .. } if key.starts_with("inbox")))
+        .count();
+    assert_eq!(n, 4, "two admissions and two tombstones");
+}
+
+#[tokio::test]
+async fn a_steer_names_a_file_with_a_hash_like_any_message_does() {
+    let r = rig(
+        vec![bash_call("c1", "echo one"), ScriptedLlm::say("done")],
+        Sum::says("-"),
+        100_000,
+    );
+    std::fs::write(r.root.join("work").join("notes.txt"), "the sample was packed").unwrap();
+    r.agent.admit("a", Class::Steer, "see #notes.txt").unwrap();
+    run(&r, "go").await.unwrap();
+    let second = &r.llm.requests()[1];
+    assert!(
+        second
+            .messages
+            .iter()
+            .any(|m| matches!(m, Msg::User { text } if text.contains("the sample was packed"))),
+        "the attachment is in the request that carries the steer"
+    );
+}

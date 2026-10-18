@@ -668,6 +668,55 @@ impl Backend {
         });
     }
 
+    /// Whether typed input is waiting in the log.
+    pub fn has_waiting(&self) -> bool {
+        !self.agent.pending_inbox().is_empty()
+    }
+
+    /// Admit input typed while a turn runs; it is in the log when this returns.
+    pub fn admit(&self, class: reactor_agent::inbox::Class, text: &str) -> std::result::Result<(), String> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let item = format!(
+            "{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.agent
+            .admit(&item, class, text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Run the oldest waiting input as a turn. The outcome arrives as [`UiEvent::TurnEnded`].
+    pub fn prompt_waiting(&self) {
+        let cancel = CancellationToken::new();
+        *self.running.lock().unwrap() = Some(cancel.clone());
+        let (agent, tx) = (self.agent.clone(), self.ui_tx.clone());
+        self.runtime.spawn(async move {
+            match agent.prompt_pending(cancel).await {
+                Some(result) => {
+                    let _ = tx.send(UiEvent::TurnEnded(result.map_err(|e| e.to_string())));
+                }
+                None => {
+                    let _ = tx.send(UiEvent::TurnEnded(Ok(Default::default())));
+                }
+            }
+        });
+    }
+
+    /// Take back the latest waiting input; its text.
+    pub fn withdraw_latest(&self) -> Option<String> {
+        self.agent.withdraw(None).ok().flatten()
+    }
+
+    /// Take back everything waiting, oldest first.
+    pub fn withdraw_all(&self) -> Vec<String> {
+        self.agent.withdraw_all().unwrap_or_default()
+    }
+
     /// Called by the window when it sees the turn end.
     pub fn turn_finished(&self) {
         *self.running.lock().unwrap() = None;

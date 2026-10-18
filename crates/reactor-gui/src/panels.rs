@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{SelectableText, h_flex, v_flex};
+use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::dock::{Panel, PanelEvent};
@@ -1775,11 +1776,7 @@ impl Render for TreePanel {
                 format!("{}\n{tip}", crate::session_list::reference(&case_id, &s.id)),
             ));
         }
-        v_flex()
-            .size_full()
-            .gap_2()
-            .child(
-                h_flex()
+        let header = h_flex()
                     .justify_between()
                     .items_center()
                     .px_2()
@@ -1852,45 +1849,73 @@ impl Render for TreePanel {
                                         }
                                     })),
                             ),
-                    ),
-            )
-            .child(
-                div()
-                    .id("session-list")
-                    .max_h(px(240.))
-                    .overflow_y_scrollbar()
-                    .child(session_list),
-            )
-            .child(
-                h_flex().px_2().child(
-                    Label::new(format!("Tree of session {active_id}"))
-                        .text_color(theme.muted_foreground),
+                    );
+        // Two panes with a divider between them that is dragged: the case's sessions above, the
+        // active session's tree below. Each scrolls in the room it has.
+        div().size_full().child(
+            v_resizable("tree-split")
+                .child(
+                    resizable_panel()
+                        .size(px(260.))
+                        .size_range(px(90.)..px(4000.))
+                        .child(
+                            v_flex()
+                                .size_full()
+                                .gap_2()
+                                .child(header)
+                                .child(
+                                    div()
+                                        .id("session-list")
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_y_scrollbar()
+                                        .child(session_list),
+                                ),
+                        ),
+                )
+                .child(
+                    resizable_panel()
+                        .size_range(px(90.)..px(4000.))
+                        .child(
+                            v_flex()
+                                .size_full()
+                                .gap_2()
+                                .pt_2()
+                                .child(
+                                    h_flex().px_2().child(
+                                        Label::new(format!("Tree of session {active_id}"))
+                                            .text_color(theme.muted_foreground),
+                                    ),
+                                )
+                                .child(
+                                    h_flex().justify_end().px_2().child(
+                                        Button::new("switch-branch")
+                                            .label("Continue from here")
+                                            .small()
+                                            .tooltip(
+                                                "Make the selected reply the tip: the next prompt branches from it",
+                                            )
+                                            .disabled(!can_switch)
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                if let (Some(id), Some(app)) =
+                                                    (this.selection, this.app.upgrade())
+                                                {
+                                                    app.update(cx, |app, cx| app.switch_branch(id, cx));
+                                                }
+                                            })),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .id("scroll-panel")
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_y_scrollbar()
+                                        .child(list),
+                                ),
+                        ),
                 ),
-            )
-            .child(
-                h_flex().justify_end().px_2().child(
-                    Button::new("switch-branch")
-                        .label("Continue from here")
-                        .small()
-                        .tooltip(
-                            "Make the selected reply the tip: the next prompt branches from it",
-                        )
-                        .disabled(!can_switch)
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            if let (Some(id), Some(app)) = (this.selection, this.app.upgrade()) {
-                                app.update(cx, |app, cx| app.switch_branch(id, cx));
-                            }
-                        })),
-                ),
-            )
-            .child(
-                div()
-                    .id("scroll-panel")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(list),
-            )
+        )
     }
 }
 

@@ -593,6 +593,7 @@ pub fn backoff(base: Duration, attempt: usize) -> Duration {
 
 /// A summarizer that asks a model — the same one by default, or a cheaper one
 /// configured separately (ADR-0038).
+#[derive(Clone)]
 pub struct LlmSummarizer<L> {
     pub llm: L,
     /// Asked once, with the same request, if `llm` fails and is not this model: a

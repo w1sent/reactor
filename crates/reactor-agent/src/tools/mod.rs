@@ -27,6 +27,7 @@ use crate::llm::ToolSpec;
 use crate::store::Store;
 use crate::truncate::{self, Limit};
 
+pub mod agent;
 pub mod bash;
 pub mod docs;
 pub mod files;
@@ -88,6 +89,8 @@ pub struct ToolCtx {
     pub limit: Limit,
     /// The tools this request left for `tool_search`, whether loaded since or not.
     pub deferred: Arc<Vec<ToolSpec>>,
+    /// What starts a child agent for the `agent` tool, when this session has it.
+    pub children: Option<Arc<dyn agent::Children>>,
 }
 
 impl ToolCtx {
@@ -185,6 +188,37 @@ impl Tools {
                 spec
             })
             .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Only the tools named, in this set's order; names that are not here are returned apart.
+    pub fn only(&self, names: &[String]) -> (Tools, Vec<String>) {
+        let kept: Vec<_> = self
+            .0
+            .iter()
+            .filter(|t| names.iter().any(|n| *n == t.spec().name))
+            .cloned()
+            .collect();
+        let unknown = names
+            .iter()
+            .filter(|n| self.find(n).is_none())
+            .cloned()
+            .collect();
+        (Tools(kept), unknown)
+    }
+
+    /// Without the tool named.
+    pub fn without(&self, name: &str) -> Tools {
+        Tools(
+            self.0
+                .iter()
+                .filter(|t| t.spec().name != name)
+                .cloned()
+                .collect(),
+        )
     }
 
     pub fn find(&self, name: &str) -> Option<&Arc<dyn Tool>> {

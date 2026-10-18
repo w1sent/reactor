@@ -1981,6 +1981,7 @@ async fn a_session_reaches_the_cases_other_sessions_unless_the_switch_is_off() {
         embedder: None,
         limit: Default::default(),
         deferred: Default::default(),
+        children: None,
     };
     let tools = Tools::standard(r.root.join("work"));
     let search = tools.find("history_search").unwrap();
@@ -4132,4 +4133,101 @@ async fn a_steer_names_a_file_with_a_hash_like_any_message_does() {
             .any(|m| matches!(m, Msg::User { text } if text.contains("the sample was packed"))),
         "the attachment is in the request that carries the steer"
     );
+}
+
+// -- a subtask goes to a child and only its report comes back (ADR-0062) -----------------------------------
+
+fn agent_call(id: &str, args: serde_json::Value) -> Result<Reply> {
+    ScriptedLlm::call("", &[(id, "agent", args)])
+}
+
+fn names_of(req: &reactor_agent::llm::LlmRequest) -> Vec<String> {
+    req.tools.iter().map(|t| t.name.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_child_works_in_a_session_of_its_own_and_only_its_report_returns() {
+    // The one scripted model answers whoever asks, in order: the parent, then the child, then the
+    // parent again.
+    let mut r = rig(
+        vec![
+            agent_call("a1", json!({"task": "list the imports of dropper.bin"})),
+            ScriptedLlm::say("It imports 3 functions: connect, send, CreateProcess."),
+            ScriptedLlm::say("The sample networks and spawns."),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    r.agent.enable_children();
+    run(&r, "triage the sample").await.unwrap();
+
+    let reqs = r.llm.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(names_of(&reqs[0]).contains(&"agent".to_string()), "the parent has it");
+    assert_eq!(
+        user_texts(&reqs[1]),
+        vec!["list the imports of dropper.bin"],
+        "the child sees its task and nothing of the parent's conversation"
+    );
+    assert!(
+        !names_of(&reqs[1]).contains(&"agent".to_string()),
+        "and does not start children of its own"
+    );
+    assert!(names_of(&reqs[1]).contains(&"bash".to_string()));
+
+    let result = results(&r).pop().unwrap();
+    assert!(
+        result.starts_with("It imports 3 functions") && result.contains("[agent session "),
+        "the report and where the rest is: {result}"
+    );
+
+    // The child is a session of the case, with its task and its parent in its log.
+    let case = r.agent.store().lock().unwrap().case().clone();
+    let all = reactor_db::sessions::list(case.db()).unwrap();
+    let child = all.iter().find(|s| s.id != "s").expect("a second session");
+    let log = Store::open(&case, &child.id).unwrap();
+    assert!(log.all().iter().any(|e| matches!(&e.kind, Kind::User { text } if text.contains("dropper.bin"))));
+    assert!(log.all().iter().any(|e| matches!(&e.kind, Kind::Custom { key, data } if key == "origin" && data["parent"] == "s")));
+    assert!(result.contains(&format!("[agent session {}", child.id)));
+}
+
+#[tokio::test]
+async fn a_child_gets_only_the_tools_it_was_given_and_is_told_of_the_ones_that_do_not_exist() {
+    let mut r = rig(
+        vec![
+            agent_call("a1", json!({"task": "read it", "tools": ["read", "no_such_tool"]})),
+            ScriptedLlm::say("read nothing"),
+            ScriptedLlm::say("done"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    r.agent.enable_children();
+    run(&r, "go").await.unwrap();
+    assert_eq!(names_of(&r.llm.requests()[1]), vec!["read".to_string()]);
+    assert!(results(&r).pop().unwrap().contains("left out: no_such_tool"));
+}
+
+#[tokio::test]
+async fn a_session_without_children_is_not_offered_the_tool() {
+    let r = rig(vec![ScriptedLlm::say("hi")], Sum::says("-"), 100_000);
+    run(&r, "go").await.unwrap();
+    assert!(!names_of(&r.llm.requests()[0]).contains(&"agent".to_string()));
+}
+
+#[tokio::test]
+async fn a_child_that_fails_gives_the_parent_an_error_result_not_a_failed_turn() {
+    let mut r = rig(
+        vec![
+            agent_call("a1", json!({"task": "do it"})),
+            Err(Error::Model("the model is down".into())),
+            ScriptedLlm::say("I will do it myself"),
+        ],
+        Sum::says("-"),
+        100_000,
+    );
+    r.agent.enable_children();
+    run(&r, "go").await.unwrap();
+    let result = results(&r).pop().unwrap();
+    assert!(result.contains("it stopped") && result.contains("the model is down"), "{result}");
 }

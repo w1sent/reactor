@@ -35,6 +35,7 @@ fn rig() -> Rig {
         embedder: None,
         limit: Default::default(),
         deferred: Default::default(),
+        children: None,
     };
     Rig {
         dir,

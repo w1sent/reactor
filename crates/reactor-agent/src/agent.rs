@@ -400,6 +400,8 @@ pub struct Agent<L: Llm, S: Summarizer> {
     deferred: Mutex<Arc<Vec<ToolSpec>>>,
     /// The warning that the fixed part of a request is most of the window has been given.
     warned_fixed: std::sync::atomic::AtomicBool,
+    /// What starts a child agent, when this session has the `agent` tool.
+    children: Option<Arc<dyn crate::tools::agent::Children>>,
 }
 
 impl<L: Llm, S: Summarizer> Agent<L, S> {
@@ -429,6 +431,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 authored_skills,
                 deferred: Mutex::new(Arc::new(Vec::new())),
                 warned_fixed: std::sync::atomic::AtomicBool::new(false),
+                children: None,
             },
             rx,
         )
@@ -1710,6 +1713,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 embedder: self.cfg.embedder.get(),
                 limit,
                 deferred: self.deferred.lock().unwrap().clone(),
+                children: self.children.clone(),
             };
             let out = match (self.tools.find(name), &self.cfg.mcp) {
                 (Some(tool), _) => tool.call(args.clone(), &ctx).await,
@@ -1975,5 +1979,155 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// The projected messages, as the next request would carry them.
     pub fn context(&self) -> Vec<Item> {
         project(&self.store.lock().unwrap())
+    }
+}
+
+
+// -- children (ADR-0062) -------------------------------------------------------------------------
+
+impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Agent<L, S> {
+    /// Give this agent the `agent` tool. A child is built like its parent, from the same model and
+    /// summarizer, and has the tools the parent has now, without `agent`: a child does not start
+    /// children.
+    pub fn enable_children(&mut self) {
+        let tools = self.tools.without(crate::tools::agent::TOOL);
+        self.children = Some(Arc::new(Spawner {
+            llm: self.llm.clone(),
+            summarizer: self.summarizer.clone(),
+            tools: tools.clone(),
+            cfg: self.cfg.clone(),
+        }));
+        self.tools = tools.with(crate::tools::agent::AgentTool);
+    }
+}
+
+struct Spawner<L, S> {
+    llm: L,
+    summarizer: S,
+    tools: Tools,
+    cfg: AgentConfig,
+}
+
+/// The origin of a session started by another: a state entry of the child's own log.
+pub const KEY_ORIGIN: &str = "origin";
+
+impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::agent::Children
+    for Spawner<L, S>
+{
+    fn run<'a>(
+        &'a self,
+        task: String,
+        tools: Option<Vec<String>>,
+        ctx: &'a ToolCtx,
+    ) -> crate::tools::BoxFut<'a, ToolOutput> {
+        Box::pin(async move {
+            let (case, parent) = {
+                let s = ctx.store.lock().unwrap();
+                (s.case().clone(), s.session().to_string())
+            };
+            let mut store = match Store::create_next(&case) {
+                Ok(s) => s,
+                Err(e) => return ToolOutput::err(format!("could not start a session for it: {e}")),
+            };
+            let child_session = store.session().to_string();
+            let mut unknown = Vec::new();
+            let tools = match tools {
+                Some(names) => {
+                    let (kept, missing) = self.tools.only(&names);
+                    unknown = missing;
+                    if kept.is_empty() {
+                        return ToolOutput::err(format!(
+                            "none of those tools exist here: {}",
+                            names.join(", ")
+                        ));
+                    }
+                    kept
+                }
+                None => self.tools.clone(),
+            };
+            if let Err(e) = store.append(Kind::Custom {
+                key: KEY_ORIGIN.into(),
+                data: serde_json::json!({ "parent": parent, "task": task }),
+            }) {
+                return ToolOutput::err(format!("could not start a session for it: {e}"));
+            }
+            let (child, mut events) = Agent::new(
+                self.llm.clone(),
+                self.summarizer.clone(),
+                store,
+                tools,
+                self.cfg.clone(),
+            );
+            // What the child is doing shows on the parent's tool card as it happens.
+            let emit = ctx.emit.clone();
+            let progress = tokio::spawn(async move {
+                while let Some(e) = events.recv().await {
+                    match e {
+                        Event::ToolStart { name, .. } => emit(&format!("[agent] {name}\n")),
+                        Event::Notice(n) => emit(&format!("[agent] {n}\n")),
+                        _ => {}
+                    }
+                }
+            });
+            let result = child.prompt(&task, ctx.cancel.clone()).await;
+            let (report, usage) = {
+                let store = child.store();
+                let store = store.lock().unwrap();
+                let report = store.branch().iter().rev().find_map(|e| match &e.kind {
+                    Kind::Assistant { blocks, .. } => {
+                        let text: String = blocks
+                            .iter()
+                            .filter_map(|b| match b {
+                                crate::entry::Block::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (!text.trim().is_empty()).then_some(text)
+                    }
+                    _ => None,
+                });
+                let mut usage = Usage::default();
+                for e in store.all() {
+                    if let Kind::Assistant { usage: Some(u), .. } = &e.kind {
+                        usage.input_tokens += u.input_tokens;
+                        usage.output_tokens += u.output_tokens;
+                        usage.cached_input_tokens += u.cached_input_tokens;
+                    }
+                }
+                (report, usage)
+            };
+            drop(child);
+            let _ = progress.await;
+            let footer = |rounds: usize, calls: usize| {
+                format!(
+                    "[agent session {child_session}: {rounds} rounds, {calls} tool calls, {} input ({} cached) and {} output tokens]{}",
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    usage.output_tokens,
+                    if unknown.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" Not tools here, left out: {}.", unknown.join(", "))
+                    }
+                )
+            };
+            match result {
+                Ok(o) => match report {
+                    Some(text) => {
+                        ToolOutput::ok(format!("{text}\n\n{}", footer(o.rounds, o.tool_calls)))
+                    }
+                    None => ToolOutput::err(format!(
+                        "it finished without a report. {}",
+                        footer(o.rounds, o.tool_calls)
+                    )),
+                },
+                Err(Error::Cancelled) => ToolOutput::err(format!(
+                    "cancelled before it finished; what it did is in session {child_session}. {}",
+                    footer(0, 0)
+                )),
+                Err(e) => ToolOutput::err(format!("it stopped: {e}. {}", footer(0, 0))),
+            }
+        })
     }
 }

@@ -22,7 +22,7 @@ which are marked † for that; what they decided about behaviour stands.
 ADR **0053** makes the tool-output bound of 0041 a setting and a per-call choice, and
 marks 0041 † for that.
 
-ADRs **0059–0061** add `/cache` and an hour-long prefix setting, notices before the repeat stop of 0058, and typed input that waits in the log.
+ADRs **0059–0062** add `/cache` and an hour-long prefix setting, notices before the repeat stop of 0058, typed input that waits in the log, and a tool that hands a subtask to a child agent.
 
 ADRs **0057–0058** record what the loop does when a request is rejected or a reply is cut off,
 and the shape the budget takes for small windows. They amend 0037, 0041 and 0053, which are
@@ -91,3 +91,4 @@ marked † for that; each says in a note what it changed.
 | [0059](0059-the-cache-is-measured-before-it-is-tuned.md) | The cache is measured before it is tuned, and the start of a request can be kept for an hour |
 | [0060](0060-a-repeated-call-is-first-a-notice.md) | A repeated call is first a notice, and only much later a stop |
 | [0061](0061-typed-input-is-a-fact-in-the-log-before-it-is-sent.md) | Typed input is a fact in the log before it is sent, and it is delivered by its class |
+| [0062](0062-a-subtask-goes-to-a-child-agent-and-only-its-report-comes-back.md) | A subtask goes to a child agent, and only its report comes back |

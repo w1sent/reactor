@@ -240,7 +240,7 @@ impl Backend {
             None => {}
         }
         cfg.skills_dir = find_bundled("skills");
-        let (agent, mut events) = Agent::new(
+        let (mut agent, mut events) = Agent::new(
             llm.clone(),
             // If the model named for summaries fails, the main one is asked instead.
             LlmSummarizer::new(summarizer.clone()).with_fallback(llm.clone()),
@@ -248,6 +248,8 @@ impl Backend {
             Tools::standard(opts.cwd.clone()),
             cfg,
         );
+        // The session may hand a subtask to a child agent (ADR-0062).
+        agent.enable_children();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

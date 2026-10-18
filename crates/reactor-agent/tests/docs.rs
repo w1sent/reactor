@@ -246,6 +246,7 @@ fn rig(embedder: Option<Arc<dyn Embedder>>) -> Rig {
         embedder,
         limit: Default::default(),
         deferred: Default::default(),
+        children: None,
     };
     Rig {
         _dir: dir,

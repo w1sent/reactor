@@ -3382,18 +3382,18 @@ fn same_calls(n: usize, cmd: &str) -> Vec<Result<Reply>> {
 }
 
 #[tokio::test]
-async fn the_same_call_with_the_same_result_five_times_in_a_row_ends_the_turn_and_says_so() {
-    let mut replies = same_calls(8, "echo still nothing here");
+async fn the_same_call_with_the_same_result_eight_times_in_a_row_ends_the_turn_and_says_so() {
+    let mut replies = same_calls(12, "echo still nothing here");
     replies.push(ScriptedLlm::say("never reached"));
     let r = rig(replies, Sum::says("-"), 100_000);
     let e = run(&r, "look again").await.unwrap_err();
     assert!(
-        e.to_string().contains("was called 5 times in a row")
+        e.to_string().contains("was called 8 times in a row")
             && e.to_string().contains("still nothing here"),
         "{e}"
     );
-    assert_eq!(r.llm.requests().len(), 5, "no sixth request");
-    assert_eq!(results(&r).len(), 5, "and every call has its result");
+    assert_eq!(r.llm.requests().len(), 8, "no ninth request");
+    assert_eq!(results(&r).len(), 8, "and every call has its result");
 }
 
 #[tokio::test]
@@ -3421,8 +3421,8 @@ async fn another_call_in_between_starts_the_count_again() {
 }
 
 #[tokio::test]
-async fn six_identical_calls_in_one_reply_stop_at_the_fifth_and_the_sixth_is_answered_unrun() {
-    let calls: Vec<(String, &str, serde_json::Value)> = (0..6)
+async fn nine_identical_calls_in_one_reply_stop_at_the_eighth_and_the_ninth_is_answered_unrun() {
+    let calls: Vec<(String, &str, serde_json::Value)> = (0..9)
         .map(|i| (format!("c{i}"), "bash", json!({"command": "echo same"})))
         .collect();
     let refs: Vec<(&str, &str, serde_json::Value)> = calls
@@ -3435,10 +3435,10 @@ async fn six_identical_calls_in_one_reply_stop_at_the_fifth_and_the_sixth_is_ans
         100_000,
     );
     let e = run(&r, "go").await.unwrap_err();
-    assert!(e.to_string().contains("5 times in a row"), "{e}");
+    assert!(e.to_string().contains("8 times in a row"), "{e}");
     let res = results(&r);
-    assert_eq!(res.len(), 6);
-    assert!(res[5].contains("not run: the turn was stopped"), "{res:?}");
+    assert_eq!(res.len(), 9);
+    assert!(res[8].contains("not run: the turn was stopped"), "{res:?}");
 }
 
 #[tokio::test]
@@ -3448,6 +3448,86 @@ async fn the_detector_can_be_turned_off() {
     let r = rig_with(replies, Sum::says("-"), 100_000, |c| c.max_repeats = 0);
     run(&r, "go").await.unwrap();
     assert_eq!(results(&r).len(), 8);
+}
+
+// -- a repeated call is first a notice (ADR-0060) ------------------------------------------------------------
+
+fn advisories(rig: &Rig) -> Vec<usize> {
+    results(rig)
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.contains("[reactor]"))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[tokio::test]
+async fn the_third_identical_call_gets_one_line_asking_what_it_is_waiting_for_and_no_other_does() {
+    let mut replies = same_calls(6, "echo nothing new");
+    replies.push(ScriptedLlm::say("done"));
+    let r = rig(replies, Sum::says("-"), 100_000);
+    run(&r, "look").await.unwrap();
+    assert_eq!(advisories(&r), vec![2], "the third result, once");
+    let third = &results(&r)[2];
+    assert!(
+        third.starts_with("nothing new") && third.contains("3rd identical call to `bash`"),
+        "after the tool's own words, not instead of them: {third}"
+    );
+    assert!(!third.to_lowercase().contains("must not") && !third.contains("stop"));
+}
+
+#[tokio::test]
+async fn arguments_in_another_order_are_the_same_call() {
+    let a = json!({"command": "echo same", "session": "main"});
+    let b = json!({"session": "main", "command": "echo same"});
+    let mut replies: Vec<Result<Reply>> = Vec::new();
+    for (i, args) in [a.clone(), b.clone(), a, b].iter().enumerate() {
+        replies.push(ScriptedLlm::call("", &[(&format!("c{i}"), "bash", args.clone())]));
+    }
+    replies.push(ScriptedLlm::say("done"));
+    let r = rig(replies, Sum::says("-"), 100_000);
+    run(&r, "go").await.unwrap();
+    assert_eq!(advisories(&r), vec![2]);
+}
+
+#[tokio::test]
+async fn the_same_tool_failing_three_times_in_a_row_is_noticed_even_with_other_arguments() {
+    let mut replies: Vec<Result<Reply>> = (0..5)
+        .map(|i| ScriptedLlm::call("", &[(&format!("c{i}"), "no_such_tool", json!({"n": i}))]))
+        .collect();
+    replies.push(ScriptedLlm::say("done"));
+    let r = rig(replies, Sum::says("-"), 100_000);
+    run(&r, "go").await.unwrap();
+    assert_eq!(advisories(&r), vec![2]);
+    assert!(results(&r)[2].contains("`no_such_tool` has failed 3 times in a row"));
+}
+
+#[tokio::test]
+async fn a_success_in_between_starts_the_failures_again() {
+    let fail = |i: usize| ScriptedLlm::call("", &[(&format!("f{i}"), "no_such_tool", json!({"n": i}))]);
+    let replies = vec![
+        fail(0),
+        fail(1),
+        bash_call("ok", "echo fine"),
+        fail(2),
+        fail(3),
+        ScriptedLlm::say("done"),
+    ];
+    let r = rig(replies, Sum::says("-"), 100_000);
+    run(&r, "go").await.unwrap();
+    assert!(advisories(&r).is_empty());
+}
+
+#[tokio::test]
+async fn the_notices_can_be_turned_off() {
+    let mut replies = same_calls(4, "echo again");
+    replies.push(ScriptedLlm::say("done"));
+    let r = rig_with(replies, Sum::says("-"), 100_000, |c| {
+        c.repeat_notice = 0;
+        c.failure_notice = 0;
+    });
+    run(&r, "go").await.unwrap();
+    assert!(advisories(&r).is_empty());
 }
 
 // -- Part D: the count, the focus, the second look, the threshold, the warning ---------------------------------

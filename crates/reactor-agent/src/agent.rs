@@ -62,21 +62,63 @@ use crate::truncate;
 /// Replies in a row cut off in the middle of a tool call before the turn stops.
 const MAX_CUT_CALLS: usize = 3;
 
-/// The last tool call of a turn, with its result, and how many times in a row it has come out
-/// the same. A call is "the same" only if its result is too, so polling something whose output
-/// changes is not a loop.
+/// What the turn's tool calls have been doing lately: the last call with its result and how many
+/// times in a row it has come out the same, and how many calls of one tool in a row have failed.
+/// A call is "the same" only if its result is too, so polling something whose output changes is
+/// not a loop ([ADR-0060](../../../docs/adr/0060-a-repeated-call-is-first-a-notice.md)).
 #[derive(Default)]
 struct Repeats {
     last: Option<u64>,
     count: usize,
+    failing: Option<String>,
+    failures: usize,
+}
+
+/// What [`Repeats::note`] counted for one settled call.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct Seen {
+    /// The same call with the same result, this many times in a row.
+    same: usize,
+    /// Calls of this tool in a row that failed.
+    failures: usize,
+}
+
+/// The arguments as text with every object's keys in order, so that `{a, b}` and `{b, a}` are
+/// one call (the JSON is kept in the order the model wrote it).
+fn canonical(v: &Value, out: &mut String) {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            out.push('{');
+            for k in keys {
+                out.push_str(&Value::String(k.clone()).to_string());
+                out.push(':');
+                canonical(&m[k], out);
+                out.push(',');
+            }
+            out.push('}');
+        }
+        Value::Array(a) => {
+            out.push('[');
+            for x in a {
+                canonical(x, out);
+                out.push(',');
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
 }
 
 impl Repeats {
-    /// Note a call and what it gave; how many times in a row that now is.
-    fn note(&mut self, name: &str, args: &Value, result: &str) -> usize {
+    /// Note a call, what it gave, and whether that was an error.
+    fn note(&mut self, name: &str, args: &Value, result: &str, is_error: bool) -> Seen {
         use std::hash::{Hash, Hasher};
+        let mut text = String::new();
+        canonical(args, &mut text);
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (name, args.to_string(), result).hash(&mut h);
+        (name, text, result).hash(&mut h);
         let sig = h.finish();
         if self.last == Some(sig) {
             self.count += 1;
@@ -84,8 +126,49 @@ impl Repeats {
             self.last = Some(sig);
             self.count = 1;
         }
-        self.count
+        if is_error && self.failing.as_deref() == Some(name) {
+            self.failures += 1;
+        } else if is_error {
+            self.failing = Some(name.to_string());
+            self.failures = 1;
+        } else {
+            self.failing = None;
+            self.failures = 0;
+        }
+        Seen {
+            same: self.count,
+            failures: self.failures,
+        }
     }
+}
+
+/// The line added to a result when a threshold is crossed: what happened, and a way on that is
+/// the model's to take. At most one per result; the repeat is the more specific.
+fn advisory(name: &str, seen: Seen, cfg: &AgentConfig) -> Option<String> {
+    if cfg.repeat_notice > 0 && seen.same == cfg.repeat_notice {
+        return Some(format!(
+            "[reactor] This is the {} identical call to `{name}` with the same result. If you are waiting for something to change, say what; otherwise try something different.",
+            ordinal(seen.same)
+        ));
+    }
+    if cfg.failure_notice > 0 && seen.failures == cfg.failure_notice {
+        return Some(format!(
+            "[reactor] `{name}` has failed {} times in a row. Say what you think is going wrong before the next attempt.",
+            seen.failures
+        ));
+    }
+    None
+}
+
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }
 
 /// What a frontend watches. Sent as things happen; never required for correctness.
@@ -141,6 +224,12 @@ pub struct AgentConfig {
     /// The same tool call, with the same result, this many times in a row ends the turn: the
     /// model is going round in circles. Zero turns it off.
     pub max_repeats: usize,
+    /// The same call with the same result this many times in a row adds a line to the result
+    /// asking the model to say what it is waiting for or to try something else. Zero turns it off
+    /// ([ADR-0060](../../../docs/adr/0060-a-repeated-call-is-first-a-notice.md)).
+    pub repeat_notice: usize,
+    /// The same tool failing this many calls in a row adds a line to the result. Zero turns it off.
+    pub failure_notice: usize,
     /// The longest a reply may be. Unset, it is a quarter of the window, at most 32k, and
     /// always cut to the room the window has left ([ADR-0057]).
     pub max_tokens: Option<u64>,
@@ -171,7 +260,9 @@ impl AgentConfig {
             budget: BudgetConfig::new(window),
             max_reductions_in_a_row: 3,
             max_rounds: 200,
-            max_repeats: 5,
+            max_repeats: 8,
+            repeat_notice: 3,
+            failure_notice: 3,
             max_tokens: None,
             idle_timeout: Duration::from_secs(300),
             transient_retries: 3,
@@ -1521,9 +1612,19 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             };
             let is_error = out.is_error;
             let kind = self.finalize(id, name, out, limit)?;
-            let seen = match &kind {
-                Kind::ToolResult { content, .. } => repeats.note(name, args, content),
-                _ => 0,
+            let mut kind = kind;
+            let seen = match &mut kind {
+                Kind::ToolResult { content, .. } => {
+                    let seen = repeats.note(name, args, content, is_error);
+                    // Appended after the result was cut, so it is never cut itself.
+                    if let Some(line) = advisory(name, seen, &self.cfg) {
+                        content.push_str("\n\n");
+                        content.push_str(&line);
+                        self.emit(Event::Notice(line));
+                    }
+                    seen
+                }
+                _ => Seen::default(),
             };
             let entry = self.append(kind)?;
             self.emit(Event::ToolEnd {
@@ -1533,13 +1634,14 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             });
 
             // The same call, giving the same result, again and again: nothing is going to change.
-            if self.cfg.max_repeats > 0 && seen >= self.cfg.max_repeats {
+            if self.cfg.max_repeats > 0 && seen.same >= self.cfg.max_repeats {
                 self.fill_results(
                     &calls[i + 1..],
                     "not run: the turn was stopped because the same call kept giving the same result",
                 )?;
                 return Err(Error::Model(format!(
-                    "stopped: `{name}` was called {seen} times in a row with the same arguments ({}) and gave the same result each time. Say what to try instead, or ask for something different.",
+                    "stopped: `{name}` was called {} times in a row with the same arguments ({}) and gave the same result each time. Say what to try instead, or ask for something different.",
+                    seen.same,
                     args.to_string().chars().take(120).collect::<String>()
                 )));
             }

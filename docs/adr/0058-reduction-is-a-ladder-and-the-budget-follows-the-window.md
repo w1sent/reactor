@@ -139,7 +139,7 @@ is a twentieth of the window (as many bytes as a fifth of its token count), betw
 16k, 20 KB in 100k, and what it always was in a large window. A limit the person set is theirs
 whatever the window, and a call may still ask for another ([ADR-0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md)).
 
-**Five identical calls in a row end the turn.** "Identical" is the call, its arguments *and* its
+**Eight identical calls in a row end the turn** (five when this was written; [ADR-0060](0060-a-repeated-call-is-first-a-notice.md) raised it and put a notice at three). "Identical" is the call, its arguments *and* its
 result, so asking again for something that changes (waiting on a process) is not a loop. The calls
 left in the reply are answered `not run`, and the message says what was repeated. Zero turns it off.
 

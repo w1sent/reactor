@@ -1,5 +1,8 @@
 # Children run in parallel, can be started in the background and waited for, and are linked to their parent
 
+> **Extended by [ADR-0064](0064-a-running-child-is-followed-in-a-tab-and-stopped-on-its-own.md):**
+> a running child is listed, followed in a tab and stopped on its own, and has a round limit.
+
 [ADR-0062](0062-a-subtask-goes-to-a-child-agent-and-only-its-report-comes-back.md) gave the agent a
 child and left four things for later: running several at once, waiting for one started earlier, a
 link from a child's session to its parent's, and a way to see that link. This does them. Token cost

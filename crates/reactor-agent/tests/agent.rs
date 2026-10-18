@@ -4431,3 +4431,117 @@ async fn a_childs_session_is_linked_to_its_parent() {
     assert_eq!(child.parent.as_deref(), Some("s"));
     assert_eq!(all.iter().find(|s| s.id == "s").unwrap().parent, None);
 }
+
+// -- stopping and following children, and a turn that panics (ADR-0064) ---------------------------------
+
+#[tokio::test]
+async fn a_running_child_is_listed_and_can_be_stopped_without_ending_the_parents_turn() {
+    let r = split_rig(
+        vec![
+            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "wait a long time"}))]),
+            ScriptedLlm::say("it was stopped, so I go on"),
+        ],
+        vec![bash_call("b", "sleep 30")],
+    );
+    let prompt = r.agent.prompt("go", CancellationToken::new());
+    let control = async {
+        let mut listed = None;
+        for _ in 0..200 {
+            let running = r.agent.running_children();
+            if !running.is_empty() {
+                listed = Some(running);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let stopped = r.agent.stop_children(None);
+        (listed, stopped)
+    };
+    let (out, (listed, stopped)) = tokio::join!(prompt, control);
+    out.unwrap();
+    let listed = listed.expect("the child was listed while it ran");
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].task.contains("wait a long time") && !listed[0].background);
+    assert_eq!(stopped, 1);
+    let res = split_results(&r);
+    assert!(res[0].contains("cancelled before it finished"), "{res:?}");
+    assert!(r.agent.running_children().is_empty(), "and it is off the list");
+    assert_eq!(r.llm.parent.requests().len(), 2, "the parent went on to its next reply");
+}
+
+#[tokio::test]
+async fn stopping_names_a_session_and_an_unknown_one_stops_nothing() {
+    let r = split_rig(vec![ScriptedLlm::say("hi")], vec![]);
+    assert_eq!(r.agent.stop_children(Some("99")), 0);
+    assert_eq!(r.agent.stop_children(None), 0);
+    let said = r.agent.command("agents", "").unwrap();
+    assert!(said.notices[0].message.contains("no agent is running"));
+    assert!(r.agent.command("agents", "stop 99").unwrap().notices[0].message.contains("no agent of session 99"));
+}
+
+#[tokio::test]
+async fn a_child_that_keeps_going_is_stopped_at_its_round_limit_and_returns_what_it_said() {
+    let r = split_rig(
+        vec![
+            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "never finish"}))]),
+            ScriptedLlm::say("done"),
+        ],
+        (0..10)
+            .map(|i| ScriptedLlm::call("still working", &[(&format!("b{i}"), "bash", json!({"command": format!("echo {i}")}))]))
+            .collect(),
+    );
+    let mut settings = reactor_context::settings::Settings::load(&r.agent.config().paths);
+    settings.children.max_rounds = 3;
+    settings.save(&r.agent.config().paths).unwrap();
+    r.agent.prompt("go", CancellationToken::new()).await.unwrap();
+    let res = split_results(&r);
+    assert!(
+        res[0].contains("it stopped: stopped after 3 model round trips")
+            && res[0].contains("What it had said last:\nstill working"),
+        "{res:?}"
+    );
+}
+
+/// Panics on its first request, answers after.
+struct PanicsOnce {
+    done: std::sync::atomic::AtomicBool,
+    inner: ScriptedLlm,
+}
+
+impl Llm for PanicsOnce {
+    async fn complete(
+        &self,
+        req: LlmRequest,
+        on_delta: &mut (dyn FnMut(Delta) + Send),
+    ) -> Result<Reply> {
+        if !self.done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            panic!("boom");
+        }
+        self.inner.complete(req, on_delta).await
+    }
+
+    fn name(&self) -> String {
+        "panics-once".into()
+    }
+}
+
+#[tokio::test]
+async fn a_turn_that_panics_ends_with_an_error_and_the_agent_goes_on_working() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let case = reactor_db::Case::create(&cwd, None).unwrap();
+    let store = Store::create(&case, "s").unwrap();
+    let mut cfg = AgentConfig::new(cwd.clone(), Paths::new(dir.path().join("cfg"), Shipped::Embedded), 100_000);
+    cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
+    cfg.scenarios_dir = dir.path().join("scenarios");
+    let llm = Arc::new(PanicsOnce {
+        done: false.into(),
+        inner: ScriptedLlm::new(vec![ScriptedLlm::say("back again")]),
+    });
+    let (agent, _events) = Agent::new(llm, Sum::says("-"), store, Tools::standard(cwd), cfg);
+    let e = agent.prompt("first", CancellationToken::new()).await.unwrap_err();
+    assert!(e.to_string().contains("internal error: boom"), "{e}");
+    // The log is whole and the next turn works.
+    agent.prompt("second", CancellationToken::new()).await.unwrap();
+}

@@ -167,6 +167,13 @@ pub fn commands() -> Vec<Entry> {
             "what the model would be sent, and where each piece comes from",
         ),
         Entry::fixed(
+            "agents",
+            "Model",
+            Optional,
+            "Child agents running now",
+            "/agents — lists them — | stop [all|<session>]",
+        ),
+        Entry::fixed(
             "children",
             "Model",
             Optional,

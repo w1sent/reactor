@@ -296,6 +296,9 @@ pub struct ChildrenSettings {
     pub parallel: bool,
     /// The most children running together, from this one reply or from the background.
     pub max_parallel: usize,
+    /// The most model round trips one child takes before it is stopped and what it had is
+    /// returned. Zero: no limit but the agent's own.
+    pub max_rounds: usize,
 }
 
 impl Default for ChildrenSettings {
@@ -303,12 +306,14 @@ impl Default for ChildrenSettings {
         ChildrenSettings {
             parallel: true,
             max_parallel: Self::DEFAULT_MAX,
+            max_rounds: Self::DEFAULT_ROUNDS,
         }
     }
 }
 
 impl ChildrenSettings {
     pub const DEFAULT_MAX: usize = 4;
+    pub const DEFAULT_ROUNDS: usize = 60;
     pub const MAX: usize = 16;
 
     pub fn is_default(&self) -> bool {
@@ -326,6 +331,10 @@ impl ChildrenSettings {
                 .filter(|n| *n >= 1.0 && n.fract() == 0.0)
                 .map(|n| (n as usize).min(Self::MAX))
                 .unwrap_or(d.max_parallel),
+            max_rounds: number(raw.get("maxRounds"))
+                .filter(|n| *n >= 0.0 && n.fract() == 0.0)
+                .map(|n| n as usize)
+                .unwrap_or(d.max_rounds),
         }
     }
 }

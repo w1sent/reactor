@@ -670,6 +670,16 @@ impl Backend {
         });
     }
 
+    /// The child agents this session's agent is running.
+    pub fn running_children(&self) -> Vec<reactor_agent::tools::agent::ChildInfo> {
+        self.agent.running_children()
+    }
+
+    /// Stop the running child agent of `session`, or all of them. How many.
+    pub fn stop_children(&self, session: Option<&str>) -> usize {
+        self.agent.stop_children(session)
+    }
+
     /// Whether typed input is waiting in the log.
     pub fn has_waiting(&self) -> bool {
         !self.agent.pending_inbox().is_empty()

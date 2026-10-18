@@ -1322,7 +1322,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
     /// Run one turn on `text`.
     pub async fn prompt(&self, text: &str, cancel: CancellationToken) -> Result<Outcome> {
-        self.prompt_from(text, None, cancel).await
+        self.guarded(self.prompt_from(text, None, cancel)).await
     }
 
     /// Run one turn on the oldest input waiting in the inbox, whatever its class: the turn it was
@@ -1331,9 +1331,75 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     pub async fn prompt_pending(&self, cancel: CancellationToken) -> Option<Result<Outcome>> {
         let first = inbox::pending(&self.store.lock().unwrap()).into_iter().next()?;
         Some(
-            self.prompt_from(&first.text, Some(first.item.as_str()), cancel)
+            self.guarded(self.prompt_from(&first.text, Some(first.item.as_str()), cancel))
                 .await,
         )
+    }
+
+    /// Run a turn so that a panic in it ends the turn with an error instead of the thread: the
+    /// frontend hears that it ended, calls left without a result are answered, and the log is
+    /// as it was. Without this a turn that panics never reports, and looks like one that never
+    /// finishes.
+    async fn guarded<F>(&self, turn: F) -> Result<Outcome>
+    where
+        F: std::future::Future<Output = Result<Outcome>>,
+    {
+        use futures::FutureExt;
+        match std::panic::AssertUnwindSafe(turn).catch_unwind().await {
+            Ok(result) => result,
+            Err(panic) => {
+                let why = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic".into());
+                let _ = self.answer_open_calls();
+                Err(Error::Model(format!(
+                    "internal error: {why}. The turn was ended and the log is intact; this is a bug in REactor."
+                )))
+            }
+        }
+    }
+
+    /// Answer the calls of the last reply that have no result, so the log stays replayable.
+    fn answer_open_calls(&self) -> Result<()> {
+        let open: Vec<(String, String, Value)> = {
+            let store = self
+                .store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let branch = store.branch();
+            let Some(at) = branch
+                .iter()
+                .rposition(|e| matches!(e.kind, Kind::Assistant { .. }))
+            else {
+                return Ok(());
+            };
+            let answered: std::collections::HashSet<&str> = branch[at..]
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    Kind::ToolResult { call_id, .. } => Some(call_id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            match &branch[at].kind {
+                Kind::Assistant { blocks, .. } => blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::entry::Block::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } if !answered.contains(id.as_str()) => {
+                            Some((id.clone(), name.clone(), arguments.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => vec![],
+            }
+        };
+        self.fill_results(&open, "not run: an internal error ended the turn")
     }
 
     /// Admit typed input. `false` if `item` was admitted already.
@@ -1987,6 +2053,47 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                     .map(|m| m.content);
                 return Ok(result);
             }
+            "agents" => {
+                let words: Vec<&str> = args.split_whitespace().collect();
+                match words.as_slice() {
+                    [] => {
+                        let running = self.running_children();
+                        if running.is_empty() {
+                            result
+                                .notices
+                                .push(reactor_context::Notice::info("no agent is running"));
+                        }
+                        for c in running {
+                            result.notices.push(reactor_context::Notice::info(format!(
+                                "session {}{} · {}s · {}",
+                                c.session,
+                                if c.background { " (background)" } else { "" },
+                                c.started.elapsed().as_secs(),
+                                c.task.lines().next().unwrap_or("").chars().take(100).collect::<String>()
+                            )));
+                        }
+                    }
+                    ["stop"] | ["stop", "all"] => {
+                        let n = self.stop_children(None);
+                        result.notices.push(reactor_context::Notice::info(format!(
+                            "stopping {n} agent{}",
+                            if n == 1 { "" } else { "s" }
+                        )));
+                    }
+                    ["stop", session] => {
+                        let session = session.trim_start_matches('#');
+                        let n = self.stop_children(Some(session));
+                        result.notices.push(if n == 0 {
+                            reactor_context::Notice::warning(format!(
+                                "no agent of session {session} is running"
+                            ))
+                        } else {
+                            reactor_context::Notice::info(format!("stopping the agent of session {session}"))
+                        });
+                    }
+                    _ => return Err(Error::Store("agents: | stop [all|<session>]".into())),
+                }
+            }
             "children" => {
                 let c = &mut settings.children;
                 let words: Vec<&str> = args.split_whitespace().collect();
@@ -2096,6 +2203,18 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
 
 // -- children (ADR-0062, ADR-0063) ---------------------------------------------------------------
 
+impl<L: Llm, S: Summarizer> Agent<L, S> {
+    /// The child agents running now, oldest first.
+    pub fn running_children(&self) -> Vec<crate::tools::agent::ChildInfo> {
+        self.children.as_ref().map(|c| c.list()).unwrap_or_default()
+    }
+
+    /// Stop the running child of `session`, or all of them. How many were stopped.
+    pub fn stop_children(&self, session: Option<&str>) -> usize {
+        self.children.as_ref().map_or(0, |c| c.stop(session))
+    }
+}
+
 impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Agent<L, S> {
     /// Give this agent the `agent` and `wait` tools. A child is built like its parent, from the
     /// same model and summarizer, and has the tools the parent has now, without those two: a
@@ -2111,6 +2230,7 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Agent<L, S> {
             tools: tools.clone(),
             cfg: self.cfg.clone(),
             running: Arc::new(Running::default()),
+            live: Arc::new(Mutex::new(Vec::new())),
         }));
         self.tools = tools
             .with(crate::tools::agent::AgentTool)
@@ -2138,6 +2258,27 @@ struct Spawner<L, S> {
     tools: Tools,
     cfg: AgentConfig,
     running: Arc<Running>,
+    /// Every child that is running, foreground or not, with the means to stop it.
+    live: Arc<Mutex<Vec<Live>>>,
+}
+
+struct Live {
+    info: crate::tools::agent::ChildInfo,
+    cancel: CancellationToken,
+}
+
+/// Takes a child off the list when it ends, however it ends.
+struct OnList {
+    live: Arc<Mutex<Vec<Live>>>,
+    session: String,
+}
+
+impl Drop for OnList {
+    fn drop(&mut self) {
+        if let Ok(mut l) = self.live.lock() {
+            l.retain(|c| c.info.session != self.session);
+        }
+    }
 }
 
 /// The origin of a session started by another: a state entry of the child's own log.
@@ -2154,6 +2295,28 @@ struct Prepared {
 type Emit = Arc<dyn Fn(&str) + Send + Sync>;
 
 impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Spawner<L, S> {
+    fn list_child(
+        &self,
+        session: &str,
+        task: &str,
+        background: bool,
+        cancel: CancellationToken,
+    ) -> OnList {
+        self.live.lock().unwrap().push(Live {
+            info: crate::tools::agent::ChildInfo {
+                session: session.to_string(),
+                task: task.to_string(),
+                background,
+                started: std::time::Instant::now(),
+            },
+            cancel,
+        });
+        OnList {
+            live: self.live.clone(),
+            session: session.to_string(),
+        }
+    }
+
     fn prepare(
         &self,
         request: &crate::tools::agent::ChildRequest,
@@ -2203,7 +2366,13 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Spawner<L, S> {
         emit: Emit,
         cancel: CancellationToken,
     ) -> impl std::future::Future<Output = ToolOutput> + Send + 'static {
-        let (llm, summarizer, cfg) = (self.llm.clone(), self.summarizer.clone(), self.cfg.clone());
+        let (llm, summarizer, mut cfg) =
+            (self.llm.clone(), self.summarizer.clone(), self.cfg.clone());
+        // A child that keeps going is stopped, and what it had said is returned.
+        let rounds = Settings::load(&cfg.paths).children.max_rounds;
+        if rounds > 0 {
+            cfg.max_rounds = cfg.max_rounds.min(rounds);
+        }
         async move {
             let Prepared {
                 store,
@@ -2276,10 +2445,19 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> Spawner<L, S> {
                     )),
                 },
                 Err(Error::Cancelled) => ToolOutput::err(format!(
-                    "cancelled before it finished; what it did is in session {session}. {}",
+                    "cancelled before it finished; what it did is in session {session}.{} {}",
+                    report
+                        .map(|r| format!("\nWhat it had said last:\n{r}\n"))
+                        .unwrap_or_default(),
                     footer(0, 0)
                 )),
-                Err(e) => ToolOutput::err(format!("it stopped: {e}. {}", footer(0, 0))),
+                Err(e) => ToolOutput::err(format!(
+                    "it stopped: {e}.{} {}",
+                    report
+                        .map(|r| format!("\nWhat it had said last:\n{r}\n"))
+                        .unwrap_or_default(),
+                    footer(0, 0)
+                )),
             }
         }
     }
@@ -2304,10 +2482,21 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
                 Ok(p) => p,
                 Err(e) => return e,
             };
+            // Foreground or not, a child can be listed and stopped on its own. The parent's cancel
+            // is still the child's: this one is derived from it.
+            let cancel = ctx.cancel.child_token();
+            let on_list = self.list_child(
+                &prepared.session,
+                &request.task,
+                request.background,
+                cancel.clone(),
+            );
             if !request.background {
-                return self
-                    .drive(prepared, request.task, ctx.emit.clone(), ctx.cancel.clone())
+                let out = self
+                    .drive(prepared, request.task, ctx.emit.clone(), cancel)
                     .await;
+                drop(on_list);
+                return out;
             }
             // In the background it has no tool card to report to: its progress is its session.
             let session = prepared.session.clone();
@@ -2321,12 +2510,13 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
                 prepared,
                 request.task,
                 Arc::new(|_: &str| {}),
-                ctx.cancel.child_token(),
+                cancel,
             );
             let running = self.running.clone();
             let id = session.clone();
             tokio::spawn(async move {
                 let out = work.await;
+                drop(on_list);
                 {
                     let mut s = running.state.lock().unwrap();
                     s.running.retain(|r| *r != id);
@@ -2338,6 +2528,27 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
                 "started in the background as session {session}. Collect its report with `wait`."
             ))
         })
+    }
+
+    fn list(&self) -> Vec<crate::tools::agent::ChildInfo> {
+        self.live
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.info.clone())
+            .collect()
+    }
+
+    fn stop(&self, session: Option<&str>) -> usize {
+        let live = self.live.lock().unwrap();
+        let mut n = 0;
+        for c in live.iter() {
+            if session.is_none_or(|s| s == c.info.session) {
+                c.cancel.cancel();
+                n += 1;
+            }
+        }
+        n
     }
 
     fn wait<'a>(

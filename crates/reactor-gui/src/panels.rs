@@ -1620,6 +1620,10 @@ impl Render for TreePanel {
             .cloned();
         let can_open = picked.as_ref().is_some_and(|s| !s.open_elsewhere);
         let can_close = picked.as_ref().is_some_and(|s| s.open_here);
+        // A child agent that is running can be stopped from here.
+        let can_stop = picked
+            .as_ref()
+            .is_some_and(|s| s.parent.is_some() && working.contains(&s.id));
         let active_id = sessions
             .iter()
             .find(|s| s.current)
@@ -1642,7 +1646,7 @@ impl Render for TreePanel {
             } else if s.open_here {
                 "Open in a tab. Double-click to bring it forward and make it the active one"
             } else {
-                "Click to pick it; double-click to open its transcript"
+                "Click to pick it; double-click to open its transcript (a child agent that is running is followed live)"
             };
             session_list = session_list.child(crate::hints::tip(
                 v_flex()
@@ -1797,6 +1801,21 @@ impl Render for TreePanel {
                                             app.update(cx, |app, cx| {
                                                 app.open_session(None, window, cx)
                                             });
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("stop-session")
+                                    .label("Stop")
+                                    .small()
+                                    .ghost()
+                                    .tooltip("Stop the picked child agent. It ends with what it has, and its session stays")
+                                    .disabled(!can_stop)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        if let (Some(id), Some(app)) =
+                                            (this.session_selection.clone(), this.app.upgrade())
+                                        {
+                                            app.update(cx, |app, cx| app.stop_child(&id, cx));
                                         }
                                     })),
                             )

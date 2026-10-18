@@ -25,11 +25,29 @@ pub struct ChildRequest {
     pub background: bool,
 }
 
+/// A child that is running.
+#[derive(Debug, Clone)]
+pub struct ChildInfo {
+    pub session: String,
+    /// What it was asked, as given.
+    pub task: String,
+    /// Started in the background (the parent's call has returned).
+    pub background: bool,
+    pub started: std::time::Instant,
+}
+
 /// What makes a child. Implemented by the agent that owns the tool, which knows the model, the
 /// summarizer, the tools and the configuration a child is made from.
 pub trait Children: Send + Sync {
     /// Run a child and return its report, or, in the background, where to wait for it.
     fn run<'a>(&'a self, request: ChildRequest, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput>;
+
+    /// The children running now, oldest first.
+    fn list(&self) -> Vec<ChildInfo>;
+
+    /// Stop the child of `session`, or all of them: they end with what they have, and their
+    /// parents hear that they were cancelled. How many were stopped.
+    fn stop(&self, session: Option<&str>) -> usize;
 
     /// The report of a child started in the background: the named one, or the next to finish.
     fn wait<'a>(&'a self, session: Option<String>, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput>;

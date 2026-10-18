@@ -193,6 +193,17 @@ struct OpenSession {
     /// This session's tab is the one the layouts place (the Transcript panel of the presets
     /// and the Panels menu). When it is closed another session takes its place.
     primary: bool,
+    /// Set for a tab that shows a child agent that is running: the transcript is read from the
+    /// case as the child writes it, and has no agent of its own to send a message to.
+    watching: Option<Watch>,
+}
+
+/// A running child agent a tab is following.
+struct Watch {
+    /// The backend whose agent started it, which can stop it.
+    owner: Arc<Backend>,
+    /// How many entries of the child's log the tab has shown.
+    seen: usize,
 }
 
 /// The one window's state.
@@ -661,14 +672,43 @@ impl ReactorApp {
 
     /// The sessions open in this window that have a turn running now.
     pub fn working_ids(&self) -> Vec<String> {
-        self.open
+        let mut ids: Vec<String> = self
+            .open
             .iter()
             .filter(|o| {
                 // The active session's backend is the live one; the same Arc as its bundle's.
                 o.bundle.backend.as_ref().is_some_and(|b| b.is_running())
             })
             .map(|o| o.id.clone())
-            .collect()
+            .collect();
+        // A child agent works too, whether or not a tab follows it.
+        for o in &self.open {
+            if let Some(b) = &o.bundle.backend {
+                for c in b.running_children() {
+                    if !ids.contains(&c.session) {
+                        ids.push(c.session);
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    /// Any backend this window has: the active session's, else one of the open ones. What the
+    /// case's sessions are read from, when the tab in front follows a child agent and has none.
+    fn any_backend(&self) -> Option<Arc<Backend>> {
+        self.backend
+            .clone()
+            .or_else(|| self.open.iter().find_map(|o| o.bundle.backend.clone()))
+    }
+
+    /// The backend whose agent is running the child agent of session `id`.
+    fn running_child_owner(&self, id: &str) -> Option<Arc<Backend>> {
+        self.open
+            .iter()
+            .filter_map(|o| o.bundle.backend.as_ref())
+            .find(|b| b.running_children().iter().any(|c| c.session == id))
+            .cloned()
     }
 
     /// Closing the window while a session works: say so, and let the person interrupt it or
@@ -737,10 +777,11 @@ impl ReactorApp {
             window.close_dialog(cx);
         }
         for o in &self.open {
-            if let Some(b) = &o.bundle.backend
-                && b.is_running()
-            {
-                b.cancel();
+            if let Some(b) = &o.bundle.backend {
+                if b.is_running() {
+                    b.cancel();
+                }
+                b.stop_children(None);
             }
         }
         self.push_note("info", "interrupting before closing…");
@@ -1112,6 +1153,7 @@ impl ReactorApp {
                 handle: panel_handle(primary_transcript.clone()),
                 transcript: primary_transcript.clone(),
                 primary: true,
+                watching: None,
             })
             .into_iter()
             .collect();
@@ -1540,7 +1582,7 @@ impl ReactorApp {
 
     /// Read the case's sessions again.
     pub fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
-        if let Some(b) = &self.backend {
+        if let Some(b) = &self.any_backend() {
             let here: Vec<String> = self.open.iter().map(|o| o.id.clone()).collect();
             self.sessions = crate::session_list::session_rows(&b.case, &self.active, &here);
         }
@@ -1763,6 +1805,23 @@ impl ReactorApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A child agent that is running is followed in a tab of its own; once it has finished,
+        // that tab gives way to the session itself, which can be continued like any other.
+        if let Some(id) = id.clone() {
+            let following = self
+                .open
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| o.watching.is_some());
+            match (following, self.running_child_owner(&id)) {
+                (Some(true), None) => self.close_session(&id, window, cx),
+                (None, Some(owner)) => {
+                    self.watch_child(id, owner, window, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if let Some(id) = &id
             && let Some(o) = self.open.iter().find(|o| o.id == *id)
         {
@@ -1771,7 +1830,7 @@ impl ReactorApp {
             self.activate_session(id, window, cx);
             return;
         }
-        let Some(base) = self.backend.clone() else {
+        let Some(base) = self.any_backend() else {
             self.push_note(
                 "warning",
                 "The agent did not start, so there is no case to open a session in.",
@@ -1833,6 +1892,7 @@ impl ReactorApp {
             transcript,
             handle: handle.clone(),
             primary: false,
+            watching: None,
         });
         if let Some(receiver) = backend.take_events() {
             self.start_pump_for(new_id.clone(), receiver, cx);
@@ -1843,6 +1903,144 @@ impl ReactorApp {
             self.start_waiting(cx);
         }
         self.refresh_sessions(cx);
+    }
+
+    /// Follow a running child agent in a tab: its transcript is read from the case as the child
+    /// writes it. The tab takes no message (the child has nobody to read it); Interrupt in it
+    /// stops that child.
+    fn watch_child(
+        &mut self,
+        id: String,
+        owner: Arc<Backend>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = cx.new(|_| Session::new());
+        let seen = Self::read_child(&owner, &id, &session, cx).unwrap_or(0);
+        let composer = Self::make_composer(window, cx);
+        let weak = cx.weak_entity();
+        let transcript = cx.new(|cx| {
+            TranscriptPanel::new(
+                weak,
+                id.clone(),
+                session.clone(),
+                composer.clone(),
+                window,
+                cx,
+            )
+        });
+        let handle = panel_handle(transcript.clone());
+        self.open.push(OpenSession {
+            id: id.clone(),
+            bundle: Bundle {
+                backend: None,
+                session,
+                composer,
+                tree: Vec::new(),
+                leaf_id: None,
+                context: None,
+                preview: None,
+                context_busy: false,
+                plan: Default::default(),
+                scenario: Default::default(),
+                memory: (true, true, true),
+                identity: None,
+            },
+            transcript,
+            handle: handle.clone(),
+            primary: false,
+            watching: Some(Watch { owner, seen }),
+        });
+        self.show_transcript(handle, window, cx);
+        self.activate_session(&id, window, cx);
+        self.start_watch(id, cx);
+        self.refresh_sessions(cx);
+    }
+
+    /// Read a child's log into a session view, and say whether it is still running. How many
+    /// entries it has.
+    fn read_child(
+        owner: &Backend,
+        id: &str,
+        session: &Entity<Session>,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        // Opening takes the session's lock for the moment it is read; if something else has it
+        // just then, the next look will do.
+        let store = reactor_agent::store::Store::open(&owner.case, id).ok()?;
+        let running = owner.running_children().iter().any(|c| c.session == id);
+        session.update(cx, |s, _| {
+            s.rebuild(&store);
+            s.phase = if running {
+                AgentPhase::Working
+            } else {
+                AgentPhase::Idle
+            };
+        });
+        Some(store.all().len())
+    }
+
+    /// Keep a followed child's tab current until it finishes or the tab is closed.
+    fn start_watch(&mut self, id: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(600))
+                    .await;
+                let keep = this.update(cx, |app, cx| app.refresh_watch(&id, cx));
+                if !keep.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// One look at a followed child. Whether to look again.
+    fn refresh_watch(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(o) = self.open.iter().find(|o| o.id == id) else {
+            return false;
+        };
+        let Some(w) = &o.watching else {
+            return false;
+        };
+        let (owner, seen, session) = (w.owner.clone(), w.seen, o.bundle.session.clone());
+        let running = owner.running_children().iter().any(|c| c.session == id);
+        if let Some(n) = Self::read_child(&owner, id, &session, cx) {
+            if let Some(w) = self
+                .open
+                .iter_mut()
+                .find(|o| o.id == id)
+                .and_then(|o| o.watching.as_mut())
+            {
+                w.seen = n;
+            }
+            if n != seen {
+                self.refresh_sessions(cx);
+            }
+        }
+        if !running {
+            // The last look has been taken above, after it ended.
+            self.refresh_sessions(cx);
+        }
+        cx.notify();
+        running
+    }
+
+    /// Stop the running child agent of session `id`, whoever started it.
+    pub fn stop_child(&mut self, id: &str, cx: &mut Context<Self>) {
+        let stopped = self
+            .running_child_owner(id)
+            .map_or(0, |b| b.stop_children(Some(id)));
+        self.push_note(
+            if stopped > 0 { "info" } else { "warning" },
+            if stopped > 0 {
+                format!("stopping the agent of session {}…", crate::session_list::short_id(id))
+            } else {
+                format!("no agent of session {} is running", crate::session_list::short_id(id))
+            },
+        );
+        cx.notify();
     }
 
     /// Let go of a session this window has open: its tab goes and its lock is released. The
@@ -2572,6 +2770,18 @@ impl ReactorApp {
         let text = self.composer.read(cx).value().to_string();
         let text = text.trim().to_string();
         if text.is_empty() {
+            return;
+        }
+        if self.backend.is_none()
+            && self
+                .open
+                .iter()
+                .any(|o| o.id == self.active && o.watching.is_some())
+        {
+            self.push_note(
+                "warning",
+                "That agent is working on its own and takes no messages. Interrupt stops it.",
+            );
             return;
         }
         self.composer.update(cx, |state, cx| {
@@ -4278,6 +4488,17 @@ impl ReactorApp {
 
     /// Interrupt: cancel the turn, and give anything scheduled back to the composer.
     pub fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A tab that follows a child agent has no agent of its own: Interrupt stops the child.
+        let active = self.active.clone();
+        if self.backend.is_none()
+            && self
+                .open
+                .iter()
+                .any(|o| o.id == active && o.watching.is_some())
+        {
+            self.stop_child(&active, cx);
+            return;
+        }
         let Some(backend) = self.backend.clone() else {
             return;
         };

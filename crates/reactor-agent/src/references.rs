@@ -39,8 +39,14 @@ pub fn find(text: &str) -> Vec<Reference> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
+        // `#` is one byte, so `i` is on a character boundary whenever it is looked at below;
+        // asking what comes before `i` first would cut a multi-byte character in two.
+        if bytes[i] != b'#' {
+            i += 1;
+            continue;
+        }
         let at_start = i == 0 || text[..i].chars().next_back().is_some_and(char::is_whitespace);
-        if bytes[i] != b'#' || !at_start {
+        if !at_start {
             i += 1;
             continue;
         }
@@ -226,6 +232,25 @@ mod tests {
             chunks: 1,
             added_at: String::new(),
         }
+    }
+
+    #[test]
+    fn text_with_multi_byte_characters_before_and_around_a_hash_does_not_panic() {
+        // An em dash is three bytes; a scan that steps by byte lands inside it.
+        let text = "Task — enumerate the imports — then #notes.txt — and “quoted” #doc:\"Pump — manual\"";
+        let found = find(text);
+        let targets: Vec<_> = found.iter().map(|r| r.target.clone()).collect();
+        assert_eq!(
+            targets,
+            vec![
+                Target::File("notes.txt".into()),
+                Target::Doc { name: "Pump — manual".into(), section: None }
+            ]
+        );
+        for r in &found {
+            assert!(text.is_char_boundary(r.span.start) && text.is_char_boundary(r.span.end));
+        }
+        assert!(find("—#").is_empty() && find("日本語 #").is_empty() && find("é").is_empty());
     }
 
     #[test]

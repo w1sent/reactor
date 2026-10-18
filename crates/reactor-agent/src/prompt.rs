@@ -125,7 +125,7 @@ pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
     );
     push(
         Part::Manifest,
-        manifest::block(&i.state.manifest, &i.settings.manifest),
+        manifest::block(&i.state.manifest),
     );
     push(
         Part::Reporting,

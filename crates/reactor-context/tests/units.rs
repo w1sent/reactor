@@ -75,14 +75,7 @@ fn settings_default_to_what_the_extensions_defaulted_to() {
     let s = Settings::default();
     assert!(s.toolbox);
     assert!(s.hidden_services.is_empty());
-    assert_eq!(
-        (
-            s.manifest.soft_step_limit,
-            s.manifest.max_description,
-            s.manifest.status_words
-        ),
-        (20, 80, 3)
-    );
+    assert_eq!((s.manifest.max_description, s.manifest.status_words), (80, 3));
     assert_eq!(s.manifest.derive_context_chars, 24_000);
     assert_eq!(s.identity.default, "");
     assert_eq!(
@@ -101,13 +94,12 @@ fn loading_is_forgiving_field_by_field() {
     let s = Settings::from_json(&json!({
         "toolbox": "yes",                      // wrong shape: default
         "hiddenServices": ["adb", 7, "bn"],    // the strings survive
-        "manifest": { "softStepLimit": 5, "maxDescription": "wide", "statusWords": -1 },
+        "manifest": { "softStepLimit": 5, "maxDescription": "wide", "statusWords": -1 }, // the step limit is gone: its key is ignored
         "identity": { "default": "publisher", "user": { "a": "A", "b": 3 } },
         "reporting": { "level": 2, "folder": "out", "stepThreshold": 0, "maxReverts": 0, "templatePath": "t.md" },
     }));
     assert!(s.toolbox);
     assert_eq!(s.hidden_services, ["adb", "bn"]);
-    assert_eq!(s.manifest.soft_step_limit, 5);
     assert_eq!(s.manifest.max_description, 80);
     assert_eq!(s.manifest.status_words, 3);
     assert_eq!(s.identity.default, "publisher");
@@ -237,7 +229,7 @@ fn an_untouched_session_adds_nothing_to_the_prompt() {
     // The property the prompt cache depends on.
     let cfg = Settings::default();
     assert_eq!(
-        manifest::block(&manifest::State::default(), &cfg.manifest),
+        manifest::block(&manifest::State::default()),
         None
     );
     assert_eq!(

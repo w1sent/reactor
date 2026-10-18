@@ -134,7 +134,7 @@ impl Effects {
 
 /// The manifest block: goal and steps (the manifest proper), plus the session
 /// guidelines, each on its own content.
-pub fn block(state: &State, cfg: &ManifestSettings) -> Option<String> {
+pub fn block(state: &State) -> Option<String> {
     // The switch pauses the whole thing: block and tool both go quiet, while the
     // goal/guidelines/steps are preserved for `/manifest on`.
     if !state.is_enabled() {
@@ -146,11 +146,7 @@ pub fn block(state: &State, cfg: &ManifestSettings) -> Option<String> {
         parts.push(String::new());
         parts.push(format!("Goal: {}", js_trim(state.goal.as_deref().unwrap())));
         parts.push(String::new());
-        parts.push(format!(
-            "Steps ({}/{}):",
-            state.steps.len(),
-            cfg.soft_step_limit
-        ));
+        parts.push(format!("Steps ({}):", state.steps.len()));
         if state.steps.is_empty() {
             parts.push("(none yet)".into());
         } else {
@@ -158,7 +154,7 @@ pub fn block(state: &State, cfg: &ManifestSettings) -> Option<String> {
         }
         parts.push(String::new());
         parts.push(
-            "Steps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away."
+            "Steps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away."
                 .into(),
         );
     }
@@ -183,14 +179,14 @@ fn step_lines(steps: &[Step], indent: &str) -> Vec<String> {
 }
 
 /// `/frame`: the manifest as plain text.
-pub fn frame_view(state: &State, cfg: &ManifestSettings) -> String {
+pub fn frame_view(state: &State) -> String {
     let mut out = vec![
         format!("goal: {}", state.goal.as_deref().unwrap_or("(none)")),
         format!(
             "guidelines: {}",
             state.guidelines.as_deref().unwrap_or("(none)")
         ),
-        format!("steps ({}/{}):", state.steps.len(), cfg.soft_step_limit),
+        format!("steps ({}):", state.steps.len()),
     ];
     if state.steps.is_empty() {
         out.push("  (none)".into());
@@ -210,12 +206,7 @@ pub fn frame_view(state: &State, cfg: &ManifestSettings) -> String {
 /// a model, which this crate does not have — see [`apply_derivation`].
 ///
 /// Returns `None` for a command this module does not own.
-pub fn command(
-    state: &mut State,
-    cfg: &ManifestSettings,
-    name: &str,
-    args: &str,
-) -> Option<Effects> {
+pub fn command(state: &mut State, name: &str, args: &str) -> Option<Effects> {
     let text = js_trim(args);
     Some(match name {
         "goal" => {
@@ -270,7 +261,7 @@ pub fn command(
                 Notice::warning(msg)
             })
         }
-        "frame" => Effects::note(Notice::info(frame_view(state, cfg))),
+        "frame" => Effects::note(Notice::info(frame_view(state))),
         _ => return None,
     })
 }
@@ -299,13 +290,7 @@ pub fn update_steps(state: &mut State, cfg: &ManifestSettings, steps: &[Step]) -
         .collect();
     let n = clamped.len();
     state.steps = clamped;
-    let mut text = format!("Steps updated: {n} step(s).");
-    if n > cfg.soft_step_limit {
-        text.push_str(&format!(
-            "\n\nWARNING: step count ({n}) exceeds the soft limit ({}). Consolidate or mark finished steps complete and rewrite the list via update_steps.",
-            cfg.soft_step_limit
-        ));
-    }
+    let text = format!("Steps updated: {n} step(s).");
     ToolOutcome {
         text,
         persist: true,

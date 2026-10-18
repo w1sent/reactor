@@ -1984,7 +1984,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         match name {
             "goal" | "guidelines" | "manifest" | "frame" => {
                 let mut m = state.manifest.clone();
-                let Some(e) = manifest::command(&mut m, &settings.manifest, name, args) else {
+                let Some(e) = manifest::command(&mut m, name, args) else {
                     unreachable!()
                 };
                 if e.persist {

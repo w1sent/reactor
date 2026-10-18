@@ -4,7 +4,7 @@
 
 use reactor_agent::context::SessionState;
 use reactor_context::manifest;
-use reactor_context::settings::{ManifestSettings, Settings};
+use reactor_context::settings::Settings;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlanView {
@@ -12,7 +12,6 @@ pub struct PlanView {
     pub guidelines: Option<String>,
     /// `(status, summary)`, as the agent keeps them.
     pub steps: Vec<(String, String)>,
-    pub soft_limit: usize,
     /// The manifest switch: block and `update_steps` both go quiet when it is off.
     pub manifest_on: bool,
     pub report_on: bool,
@@ -37,7 +36,6 @@ pub fn plan_of(state: &SessionState, settings: &Settings) -> PlanView {
             .iter()
             .map(|s| (s.status.clone(), s.summary.clone()))
             .collect(),
-        soft_limit: settings.manifest.soft_step_limit,
         manifest_on: m.is_enabled(),
         report_on: state.reporting.is_enabled(),
         report_level: state.reporting.level(&settings.reporting).get(),
@@ -56,8 +54,8 @@ pub struct Frame {
     pub state: String,
 }
 
-pub fn frame_of(state: &manifest::State, cfg: &ManifestSettings) -> Frame {
-    let sent = manifest::block(state, cfg);
+pub fn frame_of(state: &manifest::State) -> Frame {
+    let sent = manifest::block(state);
     let why_not = match (&sent, state.is_enabled(), state.has_content()) {
         (Some(_), _, _) => None,
         (None, false, _) => Some(
@@ -70,7 +68,7 @@ pub fn frame_of(state: &manifest::State, cfg: &ManifestSettings) -> Frame {
     Frame {
         sent,
         why_not,
-        state: manifest::frame_view(state, cfg),
+        state: manifest::frame_view(state),
     }
 }
 
@@ -105,40 +103,36 @@ mod tests {
         );
         assert!(p.manifest_on && p.report_on);
         assert_eq!((p.report_level, p.report_folder.as_str()), (2, "report"));
-        assert_eq!(p.soft_limit, 20);
     }
 
     #[test]
     fn nothing_set_means_nothing_sent_and_the_popup_says_why() {
-        let cfg = ManifestSettings::default();
-        let f = frame_of(&manifest::State::default(), &cfg);
+        let f = frame_of(&manifest::State::default());
         assert!(f.sent.is_none() && f.why_not.unwrap().contains("Nothing is set"));
         assert!(f.state.contains("goal: (none)") && f.state.contains("switch: on"));
     }
 
     #[test]
     fn a_switched_off_manifest_sends_nothing_but_keeps_what_it_has() {
-        let cfg = ManifestSettings::default();
         let m = manifest::State {
             goal: Some("g".into()),
             enabled: Some(false),
             ..Default::default()
         };
-        let f = frame_of(&m, &cfg);
+        let f = frame_of(&m);
         assert!(f.sent.is_none() && f.why_not.unwrap().contains("switched off"));
         assert!(f.state.contains("goal: g") && f.state.contains("switch: off"));
     }
 
     #[test]
     fn what_is_sent_is_the_block_verbatim() {
-        let cfg = ManifestSettings::default();
         let m = manifest::State {
             goal: Some("g".into()),
             guidelines: Some("be careful".into()),
             ..Default::default()
         };
-        let f = frame_of(&m, &cfg);
-        assert_eq!(f.sent, manifest::block(&m, &cfg));
+        let f = frame_of(&m);
+        assert_eq!(f.sent, manifest::block(&m));
         let sent = f.sent.unwrap();
         assert!(sent.contains("## Session Manifest") && sent.contains("## Session Guidelines"));
         assert!(f.why_not.is_none());

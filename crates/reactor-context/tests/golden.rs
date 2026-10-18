@@ -72,7 +72,7 @@ fn manifest_matches_the_goal_setting_extension() {
             let mut out = Map::new();
             match s(op, "op") {
                 "command" => {
-                    let e = manifest::command(&mut state, &cfg, s(op, "name"), s(op, "args"))
+                    let e = manifest::command(&mut state, s(op, "name"), s(op, "args"))
                         .expect("a manifest command");
                     out.insert("notify".into(), notify(&e.notices));
                     out.insert("entries".into(), entries(e.persist, &state));
@@ -86,7 +86,7 @@ fn manifest_matches_the_goal_setting_extension() {
                     out.insert("entries".into(), entries(t.persist, &state));
                 }
                 "prompt" => {
-                    out.insert("appended".into(), appended(manifest::block(&state, &cfg)));
+                    out.insert("appended".into(), appended(manifest::block(&state)));
                     out.insert("notify".into(), json!([]));
                     out.insert("entries".into(), json!([]));
                 }

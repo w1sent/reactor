@@ -58,7 +58,6 @@ pub fn resolve<T: Clone>(global: &T, session: Option<&T>) -> Resolved<T> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestSettings {
-    pub soft_step_limit: usize,
     pub max_description: usize,
     pub status_words: usize,
     /// Char budget for the session tail handed to the derive call.
@@ -68,7 +67,6 @@ pub struct ManifestSettings {
 impl Default for ManifestSettings {
     fn default() -> Self {
         Self {
-            soft_step_limit: 20,
             max_description: 80,
             status_words: 3,
             derive_context_chars: 24_000,
@@ -596,7 +594,6 @@ impl Settings {
                     *into = n as usize;
                 }
             };
-            take("softStepLimit", &mut s.manifest.soft_step_limit);
             take("maxDescription", &mut s.manifest.max_description);
             take("statusWords", &mut s.manifest.status_words);
             take("deriveContextChars", &mut s.manifest.derive_context_chars);

@@ -34,7 +34,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: (none)\nguidelines: (none)\nsteps (0/20):\n  (none)\nswitch: on",
+              "message": "goal: (none)\nguidelines: (none)\nsteps (0):\n  (none)\nswitch: on",
               "level": "info"
             }
           ],
@@ -80,7 +80,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (0/20):\n\n(none yet)\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (0):\n\n(none yet)\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -122,7 +122,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2/20):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -135,7 +135,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: find the crash\nguidelines: (none)\nsteps (2/20):\n  1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n  2. [done] ok\nswitch: on",
+              "message": "goal: find the crash\nguidelines: (none)\nsteps (2):\n  1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n  2. [done] ok\nswitch: on",
               "level": "info"
             }
           ],
@@ -191,7 +191,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2/20):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.\n\n## Session Guidelines\n\n\n\nnever touch prod",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.\n\n## Session Guidelines\n\n\n\nnever touch prod",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -259,7 +259,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: find the crash\nguidelines: never touch prod\nsteps (2/20):\n  1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n  2. [done] ok\nswitch: off",
+              "message": "goal: find the crash\nguidelines: never touch prod\nsteps (2):\n  1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n  2. [done] ok\nswitch: off",
               "level": "info"
             }
           ],
@@ -346,7 +346,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2/20):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: find the crash\n\n\n\nSteps (2):\n\n1. [one two three] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\n2. [done] ok\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -471,7 +471,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: (none)\nguidelines: (none)\nsteps (0/20):\n  (none)\nswitch: on",
+              "message": "goal: (none)\nguidelines: (none)\nsteps (0):\n  (none)\nswitch: on",
               "level": "info"
             }
           ],
@@ -536,7 +536,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: (none)\nguidelines: just rules\nsteps (0/20):\n  (none)\nswitch: on",
+              "message": "goal: (none)\nguidelines: just rules\nsteps (0):\n  (none)\nswitch: on",
               "level": "info"
             }
           ],
@@ -549,7 +549,6 @@
   {
     "name": "limits-from-config",
     "config": {
-      "softStepLimit": 2,
       "maxDescription": 10,
       "statusWords": 1,
       "deriveContextChars": 100
@@ -592,7 +591,7 @@
           }
         ],
         "out": {
-          "text": "Steps updated: 3 step(s).\n\nWARNING: step count (3) exceeds the soft limit (2). Consolidate or mark finished steps complete and rewrite the list via update_steps.",
+          "text": "Steps updated: 3 step(s).",
           "notify": [],
           "entries": [
             {
@@ -619,7 +618,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: small limits\n\n\n\nSteps (3/2):\n\n1. [two] a long su…\n2. [in] step 1\n3. [in] step 2\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: small limits\n\n\n\nSteps (3):\n\n1. [two] a long su…\n2. [in] step 1\n3. [in] step 2\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -632,7 +631,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: small limits\nguidelines: (none)\nsteps (3/2):\n  1. [two] a long su…\n  2. [in] step 1\n  3. [in] step 2\nswitch: on",
+              "message": "goal: small limits\nguidelines: (none)\nsteps (3):\n  1. [two] a long su…\n  2. [in] step 1\n  3. [in] step 2\nswitch: on",
               "level": "info"
             }
           ],
@@ -643,7 +642,7 @@
     ]
   },
   {
-    "name": "over-the-default-soft-limit",
+    "name": "many-steps",
     "config": null,
     "ops": [
       {
@@ -759,7 +758,7 @@
           }
         ],
         "out": {
-          "text": "Steps updated: 22 step(s).\n\nWARNING: step count (22) exceeds the soft limit (20). Consolidate or mark finished steps complete and rewrite the list via update_steps.",
+          "text": "Steps updated: 22 step(s).",
           "notify": [],
           "entries": [
             {
@@ -862,7 +861,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: many\n\n\n\nSteps (22/20):\n\n1. [in progress] step 1\n2. [in progress] step 2\n3. [in progress] step 3\n4. [in progress] step 4\n5. [in progress] step 5\n6. [in progress] step 6\n7. [in progress] step 7\n8. [in progress] step 8\n9. [in progress] step 9\n10. [in progress] step 10\n11. [in progress] step 11\n12. [in progress] step 12\n13. [in progress] step 13\n14. [in progress] step 14\n15. [in progress] step 15\n16. [in progress] step 16\n17. [in progress] step 17\n18. [in progress] step 18\n19. [in progress] step 19\n20. [in progress] step 20\n21. [in progress] step 21\n22. [in progress] step 22\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: many\n\n\n\nSteps (22):\n\n1. [in progress] step 1\n2. [in progress] step 2\n3. [in progress] step 3\n4. [in progress] step 4\n5. [in progress] step 5\n6. [in progress] step 6\n7. [in progress] step 7\n8. [in progress] step 8\n9. [in progress] step 9\n10. [in progress] step 10\n11. [in progress] step 11\n12. [in progress] step 12\n13. [in progress] step 13\n14. [in progress] step 14\n15. [in progress] step 15\n16. [in progress] step 16\n17. [in progress] step 17\n18. [in progress] step 18\n19. [in progress] step 19\n20. [in progress] step 20\n21. [in progress] step 21\n22. [in progress] step 22\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -922,7 +921,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: unicode\n\n\n\nSteps (1/20):\n\n1. [déjà vu ✓] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀…\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: unicode\n\n\n\nSteps (1):\n\n1. [déjà vu ✓] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀…\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -969,7 +968,7 @@
       {
         "op": "prompt",
         "out": {
-          "appended": "\n\n## Session Manifest\n\n\n\nGoal: crack the license check\n\n\n\nSteps (2/20):\n\n1. [in progress now] find the check\n2. [] patch it\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps; consolidate past the soft limit. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.\n\n## Session Guidelines\n\n\n\nbe quiet",
+          "appended": "\n\n## Session Manifest\n\n\n\nGoal: crack the license check\n\n\n\nSteps (2):\n\n1. [in progress now] find the check\n2. [] patch it\n\n\n\nSteps are the session's durable memory: record progress as conceptual summaries (an investigative question or milestone, not a micro-action), each with a 3-word status; overwrite the full list with update_steps. If a past decision or finding matters, it belongs in the steps -- not only in messages that may later be compacted or faded away.\n\n## Session Guidelines\n\n\n\nbe quiet",
           "notify": [],
           "entries": [],
           "advertised": true
@@ -1069,7 +1068,7 @@
         "out": {
           "notify": [
             {
-              "message": "goal: second goal\nguidelines: \nsteps (0/20):\n  (none)\nswitch: on",
+              "message": "goal: second goal\nguidelines: \nsteps (0):\n  (none)\nswitch: on",
               "level": "info"
             }
           ],

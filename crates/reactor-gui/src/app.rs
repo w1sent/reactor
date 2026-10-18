@@ -2340,8 +2340,8 @@ impl ReactorApp {
         let Some(backend) = self.backend.clone() else {
             return;
         };
-        let (state, settings) = (backend.session_state(), Settings::load(&backend.paths));
-        let frame = crate::plan_ui::frame_of(&state.manifest, &settings.manifest);
+        let state = backend.session_state();
+        let frame = crate::plan_ui::frame_of(&state.manifest);
         let tokens = frame
             .sent
             .as_deref()

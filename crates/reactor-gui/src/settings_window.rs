@@ -1097,14 +1097,6 @@ fn manifest_page(app: &Entity<ReactorApp>) -> SettingPage {
     let group = SettingGroup::new()
         .item(count_field(
             app,
-            "Soft step limit",
-            &["steps"],
-            (1.0, 200.0),
-            |s| s.manifest.soft_step_limit,
-            |s, n| s.manifest.soft_step_limit = n.max(1),
-        ))
-        .item(count_field(
-            app,
             "Longest step description (characters)",
             &["steps"],
             (20.0, 500.0),
@@ -1132,7 +1124,7 @@ fn manifest_page(app: &Entity<ReactorApp>) -> SettingPage {
             .icon(IconName::Target)
             .group(group),
         "manifest-info",
-        "The manifest is the goal, the guidelines and the steps the agent keeps against the goal with update_steps. The goal and guidelines are written from the goal line above the transcript. The soft step limit is the number of steps past which the agent is asked to consolidate them; a step's description and status are cut to the lengths here. Saved in ~/.reactor/settings.json; they apply to the next request.",
+        "The manifest is the goal, the guidelines and the steps the agent keeps against the goal with update_steps. The goal and guidelines are written from the goal line above the transcript. A step's description and status are cut to the lengths here. Saved in ~/.reactor/settings.json; they apply to the next request.",
     )
 }
 

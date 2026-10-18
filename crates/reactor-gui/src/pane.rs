@@ -376,7 +376,7 @@ pub fn goal_line(
                     .text_size(theme.font_size * 0.75)
                     .text_color(muted)
                     .child("STEPS")
-                    .child(format!("{}/{}", plan.steps.len(), plan.soft_limit)),
+                    .child(format!("{}", plan.steps.len())),
             );
             for (status, summary) in &plan.steps {
                 let lower = status.to_lowercase();

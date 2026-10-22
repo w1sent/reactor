@@ -220,6 +220,7 @@ pub struct ReactorApp {
     pub(crate) embedding: Option<reactor_db::corpus::Progress>,
     /// The case's graph, drawn. Told to read again whenever the agent may have written.
     graph_panel: Entity<crate::graph::panel::GraphPanel>,
+    files_panel: Entity<crate::files::explorer::FilesPanel>,
     /// The documents, searched by hand.
     pub(crate) docs_panel: Entity<crate::docs_panel::DocsPanel>,
     /// The Session Tree, told to draw again when a session starts or stops working.
@@ -1077,7 +1078,7 @@ impl ReactorApp {
         };
         let drawer_view = {
             let (app, tree) = (weak_app.clone(), tree_panel.clone());
-            cx.new(|_| crate::rail::Drawer::new(app, tree, toolbox_panel, services_panel, files_panel))
+            cx.new(|_| crate::rail::Drawer::new(app, tree, toolbox_panel, services_panel, files_panel.clone()))
         };
         let ui = crate::start::GuiConfig::load_ui();
         let layout = ui.start_layout();
@@ -1086,6 +1087,7 @@ impl ReactorApp {
         // The graph panel reads the case through the backend, which exists only now.
         graph_panel.update(cx, |g, cx| g.set_backend(backend.clone(), cx));
         docs_panel.update(cx, |d, cx| d.set_backend(backend.clone(), cx));
+        files_panel.update(cx, |f, cx| f.set_backend(backend.clone(), cx));
         let reactor = match &backend {
             Some(b) => Client::for_session(b.paths.clone(), Some(cwd.clone())),
             None => Client::from_env(Some(cwd.clone())),
@@ -1166,6 +1168,7 @@ impl ReactorApp {
             backend,
             embedding: None,
             graph_panel,
+            files_panel,
             docs_panel,
             tree_panel,
             drawer_view,
@@ -1341,6 +1344,8 @@ impl ReactorApp {
                 // A tool may have written to the case's graph: show it as it happens.
                 if matches!(e, Event::ToolEnd { .. }) {
                     self.graph_panel.update(cx, |g, cx| g.refresh(cx));
+                    self.files_panel
+                        .update(cx, |f, cx| f.refresh_artifacts(cx));
                 }
             }
             UiEvent::TurnEnded(result) => {
@@ -1749,6 +1754,8 @@ impl ReactorApp {
         let backend = self.backend.clone();
         self.graph_panel
             .update(cx, |g, cx| g.set_backend(backend.clone(), cx));
+        self.files_panel
+            .update(cx, |f, cx| f.set_backend(backend.clone(), cx));
         self.docs_panel
             .update(cx, |d, cx| d.set_backend(backend, cx));
         // Its tab's title says which one is active.

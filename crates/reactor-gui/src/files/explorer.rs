@@ -26,6 +26,7 @@ use gpui_kit::*;
 use gpui_kit::{ClipboardItem, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString};
 use gpui_kit::{Window, div, px};
 
+use reactor_db::artifact::{self, Artifact};
 use reactor_fs::{
     Algorithm, ContentHit, Entry, FileRef, Kind, SearchOptions, VPath, Vfs, search_content,
     search_names,
@@ -34,6 +35,7 @@ use reactor_fs::{
 use super::props::PropertiesView;
 use super::{Viewer, human_size, open_external};
 use crate::app::ReactorApp;
+use crate::backend::Backend;
 use crate::panels::{close_button, closer, panel_title_closing};
 
 /// What a menu item does to the panel.
@@ -82,8 +84,15 @@ pub struct FilesPanel {
     results_scroll: UniformListScrollHandle,
     searching: Option<Arc<AtomicBool>>,
     status: String,
+    /// The case's registry of referenced files, shown under the tree.
+    backend: Option<Arc<Backend>>,
+    artifacts: Vec<Artifact>,
+    artifacts_scroll: UniformListScrollHandle,
     focus: FocusHandle,
 }
+
+/// How tall the artifacts section is: a header and a few rows, scrolling beyond that.
+const ARTIFACTS_HEIGHT: f32 = 170.;
 
 fn id_of(path: &VPath) -> SharedString {
     SharedString::from(path.as_str().to_owned())
@@ -133,6 +142,9 @@ impl FilesPanel {
             results_scroll: UniformListScrollHandle::default(),
             searching: None,
             status: String::new(),
+            backend: None,
+            artifacts: Vec::new(),
+            artifacts_scroll: UniformListScrollHandle::default(),
             focus: cx.focus_handle(),
         };
         this.load(&VPath::root(), cx);
@@ -224,6 +236,126 @@ impl FilesPanel {
             self.load(&dir, cx);
         }
         self.rebuild(cx);
+        self.refresh_artifacts(cx);
+    }
+
+    /// The registry is read through the backend, handed over once it exists and again when
+    /// another session's case becomes the front one.
+    pub fn set_backend(&mut self, backend: Option<Arc<Backend>>, cx: &mut Context<Self>) {
+        self.backend = backend;
+        self.refresh_artifacts(cx);
+    }
+
+    /// Read the registered files again: after a tool may have registered one.
+    pub fn refresh_artifacts(&mut self, cx: &mut Context<Self>) {
+        self.artifacts = self
+            .backend
+            .as_ref()
+            .and_then(|b| artifact::list(&b.case).ok())
+            .unwrap_or_default();
+        cx.notify();
+    }
+
+    /// The registered file as the explorer's filesystem names it.
+    fn artifact_path(artifact: &Artifact) -> VPath {
+        VPath::new(&artifact.path)
+    }
+
+    /// The artifacts section: a header with the count, and the files in a list that scrolls.
+    fn artifacts_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let muted = theme.muted_foreground;
+        let this = cx.entity().downgrade();
+        let count = self.artifacts.len();
+        let list = if count == 0 {
+            div()
+                .px_2()
+                .py_1()
+                .text_color(muted)
+                .child("No files registered")
+                .into_any_element()
+        } else {
+            let list = uniform_list(
+                "files-artifacts",
+                count,
+                cx.processor(move |panel, range: std::ops::Range<usize>, _window, _cx| {
+                    range
+                        .filter_map(|ix| panel.artifacts.get(ix).map(|a| (ix, a.clone())))
+                        .map(|(ix, artifact)| {
+                            let path = Self::artifact_path(&artifact);
+                            let this = this.clone();
+                            h_flex()
+                                .id(("files-artifact", ix))
+                                .gap_2()
+                                .px_2()
+                                .items_center()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(muted.opacity(0.15)))
+                                .tooltip({
+                                    let tip = format!("sha256 {}", artifact.sha256);
+                                    move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                            .build(window, cx)
+                                    }
+                                })
+                                .on_click(move |_, window, cx| {
+                                    let _ = this
+                                        .update(cx, |p, cx| p.open(&path, None, window, cx));
+                                })
+                                .child(Icon::new(IconName::File).small().flex_none())
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(artifact.path.clone()),
+                                )
+                                .when_some(artifact.kind.clone(), |row, kind| {
+                                    row.child(
+                                        div().flex_none().text_xs().text_color(muted).child(kind),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(human_size(artifact.size)),
+                                )
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.artifacts_scroll)
+            .size_full();
+            div()
+                .size_full()
+                .relative()
+                .child(list)
+                .vertical_scrollbar(&self.artifacts_scroll)
+                .into_any_element()
+        };
+        v_flex()
+            .flex_none()
+            .h(px(ARTIFACTS_HEIGHT))
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(IconName::Archive).small().flex_none())
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Artifacts"))
+                    .child(div().text_color(muted).child(count.to_string())),
+            )
+            .child(div().flex_1().min_h_0().child(list))
     }
 
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
@@ -989,5 +1121,6 @@ impl Render for FilesPanel {
             .track_focus(&self.focus)
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(body))
+            .child(self.artifacts_section(cx))
     }
 }

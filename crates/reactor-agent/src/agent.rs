@@ -552,6 +552,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             registry: &g.view,
             skills: &g.offered,
             scenarios_dir: &self.cfg.scenarios_dir,
+            cwd: Some(&self.cfg.cwd),
         })
     }
 
@@ -618,6 +619,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         for (part, text) in parts {
             let (origin, label) = match part {
                 prompt::Part::Base => (Origin::Base, "Base prompt"),
+                prompt::Part::Workdir => (Origin::Base, "Working directory"),
                 prompt::Part::Identity => (Origin::Identity, "Identity"),
                 prompt::Part::Registry => (Origin::Registry, "Available tools"),
                 prompt::Part::Rules => (Origin::Base, "Tool rules"),

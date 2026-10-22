@@ -290,7 +290,7 @@ pub struct GraphPanel {
     show_groups: bool,
     /// How the graph is arranged: what *auto-layout* does, and how lines are drawn.
     layout_kind: LayoutKind,
-    /// How much is drawn, if picked; else it follows the zoom.
+    /// How much is drawn: Full until another level is picked, or `None` (auto) to follow the zoom.
     detail_pick: Option<model::Detail>,
     /// What the assessment being added does to a hypothesis selected with it.
     stance: Stance,
@@ -545,7 +545,7 @@ impl GraphPanel {
             picker_input,
             show_groups: false,
             layout_kind: LayoutKind::default(),
-            detail_pick: None,
+            detail_pick: Some(model::Detail::Full),
             stance: Stance::default(),
             form: None,
             entity_type,

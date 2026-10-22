@@ -69,6 +69,8 @@ pub struct Inputs<'a> {
     pub registry: &'a RegistryView,
     pub skills: &'a [Skill],
     pub scenarios_dir: &'a Path,
+    /// The case directory, which is the agent's working directory (ADR-0045).
+    pub cwd: Option<&'a Path>,
     /// The rules of the tools in the request, once each.
     pub rules: &'a [String],
     /// The tools left for `tool_search` (ADR-0055).
@@ -79,6 +81,8 @@ pub struct Inputs<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     Base,
+    /// Where the agent works: the case directory.
+    Workdir,
     Identity,
     Registry,
     /// One-line rules from the tools in the request (their `guidelines`).
@@ -97,6 +101,15 @@ pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
         parts.extend(b.filter(|s| !s.is_empty()).map(|s| (part, s)))
     };
 
+    push(
+        Part::Workdir,
+        i.cwd.map(|d| {
+            format!(
+                "Your working directory is the case directory: {}. Commands start there and relative paths resolve against it.",
+                d.display()
+            )
+        }),
+    );
     push(
         Part::Identity,
         identity::block(&i.state.identity, &i.settings.identity),

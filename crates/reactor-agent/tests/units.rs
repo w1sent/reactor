@@ -243,6 +243,7 @@ fn inputs<'a>(
         registry,
         skills,
         scenarios_dir: std::path::Path::new("/nonexistent"),
+        cwd: None,
         rules: &[],
         deferred: &[],
     }
@@ -269,6 +270,19 @@ fn an_untouched_session_is_the_base_the_registry_and_the_case_graph_and_nothing_
     assert_eq!(
         prompt::system_prompt(&inputs(&settings, &state, &registry, &[])),
         "BASE\n\n## Available tools (this machine)\n\nsh  shell"
+    );
+}
+
+#[test]
+fn the_case_directory_is_named_right_after_the_base_prompt() {
+    let (settings, state) = (Settings::default(), SessionState::default());
+    let registry = RegistryView::default();
+    let mut i = inputs(&settings, &state, &registry, &[]);
+    i.cwd = Some(std::path::Path::new("/cases/one"));
+    let prompt = prompt::system_prompt(&i);
+    assert!(
+        prompt.starts_with("BASE\n\nYour working directory is the case directory: /cases/one."),
+        "{prompt}"
     );
 }
 

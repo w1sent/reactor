@@ -564,6 +564,7 @@ fn render_item(
             output,
             is_error,
             done,
+            entry,
             ..
         } => {
             // A finished passage search is shown as a list, not as the tagged text the model got.
@@ -590,6 +591,7 @@ fn render_item(
                         name,
                         args,
                         output,
+                        entry: *entry,
                         is_error: *is_error,
                         done: *done,
                         out_of_context,

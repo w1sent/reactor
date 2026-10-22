@@ -33,6 +33,9 @@ pub enum ChatItem {
         output: String,
         is_error: bool,
         done: bool,
+        /// The log entry holding the result, once there is one: what `history_read` reads the
+        /// whole output from.
+        entry: Option<u64>,
     },
     /// A context reduction, where it happened (ADR-0037). `active` is false once undone.
     Reduction {
@@ -269,6 +272,7 @@ impl Session {
                                     output: self.live_tools.get(id).cloned().unwrap_or_default(),
                                     is_error: false,
                                     done: false,
+                                    entry: None,
                                 });
                             }
                         }
@@ -287,12 +291,14 @@ impl Session {
                                 output,
                                 is_error: err,
                                 done,
+                                entry,
                                 ..
                             } = &mut self.items[i]
                             {
                                 *output = content.clone();
                                 *err = *is_error;
                                 *done = true;
+                                *entry = Some(e.id);
                             }
                         }
                         // A result whose call is not on this branch (a fork): still show it.
@@ -303,6 +309,7 @@ impl Session {
                             output: content.clone(),
                             is_error: *is_error,
                             done: true,
+                            entry: Some(e.id),
                         }),
                     }
                 }

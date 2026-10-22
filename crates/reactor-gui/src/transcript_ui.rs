@@ -356,12 +356,19 @@ pub fn lines_label(n: usize) -> String {
     }
 }
 
-/// Output cut to `max` bytes on a character boundary, with a note saying where the rest is.
+/// What stands for the cut in a result still being written: it has no log entry yet, so there is
+/// no `history_read` call to name.
+const RUNNING_CUT: &str = "\n… [output truncated; the rest: history_read, once the call has finished] …\n";
+
+/// Output cut to `max` bytes, as a head and a tail on character boundaries, with the same
+/// marker the loop puts in a result it cuts: the `history_read` call for the lines that are not
+/// on screen.
 ///
-/// A result the loop already cut carries its own marker, the `history_read` call for the rest.
-/// That is kept, as a head and a tail of the same shares around it, and its lines are made to
-/// match what is left, so the call still reads everything that is not on screen.
-pub fn cut_output(output: &str, max: usize) -> String {
+/// A result the loop already cut carries that marker. It is kept, as a head and a tail of the
+/// same shares around it, and its lines are made to match what is left, so the call still reads
+/// everything that is not on screen. A result that was not cut gets one here, naming `entry`,
+/// the log entry holding it.
+pub fn cut_output(output: &str, max: usize, entry: Option<u64>) -> String {
     if output.len() <= max {
         return output.to_owned();
     }
@@ -376,14 +383,17 @@ pub fn cut_output(output: &str, max: usize) -> String {
             .min(whole);
         return format!("{head}{}{tail}", truncate::marker(entry, first, last));
     }
-    let mut end = max;
-    while !output.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!(
-        "{}\n… truncated (the whole output is in the session log)",
-        &output[..end]
-    )
+    let head = truncate::head(output, max / 4);
+    let tail = truncate::tail(output, max - head.len());
+    let Some(entry) = entry else {
+        return format!("{head}{RUNNING_CUT}{tail}");
+    };
+    let whole = truncate::count_lines(output.as_bytes());
+    let first = head.matches('\n').count() as u64 + 1;
+    let last = (whole + 1)
+        .saturating_sub(tail.lines().count() as u64)
+        .min(whole);
+    format!("{head}{}{tail}", truncate::marker(entry, first, last))
 }
 
 /// Lines in the whole output a marker stands for: its last hidden line, and the tail after it
@@ -394,7 +404,8 @@ fn whole_lines(last: u64, tail: &str) -> u64 {
 
 /// The footer's counts for a tool row: the lines on screen and the lines there are. For a
 /// result the loop cut, `shown` leaves out the marker and `total` is the stored output's, which
-/// the marker's range gives; otherwise both are counted in the text.
+/// the marker's range gives; for one cut here, `total` is counted in `output`; otherwise both
+/// are counted in the text.
 pub fn line_counts(output: &str, drawn: &str) -> (usize, usize) {
     match (
         truncate::split_marker(output),
@@ -404,6 +415,17 @@ pub fn line_counts(output: &str, drawn: &str) -> (usize, usize) {
             head.lines().count() + drawn_tail.lines().count(),
             whole_lines(last, tail) as usize,
         ),
+        (None, Some((head, _, _, _, tail))) => (
+            head.lines().count() + tail.lines().count(),
+            truncate::count_lines(output.as_bytes()) as usize,
+        ),
+        (None, None) if drawn.contains(RUNNING_CUT) => {
+            let (head, tail) = drawn.split_once(RUNNING_CUT).unwrap_or((drawn, ""));
+            (
+                head.lines().count() + tail.lines().count(),
+                truncate::count_lines(output.as_bytes()) as usize,
+            )
+        }
         _ => (drawn.lines().count(), output.lines().count()),
     }
 }
@@ -414,6 +436,8 @@ pub struct ToolCallView<'a> {
     pub name: &'a str,
     pub args: &'a Value,
     pub output: &'a str,
+    /// The log entry holding the result, once there is one.
+    pub entry: Option<u64>,
     pub is_error: bool,
     pub done: bool,
     /// A context reduction has taken it out of what the model sees.
@@ -582,7 +606,7 @@ pub fn tool_row(
             theme.foreground
         };
         let shell = is_shell(v.args);
-        let cut = cut_output(v.output, tools.max_chars);
+        let cut = cut_output(v.output, tools.max_chars, v.entry);
         let (shown, total) = line_counts(v.output, &cut);
         let footer = format!(
             "{}{}",
@@ -830,10 +854,41 @@ mod tests {
     #[test]
     fn cut_output_keeps_a_character_whole() {
         let s = "aé".repeat(10);
-        let cut = cut_output(&s, 4);
-        assert!(cut.starts_with("aéa"));
+        // A head of 2 bytes would end inside the `é`.
+        let cut = cut_output(&s, 10, Some(3));
+        assert!(cut.starts_with("a\n"));
         assert!(cut.contains("truncated"));
-        assert_eq!(cut_output("short", 100), "short");
+        assert_eq!(cut_output("short", 100, Some(3)), "short");
+    }
+
+    #[test]
+    fn a_cut_made_here_names_the_call_that_reads_the_rest() {
+        use reactor_agent::truncate::split_marker;
+        let text: String = (1..=76).map(|n| format!("line {n:03}\n")).collect();
+        let cut = cut_output(&text, 400, Some(42));
+        assert!(!cut.contains("session log"));
+        let (head, entry, first, last, tail) = split_marker(&cut).expect("the marker is there");
+        assert_eq!(entry, 42);
+        // Exactly the lines that are not on screen: no gap at either end.
+        assert_eq!(first, head.lines().count() as u64 + 1);
+        assert_eq!(last, 76 - tail.lines().count() as u64 + 1);
+        assert!(head.starts_with("line 001\n"));
+        assert!(tail.ends_with("line 076\n"));
+        let (shown, total) = super::line_counts(&text, &cut);
+        assert_eq!(total, 76);
+        assert_eq!(shown, head.lines().count() + tail.lines().count());
+        assert!(shown < total);
+    }
+
+    #[test]
+    fn a_result_still_running_is_cut_without_a_call_to_name() {
+        let text: String = (1..=76).map(|n| format!("line {n:03}\n")).collect();
+        let cut = cut_output(&text, 400, None);
+        assert!(cut.contains("once the call has finished"));
+        assert!(!cut.contains("session log"));
+        let (shown, total) = super::line_counts(&text, &cut);
+        assert_eq!(total, 76);
+        assert!(shown < total);
     }
 
     #[test]
@@ -845,7 +900,7 @@ mod tests {
             lines: 400,
         };
         let seen = view(&text, whole, reactor_agent::truncate::Limit::new(2048));
-        let cut = cut_output(&seen, 600);
+        let cut = cut_output(&seen, 600, Some(7));
         assert!(!cut.contains("session log"));
         assert!(cut.len() <= 600 + 16);
         let (head, entry, first, last, tail) = split_marker(&cut).expect("the marker is kept");
@@ -897,6 +952,7 @@ mod tests {
             output: output.into(),
             is_error: false,
             done,
+            entry: None,
         };
         assert_eq!(row_sign(&call("a", false)), row_sign(&call("a", false)));
         assert_ne!(row_sign(&call("a", false)), row_sign(&call("ab", false)));

@@ -18,6 +18,7 @@ fn call(name: &str, command: &str, output: &str, is_error: bool, done: bool) -> 
         output: output.into(),
         is_error,
         done,
+        entry: done.then_some(1),
     }
 }
 

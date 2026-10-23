@@ -437,6 +437,10 @@ pub struct MemorySettings {
     /// `docs_search`; the person can still search them in the window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documents: Option<bool>,
+    /// Whether the agent may list, write and amend scenarios (ADR-0065). Off withdraws
+    /// `scenario_list`, `scenario_save` and `scenario_amend`; running one is unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scenario_editing: Option<bool>,
 }
 
 impl MemorySettings {
@@ -449,6 +453,7 @@ impl MemorySettings {
             session_history: r.get("sessionHistory").and_then(Value::as_bool),
             case_graph: r.get("caseGraph").and_then(Value::as_bool),
             documents: r.get("documents").and_then(Value::as_bool),
+            scenario_editing: r.get("scenarioEditing").and_then(Value::as_bool),
         }
     }
 
@@ -462,6 +467,7 @@ impl MemorySettings {
             session_history: self.session_history.or(below.session_history),
             case_graph: self.case_graph.or(below.case_graph),
             documents: self.documents.or(below.documents),
+            scenario_editing: self.scenario_editing.or(below.scenario_editing),
         }
     }
 
@@ -475,6 +481,10 @@ impl MemorySettings {
 
     pub fn documents(&self) -> bool {
         self.documents.unwrap_or(true)
+    }
+
+    pub fn scenario_editing(&self) -> bool {
+        self.scenario_editing.unwrap_or(true)
     }
 }
 

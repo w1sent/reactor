@@ -136,7 +136,7 @@ pub fn commands() -> Vec<Entry> {
             "Session",
             Optional,
             "Scenarios",
-            "/reactor-scenario list | start <id> | status | next | goto <n> | stop",
+            "/reactor-scenario list | start <id> | status | next | goto <n> | stop | new | edit <id> | promote <id>",
         ),
         Entry::fixed(
             "model",
@@ -408,9 +408,10 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
         ("Reporting: level 2", "", "report level 2"),
         (
             "Scenario: list",
-            "the shipped scenarios",
+            "the case's, yours and the shipped ones",
             "reactor-scenario list",
         ),
+        ("Scenario: new", "write one in the editor", "reactor-scenario new"),
         ("Scenario: status", "", "reactor-scenario status"),
         (
             "Scenario: next phase",
@@ -535,8 +536,14 @@ pub fn build(snapshot: &Snapshot) -> Vec<Entry> {
         add(Entry::generated(
             "Session",
             format!("Scenario: start {id}"),
-            "begins with its first briefing",
+            "asks for a question, then begins",
             format!("reactor-scenario start {id}"),
+        ));
+        add(Entry::generated(
+            "Session",
+            format!("Scenario: edit {id}"),
+            "opens it in the editor",
+            format!("reactor-scenario edit {id}"),
         ));
     }
     for name in &snapshot.identities {
@@ -710,8 +717,11 @@ fn candidates(command: &str, done: &[&str], snapshot: &Snapshot) -> Vec<Param> {
             Param::last("stop", ""),
             Param::more("start", "then a scenario"),
             Param::more("goto", "then a phase number"),
+            Param::last("new", "open the editor"),
+            Param::more("edit", "then a scenario"),
+            Param::more("promote", "then a case scenario"),
         ],
-        ("reactor-scenario", 1) if first == Some("start") => snapshot
+        ("reactor-scenario", 1) if matches!(first, Some("start" | "edit" | "promote")) => snapshot
             .scenarios
             .iter()
             .map(|s| Param::last(s, ""))

@@ -3,7 +3,9 @@ title: Harden & Package
 ---
 **Goal:** Make the tool safe to hand to someone else, with its scope and limits stated honestly.
 
-**Entry criteria:** Validation results and an explained list of failures.
+**Applies when:** Validation results and an explained list of failures.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Handle variants, versions and platform differences explicitly; fail loudly and safely when input falls outside the validated scope rather than producing silently wrong output.

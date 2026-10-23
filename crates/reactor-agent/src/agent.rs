@@ -329,6 +329,8 @@ pub struct Measure {
 
 /// What one request is made from.
 struct Gathered {
+    /// The case's scenarios first, then the config directory's and the checkout's.
+    scenarios: reactor_core::scenarios::Library,
     view: RegistryView,
     settings: Settings,
     state: SessionState,
@@ -455,6 +457,21 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         Ok(id)
     }
 
+    /// This session's scenarios: the case's own, then the config directory's and the
+    /// checkout's (ADR-0065).
+    fn scenarios_of(&self, store: &Store) -> reactor_core::scenarios::Library {
+        crate::tools::scenario::library(
+            &self.cfg.paths,
+            store.case().dir(),
+            &self.cfg.scenarios_dir,
+        )
+    }
+
+    /// The scenarios this session can start, as the chooser lists them.
+    pub fn scenarios(&self) -> reactor_core::scenarios::Library {
+        self.scenarios_of(&self.store.lock().unwrap())
+    }
+
     fn settings(&self) -> Settings {
         Settings::load(&self.cfg.paths)
     }
@@ -469,9 +486,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             .await
             .map_err(|e| Error::Store(e.to_string()))?;
         let settings = self.settings();
-        let (mut state, items) = {
+        let (mut state, items, scenarios) = {
             let store = self.store.lock().unwrap();
-            (SessionState::load(&store), project(&store))
+            (
+                SessionState::load(&store),
+                project(&store),
+                self.scenarios_of(&store),
+            )
         };
         // What is advertised and said about the case follows the switches in effect:
         // the session's layer over the default (ADR-0038).
@@ -487,6 +508,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         }
         let offered = skills::offered(&self.authored_skills, &view.usable, &view.skill_dirs);
         Ok(Gathered {
+            scenarios,
             view,
             settings,
             state,
@@ -551,7 +573,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             state: &g.state,
             registry: &g.view,
             skills: &g.offered,
-            scenarios_dir: &self.cfg.scenarios_dir,
+            scenarios: &g.scenarios,
             cwd: Some(&self.cfg.cwd),
         })
     }
@@ -1489,10 +1511,33 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         // this prompt is that (the person was asked to say it in their next prompt).
         {
             let mut store = self.store.lock().unwrap();
-            if let Some(mut sc) = SessionState::load(&store).scenario
-                && scenario::record_summary(&mut sc, text)
-            {
-                save_state(&mut store, KEY_SCENARIO, serde_json::to_value(&sc).unwrap())?;
+            let state = SessionState::load(&store);
+            if let Some(mut sc) = state.scenario.clone() {
+                let at = sc.pending_summary;
+                if scenario::record_summary(&mut sc, text) {
+                    save_state(&mut store, KEY_SCENARIO, serde_json::to_value(&sc).unwrap())?;
+                    if let Some((at, summary)) = at.and_then(|i| Some((i, sc.summaries.get(i)?)))
+                    {
+                        let title = self
+                            .scenarios_of(&store)
+                            .load(&sc.scenario_id)
+                            .get(at)
+                            .map(|p| p.title.clone())
+                            .unwrap_or_default();
+                        crate::tools::scenario::keep_summary(
+                            &self.cfg.paths,
+                            &state,
+                            store.case(),
+                            store.session(),
+                            store.head(),
+                            Author::analyst(),
+                            &sc.scenario_id,
+                            at,
+                            &title,
+                            summary,
+                        );
+                    }
+                }
             }
         }
 
@@ -2023,11 +2068,31 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 result.notices = e.notices;
             }
             "reactor-scenario" => {
+                let lib = self.scenarios_of(&store);
                 let mut sc = scenario::Scenario {
-                    dir: &self.cfg.scenarios_dir,
+                    lib: &lib,
                     state: state.scenario.clone(),
                 };
-                let e = sc.command(args);
+                let mut e = sc.command(args);
+                // The question a scenario is started with is the session's goal (ADR-0065).
+                if let Some(goal) = &e.goal {
+                    let mut m = state.manifest.clone();
+                    if let Some(g) = manifest::command(&mut m, "goal", goal)
+                        && g.persist
+                    {
+                        context::save_manifest(&mut store, &m, &Author::analyst())?;
+                    }
+                }
+                // A scenario that starts reads what earlier ones concluded first.
+                if args.split_whitespace().next() == Some("start")
+                    && let Some(m) = e.messages.iter_mut().find(|m| m.trigger_turn)
+                {
+                    m.content.push_str(&crate::tools::scenario::earlier_conclusions(
+                        &self.cfg.paths,
+                        &state,
+                        store.case(),
+                    ));
+                }
                 match &e.persist {
                     scenario::Persist::Nothing => {}
                     scenario::Persist::Set(s) => {

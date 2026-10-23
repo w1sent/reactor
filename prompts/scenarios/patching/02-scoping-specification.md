@@ -3,7 +3,9 @@ title: Scoping & Specification
 ---
 **Goal:** Say exactly what the change is, what must not change, and whether it is feasible, before reverse engineering for it.
 
-**Entry criteria:** An oriented program with a recorded baseline.
+**Applies when:** An oriented program with a recorded baseline.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Confirm the purpose and the authority to modify this program -- ownership, licence terms or authorisation -- and write it down. Stop here if it cannot be established.

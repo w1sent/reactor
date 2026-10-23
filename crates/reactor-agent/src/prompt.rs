@@ -68,7 +68,7 @@ pub struct Inputs<'a> {
     pub state: &'a SessionState,
     pub registry: &'a RegistryView,
     pub skills: &'a [Skill],
-    pub scenarios_dir: &'a Path,
+    pub scenarios: &'a reactor_core::scenarios::Library,
     /// The case directory, which is the agent's working directory (ADR-0045).
     pub cwd: Option<&'a Path>,
     /// The rules of the tools in the request, once each.
@@ -147,7 +147,7 @@ pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
             .is_enabled()
             .then(|| reporting::block(&i.settings.reporting)),
     );
-    push(Part::Scenario, scenario_block(i.state, i.scenarios_dir));
+    push(Part::Scenario, scenario_block(i.state, i.scenarios));
     parts
 }
 
@@ -166,9 +166,9 @@ pub fn system_prompt(i: &Inputs) -> String {
 }
 
 /// The current phase's briefing, and what has been concluded so far.
-fn scenario_block(state: &SessionState, dir: &Path) -> Option<String> {
+fn scenario_block(state: &SessionState, lib: &reactor_core::scenarios::Library) -> Option<String> {
     let s = state.scenario.as_ref()?;
-    let steps = scenario::load_steps(dir, &s.scenario_id);
+    let steps = lib.load(&s.scenario_id);
     if s.step_index >= steps.len() {
         return None;
     }

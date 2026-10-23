@@ -162,7 +162,7 @@ struct Bundle {
     /// the identity, as of when they were last read.
     plan: crate::plan_ui::PlanView,
     scenario: crate::scenario_ui::View,
-    memory: (bool, bool, bool),
+    memory: (bool, bool, bool, bool),
     identity: Option<String>,
 }
 
@@ -175,7 +175,7 @@ pub struct PaneView {
     pub plan: crate::plan_ui::PlanView,
     pub scenario: crate::scenario_ui::View,
     /// (other sessions' history, the case graph, the documents).
-    pub memory: (bool, bool, bool),
+    pub memory: (bool, bool, bool, bool),
     /// The identity in use, if one is.
     pub identity: Option<String>,
     pub model: Option<String>,
@@ -268,7 +268,6 @@ pub struct ReactorApp {
     pub preview: Option<PlanView>,
     /// A manual reduction or preview is in flight.
     pub context_busy: bool,
-    scenarios_dir: PathBuf,
     pub(crate) panels: crate::layout::Panels,
     /// The preset last applied — what the Layout menu shows a tick beside.
     pub layout: crate::layout::LayoutPreset,
@@ -307,11 +306,13 @@ pub struct ReactorApp {
     pub scenario: crate::scenario_ui::View,
     /// The scenario chosen to start (the first one until another is picked).
     pub scenario_pick: Option<String>,
+    /// The dialog that starts a scenario, while it is open.
+    pub scenario_starter: Option<crate::scenario_start::Starter>,
     /// The goal, guidelines, steps and reporting switches.
     pub plan: crate::plan_ui::PlanView,
     /// The active session's switches (other sessions, case graph, documents) and the
     /// identity it uses, read when its statuses are.
-    pub memory_view: (bool, bool, bool),
+    pub memory_view: (bool, bool, bool, bool),
     pub identity_active: Option<String>,
     /// The goal editor and the Frame popup, while they are open.
     pub goal_editor: Option<crate::manifest_ui::GoalEditor>,
@@ -891,13 +892,20 @@ impl ReactorApp {
     // -- the memory switches (ADR-0047) -------------------------------------------------------
 
     /// The switches in effect for this session: (other sessions' history, the case graph,
-    /// the documents).
-    pub fn memory(&self) -> (bool, bool, bool) {
+    /// the documents, scenario editing).
+    pub fn memory(&self) -> (bool, bool, bool, bool) {
         self.backend
             .as_ref()
             .map(|b| b.memory())
-            .map(|m| (m.session_history(), m.case_graph(), m.documents()))
-            .unwrap_or((true, true, true))
+            .map(|m| {
+                (
+                    m.session_history(),
+                    m.case_graph(),
+                    m.documents(),
+                    m.scenario_editing(),
+                )
+            })
+            .unwrap_or((true, true, true, true))
     }
 
     /// Set one of them for this session.
@@ -1107,8 +1115,6 @@ impl ReactorApp {
             });
         }
 
-        let scenarios_dir = crate::backend::find_bundled("prompts/scenarios")
-            .unwrap_or_else(|| PathBuf::from("prompts/scenarios"));
         let models = backend.as_ref().map(|b| b.models()).unwrap_or_default();
         let tree = backend.as_ref().map(|b| b.tree()).unwrap_or_default();
         let leaf_id = backend.as_ref().map(|b| b.store().lock().unwrap().head());
@@ -1149,7 +1155,7 @@ impl ReactorApp {
                     context_busy: false,
                     plan: Default::default(),
                     scenario: Default::default(),
-                    memory: (true, true, true),
+                    memory: (true, true, true, true),
                     identity: None,
                 },
                 handle: panel_handle(primary_transcript.clone()),
@@ -1200,7 +1206,6 @@ impl ReactorApp {
             context: None,
             preview: None,
             context_busy: false,
-            scenarios_dir,
             panels,
             layout,
             dock_area,
@@ -1219,8 +1224,9 @@ impl ReactorApp {
             mcp_remove_armed: None,
             scenario: Default::default(),
             scenario_pick: None,
+            scenario_starter: None,
             plan: Default::default(),
-            memory_view: (true, true, true),
+            memory_view: (true, true, true, true),
             identity_active: None,
             goal_editor: None,
             frame_popup: None,
@@ -1893,7 +1899,7 @@ impl ReactorApp {
                 context_busy: false,
                 plan: Default::default(),
                 scenario: Default::default(),
-                memory: (true, true, true),
+                memory: (true, true, true, true),
                 identity: None,
             },
             transcript,
@@ -1950,7 +1956,7 @@ impl ReactorApp {
                 context_busy: false,
                 plan: Default::default(),
                 scenario: Default::default(),
-                memory: (true, true, true),
+                memory: (true, true, true, true),
                 identity: None,
             },
             transcript,
@@ -2129,13 +2135,14 @@ impl ReactorApp {
             return;
         };
         let (state, settings) = (b.session_state(), Settings::load(&b.paths));
-        self.scenario = crate::scenario_ui::view_of(state.scenario.as_ref(), &self.scenarios_dir);
+        self.scenario = crate::scenario_ui::view_of(state.scenario.as_ref(), &b.agent.scenarios());
         self.plan = crate::plan_ui::plan_of(&state, &settings);
         let memory = state.memory.over(&settings.memory);
         self.memory_view = (
             memory.session_history(),
             memory.case_graph(),
             memory.documents(),
+            memory.scenario_editing(),
         );
         self.identity_active = state
             .identity
@@ -2399,18 +2406,185 @@ impl ReactorApp {
 
     // -- scenarios (the Scenario chip and the pane's stepper) ------------------------------
 
-    /// Start the chosen scenario: the same as `/reactor-scenario start <id>`, which opens with
-    /// the first phase's briefing as a turn.
-    pub fn scenario_start(&mut self, cx: &mut Context<Self>) {
-        let id = self
-            .scenario_pick
-            .clone()
-            .filter(|p| self.scenario.available.contains(p))
-            .or_else(|| self.scenario.available.first().cloned());
-        match id {
-            Some(id) => self.backend_command("reactor-scenario", &format!("start {id}"), cx),
-            None => self.push_note("warning", "scenario: there are no scenarios to start"),
+    /// The scenarios this session can start: the case's own, the config directory's, a
+    /// checkout's (ADR-0065).
+    pub fn scenario_library(&self) -> Option<reactor_core::scenarios::Library> {
+        self.backend.as_ref().map(|b| b.agent.scenarios())
+    }
+
+    /// The toolsets a phase can name.
+    pub fn toolset_ids(&self) -> Vec<String> {
+        self.toolsets
+            .as_ref()
+            .map(|t| t.toolsets.iter().map(|t| t.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Open the dialog that starts scenario `id`: its description, the question (prefilled
+    /// with the goal there is) and its phases to tick. `new_session` starts it in a new
+    /// session of the case instead of this one.
+    pub fn open_scenario_start(
+        &mut self,
+        id: &str,
+        new_session: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt as _;
+        let Some(listed) = self
+            .scenario_library()
+            .and_then(|l| l.list().into_iter().find(|l| l.id == id))
+        else {
+            self.push_note("warning", format!("scenario: there is no scenario \"{id}\""));
+            return;
+        };
+        let goal = self.plan.goal.clone().unwrap_or_default();
+        let question = cx.new(|cx| {
+            let mut s = TextareaState::new(window, cx)
+                .placeholder("Was the VPN appliance the entry point? Evidence: …");
+            s.set_value(&goal, window, cx);
+            s
+        });
+        let focus = question.clone();
+        self.scenario_starter = Some(crate::scenario_start::Starter {
+            id: listed.id.clone(),
+            description: listed.description.clone(),
+            titles: listed.titles.clone(),
+            question,
+            skip: Default::default(),
+            new_session,
+            error: None,
+        });
+        let weak = cx.weak_entity();
+        let title = format!("Start {}", listed.id);
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let (w_content, w_start) = (weak.clone(), weak.clone());
+            dialog
+                .w(px(620.))
+                .title(title.clone())
+                .on_close({
+                    let weak = weak.clone();
+                    move |_, _w, cx| {
+                        let _ = weak.update(cx, |app, _| app.scenario_starter = None);
+                    }
+                })
+                .content(move |content, _w, cx| {
+                    content.child(crate::scenario_start::view(&w_content, cx))
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("scenario-start-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("scenario-start-go")
+                                .label(if new_session { "Start in a new session" } else { "Start" })
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let _ = w_start
+                                        .update(cx, |app, cx| app.scenario_start_confirm(window, cx));
+                                }),
+                        ),
+                )
+        });
+        window.defer(cx, move |window, cx| {
+            focus.update(cx, |s, cx| s.focus(window, cx));
+        });
+        cx.notify();
+    }
+
+    /// Start what the dialog says: the question becomes the goal, the unticked phases are
+    /// passed over, and the first briefing opens a turn.
+    fn scenario_start_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let Some(st) = &self.scenario_starter else {
+            return;
+        };
+        if st.skip.len() >= st.titles.len() {
+            if let Some(st) = self.scenario_starter.as_mut() {
+                st.error = Some("Keep at least one phase.".into());
+            }
+            window.refresh();
+            return;
         }
+        if self.session.read(cx).phase != AgentPhase::Idle && !st.new_session {
+            if let Some(st) = self.scenario_starter.as_mut() {
+                st.error = Some("The agent is working: wait for it, or interrupt it, first.".into());
+            }
+            window.refresh();
+            return;
+        }
+        let question = st.question.read(cx).value().to_string();
+        let args = crate::scenario_start::start_args(&st.id, &st.skip, &question);
+        let new_session = st.new_session;
+        self.scenario_starter = None;
+        window.close_dialog(cx);
+        if new_session {
+            self.open_session(None, window, cx);
+        }
+        self.backend_command("reactor-scenario", &args, cx);
+    }
+
+    /// Open the scenario editor on a new scenario or on one there is.
+    pub fn open_scenario_editor(
+        &mut self,
+        start: crate::scenario_editor::Start,
+        cx: &mut Context<Self>,
+    ) {
+        let app = cx.entity();
+        cx.defer(move |cx| crate::scenario_editor::open(cx, app, start));
+    }
+
+    /// Save a scenario from the editor; the reason it was refused is the `Err`.
+    pub fn scenario_save(
+        &mut self,
+        scope: reactor_core::scenarios::Scope,
+        id: &str,
+        description: &str,
+        phases: &[reactor_core::scenarios::Phase],
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let lib = self.scenario_library().ok_or("the agent is not running")?;
+        let dir = lib
+            .dir(scope)
+            .ok_or("that place is not available here")?
+            .to_path_buf();
+        if self
+            .backend
+            .as_ref()
+            .and_then(|b| b.session_state().scenario)
+            .is_some_and(|s| s.scenario_id == id)
+        {
+            return Err(format!(
+                "\"{id}\" is running in this session: stop it first, or have the agent amend what is left of it"
+            ));
+        }
+        let description = Some(description).filter(|d| !d.trim().is_empty());
+        reactor_core::scenarios::save(&dir, id, description, phases).map_err(|e| e.to_string())?;
+        self.push_note(
+            "info",
+            format!("scenario: saved \"{id}\" ({})", scope.as_str()),
+        );
+        self.refresh_statuses(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Ask the agent to rewrite a case scenario for every case: `/reactor-scenario promote`.
+    pub fn scenario_promote(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.session.read(cx).phase != AgentPhase::Idle {
+            self.push_note(
+                "info",
+                "scenario: wait until the agent has finished, or interrupt it, to promote a scenario",
+            );
+            return;
+        }
+        self.backend_command("reactor-scenario", &format!("promote {id}"), cx);
     }
 
     /// Make phase `n` (1-based) the current one, forwards or back. Only between turns: it
@@ -2990,13 +3164,8 @@ impl ReactorApp {
                 .map(|t| (t.id.clone(), t.active))
                 .collect();
         }
-        if let Ok(read) = std::fs::read_dir(&self.scenarios_dir) {
-            snapshot.scenarios = read
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .filter_map(|e| e.file_name().to_str().map(str::to_string))
-                .collect();
-            snapshot.scenarios.sort();
+        if let Some(b) = &self.backend {
+            snapshot.scenarios = b.agent.scenarios().ids();
         }
         if let Some(b) = &self.backend {
             let settings = Settings::load(&b.paths);
@@ -3913,6 +4082,25 @@ impl ReactorApp {
                 ) =>
             {
                 self.identity_window_command(args, window, cx)
+            }
+            // The scenario commands that open a window or the start dialog; `start <id>` with
+            // a question or `skip=` after it starts at once, as typed.
+            "reactor-scenario"
+                if matches!(
+                    args.split_whitespace().collect::<Vec<_>>().as_slice(),
+                    ["new"] | ["edit", _] | ["start", _]
+                ) =>
+            {
+                let words: Vec<&str> = args.split_whitespace().collect();
+                match words.as_slice() {
+                    ["new"] => self.open_scenario_editor(crate::scenario_editor::Start::New, cx),
+                    ["edit", id] => self.open_scenario_editor(
+                        crate::scenario_editor::Start::Edit(id.to_string()),
+                        cx,
+                    ),
+                    ["start", id] => self.open_scenario_start(id, false, window, cx),
+                    _ => {}
+                }
             }
             "model" => self.set_model(args, cx),
             "thinking" => match args.trim() {

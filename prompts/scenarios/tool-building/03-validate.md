@@ -3,7 +3,9 @@ title: Validate Against Ground Truth
 ---
 **Goal:** Show, with evidence, that the tool produces the right output and know exactly where it does not.
 
-**Entry criteria:** A working implementation and the corpus with ground truth.
+**Applies when:** A working implementation and the corpus with ground truth.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Run against every available sample and compare to independently derived expected output.

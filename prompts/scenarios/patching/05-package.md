@@ -3,7 +3,9 @@ title: Package
 ---
 **Goal:** Deliver the change so that someone else can apply it, verify it and undo it.
 
-**Entry criteria:** A patch that meets its specification and passes the baseline comparison.
+**Applies when:** A patch that meets its specification and passes the baseline comparison.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Produce the deliverable: the patched build, a patch file (a delta against the exact original), or a script that applies the change and checks what it is applied to.

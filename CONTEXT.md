@@ -91,8 +91,12 @@ A multi-phase analysis workflow expressed as prompt templates, one directory per
 scenario under `prompts/scenarios/`. Each scenario answers one question — the
 shipped set is `acquisition`, `investigation`, `malware-analysis`,
 `reverse-engineering`, `patching`, `tool-building` and `response` — so a case runs
-only the phases it needs. Scenarios run one at a time and do not carry state into
-the next; what carries over is the case (for example `evidence/INVENTORY.md`). The agent advances by calling
+only the phases it needs. A scenario starts from a question, which becomes the session's goal,
+and its briefings say how to do a stage rather than where files are, so it needs no other scenario
+to have run first. Scenarios run one at a time; what carries over is the case, including each phase's
+summary, kept in the graph as a note tagged `scenario`. A case can have scenarios of its own in
+`.reactor/scenarios/`, written with the agent after a triage, which win over the global and shipped
+ones of the same id ([ADR-0065](docs/adr/0065-a-scenario-is-general-starts-from-a-question-and-can-be-written-for-the-case.md)). The agent advances by calling
 `reactor_phase_complete`, whose *return value is the next phase's briefing*.
 Scenarios steer the agent's sequencing; like everything else in REactor they
 persuade rather than enforce. The person can go to any phase from the stepper at the edge of the session's transcript, between turns; that starts no turn, and their next prompt is recorded as the summary of the phase they left ([ADR-0049](docs/adr/0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md)). A scenario's stages are *phases* — distinct from

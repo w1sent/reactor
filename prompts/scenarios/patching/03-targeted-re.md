@@ -4,7 +4,9 @@ toolset: debugging
 ---
 **Goal:** Locate and understand the code that produces the behaviour to be changed -- no more of the program than that.
 
-**Entry criteria:** A specification naming the behaviour to change.
+**Applies when:** A specification naming the behaviour to change.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Find the change site: trace from the observable behaviour (a string, a message, a check, an output) to the code that decides it, using static cross-references and a debugger or emulator on the running program.

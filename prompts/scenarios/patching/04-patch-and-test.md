@@ -4,7 +4,9 @@ toolset: patching
 ---
 **Goal:** Make the smallest change that meets the specification, and show that it does, and that nothing else changed.
 
-**Entry criteria:** Change-site notes and guards from Targeted reverse engineering.
+**Applies when:** Change-site notes and guards from Targeted reverse engineering.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Choose the approach from what was found: in-place byte change, a code cave or added section, a loader or runtime hook, or a rebuild from source. Prefer the one with the least footprint and the easiest rollback; record why.

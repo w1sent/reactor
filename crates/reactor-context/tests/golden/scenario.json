@@ -1052,7 +1052,7 @@
         "out": {
           "notify": [
             {
-              "message": "reactor-scenario: unknown subcommand \"bogus\" -- try list, start <id>, status, next, goto <n>, or stop",
+              "message": "reactor-scenario: unknown subcommand \"bogus\" -- try list, start <id>, status, next, goto <n>, stop or promote <id>",
               "level": "error"
             }
           ],

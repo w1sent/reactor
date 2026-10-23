@@ -621,14 +621,15 @@ fn scenario_dir(phases: usize) -> tempfile::TempDir {
 }
 
 /// A runner on scenario `s`, started and standing at phase `at` (0-based) with `summaries`.
-fn running<'a>(dir: &'a Path, at: usize, summaries: &[&str]) -> scenario::Scenario<'a> {
+fn running<'a>(lib: &'a scenario::Library, at: usize, summaries: &[&str]) -> scenario::Scenario<'a> {
     scenario::Scenario {
-        dir,
+        lib,
         state: Some(scenario::State {
             scenario_id: "s".into(),
             step_index: at,
             summaries: summaries.iter().map(|s| s.to_string()).collect(),
             pending_summary: None,
+            skip: vec![],
         }),
     }
 }
@@ -643,7 +644,8 @@ fn stored(e: &scenario::Effects) -> scenario::State {
 #[test]
 fn going_forwards_skips_the_phases_between_and_waits_for_a_summary() {
     let dir = scenario_dir(5);
-    let mut sc = running(dir.path(), 1, &["one"]);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = running(&lib, 1, &["one"]);
     let e = sc.command("goto 4");
     let s = stored(&e);
     assert_eq!(s.step_index, 3);
@@ -663,7 +665,8 @@ fn going_forwards_skips_the_phases_between_and_waits_for_a_summary() {
 #[test]
 fn a_summary_given_with_the_jump_is_used_at_once() {
     let dir = scenario_dir(3);
-    let mut sc = running(dir.path(), 0, &[]);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = running(&lib, 0, &[]);
     let s = stored(&sc.command("goto 2 found the packer"));
     assert_eq!(s.summaries, ["found the packer"]);
     assert_eq!(s.pending_summary, None);
@@ -672,7 +675,8 @@ fn a_summary_given_with_the_jump_is_used_at_once() {
 #[test]
 fn going_back_drops_the_summaries_of_phases_to_be_done_again() {
     let dir = scenario_dir(4);
-    let mut sc = running(dir.path(), 3, &["a", "b", "c"]);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = running(&lib, 3, &["a", "b", "c"]);
     let e = sc.command("goto 2");
     let s = stored(&e);
     assert_eq!(
@@ -686,7 +690,8 @@ fn going_back_drops_the_summaries_of_phases_to_be_done_again() {
 #[test]
 fn goto_refuses_what_makes_no_sense_and_changes_nothing() {
     let dir = scenario_dir(3);
-    let mut sc = running(dir.path(), 1, &["a"]);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = running(&lib, 1, &["a"]);
     for args in ["goto", "goto 0", "goto 4", "goto two", "goto -1"] {
         let e = sc.command(args);
         assert_eq!(e.persist, scenario::Persist::Nothing, "{args}");
@@ -699,7 +704,7 @@ fn goto_refuses_what_makes_no_sense_and_changes_nothing() {
     let e = sc.command("goto 2");
     assert_eq!(e.persist, scenario::Persist::Nothing, "already there");
     let none = scenario::Scenario {
-        dir: dir.path(),
+        lib: &lib,
         state: None,
     }
     .command("goto 1");
@@ -709,7 +714,8 @@ fn goto_refuses_what_makes_no_sense_and_changes_nothing() {
 #[test]
 fn next_by_hand_starts_no_turn_and_finishing_clears() {
     let dir = scenario_dir(2);
-    let mut sc = running(dir.path(), 0, &[]);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = running(&lib, 0, &[]);
     let e = sc.command("next");
     let s = stored(&e);
     assert_eq!((s.step_index, s.pending_summary), (1, Some(0)));
@@ -728,6 +734,7 @@ fn the_next_prompt_becomes_the_pending_summary_once() {
         step_index: 2,
         summaries: vec!["a".into(), scenario::MANUAL.into()],
         pending_summary: Some(1),
+        skip: vec![],
     };
     assert!(scenario::record_summary(
         &mut s,
@@ -751,7 +758,8 @@ fn the_next_prompt_becomes_the_pending_summary_once() {
 #[test]
 fn the_agents_own_advance_never_leaves_a_summary_pending() {
     let dir = scenario_dir(3);
-    let mut sc = running(dir.path(), 0, &[]);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = running(&lib, 0, &[]);
     sc.advance("did it");
     let s = sc.state.unwrap();
     assert_eq!((s.step_index, s.pending_summary), (1, None));
@@ -786,4 +794,51 @@ fn children_run_in_parallel_unless_switched_off_and_at_most_so_many_at_once() {
     assert_eq!(n(json!({"maxParallel": 0})).max_parallel, 4, "at least one, else the default");
     assert!(!Settings::from_json(&json!({"children": {"parallel": false}})).children.parallel);
     assert!(serde_json::to_value(Settings::default()).unwrap().get("children").is_none());
+}
+
+// -- scenario: starting from a question, leaving phases out (ADR-0065) ------------
+
+#[test]
+fn a_start_carries_a_question_and_phases_to_leave_out() {
+    let dir = scenario_dir(4);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = scenario::Scenario { lib: &lib, state: None };
+    let e = sc.command("start s skip=1,3 Was the VPN appliance\nthe entry point?");
+    assert_eq!(e.goal.as_deref(), Some("Was the VPN appliance\nthe entry point?"));
+    let s = stored(&e);
+    // Phase 1 is left out, so it starts on phase 2 with phase 1 recorded as skipped.
+    assert_eq!((s.step_index, s.skip.clone()), (1, vec![0, 2]));
+    assert_eq!(s.summaries, [scenario::SKIPPED]);
+    assert!(e.messages[0].content.starts_with("## Phase 2/4"), "{:?}", e.messages);
+    assert_eq!(e.activate_toolsets, ["ts2"]);
+
+    // Finishing phase 2 passes over phase 3.
+    let adv = sc.advance("two done");
+    assert!(adv.text.starts_with("## Phase 4/4"), "{}", adv.text);
+    let scenario::Persist::Set(s) = adv.persist else { panic!() };
+    assert_eq!(s.summaries, [scenario::SKIPPED, "two done", scenario::SKIPPED]);
+}
+
+#[test]
+fn a_start_without_a_question_leaves_the_goal_and_everything_left_out_is_refused() {
+    let dir = scenario_dir(2);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = scenario::Scenario { lib: &lib, state: None };
+    assert_eq!(sc.command("start s skip=1,2").persist, scenario::Persist::Nothing);
+    let e = sc.command("start s");
+    assert_eq!(e.goal, None);
+    assert_eq!(stored(&e).step_index, 0);
+}
+
+#[test]
+fn going_to_a_phase_left_out_takes_it_back_in_and_next_passes_over_the_rest() {
+    let dir = scenario_dir(4);
+    let lib = scenario::Library::single(dir.path());
+    let mut sc = scenario::Scenario { lib: &lib, state: None };
+    sc.command("start s skip=2,3");
+    let s = stored(&sc.command("next done"));
+    assert_eq!(s.step_index, 3);
+    assert_eq!(s.summaries, ["done", scenario::SKIPPED, scenario::SKIPPED]);
+    let s = stored(&sc.command("goto 2"));
+    assert_eq!((s.step_index, s.skip), (1, vec![2]));
 }

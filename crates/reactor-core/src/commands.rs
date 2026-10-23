@@ -240,6 +240,26 @@ pub fn doctor(paths: &Paths, flags: DoctorFlags) -> Result<Done<DoctorReport>> {
             ..Default::default()
         });
     }
+    // The scenarios the user wrote or changed, in the config directory and in the case:
+    // they still load when they are wrong, so say why one reads oddly (ADR-0065).
+    let known: Vec<String> = l.toolsets.iter().map(|t| t.id.clone()).collect();
+    for (id, scope, issue) in crate::scenarios::lint_installed(paths, &known) {
+        problems.push(Problem {
+            kind: "scenario-invalid",
+            file: Some(issue.path.display().to_string()),
+            message: format!(
+                "scenario {id} ({}), {}: {}",
+                scope.as_str(),
+                issue
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                issue.message
+            ),
+            ..Default::default()
+        });
+    }
     for e in &entries {
         if e.skill.as_ref().is_some_and(|s| !s.fetched) {
             problems.push(Problem {

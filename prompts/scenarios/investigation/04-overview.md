@@ -3,7 +3,9 @@ title: Creating an Overview
 ---
 **Goal:** Synthesise findings so far into a coherent situational picture.
 
-**Entry criteria:** Triage, plus Memory and Network where they applied.
+**Applies when:** Always, after triage: it pulls together what the phases so far found.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Consolidate what is known (access vector, capability, scope, impact, affected platforms); identify gaps and contradictions.

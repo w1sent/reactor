@@ -1,9 +1,12 @@
 ---
 title: Remediation & Containment Recommendations
+description: Turn what an investigation established into containment, eradication and recovery steps, then lessons learned.
 ---
 **Goal:** Provide actionable containment, eradication and recovery guidance (NIST SP 800-61).
 
-**Entry criteria:** Root cause and scope reasonably established -- the output of an `investigation`.
+**Applies when:** Root cause and scope are reasonably established -- by an `investigation` in this case, or by what the person tells you.
+
+**Orient:** Start from the goal and what the case already holds: its files, the graph, and what earlier scenarios concluded (listed under this briefing when there is any). Say which of the inputs this phase works from are there, state the assumption you make for any that are not, and go on. Ask only when the goal cannot be answered without what is missing.
 
 **Activities:**
 - Recommend containment (isolation or quarantine, blocking C2, disabling accounts and tokens, credential and key rotation, revoking certificates or device enrolments).

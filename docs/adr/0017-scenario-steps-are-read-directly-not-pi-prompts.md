@@ -5,6 +5,12 @@
 > is now `reactor_phase_complete` (a scenario's stages are *phases*), and the
 > `setActiveTools` mechanics rejected below are used for advertisement at
 > state transitions. Registration remains once, always.
+>
+> **Amended by [ADR-0065](0065-a-scenario-is-general-starts-from-a-question-and-can-be-written-for-the-case.md):**
+> the first phase file may also carry `description:`; scenarios are looked up in the case's
+> `.reactor/scenarios/`, then the config directory, then the checkout; and the agent can write
+> them (`scenario_save`, `scenario_amend`). Use in the field showed that scenarios written for one
+> case are needed, and that the chooser has to say what each scenario is for.
 
 Resolves the question ADR-0009 and `TODO.md` left open: scenario definitions
 are Markdown files with a two-field YAML-lite frontmatter (`title`, optional

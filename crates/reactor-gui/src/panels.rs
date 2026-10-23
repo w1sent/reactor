@@ -375,6 +375,10 @@ pub struct ToolStyle {
 #[derive(Clone)]
 struct FileLinks {
     cwd: std::path::PathBuf,
+    /// The window's app and this transcript's session: what a saved scenario's card starts it
+    /// in or opens it with.
+    app: gpui_kit::WeakEntity<ReactorApp>,
+    session: String,
     /// Path as written, its line, the modifier keys held for the click.
     open: std::sync::Arc<OpenReference>,
     /// Open a `docs_search` result in the Documents panel: the query, its passages and the
@@ -394,6 +398,69 @@ type ShowDocs = dyn Fn(String, Vec<reactor_agent::tools::docs::ResultPassage>, u
     + Sync;
 
 type OpenReference = dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync;
+
+/// Under a scenario the agent saved: *Start here*, *Start in a new session*, *Edit*.
+fn scenario_card(
+    index: usize,
+    id: String,
+    links: &FileLinks,
+    theme: &gpui_kit::component::Theme,
+) -> gpui_kit::Div {
+    let action = |new_session: Option<bool>| {
+        let (app, session, id) = (links.app.clone(), links.session.clone(), id.clone());
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            let _ = app.update(cx, |app, cx| match new_session {
+                Some(new) => {
+                    app.activate_session(&session, window, cx);
+                    app.open_scenario_start(&id, new, window, cx);
+                }
+                None => app.open_scenario_editor(
+                    crate::scenario_editor::Start::Edit(id.clone()),
+                    cx,
+                ),
+            });
+        }
+    };
+    h_flex()
+        .gap_2()
+        .items_center()
+        .px_2()
+        .py_1()
+        .mt_1()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.border)
+        .child(Label::new("Scenario").text_color(theme.muted_foreground))
+        .child(
+            div()
+                .font_family(theme.mono_font_family.clone())
+                .child(SharedString::from(id.clone())),
+        )
+        .child(Label::new("saved -- not started").text_color(theme.muted_foreground))
+        .child(div().flex_1())
+        .child(
+            Button::new(("scenario-card-edit", index))
+                .label("Edit")
+                .small()
+                .ghost()
+                .on_click(action(None)),
+        )
+        .child(
+            Button::new(("scenario-card-new", index))
+                .label("Start in a new session")
+                .small()
+                .tooltip("A new session of this case begins with an empty context")
+                .on_click(action(Some(true))),
+        )
+        .child(
+            Button::new(("scenario-card-here", index))
+                .label("Start here")
+                .small()
+                .primary()
+                .tooltip("Start it in this session, which keeps what was discussed")
+                .on_click(action(Some(false))),
+        )
+}
 
 // One entry's look is one function of everything it draws; a context struct would only rename
 // these arguments.
@@ -583,6 +650,12 @@ fn render_item(
                 )
             });
             let copy = links.copy.clone();
+            // A scenario the agent saved: the person starts it, here or in a new session, or
+            // opens it in the editor first (ADR-0065).
+            let saved_scenario = (name == "scenario_save" && *done && !*is_error)
+                .then(|| args.get("id").and_then(Value::as_str).map(str::to_string))
+                .flatten()
+                .map(|id| scenario_card(index, id, links, theme));
             ui::lane(
                 Node::Tool(ui::tool_state(*done, *is_error)),
                 v_flex().py_0p5().child(ui::tool_row(
@@ -603,7 +676,8 @@ fn render_item(
                     tools,
                     move |window, cx| toggle_tool(index, window, cx),
                     move |text, window, cx| copy(index, text, window, cx),
-                )),
+                ))
+                .children(saved_scenario),
                 theme,
             )
         }
@@ -1034,6 +1108,8 @@ impl Render for TranscriptPanel {
                 }
             };
             let links = FileLinks {
+                app: self.app.clone(),
+                session: self.session_id.clone(),
                 cwd: self
                     .app
                     .upgrade()

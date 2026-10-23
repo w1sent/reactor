@@ -32,6 +32,7 @@ pub mod bash;
 pub mod docs;
 pub mod files;
 pub mod graph;
+pub mod scenario;
 pub mod search;
 pub mod session;
 
@@ -77,7 +78,8 @@ pub struct ToolCtx {
     pub emit: Arc<dyn Fn(&str) + Send + Sync>,
     pub store: Arc<Mutex<Store>>,
     pub paths: Paths,
-    /// Where scenario directories live.
+    /// The scenarios a checkout ships, or the config directory's when there is no checkout;
+    /// [`ToolCtx::scenarios`] adds the case's own in front.
     pub scenarios_dir: PathBuf,
     /// The model on this turn (`provider/name`): the author of what it writes to the case.
     pub model: String,
@@ -153,7 +155,10 @@ impl Tools {
             .with(session::HistoryRead)
             .with(session::HistorySearch)
             .with(session::UpdateSteps)
-            .with(session::PhaseComplete)
+            .with(scenario::PhaseComplete)
+            .with(scenario::ScenarioList)
+            .with(scenario::ScenarioSave)
+            .with(scenario::ScenarioAmend)
             .with(graph::GraphAdd)
             .with(graph::GraphAnnotate)
             .with(graph::GraphQuery)

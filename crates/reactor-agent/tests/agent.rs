@@ -190,6 +190,8 @@ async fn a_turn_without_tools_records_the_exchange_and_streams_it() {
             "history_index",
             "history_read",
             "history_search",
+            "scenario_list",
+            "scenario_save",
             "tool_search"
         ],
         "the state-gated tools are not advertised, and the graph's five wait for tool_search"
@@ -832,6 +834,133 @@ async fn a_phase_chosen_by_hand_waits_for_the_next_prompt_and_that_prompt_is_the
     r.agent.command("reactor-scenario", "goto 1").unwrap();
     let state = r.agent.session_state().scenario.unwrap();
     assert_eq!((state.step_index, state.summaries.len()), (0, 0));
+}
+
+// -- scenarios: a question, phases left out, written for the case (ADR-0065) ----------------
+
+#[tokio::test]
+async fn a_scenario_started_with_a_question_sets_the_goal_and_its_summaries_outlive_it() {
+    let r = rig_with(
+        vec![
+            ScriptedLlm::call(
+                "",
+                &[("p", "reactor_phase_complete", json!({"summary": "the VPN box was the way in"}))],
+            ),
+            ScriptedLlm::say("done"),
+            ScriptedLlm::say("again"),
+        ],
+        Sum::says("-"),
+        100_000,
+        no_deferral,
+    );
+    write_scenario(&r.root);
+    // Scoping is left out: it starts on Triage, and the question is the goal.
+    let started = r
+        .agent
+        .command("reactor-scenario", "start inv skip=1 Was the VPN appliance\nthe entry point?")
+        .unwrap();
+    assert!(started.trigger_turn.unwrap().starts_with("## Phase 2/2: Triage"));
+    assert_eq!(
+        r.agent.session_state().manifest.goal.as_deref(),
+        Some("Was the VPN appliance\nthe entry point?")
+    );
+    run(&r, "begin").await.unwrap();
+    assert!(r.agent.session_state().scenario.is_none());
+
+    // The next scenario reads what this one concluded, from the graph.
+    let again = r.agent.command("reactor-scenario", "start inv").unwrap();
+    let briefing = again.trigger_turn.unwrap();
+    assert!(
+        briefing.contains("What earlier scenarios in this case concluded")
+            && briefing.contains("inv 2. Triage: the VPN box was the way in"),
+        "{briefing}"
+    );
+}
+
+#[tokio::test]
+async fn the_agent_writes_a_scenario_for_the_case_and_amends_only_what_is_ahead() {
+    let phase = |t: &str| json!({"title": t, "body": format!("Do {t}.")});
+    let r = rig_with(
+        vec![
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "s",
+                    "scenario_save",
+                    json!({"id": "inv", "description": "This case's plan", "phases": [phase("Hosts"), phase("Logs")]}),
+                )],
+            ),
+            ScriptedLlm::say("saved"),
+            ScriptedLlm::call(
+                "",
+                &[("a", "scenario_amend", json!({"phases": [phase("Mail"), phase("Report")]}))],
+            ),
+            ScriptedLlm::say("amended"),
+        ],
+        Sum::says("-"),
+        100_000,
+        no_deferral,
+    );
+    // A global `inv` exists; the case's own, saved by the agent, wins over it.
+    write_scenario(&r.root);
+    run(&r, "write the plan down").await.unwrap();
+    assert!(results(&r)[0].contains("saved scenario \"inv\" (case, 2 phases)"), "{:?}", results(&r));
+    let lib = r.agent.scenarios();
+    assert_eq!(lib.find("inv").unwrap().0, reactor_core::scenarios::Scope::Case);
+    assert_eq!(lib.load("inv")[0].description.as_deref(), Some("This case's plan"));
+
+    r.agent.command("reactor-scenario", "start inv").unwrap();
+    run(&r, "change what is left").await.unwrap();
+    let titles: Vec<String> = r.agent.scenarios().load("inv").into_iter().map(|p| p.title).collect();
+    assert_eq!(titles, ["Hosts", "Mail", "Report"]);
+    // The global one is untouched.
+    assert_eq!(
+        reactor_core::scenarios::load_dir(&r.root.join("scenarios/inv"))[0].title,
+        "Scoping"
+    );
+}
+
+#[tokio::test]
+async fn the_scenario_editing_switch_withdraws_the_authoring_tools_and_refuses_a_stale_call() {
+    let off = |cfg: &mut AgentConfig| {
+        std::fs::create_dir_all(&cfg.paths.config_dir).unwrap();
+        std::fs::write(
+            cfg.paths.config_dir.join("settings.json"),
+            r#"{"toolSearch":{"deferOverTokens":100000},"memory":{"scenarioEditing":false}}"#,
+        )
+        .unwrap();
+    };
+    let r = rig_with(
+        vec![
+            ScriptedLlm::call("", &[("l", "scenario_list", json!({}))]),
+            ScriptedLlm::say("ok"),
+        ],
+        Sum::says("-"),
+        100_000,
+        off,
+    );
+    write_scenario(&r.root);
+    run(&r, "list them").await.unwrap();
+    let reqs = r.llm.requests();
+    let names = tool_names(&reqs[0]);
+    assert!(!names.contains(&"scenario_list") && !names.contains(&"scenario_save"));
+    assert!(results(&r)[0].contains("scenario-editing switch is off"), "{:?}", results(&r));
+    // Running one is not editing: the phase tool is still there.
+    r.agent.command("reactor-scenario", "start inv").unwrap();
+    assert!(r.agent.session_state().scenario.is_some());
+}
+
+#[tokio::test]
+async fn promoting_asks_the_agent_to_rewrite_a_case_scenario_for_every_case() {
+    let r = rig(vec![], Sum::says("-"), 100_000);
+    write_scenario(&r.root);
+    let refused = r.agent.command("reactor-scenario", "promote inv").unwrap();
+    assert!(refused.trigger_turn.is_none(), "a global one is not promoted");
+    let case_dir = r.agent.store().lock().unwrap().case().dir().to_path_buf();
+    let p = reactor_core::scenarios::Phase { title: "A".into(), body: "b".into(), ..Default::default() };
+    reactor_core::scenarios::save(&case_dir.join("scenarios"), "mine", None, &[p]).unwrap();
+    let asked = r.agent.command("reactor-scenario", "promote mine").unwrap();
+    assert!(asked.trigger_turn.unwrap().contains("scope global, id `mine`"));
 }
 
 #[tokio::test]
@@ -1559,10 +1688,14 @@ async fn a_threshold_of_zero_defers_every_group_and_a_detached_graph_has_none() 
     let r = rig_with(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000, zero);
     run(&r, "hi").await.unwrap();
     let reqs = r.llm.requests();
-    assert!(
-        !tool_names(&reqs[0]).contains(&"tool_search"),
-        "no graph, no MCP: nothing to load"
-    );
+    // No graph and no MCP: only the scenario tools are left to load.
+    let search = reqs[0]
+        .tools
+        .iter()
+        .find(|t| t.name == "tool_search")
+        .expect("the scenario group is deferred too");
+    assert!(search.description.contains("scenario_save"));
+    assert!(!search.description.contains("graph_add"));
 }
 
 // -- settings layers and session scope (ADR-0038) ----------------------------------------------------
@@ -2080,7 +2213,7 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
 
     let ((with, block, n), (without, no_block, m)) = (cost(&on), cost(&off));
     assert!(block && !no_block);
-    assert_eq!((n, m), (12, 7), "five tools come and go with the switch");
+    assert_eq!((n, m), (14, 9), "five tools come and go with the switch");
     let graph = with - without;
     eprintln!("the case graph costs {graph} tokens of every request (estimated)");
     // A ceiling, so that growing it is a decision and not an accident.
@@ -2093,8 +2226,8 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
     let left = deferred - without;
     eprintln!("deferred, the case graph costs {left} tokens of every request (estimated)");
     assert!(
-        block && count == 8,
-        "{count} tools: the seven and tool_search"
+        block && count == 10,
+        "{count} tools: the nine and tool_search"
     );
     assert!(left + 1_000 < graph, "{left} against {graph}");
 }

@@ -2,11 +2,11 @@
 title: Network Traffic Analysis
 toolset: network
 ---
-**Skippable.** Read `evidence/INVENTORY.md` first. If it lists no packet captures, flow logs or other network telemetry, this phase does not apply: call `reactor_phase_complete` at once with a summary that begins `skipped:` and says what the inventory lacks, and do nothing else.
-
 **Goal:** Characterise malicious network activity: C2, exfiltration, spread and payload delivery.
 
-**Entry criteria:** Packet captures or network telemetry are in the inventory.
+**Applies when:** There are packet captures, flow logs or other network telemetry. If triage found none, this phase does not apply: call `reactor_phase_complete` at once with a summary that begins `skipped:` and says what is missing, and do nothing else.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Profile protocols, endpoints and volumes; identify suspicious or algorithmically generated name resolution.

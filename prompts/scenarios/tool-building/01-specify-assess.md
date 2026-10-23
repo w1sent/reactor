@@ -1,9 +1,12 @@
 ---
 title: Specify & Assess
+description: Build a tool (decoder, parser, decryptor) from what analysis understood: specify, implement, validate, harden and package.
 ---
 **Goal:** Turn what earlier analysis understood into a precise specification for a tool, and decide whether building it is feasible and worth it.
 
-**Entry criteria:** Reverse engineering, memory analysis or artifact analysis has produced a sufficiently complete description of the logic to be reimplemented, plus samples to validate against.
+**Applies when:** Reverse engineering, memory analysis or artifact analysis has produced a sufficiently complete description of the logic to be reimplemented, plus samples to validate against.
+
+**Orient:** Start from the goal and what the case already holds: its files, the graph, and what earlier scenarios concluded (listed under this briefing when there is any). Say which of the inputs this phase works from are there, state the assumption you make for any that are not, and go on. Ask only when the goal cannot be answered without what is missing.
 
 **Inputs:** Recovered algorithms and pseudocode, format and protocol specifications, extracted key or configuration material, a corpus of samples or artifacts, and ground truth (known plaintext, known-good parsed output, expected configurations, reference decoded data).
 

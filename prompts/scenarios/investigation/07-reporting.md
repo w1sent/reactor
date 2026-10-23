@@ -3,7 +3,9 @@ title: Reporting / Publication
 ---
 **Goal:** Produce clear, defensible deliverables for technical and executive audiences (NIST SP 800-86 "Reporting").
 
-**Entry criteria:** Analysis sufficient to answer the scope statement's questions.
+**Applies when:** The analysis can answer the goal's questions, or it is clear which it cannot.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Structure the report (executive summary -> scope and method -> findings -> timeline -> ATT&CK mapping -> IOC appendix -> recommendations).
@@ -19,4 +21,4 @@ title: Reporting / Publication
 
 **Deliverables:** Final report, executive brief, IOC appendix. Feeds the `response` scenario and the customer.
 
-Call `reactor_phase_complete` once the report answers the scoping questions and every claim carries its evidence.
+Call `reactor_phase_complete` once the report answers the goal's questions and every claim carries its evidence.

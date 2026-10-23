@@ -3,7 +3,9 @@ title: Root Cause Analysis
 ---
 **Goal:** Determine the underlying cause and enabling conditions.
 
-**Entry criteria:** Timeline and overview sufficient to reason about causation.
+**Applies when:** The question is how it happened and what allowed it, and the timeline and overview are enough to reason about causation.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Identify the initial access vector and the first compromised system or device.

@@ -30,6 +30,8 @@ pub mod plan_ui;
 pub mod prompt_history;
 pub mod quick_filter;
 pub mod rail;
+pub mod scenario_editor;
+pub mod scenario_start;
 pub mod scenario_ui;
 pub mod session;
 pub mod session_list;

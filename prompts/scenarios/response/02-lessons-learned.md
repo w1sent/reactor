@@ -3,7 +3,9 @@ title: Lessons Learned
 ---
 **Goal:** Improve future response (NIST SP 800-61 Post-Incident Activity).
 
-**Entry criteria:** Incident substantially resolved.
+**Applies when:** Incident substantially resolved.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Hold a review; assess what happened, what worked and what did not.

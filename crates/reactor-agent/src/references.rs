@@ -72,7 +72,8 @@ pub fn find(text: &str) -> Vec<Reference> {
             let trimmed = raw.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']']);
             (trimmed.to_string(), start + trimmed.len())
         };
-        if name.is_empty() {
+        // A Markdown heading (`## Phase 1/7`) is not a reference to a file named `#`.
+        if name.is_empty() || name.chars().all(|c| c == '#') {
             i += 1;
             continue;
         }
@@ -255,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_hash_after_whitespace_with_something_after_it_is_a_reference() {
-        let found = find("see #logs/a.txt, and #doc:manual.pdf#2.2. # Heading, C# and #");
+        let found = find("## Phase 1/7\n\nsee #logs/a.txt, and #doc:manual.pdf#2.2. # Heading, ### Sub, C# and #");
         let targets: Vec<_> = found.iter().map(|r| r.target.clone()).collect();
         assert_eq!(
             targets,

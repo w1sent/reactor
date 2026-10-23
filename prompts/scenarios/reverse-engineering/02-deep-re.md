@@ -4,7 +4,9 @@ toolset: debugging
 ---
 **Goal:** Recover the true code, algorithms, protocols and cryptography through unpacking, deobfuscation, disassembly, decompilation and emulation.
 
-**Entry criteria:** Static analysis indicates packing, obfuscation or unanswered questions requiring code-level insight.
+**Applies when:** Static analysis indicates packing, obfuscation or unanswered questions requiring code-level insight.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Identify the packer, protector or obfuscator; unpack -- automatically where possible, otherwise by running to the original entry point under a debugger or emulator and dumping, then repairing the dumped image (import tables, relocations, section alignment).

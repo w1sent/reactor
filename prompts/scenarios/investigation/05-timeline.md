@@ -4,7 +4,9 @@ toolset: forensics
 ---
 **Goal:** Build an accurate, source-attributed chronology of events.
 
-**Entry criteria:** Timestamped artifacts are available.
+**Applies when:** There are timestamped artifacts to put in order -- nearly always.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Normalise all timestamps to a single reference (UTC), recording each source's original time zone, epoch format, resolution and any clock skew.

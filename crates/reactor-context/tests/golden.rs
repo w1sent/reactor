@@ -267,8 +267,9 @@ fn scenario_matches_the_scenario_extension() {
         let name = s(&case, "name");
         let dir: PathBuf = tempfile::tempdir().unwrap().keep();
         write_scenarios(&dir, &case["scenarios"]);
+        let lib = scenario::Library::single(&dir);
         let mut sc = scenario::Scenario {
-            dir: &dir,
+            lib: &lib,
             state: None,
         };
         let toolset_call = |t: &String| format!("toolsets enable {t} --format json");

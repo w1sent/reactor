@@ -1,5 +1,10 @@
 # The scenarios are compiled in and seeded by `reactor setup`, and their absence is said
 
+> **Amended by [ADR-0065](0065-a-scenario-is-general-starts-from-a-question-and-can-be-written-for-the-case.md):**
+> the config directory is the middle of three places a scenario is looked up in, after the
+> case's `.reactor/scenarios/` and before the checkout. Scenarios written for one case had to live
+> with the case.
+
 A fresh install listed no scenarios. They are files under `prompts/scenarios/`, the GUI
 found them only next to a checkout or in `~/.reactor/prompts/scenarios`, and nothing put
 them there: `reactor setup` seeded the catalogue and nothing else. A binary installed with

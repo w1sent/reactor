@@ -2,11 +2,11 @@
 title: Memory / Runtime State Analysis
 toolset: memory
 ---
-**Skippable.** Read `evidence/INVENTORY.md` first. If it lists no memory image and no live runtime access, this phase does not apply: call `reactor_phase_complete` at once with a summary that begins `skipped:` and says what the inventory lacks, and do nothing else.
-
 **Goal:** Extract evidence from volatile memory that never reaches persistent storage -- injected code, memory-only payloads, hidden processes, in-memory configuration, credentials and keys.
 
-**Entry criteria:** A memory image or live runtime access is in the inventory.
+**Applies when:** There is a memory image or live runtime access. If triage found neither, this phase does not apply: call `reactor_phase_complete` at once with a summary that begins `skipped:` and says what is missing, and do nothing else.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Establish process and task context; hunt injected, hollowed or unbacked executable regions.

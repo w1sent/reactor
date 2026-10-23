@@ -17,6 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::stepper::{Stepper, StepperItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, Theme};
@@ -686,7 +687,7 @@ pub fn chips(
     choose_scenario: Flip,
     theme: &Theme,
 ) -> AnyElement {
-    let (history_on, graph_on, docs_on) = pane.memory;
+    let (history_on, graph_on, docs_on, editing_on) = pane.memory;
     let mut row = h_flex().gap_1p5().items_center().flex_wrap();
 
     // -- Budget: always there, first, with the mode in force --
@@ -748,6 +749,17 @@ pub fn chips(
             "On: the agent may search the case's imported documents (docs_search). Click to turn off: the tool is withdrawn from this session; you can still search them yourself in the Documents panel.",
             || MemorySettings {
                 documents: Some(false),
+                ..Default::default()
+            },
+        ));
+    }
+    if editing_on {
+        row = row.child(memory(
+            "Scenario editing",
+            "chip-scenario-editing",
+            "On: the agent may list scenarios, write one for this case or for every case, and amend the one that is running (scenario_list, scenario_save, scenario_amend). Click to turn off: those tools are withdrawn from this session; running a scenario and the editor are unaffected.",
+            || MemorySettings {
+                scenario_editing: Some(false),
                 ..Default::default()
             },
         ));
@@ -826,6 +838,7 @@ pub fn chips(
     let anything_off = !history_on
         || !graph_on
         || !docs_on
+        || !editing_on
         || !pane.plan.report_on
         || !goal_shown(&pane.plan)
         || scenario_off
@@ -865,6 +878,12 @@ pub fn chips(
                     if !docs_on {
                         menu = menu.item(memory("Documents", || MemorySettings {
                             documents: Some(true),
+                            ..Default::default()
+                        }));
+                    }
+                    if !editing_on {
+                        menu = menu.item(memory("Scenario editing", || MemorySettings {
+                            scenario_editing: Some(true),
                             ..Default::default()
                         }));
                     }
@@ -1119,9 +1138,11 @@ fn scenario_popover(app: &Weak, id: &str, cx: &mut App) -> AnyElement {
     .into_any_element()
 }
 
-/// The scenarios there are to start, and *Start*.
+/// The scenarios there are to start, each with what it is for and where it is kept, and
+/// *New*, *Edit* and *Start* (which opens the start dialog).
 fn scenario_chooser(app: &Weak, id: &str, idle: bool, done: Flip, cx: &mut App) -> AnyElement {
     let theme = cx.theme().clone();
+    let muted = theme.muted_foreground;
     let (available, pick) = app
         .upgrade()
         .map(|a| {
@@ -1130,21 +1151,25 @@ fn scenario_chooser(app: &Weak, id: &str, idle: bool, done: Flip, cx: &mut App) 
         })
         .unwrap_or_default();
     let chosen = pick
-        .filter(|p| available.contains(p))
-        .or_else(|| available.first().cloned());
+        .filter(|p| available.iter().any(|l| l.id == *p))
+        .or_else(|| available.first().map(|l| l.id.clone()));
     let mut choices = v_flex().gap_0p5();
-    for name in &available {
-        let (a, picked) = (app.clone(), name.clone());
-        let is_chosen = chosen.as_deref() == Some(name.as_str());
+    for listed in &available {
+        let (a, picked) = (app.clone(), listed.id.clone());
+        let is_chosen = chosen.as_deref() == Some(listed.id.as_str());
+        let place = match listed.scope {
+            reactor_core::scenarios::Scope::Case => "case",
+            reactor_core::scenarios::Scope::Global => "global",
+            reactor_core::scenarios::Scope::Shipped => "shipped",
+        };
         choices = choices.child(
-            h_flex()
-                .id(SharedString::from(format!("scenario-pick-{name}")))
+            v_flex()
+                .id(SharedString::from(format!("scenario-pick-{}", listed.id)))
+                .w(px(300.))
                 .px_2()
-                .h(px(26.))
-                .items_center()
+                .py_1()
                 .rounded_md()
                 .cursor_pointer()
-                .font_family(theme.mono_font_family.clone())
                 .when(is_chosen, |r| {
                     r.bg(theme.list_active)
                         .border_1()
@@ -1157,11 +1182,36 @@ fn scenario_chooser(app: &Weak, id: &str, idle: bool, done: Flip, cx: &mut App) 
                         cx.notify();
                     });
                 })
-                .child(SharedString::from(name.clone())),
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .font_family(theme.mono_font_family.clone())
+                                .child(SharedString::from(listed.id.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_size(small(&theme))
+                                .text_color(if place == "case" { theme.accent } else { muted })
+                                .child(place),
+                        ),
+                )
+                // The chosen one says in full what it is for; the others in a line.
+                .children(listed.description.clone().map(|d| {
+                    div()
+                        .text_size(small(&theme))
+                        .text_color(muted)
+                        .when(!is_chosen, |el| el.truncate())
+                        .child(SharedString::from(d))
+                })),
         );
     }
-    let (cancel, started) = (done.clone(), done);
+    let (cancel, started, edit_done, new_done) = (done.clone(), done.clone(), done.clone(), done);
     let (a, sid) = (app.clone(), id.to_string());
+    let (a_edit, a_new) = (app.clone(), app.clone());
+    let (chosen_start, chosen_edit) = (chosen.clone(), chosen.clone());
     popover_body()
         .child(
             h_flex()
@@ -1170,14 +1220,56 @@ fn scenario_chooser(app: &Weak, id: &str, idle: bool, done: Flip, cx: &mut App) 
                 .child(Label::new("Scenario"))
                 .child(crate::hints::info_button(
                     "scenario-info",
-                    "A scenario is a series of steps, each with a briefing for the agent: it is added to the system prompt while the step is current, and the agent moves to the next with a tool call that carries a summary. Click a number at the pane's edge to read a step, and again to go there yourself — only between turns. After moving on by hand, say in your next prompt what the step you left concluded: it is recorded as its summary. /reactor-scenario list | start <id> | status | next | goto <n> | stop does the same.",
+                    "A scenario is a series of steps, each with a briefing for the agent: it is added to the system prompt while the step is current, and the agent moves to the next with a tool call that carries a summary. Start opens a dialog: the question you give becomes the case's goal, and the steps you untick are passed over. A case scenario is kept in the case and wins over a global or shipped one of the same id; ask the agent to write one after a triage, or use New. Click a number at the pane's edge to read a step, and again to go there yourself — only between turns. /reactor-scenario list | start <id> | status | next | goto <n> | stop | promote <id> does the same.",
                 )),
         )
-        .child(choices)
+        .child(if available.len() > 6 {
+            // A list taller than the popover can hold scrolls in a box of its own.
+            div()
+                .id("scenario-choices")
+                .h(px(340.))
+                .overflow_y_scrollbar()
+                .child(choices)
+                .into_any_element()
+        } else {
+            choices.into_any_element()
+        })
         .child(
             h_flex()
                 .gap_2()
-                .justify_end()
+                .child(
+                    Button::new("scenario-new")
+                        .label("New…")
+                        .small()
+                        .ghost()
+                        .tooltip("Write a scenario in the editor")
+                        .on_click(move |_, window, cx| {
+                            new_done(false, window, cx);
+                            let _ = a_new.update(cx, |app, cx| {
+                                app.open_scenario_editor(crate::scenario_editor::Start::New, cx)
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("scenario-edit")
+                        .label("Edit…")
+                        .small()
+                        .ghost()
+                        .disabled(chosen_edit.is_none())
+                        .tooltip("Open the chosen scenario in the editor")
+                        .on_click(move |_, window, cx| {
+                            edit_done(false, window, cx);
+                            if let Some(id) = chosen_edit.clone() {
+                                let _ = a_edit.update(cx, |app, cx| {
+                                    app.open_scenario_editor(
+                                        crate::scenario_editor::Start::Edit(id),
+                                        cx,
+                                    )
+                                });
+                            }
+                        }),
+                )
+                .child(div().flex_1())
                 .child(
                     Button::new("scenario-cancel")
                         .label("Cancel")
@@ -1187,17 +1279,19 @@ fn scenario_chooser(app: &Weak, id: &str, idle: bool, done: Flip, cx: &mut App) 
                 )
                 .child(
                     Button::new("scenario-start")
-                        .label("Start")
+                        .label("Start…")
                         .small()
                         .primary()
-                        .disabled(!idle || available.is_empty())
-                        .tooltip("Start the chosen scenario: its first step is briefed and the agent begins")
+                        .disabled(!idle || chosen_start.is_none())
+                        .tooltip("Give it a question and choose its steps, then start it")
                         .on_click(move |_, window, cx| {
                             started(false, window, cx);
-                            let _ = a.update(cx, |app, cx| {
-                                app.activate_session(&sid, window, cx);
-                                app.scenario_start(cx);
-                            });
+                            if let Some(chosen) = chosen_start.clone() {
+                                let _ = a.update(cx, |app, cx| {
+                                    app.activate_session(&sid, window, cx);
+                                    app.open_scenario_start(&chosen, false, window, cx);
+                                });
+                            }
                         }),
                 ),
         )

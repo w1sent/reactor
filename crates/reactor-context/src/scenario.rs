@@ -2,31 +2,26 @@
 //! advance on a tool result rather than on a marker or a heuristic (ADR-0009).
 //! Port of `extensions/scenario/` (ADR-0017, ADR-0030).
 //!
-//! A scenario is a directory of `NN-name.md` files. Each has two frontmatter
-//! fields, hand-parsed — `title:` and `toolset:` — and everything else about a
-//! phase (which tools just became relevant, what not to start yet) is prose the
-//! author writes into the body. Activating a phase's toolset is *additive and
-//! advisory* (ADR-0007): the effect asks the caller to enable it, and a caller
-//! that cannot still lets the phase advance.
+//! A scenario is a directory of `NN-name.md` files, read by
+//! [`reactor_core::scenarios`]: `title:`, `toolset:` and, in the first, `description:`
+//! frontmatter, and everything else about a phase (which tools just became relevant,
+//! what not to start yet) is prose the author writes into the body. Scenarios are
+//! looked up in the case, the config directory and a checkout, in that order
+//! ([`Library`], ADR-0065). Activating a phase's toolset is *additive and advisory*
+//! (ADR-0007): the effect asks the caller to enable it, and a caller that cannot still
+//! lets the phase advance.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
-use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+pub use reactor_core::scenarios::{Library, Phase as Step};
 
 use crate::notice::Notice;
 use crate::text::js_trim;
 
 pub const ENTRY_TYPE: &str = "reactor-scenario";
 pub const TOOL_NAME: &str = "reactor_phase_complete";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Step {
-    pub title: String,
-    pub toolset: Option<String>,
-    pub body: String,
-}
 
 /// The scenario in progress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +37,10 @@ pub struct State {
     /// ([`record_summary`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_summary: Option<usize>,
+    /// The phases left out when it was started: moving on passes over them, recording
+    /// [`SKIPPED`] (ADR-0065).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip: Vec<usize>,
 }
 
 /// The summary of a phase that was jumped over.
@@ -73,73 +72,18 @@ pub fn record_summary(state: &mut State, prompt: &str) -> bool {
 
 // -- reading scenarios ----------------------------------------------------------
 
-/// Scenario ids: the subdirectories of `dir`, sorted.
+/// Scenario ids: the scenarios in `dir`, sorted.
 pub fn list_scenarios(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return vec![];
-    };
-    let mut ids: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    ids.sort();
-    ids
-}
-
-fn frontmatter_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?s)\A---\r?\n(.*?)\r?\n---\r?\n?(.*)\z").unwrap())
-}
-
-fn field_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    // `.` in JS excludes the four line terminators, not just \n.
-    RE.get_or_init(|| Regex::new(r"\A(\w+):\s*([^\r\n\u{2028}\u{2029}]*)\z").unwrap())
+    Library::single(dir).ids()
 }
 
 pub fn parse_step(raw: &str) -> Step {
-    let Some(m) = frontmatter_re().captures(raw) else {
-        return Step {
-            title: String::new(),
-            toolset: None,
-            body: js_trim(raw).to_string(),
-        };
-    };
-    let (mut title, mut toolset) = (String::new(), String::new());
-    for line in m[1].split('\n') {
-        if let Some(kv) = field_re().captures(line) {
-            let value = js_trim(&kv[2]).to_string();
-            match &kv[1] {
-                "title" => title = value,
-                "toolset" => toolset = value,
-                _ => {}
-            }
-        }
-    }
-    Step {
-        title,
-        toolset: (!toolset.is_empty()).then_some(toolset),
-        body: js_trim(&m[2]).to_string(),
-    }
+    reactor_core::scenarios::parse_phase(raw)
 }
 
 /// A scenario's phases, in file-name order. Unknown or unreadable is empty.
 pub fn load_steps(dir: &Path, id: &str) -> Vec<Step> {
-    let base = dir.join(id);
-    let Ok(entries) = std::fs::read_dir(&base) else {
-        return vec![];
-    };
-    let mut files: Vec<String> = entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|f| f.ends_with(".md"))
-        .collect();
-    files.sort();
-    files
-        .iter()
-        .map(|f| parse_step(&std::fs::read_to_string(base.join(f)).unwrap_or_default()))
-        .collect()
+    Library::single(dir).load(id)
 }
 
 /// `## Phase 2/4: Static analysis`, then the phase's own body verbatim.
@@ -185,6 +129,8 @@ pub struct Effects {
     pub persist: Persist,
     /// Toolsets to enable (advisory; failure must not stop the phase).
     pub activate_toolsets: Vec<String>,
+    /// The question a scenario was started with: it becomes the session's goal.
+    pub goal: Option<String>,
 }
 
 impl Effects {
@@ -194,6 +140,7 @@ impl Effects {
             messages: vec![],
             persist: Persist::Nothing,
             activate_toolsets: vec![],
+            goal: None,
         }
     }
     fn notice(n: Notice) -> Self {
@@ -204,11 +151,16 @@ impl Effects {
     }
 }
 
-/// The scenario runner: a state and a directory of scenarios.
+/// The scenario runner: a state and the places scenarios are found.
 #[derive(Debug, Clone)]
 pub struct Scenario<'a> {
-    pub dir: &'a Path,
+    pub lib: &'a Library,
     pub state: Option<State>,
+}
+
+/// The first phase from `from` on that is not left out.
+fn next_unskipped(skip: &[usize], from: usize) -> usize {
+    (from..).find(|i| !skip.contains(i)).unwrap_or(from)
 }
 
 /// The result of finishing a phase: what to tell the model, and what changed.
@@ -235,10 +187,11 @@ impl Scenario<'_> {
                 activate_toolset: None,
             };
         };
-        let steps = load_steps(self.dir, &state.scenario_id);
-        let next = state.step_index + 1;
+        let steps = self.lib.load(&state.scenario_id);
         let mut summaries = state.summaries.clone();
         summaries.push(summary.to_string());
+        let next = next_unskipped(&state.skip, state.step_index + 1);
+        summaries.extend((state.step_index + 1..next.min(steps.len())).map(|_| SKIPPED.to_string()));
 
         if next >= steps.len() {
             self.state = None;
@@ -257,6 +210,7 @@ impl Scenario<'_> {
             step_index: next,
             summaries,
             pending_summary: None,
+            skip: state.skip,
         };
         self.state = Some(new.clone());
         Advance {
@@ -319,11 +273,15 @@ impl Scenario<'_> {
                 steps.len()
             )
         };
+        // Going to a phase that was left out takes it back in.
+        let mut skip = state.skip;
+        skip.retain(|&i| i != target);
         let new = State {
             scenario_id: state.scenario_id,
             step_index: target,
             summaries,
             pending_summary: pending,
+            skip,
         };
         self.state = Some(new.clone());
         Effects {
@@ -334,7 +292,7 @@ impl Scenario<'_> {
         }
     }
 
-    /// `/reactor-scenario [list|start <id>|status|next [summary]|goto <n> [summary]|stop]`.
+    /// `/reactor-scenario [list|start <id> [skip=2,4] [question]|status|next [summary]|goto <n> [summary]|stop]`.
     pub fn command(&mut self, args: &str) -> Effects {
         let mut words = args.split(crate::text::js_space).filter(|w| !w.is_empty());
         let sub = words.next();
@@ -342,7 +300,7 @@ impl Scenario<'_> {
 
         match sub.unwrap_or("status") {
             "list" => {
-                let ids = list_scenarios(self.dir);
+                let ids = self.lib.ids();
                 Effects::notice(Notice::info(if ids.is_empty() {
                     "reactor: no scenarios found in prompts/scenarios/".to_string()
                 } else {
@@ -350,48 +308,58 @@ impl Scenario<'_> {
                 }))
             }
             "start" => {
-                let id = rest.join(" ");
-                if id.is_empty() {
+                let Some(start) = parse_start(args) else {
                     return Effects::notice(Notice::error(
                         "reactor-scenario: start needs a scenario id -- try `list`",
                     ));
-                }
+                };
+                let id = start.id;
                 if let Some(s) = &self.state {
                     return Effects::notice(Notice::error(format!(
                         "reactor: \"{}\" is already running -- `stop` it first",
                         s.scenario_id
                     )));
                 }
-                let steps = load_steps(self.dir, &id);
+                let steps = self.lib.load(&id);
                 if steps.is_empty() {
                     return Effects::notice(Notice::error(format!(
                         "reactor-scenario: unknown scenario \"{id}\" -- try `list`"
                     )));
                 }
+                let skip: Vec<usize> = start.skip.into_iter().filter(|&i| i < steps.len()).collect();
+                let first = next_unskipped(&skip, 0);
+                if first >= steps.len() {
+                    return Effects::notice(Notice::error(
+                        "reactor-scenario: every phase is left out -- keep at least one",
+                    ));
+                }
                 let new = State {
                     scenario_id: id.clone(),
-                    step_index: 0,
-                    summaries: vec![],
+                    step_index: first,
+                    summaries: (0..first).map(|_| SKIPPED.to_string()).collect(),
                     pending_summary: None,
+                    skip,
                 };
                 self.state = Some(new.clone());
                 Effects {
                     notices: vec![Notice::info(format!(
-                        "reactor: started \"{id}\" -- step 1/{}",
+                        "reactor: started \"{id}\" -- step {}/{}",
+                        first + 1,
                         steps.len()
                     ))],
                     messages: vec![Message {
-                        content: briefing(&steps, 0),
+                        content: briefing(&steps, first),
                         trigger_turn: true,
                     }],
                     persist: Persist::Set(new),
-                    activate_toolsets: steps[0].toolset.clone().into_iter().collect(),
+                    activate_toolsets: steps[first].toolset.clone().into_iter().collect(),
+                    goal: start.question,
                 }
             }
             "status" => match &self.state {
                 None => Effects::notice(Notice::info("reactor: no scenario active")),
                 Some(s) => {
-                    let steps = load_steps(self.dir, &s.scenario_id);
+                    let steps = self.lib.load(&s.scenario_id);
                     let title = steps
                         .get(s.step_index)
                         .map(|st| st.title.clone())
@@ -415,8 +383,9 @@ impl Scenario<'_> {
                 // The human is the better judge of whether a phase is genuinely finished
                 // (ADR-0009). Moving on by hand does not start a turn: what the agent was
                 // doing is over, and the person's next prompt starts the phase.
-                let steps = load_steps(self.dir, &state.scenario_id);
-                if state.step_index + 1 >= steps.len() {
+                let steps = self.lib.load(&state.scenario_id);
+                let target = next_unskipped(&state.skip, state.step_index + 1);
+                if target >= steps.len() {
                     let summary = if rest.is_empty() {
                         MANUAL.to_string()
                     } else {
@@ -430,7 +399,6 @@ impl Scenario<'_> {
                     };
                 }
                 let summary = (!rest.is_empty()).then(|| rest.join(" "));
-                let target = state.step_index + 1;
                 self.go_to(state, &steps, target, summary)
             }
             "goto" => {
@@ -439,7 +407,7 @@ impl Scenario<'_> {
                         "reactor: no scenario active -- `start` one first",
                     ));
                 };
-                let steps = load_steps(self.dir, &state.scenario_id);
+                let steps = self.lib.load(&state.scenario_id);
                 let target = rest
                     .first()
                     .and_then(|n| n.parse::<usize>().ok())
@@ -453,6 +421,24 @@ impl Scenario<'_> {
                 let summary = (rest.len() > 1).then(|| rest[1..].join(" "));
                 self.go_to(state, &steps, target - 1, summary)
             }
+            "promote" => {
+                let id = rest.join(" ");
+                match self.lib.find(&id) {
+                    Some((reactor_core::scenarios::Scope::Case, _)) => Effects {
+                        messages: vec![Message {
+                            content: promote_prompt(&id),
+                            trigger_turn: true,
+                        }],
+                        ..Effects::none()
+                    },
+                    Some(_) => Effects::notice(Notice::error(format!(
+                        "reactor-scenario: \"{id}\" is not a case scenario -- only those are promoted"
+                    ))),
+                    None => Effects::notice(Notice::error(format!(
+                        "reactor-scenario: unknown scenario \"{id}\" -- try `list`"
+                    ))),
+                }
+            }
             "stop" => match self.state.take() {
                 None => Effects::notice(Notice::info("reactor: no scenario active")),
                 Some(s) => Effects {
@@ -465,8 +451,57 @@ impl Scenario<'_> {
                 },
             },
             other => Effects::notice(Notice::error(format!(
-                "reactor-scenario: unknown subcommand \"{other}\" -- try list, start <id>, status, next, goto <n>, or stop"
+                "reactor-scenario: unknown subcommand \"{other}\" -- try list, start <id>, status, next, goto <n>, stop or promote <id>"
             ))),
         }
     }
+}
+
+/// What the agent is asked to do to make a case scenario global: rewrite it without the
+/// case in it, then save it (ADR-0065).
+pub fn promote_prompt(id: &str) -> String {
+    format!(
+        "Promote the case scenario `{id}` to a global one, for every case. Read it with scenario_list (id `{id}`). Rewrite each phase so it holds for any case of this kind: take out this case's host names, paths, user and account names, indicators, dates and other specifics, and keep the method. Then save it with scenario_save, scope global, id `{id}`, and tell me in a few lines what you took out or generalised."
+    )
+}
+
+/// `start <id> [skip=2,4] [question…]`: the question keeps its line breaks.
+struct Start {
+    id: String,
+    /// 0-based.
+    skip: Vec<usize>,
+    question: Option<String>,
+}
+
+fn next_word(s: &str) -> (&str, &str) {
+    let s = js_trim(s);
+    match s.find(crate::text::js_space) {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s, ""),
+    }
+}
+
+fn parse_start(args: &str) -> Option<Start> {
+    let (_, rest) = next_word(args);
+    let (id, mut rest) = next_word(rest);
+    if id.is_empty() {
+        return None;
+    }
+    let mut skip = Vec::new();
+    let (word, after) = next_word(rest);
+    if let Some(list) = word.strip_prefix("skip=") {
+        skip = list
+            .split(',')
+            .filter_map(|n| n.trim().parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .map(|n| n - 1)
+            .collect();
+        rest = after;
+    }
+    let question = js_trim(rest);
+    Some(Start {
+        id: id.to_string(),
+        skip,
+        question: (!question.is_empty()).then(|| question.to_string()),
+    })
 }

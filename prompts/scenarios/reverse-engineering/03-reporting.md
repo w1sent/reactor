@@ -3,7 +3,9 @@ title: Reporting
 ---
 **Goal:** Record what was recovered so that someone else can verify it and build on it.
 
-**Entry criteria:** The questions that started the work are answered, or the point where they could not be is understood.
+**Applies when:** The questions that started the work are answered, or the point where they could not be is understood.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - State each question and its answer, with the evidence (addresses, functions, captured data) and how a reader reproduces it.

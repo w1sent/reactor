@@ -3,9 +3,8 @@
 //! session's stored state and the scenario files, so it is the same whoever moved the
 //! scenario on -- the agent with `reactor_phase_complete`, or the person with the stepper.
 
-use std::path::Path;
-
 use reactor_context::scenario::{self, SKIPPED};
+use reactor_core::scenarios::{Library, Listed, Scope};
 
 /// One phase of the running scenario.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +30,8 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub id: String,
+    /// Where the scenario was found: the case's own, the config directory's or a checkout's.
+    pub scope: Scope,
     /// The phase in progress (0-based).
     pub current: usize,
     pub phases: Vec<Phase>,
@@ -38,15 +39,23 @@ pub struct Run {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
-    /// The scenarios that can be started.
-    pub available: Vec<String>,
+    /// The scenarios that can be started, with what each is for.
+    pub available: Vec<Listed>,
     pub run: Option<Run>,
 }
 
-pub fn view_of(state: Option<&scenario::State>, dir: &Path) -> View {
-    let available = scenario::list_scenarios(dir);
+impl View {
+    /// A scenario that can be started, by id.
+    pub fn find(&self, id: &str) -> Option<&Listed> {
+        self.available.iter().find(|l| l.id == id)
+    }
+}
+
+pub fn view_of(state: Option<&scenario::State>, lib: &Library) -> View {
+    let available = lib.list();
     let run = state.and_then(|s| {
-        let steps = scenario::load_steps(dir, &s.scenario_id);
+        let scope = lib.find(&s.scenario_id)?.0;
+        let steps = lib.load(&s.scenario_id);
         if steps.is_empty() {
             return None;
         }
@@ -64,12 +73,15 @@ pub fn view_of(state: Option<&scenario::State>, dir: &Path) -> View {
                     Some(_) if s.pending_summary == Some(i) => Outcome::Awaiting,
                     Some(t) if t == SKIPPED => Outcome::Skipped,
                     Some(t) => Outcome::Summary(t.clone()),
+                    // Left out at the start: it will be passed over (ADR-0065).
+                    None if i > s.step_index && s.skip.contains(&i) => Outcome::Skipped,
                     None => Outcome::None,
                 },
             })
             .collect();
         Some(Run {
             id: s.scenario_id.clone(),
+            scope,
             current: s.step_index.min(steps.len() - 1),
             phases,
         })
@@ -128,8 +140,9 @@ mod tests {
     #[test]
     fn nothing_running_offers_the_scenarios() {
         let d = dir();
-        let v = view_of(None, d.path());
-        assert_eq!(v.available, ["alpha", "beta"]);
+        let v = view_of(None, &Library::single(d.path()));
+        let ids: Vec<&str> = v.available.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["alpha", "beta"]);
         assert!(v.run.is_none());
     }
 
@@ -141,8 +154,9 @@ mod tests {
             step_index: 2,
             summaries: vec![scenario::SKIPPED.into(), "found it".into()],
             pending_summary: None,
+            skip: vec![],
         };
-        let run = view_of(Some(&s), d.path()).run.unwrap();
+        let run = view_of(Some(&s), &Library::single(d.path())).run.unwrap();
         assert_eq!((run.id.as_str(), run.current), ("alpha", 2));
         assert_eq!(run.phases[0].title, "P1");
         assert_eq!(run.phases[0].toolset.as_deref(), Some("t1"));
@@ -153,6 +167,21 @@ mod tests {
     }
 
     #[test]
+    fn a_phase_left_out_at_the_start_shows_as_skipped_before_it_is_reached() {
+        let d = dir();
+        let s = scenario::State {
+            scenario_id: "alpha".into(),
+            step_index: 0,
+            summaries: vec![],
+            pending_summary: None,
+            skip: vec![2],
+        };
+        let run = view_of(Some(&s), &Library::single(d.path())).run.unwrap();
+        assert_eq!(run.phases[1].outcome, Outcome::None);
+        assert_eq!(run.phases[2].outcome, Outcome::Skipped);
+    }
+
+    #[test]
     fn a_phase_left_by_hand_awaits_its_summary() {
         let d = dir();
         let s = scenario::State {
@@ -160,9 +189,10 @@ mod tests {
             step_index: 1,
             summaries: vec![scenario::MANUAL.into()],
             pending_summary: Some(0),
+            skip: vec![],
         };
         assert_eq!(
-            view_of(Some(&s), d.path()).run.unwrap().phases[0].outcome,
+            view_of(Some(&s), &Library::single(d.path())).run.unwrap().phases[0].outcome,
             Outcome::Awaiting
         );
     }
@@ -175,15 +205,17 @@ mod tests {
             step_index: 0,
             summaries: vec![],
             pending_summary: None,
+            skip: vec![],
         };
-        assert!(view_of(Some(&gone), d.path()).run.is_none());
+        assert!(view_of(Some(&gone), &Library::single(d.path())).run.is_none());
         let stale = scenario::State {
             scenario_id: "beta".into(),
             step_index: 9,
             summaries: vec![],
             pending_summary: None,
+            skip: vec![],
         };
-        assert_eq!(view_of(Some(&stale), d.path()).run.unwrap().current, 0);
+        assert_eq!(view_of(Some(&stale), &Library::single(d.path())).run.unwrap().current, 0);
     }
 }
 

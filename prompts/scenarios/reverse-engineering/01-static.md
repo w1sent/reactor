@@ -1,10 +1,13 @@
 ---
 title: Static Analysis
 toolset: native
+description: Answer specific questions about a program's internals: static mapping, deep reverse engineering, and a report.
 ---
 **Goal:** Map the program's structure without executing it, so that reverse engineering goes where the questions are.
 
-**Entry criteria:** A program, library or specimen whose internals are in question, and the specific questions: what algorithm, what protocol, what configuration, why it behaves as it does.
+**Applies when:** A program, library or specimen whose internals are in question, and the specific questions: what algorithm, what protocol, what configuration, why it behaves as it does.
+
+**Orient:** Start from the goal and what the case already holds: its files, the graph, and what earlier scenarios concluded (listed under this briefing when there is any). Say which of the inputs this phase works from are there, state the assumption you make for any that are not, and go on. Ask only when the goal cannot be answered without what is missing.
 
 **Activities:**
 - Identify format, architecture, target platform and toolchain; compute hashes.

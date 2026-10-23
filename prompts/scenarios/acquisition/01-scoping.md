@@ -1,10 +1,13 @@
 ---
 title: Scoping & Collection Planning
 toolset: forensics
+description: Plan and collect evidence defensibly: decide what to collect, from where and under what authority, then acquire and preserve it.
 ---
 **Goal:** Define the questions to answer, the scope, the legal authority and a prioritised evidence-collection plan before touching any evidence.
 
-**Entry criteria:** An incident or request exists with a point of contact and a rough description.
+**Applies when:** An incident or request needs evidence collected, and the sources, scope or authority are not settled yet. When evidence is already in the case, record what is there and plan only what is missing.
+
+**Orient:** Start from the goal and what the case already holds: its files, the graph, and what earlier scenarios concluded (listed under this briefing when there is any). Say which of the inputs this phase works from are there, state the assumption you make for any that are not, and go on. Ask only when the goal cannot be answered without what is missing.
 
 **Activities:**
 - Identify the questions to answer and the success criteria; determine the platforms, architectures and device types in scope.
@@ -12,7 +15,7 @@ toolset: forensics
 - Classify sources by order of volatility and by accessibility constraints (locked devices, encrypted storage, soldered flash, vendor-controlled cloud data, captures that roll over).
 - Determine legal authority, jurisdiction, privacy constraints and data-handling rules; select acquisition methods and validate tools per ISO/IEC 27041.
 - Define storage, naming and chain-of-custody procedures; assign roles.
-- Write the scope statement and the collection plan into the case as files. Acquisition, the next phase, works from the plan; the `investigation` scenario later answers to the scope statement.
+- Record the scope and the collection plan in the case, where the next phase and later scenarios will find them. Acquisition, the next phase, works from the plan.
 
 **Decision points:** Live vs. dead acquisition? Full image vs. targeted/logical collection? Which sources are technically reachable at all? In-scope vs. out-of-scope systems?
 
@@ -22,4 +25,4 @@ toolset: forensics
 
 **Deliverables:** Collection plan, scope statement, volatility-ordered evidence source list, chain-of-custody template. Feeds Acquisition.
 
-Call `reactor_phase_complete` once the collection plan and scope statement exist.
+Call `reactor_phase_complete` once the scope and the collection plan are recorded.

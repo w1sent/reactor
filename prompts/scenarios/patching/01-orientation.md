@@ -1,10 +1,13 @@
 ---
 title: Orientation
 toolset: native
+description: Change a program's behaviour at binary level safely: orient, specify, reverse the change site, patch and test, package.
 ---
 **Goal:** Understand the program well enough to change it safely, and record how it behaves *before* it is changed.
 
-**Entry criteria:** The program to be changed is in hand, with a reason for changing it.
+**Applies when:** The program to be changed is in hand, with a reason for changing it.
+
+**Orient:** Start from the goal and what the case already holds: its files, the graph, and what earlier scenarios concluded (listed under this briefing when there is any). Say which of the inputs this phase works from are there, state the assumption you make for any that are not, and go on. Ask only when the goal cannot be answered without what is missing.
 
 **Activities:**
 - Work on a copy; the original stays read-only and is hashed. Record its hashes, format, architecture, target platform, toolchain and version.

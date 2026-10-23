@@ -1,14 +1,13 @@
 //! Tools that work on the session itself: reading its history back, keeping its
-//! manifest, advancing its scenario. Each is a thin skin over `reactor-context` or
+//! manifest. The scenario's tools are in [`super::scenario`]. Each is a thin skin over `reactor-context` or
 //! [`crate::history`]; the words the model reads come from there.
 
 use reactor_context::manifest::{self, Step};
-use reactor_context::scenario::{Persist, Scenario};
 use reactor_context::settings::Settings;
 use serde_json::{Value, json};
 
 use super::{BoxFut, Tool, ToolCtx, ToolOutput, str_arg, usize_arg};
-use crate::context::{KEY_SCENARIO, SessionState, save_manifest, save_state};
+use crate::context::{SessionState, save_manifest};
 use crate::history;
 use crate::llm::ToolSpec;
 use reactor_db::manifest::Author;
@@ -237,60 +236,6 @@ impl Tool for UpdateSteps {
                 let _ = save_manifest(&mut store, &state, &Author::agent(""));
             }
             ToolOutput::ok(out.text)
-        })
-    }
-}
-
-/// Finish the current scenario phase and receive the next briefing.
-pub struct PhaseComplete;
-
-impl Tool for PhaseComplete {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: reactor_context::scenario::TOOL_NAME.into(),
-            description: "Mark the current scenario phase complete and receive the next phase's briefing. Call it once, when the phase's work is finished, with a summary of what you concluded; not to narrate progress. Unrelated to the manifest's steps (update_steps).".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": { "summary": { "type": "string", "description": "What you concluded in this phase. Required before the scenario advances." } },
-                "required": ["summary"]
-            }),
-        }
-    }
-
-    fn available(&self, state: &SessionState) -> bool {
-        state.scenario.is_some()
-    }
-
-    fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
-        Box::pin(async move {
-            let Some(summary) = str_arg(&args, "summary") else {
-                return ToolOutput::err("reactor_phase_complete needs a `summary`");
-            };
-            let adv = {
-                let mut store = ctx.store.lock().unwrap();
-                let mut sc = Scenario {
-                    dir: &ctx.scenarios_dir,
-                    state: SessionState::load(&store).scenario,
-                };
-                let adv = sc.advance(summary);
-                match &adv.persist {
-                    Persist::Nothing => {}
-                    Persist::Set(s) => {
-                        let _ =
-                            save_state(&mut store, KEY_SCENARIO, serde_json::to_value(s).unwrap());
-                    }
-                    Persist::Clear => {
-                        let _ = save_state(&mut store, KEY_SCENARIO, Value::Null);
-                    }
-                }
-                adv
-            };
-            // Additive and advisory (ADR-0007): a phase advances whether or not the
-            // registry can be told about its toolset.
-            if let Some(t) = adv.activate_toolset {
-                let _ = reactor_core::commands::set_activation(&ctx.paths, &[t], false, Some(true));
-            }
-            ToolOutput::ok(adv.text)
         })
     }
 }

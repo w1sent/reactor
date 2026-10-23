@@ -3,7 +3,9 @@ title: Implement
 ---
 **Goal:** Build the tool defensively, from the specification.
 
-**Entry criteria:** A specification, a success criterion and a validation corpus with ground truth.
+**Applies when:** A specification, a success criterion and a validation corpus with ground truth.
+
+**Orient:** Build on what the earlier phases concluded. If what this phase works from is not there, say so, state the assumption you make and go on with what there is.
 
 **Activities:**
 - Implement against the specification, not against the one sample that prompted it.

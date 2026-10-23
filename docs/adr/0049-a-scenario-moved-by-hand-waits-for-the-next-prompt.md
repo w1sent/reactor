@@ -6,6 +6,10 @@
 > number opens that phase's card and a second click goes there. Where this says "the panel",
 > read that card and the Scenario chip under the prompt. Everything decided below about a move
 > by hand is unchanged.
+>
+> **Amended by [ADR-0065](0065-a-scenario-is-general-starts-from-a-question-and-can-be-written-for-the-case.md):**
+> phases can be left out in the start dialog. They are passed over as `(skipped)` as a jump
+> over them would be, and going to one by hand takes it back in.
 
 [ADR-0009](0009-scenarios-advance-by-tool-result.md) has the agent advance a scenario with
 `reactor_phase_complete`, and gives the person a manual `next`. The GUI now shows the phases

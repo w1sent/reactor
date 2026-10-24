@@ -95,3 +95,4 @@ marked † for that; each says in a note what it changed.
 | †&nbsp;[0063](0063-children-run-in-parallel-in-the-background-and-are-linked-to-their-parent.md) | Children run in parallel, can be started in the background and waited for, and are linked to their parent |
 | [0064](0064-a-running-child-is-followed-in-a-tab-and-stopped-on-its-own.md) | A running child is followed in a tab and stopped on its own, and a panic ends a turn instead of hanging it |
 | [0065](0065-a-scenario-is-general-starts-from-a-question-and-can-be-written-for-the-case.md) | A scenario is general, starts from a question, and can be written for the case |
+| [0066](0066-the-case-is-addressed-by-references.md) | The case is addressed by references: one grammar for what a person, the agent and an export point at |

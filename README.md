@@ -36,7 +36,7 @@ removed from the tree; it lives in git history. The last commit that has it is
        services                        │
               │                        ▼
               │      ## Available tools (this machine)
-              │      bn         reverse engineering framework  [BN session: up]
+              │      binja      reverse engineering framework  [BN session: up]
               │      frida      dynamic instrumentation        17.9.7
               │      jadx       decompile Android DEX/APK      1.5.6
               │      adb        Android device bridge          [adb: 2 devices]

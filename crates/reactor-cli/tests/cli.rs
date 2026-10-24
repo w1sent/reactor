@@ -936,7 +936,7 @@ fn overwrite_config_backs_up_and_needs_yes() {
 #[test]
 fn skills_show_prints_a_fetched_skill_and_refuses_an_unfetched_one() {
     let env = Env::shipped();
-    let missing = env.json(&["skills", "show", "bn"]);
+    let missing = env.json(&["skills", "show", "binja"]);
     assert_eq!(missing.code, 1);
     assert!(
         missing.json()["error"]
@@ -945,17 +945,17 @@ fn skills_show_prints_a_fetched_skill_and_refuses_an_unfetched_one() {
             .contains("no fetched skill")
     );
 
-    let dir = env.cfg.join("skills/bn");
+    let dir = env.cfg.join("skills/binja");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "---\nname: bn\n---\nbody\n").unwrap();
-    let ok = env.run(&["skills", "show", "bn"]);
-    assert_eq!(ok.stdout, "---\nname: bn\n---\nbody\n\n");
+    std::fs::write(dir.join("SKILL.md"), "---\nname: binja\n---\nbody\n").unwrap();
+    let ok = env.run(&["skills", "show", "binja"]);
+    assert_eq!(ok.stdout, "---\nname: binja\n---\nbody\n\n");
 }
 
 #[test]
 fn skills_list_reports_fetch_state_and_metadata() {
     let env = Env::shipped();
-    let dir = env.cfg.join("skills/bn");
+    let dir = env.cfg.join("skills/binja");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\n---\n").unwrap();
     std::fs::write(
@@ -968,7 +968,7 @@ fn skills_list_reports_fetch_state_and_metadata() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["tool"] == "bn")
+        .find(|s| s["tool"] == "binja")
         .unwrap();
     assert_eq!(bn["fetched"], true);
     assert_eq!(bn["commit"], "abcdef0123456789");
@@ -979,7 +979,7 @@ fn skills_list_reports_fetch_state_and_metadata() {
 fn the_skill_paths_in_the_registry_are_sorted_and_only_for_present_tools() {
     // A fetched skill for a tool that is not here must not be advertised.
     let env = Env::shipped();
-    let dir = env.cfg.join("skills/bn");
+    let dir = env.cfg.join("skills/binja");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\n---\n").unwrap();
     let p = env.json(&["registry", "--cached"]).json();

@@ -21,7 +21,7 @@ _Avoid_: registry (that is the injected block), manifest, tool database, index.
 
 **Tool**:
 One catalogue entry — an external binary or library REactor can detect, describe
-and install. `bn`, `frida`, `jadx`, `yara`, `rg`. A tool is not written by us;
+and install. `binja`, `frida`, `jadx`, `yara`, `rg`. A tool is not written by us;
 even the ones we do write live in their own repositories and enter REactor only
 as a catalogue entry. Every entry declares its `source` — the tool's true
 upstream, https only — which is what the manual install paths are trusted
@@ -55,8 +55,8 @@ _Avoid_: context block, tool list, inventory, preamble.
 **Probe**:
 The command that answers one question about a tool. A *detection* probe answers
 "is it installed"; a *version* probe answers "which version"; a *service* probe
-answers "is the thing it talks to actually running" (e.g. `bn health` against a
-live Binary Ninja session). Probes are cached; only service probes are re-run on
+answers "is the thing it talks to actually running" (e.g. the MCP Extender's health
+endpoint, for a live Binary Ninja session). Probes are cached; only service probes are re-run on
 a timer.
 _Avoid_: check, health check, test, ping.
 
@@ -79,7 +79,7 @@ execute, promoting the result into the user-local PATH
 _Avoid_: instruction, hint, fallback (for either).
 
 **Upstream skill**:
-An Agent Skill written by a tool's own author (`bn`'s skill in the plugins repo,
+An Agent Skill written by a tool's own author (`binja`'s skill in the mcp_extender repo,
 `ipsw-skill`) that REactor fetches at install time into
 `~/.reactor/skills/<tool>/` rather than writing its own. The tool's author
 knows the tool best. A configured-but-unfetchable upstream skill is a warning; a

@@ -133,18 +133,33 @@ python = "python3"
 # Static analysis — native
 # ---------------------------------------------------------------------------
 
-[tool.bn]
+[tool.binja]
 name   = "Binary Ninja"
-desc   = "reverse engineering framework; drives a live BN session"
-source  = "https://github.com/w1sent/bn-plugins"
-invoke = "bn"
-detect = { binary = "bn" }
+desc   = "reverse engineering framework; drives a live GUI session over MCP"
+source = "https://binary.ninja"
+invoke = "binaryninja"
+# The Python API is what is on every machine that has it set up (its install_api.py); the GUI
+# launcher is rarely on PATH.
+detect = { python_module = "binaryninja" }
 tags   = ["static", "native", "disassembler", "decompiler"]
-service = { probe = ["bn", "health"], label = "BN session" }
-skill = { source = "git+https://github.com/w1sent/bn-plugins", path = "ai/mcp-server/skills/binja-cli", ref = "main" }
+# Up when the MCP Extender plugin answers: it starts with the GUI, so this is "a GUI is running
+# with the plugin". Plain Python, so that curl is not a dependency of the probe.
+service = { probe = ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:24643/health', timeout=2)"], label = "BN session" }
+# Only the skill: the plugin's own repository is the home of what scripting is for and where
+# Binary Ninja's documentation is. How to start Binary Ninja is below, as notes.
+skill  = { source = "git+https://github.com/w1sent/mcp_extender", path = "skills/binja-scripting", ref = "main" }
 
-[tool.bn.install]
-manual = "install the binja-mcp plugin from the bn-plugins repo, then run its scripts/install.py"
+[tool.binja.install]
+# One note, in three parts: how to get it, and how to start it with a GUI or without. A manager
+# key would never be selected (Binary Ninja is in no package manager), and a note costs the
+# prompt nothing until `reactor tools show binja` is run.
+manual = """
+INSTALL. Binary Ninja is commercial software: get a licence and install it from https://binary.ninja, run its scripts/install_api.py so that `python3 -c 'import binaryninja'` works, then install the MCP Extender plugin: git clone https://github.com/w1sent/mcp_extender && cd mcp_extender && python install.py --link (it picks the Python version Binary Ninja ships), and restart Binary Ninja.
+
+START WITH THE GUI (any licence; the only way with Personal). Start it with a binary: `binaryninja /path/to/binary` or the launcher/app (the installation directory is usually not on PATH). It is a window: start it where the person can see it, and say so. Two MCP servers come up with it. The built-in one (bn_* tools) needs `ui.mcp.enabled` in Settings and a restart, then Plugins > MCP > Start Server: http://127.0.0.1:24642/mcp, optional `ui.mcp.token`. The MCP Extender starts by itself: http://127.0.0.1:24643/mcp (bnx_script_run runs Python in the open binary), optional `mcp_extender.token`; Plugins > MCP Extender has Start, Stop and Copy Connection Info. A file opened in the GUI is not active for the built-in server until bn_binary_view_list and bn_binary_view_set_active select it; the extender follows the tab in front.
+
+START WITHOUT A GUI (Commercial or Ultimate licence, Linux or macOS only; not Free, Personal or native Windows packages, where WSL is the way). `binaryninja_mcp` is a stdio MCP server for a client to launch: give its full path in the client config unless it is on PATH. User and Extension Manager plugins load by default; `-p` or BN_DISABLE_USER_PLUGINS turns them off. It serves the built-in bn_* tools. The MCP Extender follows the GUI's open tabs, so without a GUI its scripts have no `bv` (they can still call `binaryninja.load(path)` themselves). With a Commercial licence the Python API also runs in plain scripts.
+"""
 
 [tool.bindiff]
 name    = "BinDiff"
@@ -154,8 +169,8 @@ invoke  = "bindiff --primary=a.BinExport --secondary=b.BinExport --output_dir=."
 detect  = { binary = "bindiff" }
 version = ["bindiff", "--version"]
 # No `skill = {...}`: BinDiff's own docs cover its CLI flags and the IDA/GUI
-# workflow, but not this catalogue's actual pipeline -- exporting from `bn`
-# via script rather than IDA, and reading the resulting .BinDiff SQLite file
+# workflow, but not this catalogue's actual pipeline -- exporting from
+# Binary Ninja via script rather than IDA, and reading the resulting .BinDiff SQLite file
 # programmatically -- so a REactor-authored skill covers that gap
 # (ADR-0008 case 3). See skills/bindiff/.
 tags    = ["static", "native"]
@@ -163,8 +178,8 @@ tags    = ["static", "native"]
 [tool.bindiff.install]
 # Not in any distro's own repos, official or AUR. Upstream's last prebuilt
 # release (.deb/.dmg/.msi, v8) shipped in 2023 and nothing has followed --
-# building from source is the only currently-maintained path. `bn` is this
-# catalogue's disassembler (ADR: bn over IDA), so -DBINEXPORT_ENABLE_IDAPRO=OFF
+# building from source is the only currently-maintained path. Binary Ninja is
+# this catalogue's disassembler (ADR: bn over IDA), so -DBINEXPORT_ENABLE_IDAPRO=OFF
 # and skipping the Java GUI (needs the commercial yFiles library, irrelevant
 # to the headless CLI) both apply.
 manual = "build from source -- git clone https://github.com/google/bindiff && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBINEXPORT_ENABLE_IDAPRO=OFF && cmake --build build && cmake --install build (needs CMake 3.14+, Ninja, a C++ compiler, and Git)"

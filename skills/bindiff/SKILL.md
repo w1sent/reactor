@@ -1,7 +1,7 @@
 ---
 name: bindiff
 description: Diff two versions of the same binary with BinDiff -- export both from Binary Ninja, run bindiff headlessly, then query the resulting .BinDiff SQLite result for matched/changed/unique functions. Use when the user wants to patch-diff or otherwise compare two binaries to find which functions changed.
-requires: [bindiff, bn]
+requires: [bindiff, binja]
 ---
 
 # bindiff
@@ -12,20 +12,21 @@ the third is where the actual analysis happens.
 
 ## 1. Export both binaries to `.BinExport`
 
-This catalogue uses `bn` (Binary Ninja) as the disassembler, not IDA --
+This catalogue uses Binary Ninja as the disassembler, not IDA --
 BinDiff's IDA integration and its `--export` batch mode are irrelevant here.
 Binary Ninja ships BinExport as a built-in plugin; trigger it per binary
-with:
+from a script, with the MCP Extender's `bnx_script_run` tool. Open the binary
+in the Binary Ninja GUI first (`binja` tool notes say how to start it), and
+pass `binary=<index>` from `bnx_script_list` if more than one is open:
 
-```
-bn load-binary /path/to/primary.bin
-bn execute-script "from binaryninja import PluginCommandContext, PluginCommand; cxt = PluginCommandContext(bv); PluginCommand.get_valid_list(cxt)['BinExport (Quick)'].execute(cxt)"
+```python
+from binaryninja import PluginCommandContext, PluginCommand
+cxt = PluginCommandContext(bv)
+PluginCommand.get_valid_list(cxt)['BinExport (Quick)'].execute(cxt)
 ```
 
-then the same two commands for the secondary binary. `load-binary` also
-selects the newly opened binary as current, so no separate select step is
-needed between the two. (If you have live Binary Ninja MCP tools instead of
-the `bn` CLI, run the same script via your `execute_script` tool directly.)
+then the same script for the secondary binary (its own tab, its own
+`binary=` index).
 
 The `from binaryninja import ...` is not optional, even though Binary
 Ninja's own BinExport docs omit it -- `PluginCommandContext`/`PluginCommand`

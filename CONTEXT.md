@@ -79,7 +79,7 @@ execute, promoting the result into the user-local PATH
 _Avoid_: instruction, hint, fallback (for either).
 
 **Upstream skill**:
-An Agent Skill written by a tool's own author (`binja`'s skill in the mcp_extender repo,
+An Agent Skill written by a tool's own author (`binja`'s skill in the bn-mcp-extender repo,
 `ipsw-skill`) that REactor fetches at install time into
 `~/.reactor/skills/<tool>/` rather than writing its own. The tool's author
 knows the tool best. A configured-but-unfetchable upstream skill is a warning; a

@@ -147,14 +147,14 @@ tags   = ["static", "native", "disassembler", "decompiler"]
 service = { probe = ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:24643/health', timeout=2)"], label = "BN session" }
 # Only the skill: the plugin's own repository is the home of what scripting is for and where
 # Binary Ninja's documentation is. How to start Binary Ninja is below, as notes.
-skill  = { source = "git+https://github.com/w1sent/mcp_extender", path = "skills/binja-scripting", ref = "main" }
+skill  = { source = "git+https://github.com/w1sent/bn-mcp-extender", path = "skills/binja-scripting", ref = "main" }
 
 [tool.binja.install]
 # One note, in three parts: how to get it, and how to start it with a GUI or without. A manager
 # key would never be selected (Binary Ninja is in no package manager), and a note costs the
 # prompt nothing until `reactor tools show binja` is run.
 manual = """
-INSTALL. Binary Ninja is commercial software: get a licence and install it from https://binary.ninja, run its scripts/install_api.py so that `python3 -c 'import binaryninja'` works, then install the MCP Extender plugin: git clone https://github.com/w1sent/mcp_extender && cd mcp_extender && python install.py --link (it picks the Python version Binary Ninja ships), and restart Binary Ninja.
+INSTALL. Binary Ninja is commercial software: get a licence and install it from https://binary.ninja, run its scripts/install_api.py so that `python3 -c 'import binaryninja'` works, then install the MCP Extender plugin: git clone https://github.com/w1sent/bn-mcp-extender && cd bn-mcp-extender && python install.py --link (it picks the Python version Binary Ninja ships), and restart Binary Ninja.
 
 START WITH THE GUI (any licence; the only way with Personal). Start it with a binary: `binaryninja /path/to/binary` or the launcher/app (the installation directory is usually not on PATH). It is a window: start it where the person can see it, and say so. Two MCP servers come up with it. The built-in one (bn_* tools) needs `ui.mcp.enabled` in Settings and a restart, then Plugins > MCP > Start Server: http://127.0.0.1:24642/mcp, optional `ui.mcp.token`. The MCP Extender starts by itself: http://127.0.0.1:24643/mcp (bnx_script_run runs Python in the open binary), optional `mcp_extender.token`; Plugins > MCP Extender has Start, Stop and Copy Connection Info. A file opened in the GUI is not active for the built-in server until bn_binary_view_list and bn_binary_view_set_active select it; the extender follows the tab in front.
 

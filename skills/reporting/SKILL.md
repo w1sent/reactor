@@ -22,8 +22,11 @@ useful: exactly where each claim came from.
   blending the two into one sentence.
 - **Leaves a paper trail.** Every finding cites where in the analysis target
   it came from -- file:line, function name/address, packet number, log
-  timestamp, registry key, whatever the target's own addressing scheme is. A
-  claim with no paper trail is not a finding yet, it's a note to go find one.
+  timestamp, registry key, whatever the target's own addressing scheme is. Where
+  the case has a reference for it, cite that (`artifact:samples/dropper.bin#offset=0x401000`,
+  `graph:<id>`, `session:<id>#entry=<n>`): it can be opened from the report and
+  survives the report leaving the case. A claim with no paper trail is not a
+  finding yet, it's a note to go find one.
 - **Says where the trail forks.** When static and dynamic analysis (or any
   two sources) point different ways, say so plainly in `summary.md`'s
   Disagreements section. Smoothing a fork into one confident paragraph is

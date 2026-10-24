@@ -205,6 +205,7 @@ pub fn export(case: &Case, opts: &ExportOptions) -> Result<Value> {
         out_edges.entry(g.from_id.as_str()).or_default().push(g);
     }
 
+    let authority = case.authority();
     // Which STIX object each element becomes, and so its id.
     let identity_id = stix_id("identity", &case.meta().id);
     let mut kind_of: HashMap<&str, String> = HashMap::new();
@@ -248,6 +249,9 @@ pub fn export(case: &Case, opts: &ExportOptions) -> Result<Value> {
     let mut objects: Vec<Value> = Vec::new();
     let meta = case.meta();
     objects.push(json!({
+        // Both names of the case: the alias in the references, the id to tell two cases that
+        // chose the same alias apart (ADR-0066).
+        "x_reactor_case": { "id": meta.id, "alias": meta.alias },
         "type": "identity",
         "spec_version": SPEC_VERSION,
         "id": identity_id,
@@ -276,7 +280,10 @@ pub fn export(case: &Case, opts: &ExportOptions) -> Result<Value> {
                             "to": {
                                 "id": g.to_id,
                                 "kind": target.map(|t| t.kind.as_str()),
-                                "uri": target.filter(|t| t.kind == Kind::External).and_then(|t| t.content.value.clone()),
+                                "uri": target
+                                    .filter(|t| t.kind == Kind::External)
+                                    .and_then(|t| t.content.value.as_deref())
+                                    .map(|u| crate::reference::canonicalize_text(u, &authority)),
                             },
                             "pinned_ver": g.pinned_ver,
                             "locator": g.locator,
@@ -310,6 +317,7 @@ pub fn export(case: &Case, opts: &ExportOptions) -> Result<Value> {
             .filter(|g| g.role == "source")
             .filter_map(|g| by_id.get(g.to_id.as_str()))
             .filter_map(|x| x.content.value.clone())
+            .map(|uri| crate::reference::canonicalize_text(&uri, &authority))
             .map(|uri| {
                 if uri.starts_with("http://") || uri.starts_with("https://") {
                     json!({ "source_name": "reactor", "url": uri })
@@ -701,12 +709,23 @@ fn parse_author(s: &str) -> Author {
     }
 }
 
+/// A reference the bundle's own case wrote with its name is the short reference again: it
+/// was the same thing inside that case, and is the same thing inside this one.
+fn unqualify(uri: &str, own: &[String]) -> String {
+    match crate::reference::parse(uri) {
+        Ok(r) if r.case.as_deref().is_some_and(|c| own.iter().any(|o| o.eq_ignore_ascii_case(c))) => {
+            r.short()
+        }
+        _ => uri.to_string(),
+    }
+}
+
 struct Restored {
     put: Put,
     needs: Vec<String>,
 }
 
-fn restore(x: &Value) -> Option<Restored> {
+fn restore(x: &Value, own: &[String]) -> Option<Restored> {
     let kind = Kind::parse(x["kind"].as_str()?)?;
     if kind == Kind::External {
         return None;
@@ -733,7 +752,7 @@ fn restore(x: &Value) -> Option<Restored> {
         let to = &l["to"];
         let target = match to["kind"].as_str() {
             Some("external") => Target::External {
-                uri: to["uri"].as_str()?.to_string(),
+                uri: unqualify(to["uri"].as_str()?, own),
             },
             _ => {
                 let id = to["id"].as_str()?.to_string();
@@ -779,9 +798,17 @@ pub fn import(case: &Case, bundle: &Value, name: &str) -> Result<Imported> {
     batch.kind = "import".into();
     batch.payload = json!({ "format": "stix", "bundle": bundle["id"], "name": name });
 
+    // The names the bundle's case went by.
+    let own: Vec<String> = objects
+        .iter()
+        .filter_map(|o| o.get("x_reactor_case"))
+        .flat_map(|c| [c["id"].as_str(), c["alias"].as_str()])
+        .flatten()
+        .map(str::to_string)
+        .collect();
     let restored: Vec<Restored> = objects
         .iter()
-        .filter_map(|o| restore(&o["x_reactor"]))
+        .filter_map(|o| restore(&o["x_reactor"], &own))
         .collect();
     if !restored.is_empty() {
         report.restored = true;

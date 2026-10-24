@@ -282,8 +282,8 @@ pub fn commands() -> Vec<Entry> {
             "open",
             "Window",
             Required,
-            "Open a file in a viewer",
-            "/open [edit|table|data|hex] <path>",
+            "Open a file in a viewer, or a reference of the case",
+            "/open [edit|table|data|hex] <path | reference>",
         ),
         Entry::fixed(
             "look",

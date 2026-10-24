@@ -15,7 +15,7 @@ use reactor_db::manifest::Author;
 /// The answer when a tool is asked to look outside this session while the
 /// session-history switch is off (ADR-0047). It explains rather than blocks silently
 /// (ADR-0030).
-fn other_sessions_off(ctx: &ToolCtx) -> Option<ToolOutput> {
+pub(super) fn other_sessions_off(ctx: &ToolCtx) -> Option<ToolOutput> {
     let global = Settings::load(&ctx.paths).memory;
     (!ctx.state().memory.over(&global).session_history()).then(|| {
         ToolOutput::err(

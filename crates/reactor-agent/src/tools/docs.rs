@@ -27,7 +27,7 @@ pub fn defang(text: &str) -> String {
     text.replace("</passage", "</ passage")
 }
 
-fn attr(s: &str) -> String {
+pub(super) fn attr(s: &str) -> String {
     s.replace('"', "'").replace(['\n', '\r'], " ")
 }
 

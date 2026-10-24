@@ -424,7 +424,7 @@ pub struct Annotate<'a> {
     pub confidence: Option<&'a str>,
 }
 
-/// Add an annotation in the analyst's name, the same way the agent's `graph_annotate` does.
+/// Add an annotation in the analyst's name, the same way the agent's `graph_write` does.
 ///
 /// * **hypothesis**: needs text; starts `open`; about anything or nothing.
 /// * **judgement**: needs text and something it is *about* (pinned to that version of it, so

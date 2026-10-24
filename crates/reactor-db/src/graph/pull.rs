@@ -21,7 +21,7 @@
 //! | `<type>@<role>` | an entity of that type, linked with that role |
 //! | anything else | a property of the claim |
 //!
-//! One source table is always there as `src`: the table named in a `sqlite:` URI, or
+//! One source table is always there as `src`: the table named in an `artifact:...#table=<t>` reference, or
 //! the rows of a CSV, JSON or JSONL file. A whole SQLite file is attached as `data`.
 //!
 //! The query runs on a connection of its own that can only read: no writes, no
@@ -49,8 +49,8 @@ pub const DEFAULT_MAX_ROWS: usize = 5_000;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Request {
-    /// The external to pull from: `sqlite:reactor_data.sqlite?table=fw_conn`,
-    /// `csv:data/pdns.csv`, `jsonl:out/edr.jsonl`, `json:out/report.json#/hits`, or a
+    /// The external to pull from: `artifact:reactor_data.sqlite#table=fw_conn`,
+    /// `artifact:data/pdns.csv`, `artifact:out/edr.jsonl`, `artifact:out/report.json#/hits`, or a
     /// bare path whose extension says which.
     pub source: String,
     pub query: String,
@@ -93,94 +93,78 @@ enum Source {
     },
 }
 
-/// What a source string means: the URI the external is stored under, and how to read it.
+/// What a source string means: the URI the external is stored under, and how to read it. A
+/// source is a file of the case, `artifact:<path>`, and what is read from it follows the
+/// file: a table of a SQLite file (`#table=<t>`), the array a JSON pointer names
+/// (`#/events`), or every row of a CSV or JSON lines file.
 fn resolve(case: &Case, raw: &str) -> Result<(String, Source, PathBuf)> {
     let raw = identity::canonical_uri(raw)?;
-    let (scheme, rest) = match raw.split_once(':') {
-        Some((s, r)) if s.chars().all(|c| c.is_ascii_alphanumeric()) && !s.is_empty() => {
-            (s.to_lowercase(), r.to_string())
-        }
-        _ => {
-            let ext = Path::new(&raw)
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let scheme = match ext.as_str() {
-                "csv" | "tsv" => "csv",
-                "jsonl" | "ndjson" => "jsonl",
-                "json" => "json",
-                "sqlite" | "sqlite3" | "db" => "sqlite",
-                _ => {
-                    return Err(Error::Invalid(format!(
-                        "`{raw}`: cannot tell what this is -- say sqlite:, csv:, jsonl: or json:"
-                    )));
-                }
-            };
-            (scheme.to_string(), raw.clone())
+    let target = match crate::reference::parse(&raw) {
+        Ok(r) => r.target,
+        Err(_) => {
+            return Err(Error::Invalid(format!(
+                "`{raw}`: a pull reads a file of the case: `artifact:<path>`"
+            )));
         }
     };
-    let (path, query, fragment) = {
-        let (before, fragment) = match rest.split_once('#') {
-            Some((b, f)) => (b, Some(f.to_string())),
-            None => (rest.as_str(), None),
-        };
-        let (path, query) = match before.split_once('?') {
-            Some((p, q)) => (p.to_string(), Some(q.to_string())),
-            None => (before.to_string(), None),
-        };
-        (path, query, fragment)
+    let crate::reference::Target::Artifact { path, locator } = target else {
+        return Err(Error::Invalid(format!(
+            "`{raw}`: a pull reads a file of the case: `artifact:<path>`"
+        )));
     };
-    // The case's own database is named by the empty path, and only read.
-    let (stored, file) = if scheme == "sqlite" && path.is_empty() {
-        (String::new(), case.dir().join("analysis.db"))
+    // The case's own database is read, and only read.
+    let (stored, file) = if path == ".reactor/analysis.db" {
+        (path.clone(), case.dir().join("analysis.db"))
     } else {
         artifact::locate(case, &path)?
     };
-    let source = match scheme.as_str() {
-        "sqlite" => {
-            let table = query.as_deref().and_then(|q| {
-                q.split('&')
-                    .find_map(|kv| kv.strip_prefix("table="))
-                    .map(str::to_string)
-            });
-            let uri = match &table {
-                Some(t) => format!("sqlite:{stored}?table={t}"),
-                None => format!("sqlite:{stored}"),
+    let ext = Path::new(&stored)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let place = locator.as_deref().and_then(crate::reference::Locator::parse);
+    let uri = |loc: Option<String>| {
+        let mut r = crate::reference::Reference::artifact(&stored);
+        if let crate::reference::Target::Artifact { locator, .. } = &mut r.target {
+            *locator = loc;
+        }
+        r.short()
+    };
+    match ext.as_str() {
+        "sqlite" | "sqlite3" | "db" => {
+            let table = match place {
+                Some(crate::reference::Locator::Table { table, .. }) => Some(table),
+                _ => None,
             };
-            return Ok((
-                uri,
+            Ok((
+                uri(table.as_ref().map(|t| format!("table={t}"))),
                 Source::Sqlite {
                     file: file.clone(),
                     table,
                 },
                 file,
-            ));
+            ))
         }
-        "csv" => Source::Csv(file.clone()),
-        "jsonl" => Source::Jsonl(file.clone()),
+        "csv" | "tsv" => Ok((uri(None), Source::Csv(file.clone()), file)),
+        "jsonl" | "ndjson" => Ok((uri(None), Source::Jsonl(file.clone()), file)),
         "json" => {
-            let pointer = fragment.unwrap_or_default();
-            let uri = if pointer.is_empty() {
-                format!("json:{stored}")
-            } else {
-                format!("json:{stored}#{pointer}")
+            let pointer = match place {
+                Some(crate::reference::Locator::JsonPointer(p)) => p,
+                _ => String::new(),
             };
-            return Ok((
-                uri,
+            Ok((
+                uri((!pointer.is_empty()).then(|| pointer.clone())),
                 Source::Json {
                     file: file.clone(),
                     pointer,
                 },
                 file,
-            ));
+            ))
         }
-        other => {
-            return Err(Error::Invalid(format!(
-                "`{other}:` is not something a pull can read (sqlite, csv, jsonl, json)"
-            )));
-        }
-    };
-    Ok((format!("{scheme}:{stored}"), source, file))
+        _ => Err(Error::Invalid(format!(
+            "`{raw}`: cannot tell what this file is -- a pull reads .sqlite, .csv, .tsv, .jsonl and .json"
+        ))),
+    }
 }
 
 fn quote(ident: &str) -> String {

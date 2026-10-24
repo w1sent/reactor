@@ -187,6 +187,28 @@ One searchable piece of a context document, with the headings it sits under
 (`Install > Linux`). What `docs_search` returns, quoted with where it came from.
 _Avoid_: chunk (the code's word for it), snippet, excerpt.
 
+**Reference**:
+A string that names one thing of the case and that a person, the agent and an export can all
+write: `graph:<id>`, `artifact:<path>#row=3`, `session:<id>#entry=7`, `doc:<id>`, `change:<n>`,
+`vocab:<type>`, or a set such as `graph:?type=net.`. Its body is a key the database already
+has. Inside the case it is written short; out of it, with the case's name:
+`reactor://<alias>/graph/<id>`. In the composer the person triggers one with `@`
+([ADR-0066](docs/adr/0066-the-case-is-addressed-by-references.md)).
+_Avoid_: link, URI (a source's URL is one; a reference is the case's own), address, id.
+
+**Artifact**:
+A file of the case, named by its path relative to the case directory. Registered when the
+case should keep its hashes and notice a change (`artifact_register`, the Files tab's artifacts
+list); every file in the directory can be referred to as `artifact:<path>`. What the glossary elsewhere calls evidence is the
+artifacts of the case.
+_Avoid_: sample (a kind of artifact), upload.
+
+**Case alias**:
+The name the person gives a case, which a reference written out of it carries instead of the
+case's id (`reactor://acme/...`). Letters, digits, `-` and `_`. Renaming keeps the old ones
+accepted; the id, in `case.json`, tells two cases of the same alias apart.
+_Avoid_: case name (that is the title), slug.
+
 **Pull**:
 Turning rows of an External — a SQLite table, a CSV, JSON or JSONL file — into
 graph elements, each linked back to where it came from. The only bulk way into

@@ -52,7 +52,7 @@ fn open(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, Entity<Transcrip
                     true,
                 ),
                 // 3: one still running.
-                call("graph_add", "x", "writing node 1 of 2…", false, false),
+                call("graph_write", "x", "writing node 1 of 2…", false, false),
                 ChatItem::Error {
                     message: "The provider closed the stream.".into(),
                 },

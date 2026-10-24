@@ -21,7 +21,7 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,22 @@ pub struct Meta {
     /// RFC 3339 UTC.
     pub created: String,
     pub format: u32,
+    /// The name the person gave the case, which a reference to it carries instead of the id
+    /// ([ADR-0066](../../../docs/adr/0066-the-case-is-addressed-by-references.md)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// Aliases the case had before: references written with them still name it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former_aliases: Vec<String>,
+}
+
+/// Whether `alias` is a name a case may have: letters, digits, `-` and `_`, no spaces.
+pub fn valid_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias.len() <= 64
+        && alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 struct Inner {
@@ -49,7 +65,7 @@ struct Inner {
     dir: PathBuf,
     /// The unsaved state's `<id>.workdir` marker; `None` for a saved case.
     marker: Option<PathBuf>,
-    meta: Meta,
+    meta: RwLock<Meta>,
     db: Db,
     blobs: BlobStore,
 }
@@ -63,7 +79,7 @@ pub struct Case {
 impl std::fmt::Debug for Case {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Case")
-            .field("id", &self.inner.meta.id)
+            .field("id", &self.meta().id)
             .field("root", &self.inner.root)
             .field("saved", &self.is_saved())
             .finish()
@@ -126,7 +142,7 @@ impl Case {
                 root,
                 dir,
                 marker,
-                meta,
+                meta: RwLock::new(meta),
                 db,
                 blobs,
             }),
@@ -142,6 +158,8 @@ impl Case {
                 title: title.map(str::to_string).filter(|t| !t.is_empty()),
                 created: now_rfc3339(),
                 format: FORMAT_VERSION,
+                alias: None,
+                former_aliases: Vec::new(),
             },
         )
     }
@@ -214,8 +232,58 @@ impl Case {
         self.inner.marker.is_none()
     }
 
-    pub fn meta(&self) -> &Meta {
-        &self.inner.meta
+    /// The case's identity file as it stands now.
+    pub fn meta(&self) -> Meta {
+        self.inner.meta.read().unwrap().clone()
+    }
+
+    /// The name the person gave the case, if they did.
+    pub fn alias(&self) -> Option<String> {
+        self.inner.meta.read().unwrap().alias.clone()
+    }
+
+    /// What a reference to this case calls it: the alias, else the id.
+    pub fn authority(&self) -> String {
+        let m = self.inner.meta.read().unwrap();
+        m.alias.clone().unwrap_or_else(|| m.id.clone())
+    }
+
+    /// Whether a reference's case part names this case: its id, its alias, or an alias it
+    /// had before. Names are compared without regard to case.
+    pub fn is_named(&self, authority: &str) -> bool {
+        let m = self.inner.meta.read().unwrap();
+        m.id.eq_ignore_ascii_case(authority)
+            || m.alias
+                .iter()
+                .chain(m.former_aliases.iter())
+                .any(|a| a.eq_ignore_ascii_case(authority))
+    }
+
+    /// Give the case an alias, or take it away (`None`). The alias it had becomes a former
+    /// one, so references written with it keep working.
+    pub fn set_alias(&self, alias: Option<&str>) -> Result<()> {
+        let alias = alias.map(str::trim).filter(|a| !a.is_empty());
+        if let Some(a) = alias
+            && !valid_alias(a)
+        {
+            return Err(Error::Invalid(format!(
+                "`{a}`: an alias is letters, digits, `-` and `_`, up to 64, no spaces"
+            )));
+        }
+        let mut m = self.inner.meta.write().unwrap();
+        let mut next = m.clone();
+        if let Some(old) = next.alias.take()
+            && !old.eq_ignore_ascii_case(alias.unwrap_or(""))
+            && !next.former_aliases.iter().any(|f| f.eq_ignore_ascii_case(&old))
+        {
+            next.former_aliases.push(old);
+        }
+        next.former_aliases
+            .retain(|f| !alias.is_some_and(|a| f.eq_ignore_ascii_case(a)));
+        next.alias = alias.map(str::to_string);
+        write_json(&self.inner.dir.join("case.json"), &next)?;
+        *m = next;
+        Ok(())
     }
 
     pub fn db(&self) -> &Db {

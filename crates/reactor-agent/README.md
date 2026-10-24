@@ -18,7 +18,7 @@ reactor-agent     this crate                          the loop
 | `budget` | one policy, three modes, planned purely and previewable ([ADR-0037](../../docs/adr/0037-context-reduction-is-one-budget-manager.md)) |
 | `history` | reading the log back whole, including everything a reduction hides, and the case's other sessions |
 | `llm`, `provider` | the seam to a model: rig for real, a script for tests |
-| `tools` | `bash` (persistent shells), `read`/`write`/`edit`, `history_*`, `update_steps`, `reactor_phase_complete`, and the case graph's `graph_add`/`graph_annotate`/`graph_query`/`graph_pull`/`artifact_register` ([ADR-0047](../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)); a group that costs more than `toolSearch.deferOverTokens` (the graph's, or one MCP server's) is left for `tool_search` to load ([ADR-0055](../../docs/adr/0055-large-tool-groups-are-loaded-on-demand.md)) |
+| `tools` | `bash` (persistent shells), `read`/`write`/`edit`, `history_*`, `update_steps`, `reactor_phase_complete`, `case_get` (the case read by reference, [ADR-0066](../../docs/adr/0066-the-case-is-addressed-by-references.md)), and the case graph's `graph_write`/`graph_query`/`graph_pull`/`graph_revert`/`define_type`/`artifact_register` ([ADR-0047](../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)); a group that costs more than `toolSearch.deferOverTokens` (the graph's, or one MCP server's) is left for `tool_search` to load ([ADR-0055](../../docs/adr/0055-large-tool-groups-are-loaded-on-demand.md)) |
 | `truncate` | head-and-tail cutting with an address for the rest |
 | `skills`, `prompt` | what goes in the system prompt, in a fixed order |
 | `agent` | the loop, its invariants, and the session commands |

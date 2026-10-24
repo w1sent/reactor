@@ -455,7 +455,7 @@ fn the_rules_of_the_tools_in_the_request_come_after_the_registry_and_say_the_gra
         "Use `read` to look at a file.".to_string(),
         "Second.".to_string(),
     ];
-    let deferred = ["graph_add".to_string()];
+    let deferred = ["graph_write".to_string()];
     let mut i = inputs(&settings, &state, &registry, &[]);
     i.rules = &rules;
     i.deferred = &deferred;
@@ -467,7 +467,7 @@ fn the_rules_of_the_tools_in_the_request_come_after_the_registry_and_say_the_gra
     assert!(at("## Available tools") < at("## Tool rules"));
     assert!(at("## Tool rules") < at("## Case graph"));
     assert!(p.contains("- Use `read` to look at a file.\n- Second."));
-    assert!(p.contains("`tool_search` with `select:graph_add"));
+    assert!(p.contains("`tool_search` with `select:graph_write"));
     // With nothing deferred the graph block is the plain text.
     i.deferred = &[];
     assert!(!prompt::system_prompt(&i).contains("tool_search"));

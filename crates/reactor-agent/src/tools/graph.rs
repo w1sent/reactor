@@ -1,8 +1,9 @@
 //! The case's graph, for the agent
 //! ([ADR-0047](../../../../docs/adr/0047-the-analysis-graph-is-the-case-s-model.md)).
 //!
-//! Five tools over `reactor-db`: add what a source says, annotate with what you
-//! conclude, query, pull rows of a source in, and register a file. Each is a thin skin:
+//! Six tools over `reactor-db`: write elements (what a source says, and what you conclude),
+//! query, pull rows of a source in, take a mistake back, define a type, and register a file.
+//! Reading by reference is `case_get`. Each is a thin skin:
 //! the rules — a claim needs a source, an entity's key never changes, nothing is
 //! overwritten — are the database's, and a refusal comes back as the text to act on.
 //!
@@ -19,6 +20,7 @@ use reactor_db::graph::{
     self, Batch, Change, Content, Element, Filter, Kind, Link, Put, Target, query,
 };
 use reactor_db::manifest::Author;
+use reactor_db::reference;
 use reactor_db::time::parse_source_time;
 use reactor_db::{Case, Db};
 use serde_json::{Map, Value, json};
@@ -74,9 +76,15 @@ fn fail(e: impl std::fmt::Display) -> ToolOutput {
 // -- reading arguments ----------------------------------------------------------------------
 
 /// `"<id>"`, or `{type, value, scope?}` for an entity, or `{uri}` for an external.
-fn target(v: &Value) -> Result<Target, String> {
+fn target(v: &Value, case: &Case) -> Result<Target, String> {
     match v {
-        Value::String(id) if !id.trim().is_empty() => Ok(Target::Id(id.trim().to_string())),
+        Value::String(id) if !id.trim().is_empty() => {
+            let id = id.trim();
+            if reference::looks_like(id) {
+                return from_reference(id, case);
+            }
+            Ok(Target::Id(id.to_string()))
+        }
         Value::Object(o) => {
             if let Some(id) = o.get("id").and_then(Value::as_str) {
                 return Ok(Target::Id(id.to_string()));
@@ -99,6 +107,44 @@ fn target(v: &Value) -> Result<Target, String> {
             }
         }
         _ => Err("a target is an element id, or {type, value} for an entity".into()),
+    }
+}
+
+/// What a reference names, as the graph takes it: an element by id, an entity by its key,
+/// anything else outside the graph as an external.
+fn from_reference(raw: &str, case: &Case) -> Result<Target, String> {
+    let mut r = reference::parse(raw).map_err(|e| e.to_string())?;
+    // Written with this case's name: the same thing as without it.
+    if let Some(named) = &r.case {
+        if !case.is_named(named) {
+            return Ok(Target::External {
+                uri: r.to_string(),
+            });
+        }
+        r.case = None;
+    }
+    match r.target {
+        reference::Target::Graph {
+            id: reference::GraphId::Id(id),
+            ..
+        } => Ok(Target::Id(id)),
+        reference::Target::Graph {
+            id:
+                reference::GraphId::Entity {
+                    type_,
+                    value,
+                    scope,
+                },
+            ..
+        } => Ok(Target::Entity {
+            type_,
+            value,
+            scope,
+        }),
+        reference::Target::Set { .. } => Err(format!("`{raw}` is a set, not one thing")),
+        _ => Ok(Target::External {
+            uri: r.short(),
+        }),
     }
 }
 
@@ -127,17 +173,29 @@ fn list(v: Option<&Value>) -> Vec<Value> {
 }
 
 /// `"uri"` or `{uri, locator?}`.
-fn source(v: &Value) -> Result<Link, String> {
+fn source(v: &Value, case: &Case) -> Result<Link, String> {
     match v {
-        Value::String(uri) => Ok(Link::source(uri)),
+        Value::String(uri) => {
+            let (uri, place) = reference::split_source(&reference::localize(case, uri));
+            Ok(match place {
+                Some(p) => Link::source(&uri).at(&p, None),
+                None => Link::source(&uri),
+            })
+        }
         Value::Object(o) => {
             let uri = o
                 .get("uri")
                 .and_then(Value::as_str)
                 .ok_or("a source needs a `uri`")?;
-            let link = Link::source(uri);
+            let (uri, place) = reference::split_source(&reference::localize(case, uri));
+            let link = Link::source(&uri);
             Ok(
-                match o.get("locator").map(text_of).filter(|l| !l.is_empty()) {
+                match o
+                    .get("locator")
+                    .map(text_of)
+                    .filter(|l| !l.is_empty())
+                    .or(place)
+                {
                     Some(l) => link.at(&l, None),
                     None => link,
                 },
@@ -211,7 +269,7 @@ fn short(s: &str, n: usize) -> String {
 /// One line for an element: what it is, what it says, and its state where that is not
 /// the ordinary one.
 fn line(e: &Element) -> String {
-    let mut out = format!("{} {}", e.id, e.type_);
+    let mut out = format!("graph:{} {}", e.id, e.type_);
     if let Some(v) = &e.content.value {
         out.push_str(&format!(" \"{}\"", short(v, 100)));
     }
@@ -281,7 +339,7 @@ pub fn detail(db: &Db, e: &Element) -> reactor_db::Result<String> {
     }
     for g in query::edges_to(db, &e.id)? {
         out.push(format!(
-            "  <-{}- {} {}",
+            "  <-{}- {} graph:{}",
             g.role,
             name(db, &g.from_id),
             g.from_id
@@ -290,18 +348,37 @@ pub fn detail(db: &Db, e: &Element) -> reactor_db::Result<String> {
     Ok(out.join("\n"))
 }
 
-// -- graph_add ------------------------------------------------------------------------------
+// -- graph_write ----------------------------------------------------------------------------
 
-pub struct GraphAdd;
+pub struct GraphWrite;
 
-impl Tool for GraphAdd {
+const ANNOTATIONS: [&str; 6] = [
+    "hypothesis",
+    "judgement",
+    "note",
+    "cluster",
+    "same_as",
+    "search_negative",
+];
+
+const CONFIDENCE: [&str; 7] = [
+    "almost no chance",
+    "very unlikely",
+    "unlikely",
+    "roughly even",
+    "likely",
+    "very likely",
+    "almost certain",
+];
+
+impl Tool for GraphWrite {
     fn group(&self) -> Option<&'static str> {
         Some(super::GRAPH_GROUP)
     }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "graph_add".into(),
-            description: "Add to the case's graph what a source says. An `entity` is a thing that can show up in many places (an address, a host, a hash): the same type and value is always the same node. An `event` happened and an `observation` holds; each links the entities it involves by role, and needs a `source`. A conclusion of your own is not for this tool.".into(),
+            name: "graph_write".into(),
+            description: "Write to the case's graph. An element is new, or, with an `id`, a new version of one that exists: nothing is overwritten. An `entity`, `event` or `observation` records what a source says and an event or observation needs its `source`; an `annotation` records what you or the user conclude. Returns each element with its reference and the change number.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -310,30 +387,34 @@ impl Tool for GraphAdd {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
-                                "type": { "type": "string", "description": "Dot-namespaced, e.g. net.ipv4, file.hash.sha256, host.name, auth.logon, net.connection. `graph_query` with `what: vocabulary` lists the known ones." },
-                                "value": { "type": "string", "description": "An entity's value, or an optional label for an event or observation." },
+                                "id": { "type": "string", "description": "Revise this element (a reference or id) instead of adding one; then only the fields below that you give change." },
+                                "kind": { "type": "string", "enum": ["entity", "event", "observation", "annotation"], "description": "entity: a thing that can show up in many places (an address, a host, a hash): the same type and value is always the same node. event: it happened. observation: it holds. annotation: a conclusion of yours or the user's. Not needed when `type` is an annotation type." },
+                                "type": { "type": "string", "description": "Dot-namespaced, e.g. net.ipv4, file.hash.sha256, host.name, auth.logon, net.connection (`graph_query` with `what: vocabulary` lists the known ones). For an annotation: hypothesis (a candidate explanation), judgement (an assessment of a claim, `about` it, with a confidence; `supports` or `refutes` a hypothesis), note (commentary, a question, a to-do), cluster (these belong together: `member` links), same_as (two entities are one: `about` both), search_negative (you looked and found nothing: `source` where, `about` what for)." },
+                                "value": { "type": "string", "description": "An entity's value, or a label for an event or observation. For an annotation, its text. Plain text; Markdown only for a long one (several paragraphs), because the graph shows it rendered." },
                                 "scope": { "type": "string", "description": "Entities only: the context the value is unique in (a private address at site-a)." },
                                 "time": { "type": "string", "description": "Events: when it happened, as the source wrote it." },
                                 "valid_from": { "type": "string", "description": "Observations: when it started to hold." },
                                 "valid_to": { "type": "string", "description": "Observations: when it stopped." },
-                                "confidence": { "type": "string" },
+                                "confidence": { "type": "string", "description": format!("Of an annotation: {}.", CONFIDENCE.join(", ")) },
                                 "tags": { "type": "array", "items": { "type": "string" } },
-                                "props": { "type": "object" },
+                                "props": { "type": "object", "description": "E.g. for search_negative: {query, window_from, window_to}." },
                                 "links": {
                                     "type": "array",
                                     "items": {
                                         "type": "object",
                                         "properties": {
-                                            "role": { "type": "string", "description": "src/dst, actor/target, parent/child, subject/object, query/answer, ..." },
-                                            "to": { "description": "An element id, or {type, value} for an entity." }
+                                            "role": { "type": "string", "description": "src/dst, actor/target, parent/child, subject/object, query/answer, ...; for an annotation about, supports, refutes or member." },
+                                            "to": { "description": "A reference (graph:<id>, graph:entity/<type>/<value>) or an element id, or {type, value} for an entity." }
                                         },
                                         "required": ["role", "to"]
                                     }
                                 },
-                                "source": { "description": "A URI, or {uri, locator}: a file or table in the case, or a session entry as `session:<id>#entry=<n>`. Required for an event or observation." }
-                            },
-                            "required": ["kind", "type"]
+                                "source": { "description": "A reference: artifact:<path>[#locator], session:<id>#entry=<n>, doc:<id>, or a URL; or {uri, locator}; or a list of them. Required for an event or observation." },
+                                "status": { "type": "string", "enum": ["active", "conflicting", "soft-deleted"], "description": "Revising: the new status." },
+                                "add_tags": { "type": "array", "items": { "type": "string" }, "description": "Revising." },
+                                "remove_tags": { "type": "array", "items": { "type": "string" }, "description": "Revising." },
+                                "reason": { "type": "string", "description": "Revising: why; kept as a note on the element." }
+                            }
                         }
                     }
                 },
@@ -352,63 +433,51 @@ impl Tool for GraphAdd {
                 Ok(s) => s,
                 Err(refusal) => return refusal,
             };
+            let db = s.case.db();
             let mut batch = s.batch("graph");
+            let mut revised: Vec<String> = Vec::new();
             for (i, el) in list(args.get("elements")).iter().enumerate() {
+                let n = i + 1;
                 let Some(o) = el.as_object() else {
-                    return ToolOutput::err(format!("element {}: not an object", i + 1));
+                    return ToolOutput::err(format!("element {n}: not an object"));
                 };
-                let kind = match o.get("kind").and_then(Value::as_str).and_then(Kind::parse) {
-                    Some(k @ (Kind::Entity | Kind::Event | Kind::Observation)) => k,
-                    _ => {
-                        return ToolOutput::err(format!(
-                            "element {}: `kind` is entity, event or observation (a conclusion is an annotation: use graph_annotate)",
-                            i + 1
-                        ));
+                if let Some(id) = o.get("id").filter(|v| !v.is_null()) {
+                    match revision(&s, id, o, &mut batch) {
+                        Ok(id) => revised.push(id),
+                        Err(e) => return ToolOutput::err(format!("element {n}: {e}")),
                     }
-                };
-                let Some(type_) = o.get("type").and_then(Value::as_str) else {
-                    return ToolOutput::err(format!("element {}: needs a `type`", i + 1));
-                };
-                let mut put = Put {
-                    scope: o.get("scope").and_then(Value::as_str).map(str::to_string),
-                    content: content(o),
-                    ..Put::new(kind, type_)
-                };
-                for l in list(o.get("links")) {
-                    let role = l.get("role").and_then(Value::as_str).unwrap_or("");
-                    match l.get("to").map(target) {
-                        Some(Ok(to)) => put.links.push(Link::new(role, to)),
-                        Some(Err(e)) => return ToolOutput::err(format!("element {}: {e}", i + 1)),
-                        None => {
-                            return ToolOutput::err(format!(
-                                "element {}: a link needs `to`",
-                                i + 1
-                            ));
-                        }
-                    }
+                    continue;
                 }
-                if let Some(src) = o.get("source") {
-                    match source(src) {
-                        Ok(link) => put.links.push(link),
-                        Err(e) => return ToolOutput::err(format!("element {}: {e}", i + 1)),
-                    }
+                match addition(o, &s.case) {
+                    Ok(put) => batch.puts.push(put),
+                    Err(e) => return ToolOutput::err(format!("element {n}: {e}")),
                 }
-                batch.puts.push(put);
             }
-            if batch.puts.is_empty() {
-                return ToolOutput::err("graph_add needs `elements`");
+            if batch.puts.is_empty() && batch.changes.is_empty() {
+                return ToolOutput::err("graph_write needs `elements`");
             }
-            match graph::apply(s.case.db(), batch) {
+            match graph::apply(db, batch) {
                 Ok(done) => {
                     let mut out: Vec<String> = Vec::new();
+                    // One new element is shown in full, with what it links to; several, a
+                    // line each.
+                    let alone = done.ids.len() == 1 && revised.is_empty();
                     for id in &done.ids {
-                        if let Ok(Some(e)) = query::get(s.case.db(), id) {
-                            out.push(line(&e));
+                        if let Ok(Some(e)) = query::get(db, id) {
+                            match alone {
+                                true => out.push(detail(db, &e).unwrap_or_else(|_| line(&e))),
+                                false => out.push(line(&e)),
+                            }
+                        }
+                    }
+                    for id in &revised {
+                        if let Ok(Some(e)) = query::get(db, id) {
+                            out.push(format!("{} -- now at version {}", line(&e), e.ver));
                         }
                     }
                     out.push(match done.event_seq {
                         Some(seq) => format!(
-                            "{} new, {} updated (change #{seq})",
+                            "{} new, {} updated (change:{seq})",
                             done.created, done.versioned
                         ),
                         None => "nothing new: the graph already says this".into(),
@@ -421,201 +490,213 @@ impl Tool for GraphAdd {
     }
 }
 
-// -- graph_annotate -------------------------------------------------------------------------
+/// The element id a reference or id argument names.
+fn element_id(case: &Case, v: &Value) -> Result<String, String> {
+    let db = case.db();
+    match target(v, case)? {
+        Target::Id(id) => Ok(id),
+        Target::Entity {
+            type_,
+            value,
+            scope,
+        } => query::entity_id(db, &type_, &value, scope.as_deref()).map_err(|e| e.to_string()),
+        Target::External { .. } => Err("name an element by its id or a graph reference".into()),
+    }
+}
 
-pub struct GraphAnnotate;
+/// An element with an `id`: a new version of it.
+fn revision(
+    s: &Scope,
+    id: &Value,
+    o: &Map<String, Value>,
+    batch: &mut Batch,
+) -> Result<String, String> {
+    let id = element_id(&s.case, id)?;
+    let change = Change {
+        id: id.clone(),
+        status: o.get("status").and_then(Value::as_str).map(str::to_string),
+        confidence: o
+            .get("confidence")
+            .map(|v| Some(text_of(v)).filter(|t| !t.is_empty())),
+        value: o
+            .get("value")
+            .or(o.get("text"))
+            .map(|v| Some(text_of(v)).filter(|t| !t.is_empty())),
+        set_props: o
+            .get("props")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default(),
+        add_tags: strings(o.get("add_tags")),
+        remove_tags: strings(o.get("remove_tags")),
+        ..Change::default()
+    };
+    batch.changes.push(change);
+    if let Some(reason) = o.get("reason").map(text_of).filter(|r| !r.is_empty()) {
+        batch.puts.push(Put {
+            content: Content::value(reason),
+            links: vec![Link::new("about", Target::Id(id.clone()))],
+            ..Put::new(Kind::Annotation, "analysis.note")
+        });
+    }
+    Ok(id)
+}
 
-const ANNOTATIONS: [&str; 6] = [
-    "hypothesis",
-    "judgement",
-    "note",
-    "cluster",
-    "same_as",
-    "search_negative",
-];
+/// An element that is new: its kind, its content, what it links to and where it came from.
+fn addition(o: &Map<String, Value>, case: &Case) -> Result<Put, String> {
+    let given = o.get("type").and_then(Value::as_str).map(str::trim);
+    let annotation_type = given
+        .map(|t| t.trim_start_matches("analysis."))
+        .filter(|t| ANNOTATIONS.contains(t));
+    let kind = match o.get("kind").and_then(Value::as_str).and_then(Kind::parse) {
+        Some(k @ (Kind::Entity | Kind::Event | Kind::Observation | Kind::Annotation)) => k,
+        Some(Kind::External) => {
+            return Err("an external is made by naming it as a `source` or a link".into());
+        }
+        None if annotation_type.is_some() => Kind::Annotation,
+        None => {
+            return Err(
+                "`kind` is entity, event, observation or annotation (or give an annotation `type`)"
+                    .into(),
+            );
+        }
+    };
+    let Some(type_) = given.filter(|t| !t.is_empty()) else {
+        return Err("needs a `type`".into());
+    };
+    let mut put = if kind == Kind::Annotation {
+        let Some(a) = annotation_type else {
+            return Err(format!(
+                "an annotation's `type` is one of {}",
+                ANNOTATIONS.join(", ")
+            ));
+        };
+        let mut put = Put {
+            scope: None,
+            content: content(o),
+            ..Put::new(Kind::Annotation, &format!("analysis.{a}"))
+        };
+        if put.content.value.is_none() && a != "cluster" && a != "same_as" {
+            return Err(format!("a {a} needs its text in `value`"));
+        }
+        if a == "hypothesis" {
+            put.content
+                .props
+                .entry("hypothesis_status")
+                .or_insert_with(|| json!("open"));
+        }
+        put
+    } else {
+        Put {
+            scope: o.get("scope").and_then(Value::as_str).map(str::to_string),
+            content: content(o),
+            ..Put::new(kind, type_)
+        }
+    };
+    let judgement = kind == Kind::Annotation && put.type_ == "analysis.judgement";
+    for l in list(o.get("links")) {
+        let role = l.get("role").and_then(Value::as_str).unwrap_or("");
+        let to = match l.get("to").map(|t| target(t, case)) {
+            Some(Ok(to)) => to,
+            Some(Err(e)) => return Err(e),
+            None => return Err("a link needs `to`".into()),
+        };
+        // A judgement is about a claim as it stood: pin that version, so it is flagged when
+        // the claim moves on.
+        if judgement && role == "about" {
+            put.links.push(Link::new(role, to).pinned());
+        } else {
+            put.links.push(Link::new(role, to));
+        }
+    }
+    if let Some(src) = o.get("source").filter(|v| !v.is_null()) {
+        let sources = match src {
+            Value::Array(a) => a.clone(),
+            one => vec![one.clone()],
+        };
+        for s in &sources {
+            put.links.push(source(s, case)?);
+        }
+    }
+    Ok(put)
+}
 
-impl Tool for GraphAnnotate {
+// -- graph_revert and define_type -----------------------------------------------------------
+
+pub struct GraphRevert;
+
+impl Tool for GraphRevert {
     fn group(&self) -> Option<&'static str> {
         Some(super::GRAPH_GROUP)
     }
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "graph_annotate".into(),
-            description: "Record in the case's graph what you or the user conclude, or revise it. `type` adds an annotation. `change` revises an element: a new version, nothing is overwritten. `revert` takes back a mistake nothing builds on (preview first). `define_type` makes a recurring type of your own known.".into(),
+            name: "graph_revert".into(),
+            description: "Take back a mistake in the graph that nothing builds on: one change, or one element back to a version. Preview first.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "type": { "type": "string", "enum": ANNOTATIONS, "description": "hypothesis: a candidate explanation. judgement: your assessment of a claim, with a confidence (`about` it; `supports` or `refutes` a hypothesis). note: commentary, a question, a to-do. cluster: these belong together (`members`). same_as: two entities are one (`about` both). search_negative: you looked and found nothing (`sources` where, `about` what for)." },
-                    "text": { "type": "string", "description": "The hypothesis, assessment or note. Plain text; Markdown only for a long one (several paragraphs), because the graph shows it rendered." },
-                    "confidence": { "type": "string", "enum": ["almost no chance", "very unlikely", "unlikely", "roughly even", "likely", "very likely", "almost certain"] },
-                    "about": { "type": "array", "description": "Element ids, or {type, value} entities.", "items": {} },
-                    "supports": { "type": "array", "description": "Hypotheses this judgement supports (element ids).", "items": {} },
-                    "refutes": { "type": "array", "description": "Hypotheses this judgement refutes (element ids).", "items": {} },
-                    "members": { "type": "array", "description": "cluster: the elements that belong together.", "items": {} },
-                    "sources": { "type": "array", "description": "search_negative: the URIs that were searched.", "items": { "type": "string" } },
-                    "tags": { "type": "array", "items": { "type": "string" } },
-                    "props": { "type": "object", "description": "E.g. for search_negative: {query, window_from, window_to}." },
-                    "change": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "status": { "type": "string", "enum": ["active", "conflicting", "soft-deleted"] },
-                            "confidence": { "type": "string" },
-                            "text": { "type": "string" },
-                            "add_tags": { "type": "array", "items": { "type": "string" } },
-                            "remove_tags": { "type": "array", "items": { "type": "string" } },
-                            "props": { "type": "object" },
-                            "reason": { "type": "string", "description": "Why; kept as a note on the element." }
-                        },
-                        "required": ["id"]
-                    },
-                    "revert": {
-                        "type": "object",
-                        "properties": {
-                            "change": { "type": "integer", "description": "A change number, as tools report it." },
-                            "element": { "type": "string" },
-                            "to": { "type": "integer", "description": "The version to return to; 0 removes the element." },
-                            "force": { "type": "boolean" },
-                            "preview": { "type": "boolean", "description": "Say what would go, and do nothing." }
-                        }
-                    },
-                    "define_type": {
-                        "type": "object",
-                        "properties": {
-                            "type": { "type": "string" },
-                            "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
-                            "definition": { "type": "string", "description": "One line." },
-                            "icon": { "type": "string", "description": "A Lucide icon name." },
-                            "colour": { "type": "string", "description": "How it is drawn." }
-                        },
-                        "required": ["type"]
-                    }
+                    "change": { "type": "string", "description": "A change, as tools report it: change:<n> or the number." },
+                    "element": { "type": "string", "description": "An element, as a reference or id." },
+                    "to": { "type": "integer", "description": "With `element`: the version to return to; 0 removes it." },
+                    "force": { "type": "boolean", "description": "Also take back what builds on it." },
+                    "preview": { "type": "boolean", "description": "Say what would go, and do nothing." }
                 }
             }),
         }
     }
-
     fn available(&self, state: &SessionState) -> bool {
         attached(state)
     }
-
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
             let s = match scope(ctx) {
                 Ok(s) => s,
                 Err(refusal) => return refusal,
             };
-            let db = s.case.db();
-            if let Some(r) = args.get("revert").and_then(Value::as_object) {
-                return revert_call(&s, r);
+            match args.as_object() {
+                Some(o) => revert_call(&s, o),
+                None => ToolOutput::err("graph_revert needs an object"),
             }
-            if let Some(d) = args.get("define_type").and_then(Value::as_object) {
-                return define_type_call(&s, d);
-            }
-            if let Some(c) = args.get("change").and_then(Value::as_object) {
-                let Some(id) = c.get("id").and_then(Value::as_str) else {
-                    return ToolOutput::err("`change` needs the element's `id`");
-                };
-                let change = Change {
-                    id: id.to_string(),
-                    status: c.get("status").and_then(Value::as_str).map(str::to_string),
-                    confidence: c
-                        .get("confidence")
-                        .map(|v| Some(text_of(v)).filter(|t| !t.is_empty())),
-                    value: c
-                        .get("text")
-                        .map(|v| Some(text_of(v)).filter(|t| !t.is_empty())),
-                    set_props: c
-                        .get("props")
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .unwrap_or_default(),
-                    add_tags: strings(c.get("add_tags")),
-                    remove_tags: strings(c.get("remove_tags")),
-                    ..Change::default()
-                };
-                let mut batch = s.batch("graph").change(change);
-                if let Some(reason) = c.get("reason").map(text_of).filter(|r| !r.is_empty()) {
-                    batch.puts.push(Put {
-                        content: Content::value(reason),
-                        links: vec![Link::new("about", Target::Id(id.to_string()))],
-                        ..Put::new(Kind::Annotation, "analysis.note")
-                    });
-                }
-                return match graph::apply(db, batch) {
-                    Ok(done) => match query::get(db, id) {
-                        Ok(Some(e)) => ToolOutput::ok(format!(
-                            "{}\n{}",
-                            line(&e),
-                            match done.event_seq {
-                                Some(seq) => format!("now at version {} (change #{seq})", e.ver),
-                                None => "unchanged: it already says this".into(),
-                            }
-                        )),
-                        _ => ToolOutput::ok("changed"),
-                    },
-                    Err(e) => fail(e),
-                };
-            }
+        })
+    }
+}
 
-            let Some(kind) = str_arg(&args, "type")
-                .map(|t| t.trim().trim_start_matches("analysis.").to_string())
-                .filter(|t| ANNOTATIONS.contains(&t.as_str()))
-            else {
-                return ToolOutput::err(format!(
-                    "graph_annotate needs a `type` ({}), or `change`, or `revert`",
-                    ANNOTATIONS.join(", ")
-                ));
-            };
-            let Some(o) = args.as_object() else {
-                return ToolOutput::err("graph_annotate needs an object");
-            };
-            let mut put = Put {
-                content: content(o),
-                ..Put::new(Kind::Annotation, &format!("analysis.{kind}"))
-            };
-            if put.content.value.is_none() && kind != "cluster" && kind != "same_as" {
-                return ToolOutput::err(format!("a {kind} needs `text`"));
-            }
-            if kind == "hypothesis" {
-                put.content
-                    .props
-                    .entry("hypothesis_status")
-                    .or_insert_with(|| json!("open"));
-            }
-            for (key, role) in [
-                ("about", "about"),
-                ("supports", "supports"),
-                ("refutes", "refutes"),
-                ("members", "member"),
-            ] {
-                for t in list(args.get(key)) {
-                    match target(&t) {
-                        // A judgement is about a claim as it stood: pin that version, so
-                        // it is flagged when the claim moves on.
-                        Ok(to) if kind == "judgement" && role == "about" => {
-                            put.links.push(Link::new(role, to).pinned())
-                        }
-                        Ok(to) => put.links.push(Link::new(role, to)),
-                        Err(e) => return ToolOutput::err(format!("`{key}`: {e}")),
-                    }
-                }
-            }
-            for uri in strings(args.get("sources")) {
-                put.links.push(Link::source(&uri));
-            }
-            match graph::apply(db, s.batch("graph").put(put)) {
-                Ok(done) => match query::get(db, &done.ids[0]) {
-                    Ok(Some(e)) => match detail(db, &e) {
-                        Ok(d) => ToolOutput::ok(format!(
-                            "{d}\n(change #{})",
-                            done.event_seq.unwrap_or_default()
-                        )),
-                        Err(e) => fail(e),
-                    },
-                    _ => ToolOutput::ok("recorded"),
+pub struct DefineType;
+
+impl Tool for DefineType {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "define_type".into(),
+            description: "Make a recurring type of your own known to the graph, or say more about one that is.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "type": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
+                    "definition": { "type": "string", "description": "One line." },
+                    "icon": { "type": "string", "description": "A Lucide icon name." },
+                    "colour": { "type": "string", "description": "How it is drawn." }
                 },
-                Err(e) => fail(e),
+                "required": ["type"]
+            }),
+        }
+    }
+    fn available(&self, state: &SessionState) -> bool {
+        attached(state)
+    }
+    fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
+        Box::pin(async move {
+            let s = match scope(ctx) {
+                Ok(s) => s,
+                Err(refusal) => return refusal,
+            };
+            match args.as_object() {
+                Some(o) => define_type_call(&s, o),
+                None => ToolOutput::err("define_type needs an object"),
             }
         })
     }
@@ -666,18 +747,34 @@ fn define_type_call(s: &Scope, d: &Map<String, Value>) -> ToolOutput {
 }
 
 fn revert_call(s: &Scope, r: &Map<String, Value>) -> ToolOutput {
-    let what = match (
-        r.get("change").and_then(Value::as_i64),
-        r.get("element").and_then(Value::as_str),
-    ) {
+    // A change is `change:<n>` or the number; an element is a reference or an id.
+    let change = r.get("change").and_then(|v| match v {
+        Value::Number(n) => n.as_i64(),
+        Value::String(t) => match reference::parse(t) {
+            Ok(reference::Reference {
+                target: reference::Target::Change { seq },
+                ..
+            }) => Some(seq as i64),
+            _ => t.trim().parse().ok(),
+        },
+        _ => None,
+    });
+    let element = match r.get("element") {
+        Some(v) => match element_id(&s.case, v) {
+            Ok(id) => Some(id),
+            Err(e) => return ToolOutput::err(e),
+        },
+        None => None,
+    };
+    let what = match (change, element) {
         (Some(seq), None) => What::Event(seq),
         (None, Some(id)) => What::Element {
-            id: id.to_string(),
+            id,
             to: r.get("to").and_then(Value::as_u64).unwrap_or(0) as u32,
         },
         _ => {
             return ToolOutput::err(
-                "`revert` names one `change` number, or one `element` with `to`",
+                "`graph_revert` names one `change` number, or one `element` with `to`",
             );
         }
     };
@@ -711,7 +808,7 @@ fn revert_call(s: &Scope, r: &Map<String, Value>) -> ToolOutput {
             }
             if !plan.blocked_by.is_empty() {
                 out.push(format!(
-                    "blocked -- something builds on it: {}. Use `change` to revise instead, or `force` to take those along.",
+                    "blocked -- something builds on it: {}. Use `graph_write` with the element's `id` to revise instead, or `force` to take those along.",
                     plan.blocked_by.join("; ")
                 ));
             }
@@ -774,8 +871,9 @@ impl Tool for GraphQuery {
 }
 
 /// The id an `id` argument stands for. An entity named by type and value need not exist.
-fn resolve_id(db: &Db, v: Option<&Value>) -> Result<String, String> {
-    match v.map(target) {
+fn resolve_id(case: &Case, v: Option<&Value>) -> Result<String, String> {
+    let db = case.db();
+    match v.map(|v| target(v, case)) {
         Some(Ok(Target::Id(id))) => Ok(id),
         Some(Ok(Target::Entity {
             type_,
@@ -797,6 +895,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
             let found = query::find(
                 db,
                 &Filter {
+                    offset: 0,
                     kind: str_arg(args, "kind").and_then(Kind::parse),
                     type_prefix: str_arg(args, "type").map(str::to_string),
                     text: str_arg(args, "text").map(str::to_string),
@@ -819,7 +918,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
             Ok(out.join("\n"))
         }
         "element" => {
-            let id = resolve_id(db, args.get("id"))?;
+            let id = resolve_id(&s.case, args.get("id"))?;
             if args
                 .get("history")
                 .and_then(Value::as_bool)
@@ -853,7 +952,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
         }
         "relations" => {
             let about = match args.get("id") {
-                Some(v) => Some(resolve_id(db, Some(v))?),
+                Some(v) => Some(resolve_id(&s.case, Some(v))?),
                 None => None,
             };
             let rel = query::relations(db, about.as_deref()).map_err(err)?;
@@ -958,7 +1057,7 @@ impl Tool for GraphPull {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "source": { "type": "string", "description": "`sqlite:reactor_data.sqlite?table=<t>`, or a .csv, .jsonl or .json file in the case (`json:path#/pointer` for an array inside)." },
+                    "source": { "type": "string", "description": "A file of the case as a reference: `artifact:reactor_data.sqlite#table=<t>`, or `artifact:<path>` for a .csv, .tsv, .jsonl or .json file (`artifact:<path>#/pointer` for an array inside a JSON file)." },
                     "query": { "type": "string", "description": "SQL over `src`." },
                     "preview": { "type": "boolean", "description": "Show what the first rows would become and write nothing (default false)." }
                 },
@@ -1009,7 +1108,7 @@ impl Tool for GraphPull {
             } else {
                 out.push(match r.applied.event_seq {
                     Some(seq) => format!(
-                        "{} claim(s); {} element(s) new, {} updated (change #{seq})",
+                        "{} claim(s); {} element(s) new, {} updated (change:{seq})",
                         r.claims.len(),
                         r.applied.created,
                         r.applied.versioned

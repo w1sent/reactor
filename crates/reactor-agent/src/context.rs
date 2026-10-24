@@ -181,7 +181,9 @@ pub fn project(store: &Store) -> Vec<Item> {
             continue;
         }
         let msg = match &e.kind {
-            Kind::User { text } => Msg::User { text: text.clone() },
+            Kind::User { text } => Msg::User {
+                text: crate::references::for_model(text),
+            },
             Kind::Assistant { blocks, .. } => Msg::Assistant {
                 blocks: blocks.clone(),
             },

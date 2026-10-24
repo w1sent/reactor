@@ -64,9 +64,9 @@ const LOGONS: &str = r#"SELECT ts AS "@time", record_id AS "@row", 'auth.logon' 
 fn rows_of_a_table_become_sourced_claims_and_a_second_pull_changes_nothing() {
     let (_d, case) = case();
     let db = case.db();
-    let r = run(&case, "sqlite:reactor_data.sqlite?table=vpn_auth", LOGONS).unwrap();
+    let r = run(&case, "artifact:reactor_data.sqlite#table=vpn_auth", LOGONS).unwrap();
     assert_eq!((r.rows, r.claims.len()), (3, 3));
-    assert_eq!(r.source, "sqlite:reactor_data.sqlite?table=vpn_auth");
+    assert_eq!(r.source, "artifact:reactor_data.sqlite#table=vpn_auth");
     assert!(r.applied.event_seq.is_some() && r.skipped.is_empty() && r.overlaps.is_empty());
 
     let first = query::get(db, &r.claims[0]).unwrap().unwrap();
@@ -129,7 +129,7 @@ fn rows_of_a_table_become_sourced_claims_and_a_second_pull_changes_nothing() {
             .contains("auth.logon")
     );
 
-    let again = run(&case, "sqlite:reactor_data.sqlite?table=vpn_auth", LOGONS).unwrap();
+    let again = run(&case, "artifact:reactor_data.sqlite#table=vpn_auth", LOGONS).unwrap();
     assert_eq!(again.claims, r.claims);
     assert_eq!(again.applied.event_seq, None, "nothing was written");
     assert_eq!((again.applied.created, again.applied.versioned), (0, 0));
@@ -147,7 +147,7 @@ fn a_csv_a_jsonl_and_a_json_file_are_pulled_the_same_way() {
              FROM src"#,
     )
     .unwrap();
-    assert_eq!((r.source.as_str(), r.rows), ("csv:data/pdns.csv", 2));
+    assert_eq!((r.source.as_str(), r.rows), ("artifact:data/pdns.csv", 2));
     let obs = query::get(db, &r.claims[1]).unwrap().unwrap();
     assert_eq!(
         obs.kind,
@@ -167,7 +167,7 @@ fn a_csv_a_jsonl_and_a_json_file_are_pulled_the_same_way() {
     // JSONL: top-level keys are columns, nested values are JSON, blank lines are skipped.
     let r = run(
         &case,
-        "jsonl:data/edr.jsonl",
+        "artifact:data/edr.jsonl",
         r#"SELECT 'process.start' AS "@type", ts AS "@time", _row AS "@row",
                   host AS "host.name@target", json_extract(proc, '$.name') AS "process.name@child",
                   json_extract(proc, '$.pid') AS pid
@@ -185,14 +185,14 @@ fn a_csv_a_jsonl_and_a_json_file_are_pulled_the_same_way() {
     // JSON: the array a pointer selects. Without @row, a row is located by its content.
     let r = run(
         &case,
-        "json:data/report.json#/hits",
+        "artifact:data/report.json#/hits",
         r#"SELECT 'file.seen' AS "@type", sha256 AS "file.hash.sha256@subject",
                   name AS "file.name@object" FROM src"#,
     )
     .unwrap();
     assert_eq!(
         (r.source.as_str(), r.rows),
-        ("json:data/report.json#/hits", 2)
+        ("artifact:data/report.json#/hits", 2)
     );
     let hash = query::entity_id(db, "sha256", "aa11", None).unwrap();
     assert_eq!(
@@ -215,7 +215,7 @@ fn a_csv_a_jsonl_and_a_json_file_are_pulled_the_same_way() {
 #[test]
 fn a_pull_query_can_only_read() {
     let (dir, case) = case();
-    let table = "sqlite:reactor_data.sqlite?table=vpn_auth";
+    let table = "artifact:reactor_data.sqlite#table=vpn_auth";
     for bad in [
         "DELETE FROM src",
         "UPDATE data.vpn_auth SET username = 'x'",
@@ -246,8 +246,8 @@ fn a_pull_query_can_only_read() {
     )
     .unwrap_err();
     assert!(e.to_string().contains("more than 2 rows"), "{e}");
-    assert!(run(&case, "sqlite:reactor_data.sqlite?table=nope", LOGONS).is_err());
-    assert!(run(&case, "csv:../outside.csv", LOGONS).is_err());
+    assert!(run(&case, "artifact:reactor_data.sqlite#table=nope", LOGONS).is_err());
+    assert!(run(&case, "artifact:../outside.csv", LOGONS).is_err());
     assert!(run(&case, "notes.txt", LOGONS).is_err());
     // None of that left anything in the graph.
     assert!(
@@ -260,7 +260,7 @@ fn a_pull_query_can_only_read() {
 #[test]
 fn a_preview_writes_nothing_and_an_overlapping_pull_is_pointed_out() {
     let (_d, case) = case();
-    let table = "sqlite:reactor_data.sqlite?table=vpn_auth";
+    let table = "artifact:reactor_data.sqlite#table=vpn_auth";
     let preview = pull::pull(
         &case,
         Request {
@@ -299,7 +299,7 @@ fn a_source_that_changed_since_it_was_pulled_is_reported() {
     let (dir, case) = case();
     run(
         &case,
-        "csv:data/pdns.csv",
+        "artifact:data/pdns.csv",
         r#"SELECT 'net.resolution' AS "@type", domain AS "net.domain@query" FROM src"#,
     )
     .unwrap();
@@ -309,5 +309,5 @@ fn a_source_that_changed_since_it_was_pulled_is_reported() {
         "domain,ip\nnew.example,1.2.3.4\n",
     )
     .unwrap();
-    assert_eq!(pull::changed_sources(&case).unwrap(), ["csv:data/pdns.csv"]);
+    assert_eq!(pull::changed_sources(&case).unwrap(), ["artifact:data/pdns.csv"]);
 }

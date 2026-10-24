@@ -31,7 +31,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("actor", "account.user", "jdoe"),
                     Link::entity("target", "host.name", "ws-042"),
-                    Link::source("csv:vpn.csv"),
+                    Link::source("artifact:vpn.csv"),
                 ],
             ))
             .put(Put {
@@ -45,7 +45,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                     vec![
                         Link::entity("src", "host.name", "ws-042"),
                         Link::entity("dst", "net.ipv4", "198.51.100.7"),
-                        Link::source("csv:fw.csv"),
+                        Link::source("artifact:fw.csv"),
                     ],
                 )
             })
@@ -55,7 +55,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("query", "net.domain", "cdn-sync.example"),
                     Link::entity("answer", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:pdns.csv").at("row=1", None),
+                    Link::source("artifact:pdns.csv").at("row=1", None),
                 ],
             ))
             .put(Put {
@@ -69,7 +69,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                     vec![
                         Link::entity("query", "net.domain", "cdn-sync.example"),
                         Link::entity("answer", "net.ipv4", "198.51.100.7"),
-                        Link::source("csv:pdns.csv").at("row=2", None),
+                        Link::source("artifact:pdns.csv").at("row=2", None),
                     ],
                 )
             })
@@ -79,7 +79,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("actor", "host.name", "ws-042"),
                     Link::entity("target", "file.path", PATH),
-                    Link::source("jsonl:edr.jsonl"),
+                    Link::source("artifact:edr.jsonl"),
                 ],
             ))
             .put(claim(
@@ -92,7 +92,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                         "file.hash.sha256",
                         "9f2c4e1ab07d53c8e6f1420b9a7d3e5c81f0a2b4c6d8e0f13579bdf2468ace01",
                     ),
-                    Link::source("jsonl:edr.jsonl"),
+                    Link::source("artifact:edr.jsonl"),
                 ],
             ))
             .put(Put {
@@ -108,7 +108,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                         Link::entity("parent", "process.name", "winword.exe"),
                         Link::entity("child", "process.name", "powershell.exe"),
                         Link::entity("actor", "account.user", "jdoe"),
-                        Link::source("jsonl:edr.jsonl"),
+                        Link::source("artifact:edr.jsonl"),
                     ],
                 )
             })
@@ -118,7 +118,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("subject", "file.path", PATH),
                     Link::entity("object", "malware.family", "QakBot"),
-                    Link::source("jsonl:edr.jsonl"),
+                    Link::source("artifact:edr.jsonl"),
                 ],
             ))
             .put(claim(
@@ -127,7 +127,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("subject", "process.name", "powershell.exe"),
                     Link::entity("object", "attack.technique", "t1059.001"),
-                    Link::source("jsonl:edr.jsonl"),
+                    Link::source("artifact:edr.jsonl"),
                 ],
             ))
             .put(claim(
@@ -136,7 +136,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("subject", "file.path", PATH),
                     Link::entity("object", "code.function", "sub_180004a20 (rc4_init)"),
-                    Link::source("jsonl:edr.jsonl"),
+                    Link::source("artifact:edr.jsonl"),
                 ],
             ))
             .put(claim(
@@ -145,7 +145,7 @@ fn fill(db: &reactor_db::Db) -> Vec<String> {
                 vec![
                     Link::entity("subject", "hunt.lead", "LEAD-17"),
                     Link::entity("object", "host.name", "ws-042"),
-                    Link::source("jsonl:edr.jsonl"),
+                    Link::source("artifact:edr.jsonl"),
                 ],
             )),
     )

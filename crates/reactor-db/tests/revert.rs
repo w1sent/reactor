@@ -26,7 +26,7 @@ fn resolution(db: &Db, domain: &str, n: u32) -> graph::Applied {
         links: vec![
             Link::entity("query", "net.domain", domain),
             Link::entity("answer", "net.ipv4", "198.51.100.7"),
-            Link::source("csv:data/pdns.csv").at(&format!("row={n}"), None),
+            Link::source("artifact:data/pdns.csv").at(&format!("row={n}"), None),
         ],
         ..Put::new(Kind::Observation, "net.resolution")
     };

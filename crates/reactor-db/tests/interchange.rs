@@ -34,7 +34,7 @@ fn analysis(case: &Case) {
                 vec![
                     Link::entity("actor", "account.user", "jdoe"),
                     Link::entity("target", "host.name", "ws-042"),
-                    Link::source("sqlite:reactor_data.sqlite?table=vpn_auth")
+                    Link::source("artifact:reactor_data.sqlite#table=vpn_auth")
                         .at("row=1204", Some("f1")),
                 ],
             ))
@@ -44,7 +44,7 @@ fn analysis(case: &Case) {
                 vec![
                     Link::entity("src", "host.name", "ws-042"),
                     Link::entity("dst", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:fw.csv"),
+                    Link::source("artifact:fw.csv"),
                 ],
             ))
             .put(claim(
@@ -587,7 +587,7 @@ fn the_graph_is_two_csv_tables_that_quote_what_needs_it() {
             .map(|r| r.unwrap())
             .collect::<Vec<_>>()
     };
-    let elements = tables::elements(case.db(), false).unwrap();
+    let elements = tables::elements(&case, false).unwrap();
     let rows = read(&elements);
     let (all, _) = query::snapshot(case.db(), false).unwrap();
     assert_eq!(rows.len(), all.len());
@@ -601,7 +601,7 @@ fn the_graph_is_two_csv_tables_that_quote_what_needs_it() {
         .clone();
     assert_eq!(&header[0], "id");
     assert!(header.iter().any(|h| h == "time_as_written"));
-    let edges = tables::edges(case.db(), false).unwrap();
+    let edges = tables::edges(&case, false).unwrap();
     let e = read(&edges);
     let (_, graph_edges) = query::snapshot(case.db(), false).unwrap();
     assert_eq!(e.len(), graph_edges.len());

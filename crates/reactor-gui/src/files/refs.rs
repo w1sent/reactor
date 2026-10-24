@@ -13,6 +13,10 @@ use regex::Regex;
 
 pub const SCHEME: &str = "reactor-file:";
 
+/// The link scheme of a reference of the case (`graph:...`, `artifact:...`): the link carries
+/// the reference, percent-encoded whole.
+pub const REF_SCHEME: &str = "reactor-ref:";
+
 static CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:~/|/|\.{1,2}/)?[A-Za-z0-9_@+\-.]+(?:/[A-Za-z0-9_@+\-.]+)*(?::\d+(?::\d+)?)?")
         .unwrap()
@@ -52,6 +56,31 @@ pub fn exists(cwd: &Path, path: &str) -> bool {
         return true;
     }
     false
+}
+
+static KNOWN_REFS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+/// Whether a reference names something in `case`. Yeses are remembered, as for files: the
+/// transcript asks again on every frame. A reference naming another case is not linked.
+pub fn reference_exists(case: &reactor_db::Case, r: &reactor_db::reference::Reference) -> bool {
+    if let Some(named) = &r.case
+        && !case.is_named(named)
+    {
+        return false;
+    }
+    let key = format!("{}|{}", case.meta().id, r.short());
+    let mut known = KNOWN_REFS.lock().unwrap_or_else(|e| e.into_inner());
+    if known.contains(&key) {
+        return true;
+    }
+    let found = reactor_db::reference::lookup::exists(case, &r.target).unwrap_or(false);
+    if found {
+        if known.len() > 4096 {
+            known.clear();
+        }
+        known.insert(key);
+    }
+    found
 }
 
 /// `src/a.rs:42:7` -> (`src/a.rs`, Some(42)).
@@ -167,6 +196,91 @@ fn link_line(line: &str, exists: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
+fn encode_ref(reference: &str) -> String {
+    let mut out = String::from(REF_SCHEME);
+    for byte in reference.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// The reference a [`REF_SCHEME`] link carries.
+pub fn parse_ref_url(url: &str) -> Option<reactor_db::reference::Reference> {
+    let text = decode(url.strip_prefix(REF_SCHEME)?)?;
+    reactor_db::reference::parse(&text).ok()
+}
+
+fn link_refs_plain(text: &str, exists: &dyn Fn(&reactor_db::reference::Reference) -> bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for found in reactor_db::reference::find(text) {
+        // A reference that is already a link's text or target is left to its link.
+        let before = &text[..found.span.start];
+        if before.ends_with("](") || before.ends_with('[') || !exists(&found.reference) {
+            continue;
+        }
+        let written = &text[found.span.clone()];
+        out.push_str(&text[last..found.span.start]);
+        out.push_str(&format!("[{written}]({})", encode_ref(written)));
+        last = found.span.end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+fn link_refs_line(
+    line: &str,
+    exists: &dyn Fn(&reactor_db::reference::Reference) -> bool,
+) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('`') {
+        out.push_str(&link_refs_plain(&rest[..start], exists));
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let code = after[..end].trim();
+        match reactor_db::reference::parse(code) {
+            Ok(r) if reactor_db::reference::looks_like(code) && exists(&r) => {
+                out.push_str(&format!("[`{code}`]({})", encode_ref(code)));
+            }
+            _ => out.push_str(&rest[start..start + end + 2]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(&link_refs_plain(rest, exists));
+    out
+}
+
+/// `text` with the references of the case it names turned into links, when they exist. Code
+/// blocks are left alone; a span of inline code that is one reference is linked.
+pub fn linkify_references(
+    text: &str,
+    exists: &dyn Fn(&reactor_db::reference::Reference) -> bool,
+) -> String {
+    let mut fenced = false;
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            out.push(line.to_owned());
+        } else if fenced {
+            out.push(line.to_owned());
+        } else {
+            out.push(link_refs_line(line, exists));
+        }
+    }
+    out.join("\n")
+}
+
 /// `text` with the existing files it names turned into links.
 pub fn linkify(text: &str, exists: &dyn Fn(&str) -> bool) -> String {
     let mut fenced = false;
@@ -237,6 +351,25 @@ mod tests {
             Some(("src/main.rs".into(), Some(42)))
         );
         assert_eq!(parse_url("https://x"), None);
+    }
+
+    #[test]
+    fn references_of_the_case_are_linked_when_they_exist() {
+        let exists = |r: &reactor_db::reference::Reference| r.short() != "graph:missing";
+        let out = linkify_references(
+            "see graph:abc, `artifact:data/a.csv#row=2` and graph:missing.\n```\nsession:3\n```",
+            &exists,
+        );
+        assert!(out.contains("[graph:abc](reactor-ref:graph%3Aabc)"), "{out}");
+        assert!(
+            out.contains("[`artifact:data/a.csv#row=2`](reactor-ref:artifact%3Adata%2Fa.csv%23row%3D2)"),
+            "{out}"
+        );
+        assert!(out.contains("graph:missing.") && !out.contains("](reactor-ref:graph%3Amissing"), "{out}");
+        assert!(out.ends_with("session:3\n```"), "{out}");
+        let url = out.split("](").nth(1).unwrap().split(')').next().unwrap();
+        assert_eq!(parse_ref_url(url).unwrap().short(), "graph:abc");
+        assert!(parse_ref_url("https://x").is_none());
     }
 
     #[test]

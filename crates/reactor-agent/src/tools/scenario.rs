@@ -120,7 +120,7 @@ pub fn earlier_conclusions(paths: &Paths, state: &SessionState, case: &Case) -> 
         return String::new();
     }
     let mut out = String::from(
-        "\n\n## What earlier scenarios in this case concluded\n\nNewest first; graph notes tagged `scenario`.",
+        "\n\n## What earlier scenarios in this case concluded\n\nNewest first; graph notes tagged `scenario` (`case_get` with `graph:?kind=annotation&tag=scenario` lists them, and a reference reads one).",
     );
     for e in found {
         let p = &e.content.props;
@@ -137,7 +137,7 @@ pub fn earlier_conclusions(paths: &Paths, state: &SessionState, case: &Case) -> 
             p.get("phase").and_then(Value::as_u64).unwrap_or(0),
             p.get("phase_title").and_then(Value::as_str).unwrap_or(""),
             text.split_whitespace().collect::<Vec<_>>().join(" "),
-            e.id
+            reactor_db::reference::Reference::graph(&e.id).short()
         ));
     }
     out

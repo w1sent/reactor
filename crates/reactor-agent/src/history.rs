@@ -215,7 +215,36 @@ pub fn read_from(
         .entries()
         .get(id as usize)
         .ok_or_else(|| Error::Store(format!("no entry #{id}")))?;
-    let full = log.full(entry)?;
+    page(id, &log.full(entry)?, offset, limit)
+}
+
+/// An entry of a session of `case`, read from the database alone, as `read_from` reads it:
+/// for a reader that has no session open (a command line, a reference in a message).
+pub fn read_in_case(
+    case: &reactor_db::Case,
+    session: &str,
+    id: EntryId,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<String> {
+    let rows = reactor_db::sessions::load(case.db(), session)?;
+    let row = rows
+        .iter()
+        .find(|r| r.id == id)
+        .ok_or_else(|| Error::Store(format!("no entry #{id} in session `{session}`")))?;
+    let entry: Entry = serde_json::from_str(&row.body)
+        .map_err(|e| Error::Store(format!("entry #{id} is unreadable: {e}")))?;
+    let full = match &entry.kind {
+        Kind::ToolResult { blob: Some(b), .. } => {
+            String::from_utf8_lossy(&case.blobs().read(&b.sha256)?).into_owned()
+        }
+        other => text_of(other),
+    };
+    page(id, &full, offset, limit)
+}
+
+/// Lines `offset..offset+limit` (1-based) of an entry's text, with a note on how to go on.
+fn page(id: EntryId, full: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
     let lines: Vec<&str> = full.lines().collect();
     let start = offset.unwrap_or(1).max(1) - 1;
     if start >= lines.len().max(1) && !lines.is_empty() {

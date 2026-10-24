@@ -1,5 +1,6 @@
-//! What `#` and `#doc:` in the composer complete from: the files of the working directory,
-//! and the case's imported documents ([`reactor_agent::references`] says what they name).
+//! What `@` in the composer completes from: the files of the working directory, and every kind
+//! of reference of the case ([`reactor_agent::references`] says what they name;
+//! [ADR-0066](../../../docs/adr/0066-the-case-is-addressed-by-references.md)).
 
 use std::ops::Range;
 use std::path::Path;
@@ -99,15 +100,16 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
-/// What kind of reference is being typed.
+/// What kind of reference is being typed: a file (after a bare `@`), or one kind of the
+/// grammar (`@graph:`, `@doc:`, ...).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     File,
-    Document,
+    Kind(reactor_db::reference::Kind),
 }
 
 /// The reference being typed at `cursor`: its kind, what was typed after the trigger, and the
-/// byte range of the whole token (`#` included), which is what a completion replaces.
+/// byte range of the whole token (`@` included), which is what a completion replaces.
 pub fn reference_at(text: &str, cursor: usize) -> Option<(Trigger, String, Range<usize>)> {
     let cursor = cursor.min(text.len());
     if !text.is_char_boundary(cursor) {
@@ -119,28 +121,24 @@ pub fn reference_at(text: &str, cursor: usize) -> Option<(Trigger, String, Range
         .map(|i| i + before[i..].chars().next().map_or(1, char::len_utf8))
         .unwrap_or(0);
     let token = &before[start..];
-    let rest = token.strip_prefix('#')?;
+    let rest = token.strip_prefix('@')?;
     // The rest of the word after the cursor is replaced with it.
     let after = &text[cursor..];
     let tail = after.find(char::is_whitespace).unwrap_or(after.len());
     let end = cursor + tail;
-    Some(match rest.strip_prefix("doc:") {
-        Some(q) => (Trigger::Document, q.trim_matches('"').to_string(), start..end),
+    let kind = rest
+        .split_once(':')
+        .and_then(|(scheme, q)| reactor_db::reference::Kind::from_scheme(scheme).map(|k| (k, q)));
+    Some(match kind {
+        Some((kind, q)) => (Trigger::Kind(kind), q.trim_matches('"').to_string(), start..end),
         None => (Trigger::File, rest.trim_matches('"').to_string(), start..end),
     })
 }
 
-/// A reference's text as inserted: quoted when the name has a space.
-pub fn written(trigger: Trigger, name: &str) -> String {
-    let prefix = match trigger {
-        Trigger::File => "#",
-        Trigger::Document => "#doc:",
-    };
-    if name.contains(char::is_whitespace) {
-        format!("{prefix}\"{name}\"")
-    } else {
-        format!("{prefix}{name}")
-    }
+/// A reference's text as inserted: the `@` and the reference itself, which is already written
+/// so that nothing in it needs quoting.
+pub fn written(reference: &str) -> String {
+    format!("@{reference}")
 }
 
 /// The (line, UTF-16 column) of a byte offset, which is what the composer's cursor is set in.
@@ -163,28 +161,30 @@ mod tests {
 
     #[test]
     fn a_token_is_found_at_the_cursor() {
-        let text = "compare #logs/ac with the rest";
-        let (t, q, r) = reference_at(text, "compare #logs/ac".len()).unwrap();
+        let text = "compare @logs/ac with the rest";
+        let (t, q, r) = reference_at(text, "compare @logs/ac".len()).unwrap();
         assert_eq!(t, Trigger::File);
         assert_eq!(q, "logs/ac");
-        assert_eq!(&text[r], "#logs/ac");
+        assert_eq!(&text[r], "@logs/ac");
     }
 
     #[test]
-    fn doc_is_its_own_trigger_and_hash_alone_is_a_file_trigger() {
-        let (t, q, _) = reference_at("see #doc:ps-man", 15).unwrap();
-        assert_eq!((t, q.as_str()), (Trigger::Document, "ps-man"));
-        let (t, q, _) = reference_at("#", 1).unwrap();
+    fn a_kind_is_its_own_trigger_and_at_alone_is_a_file_trigger() {
+        use reactor_db::reference::Kind;
+        let (t, q, _) = reference_at("see @doc:ps-man", 15).unwrap();
+        assert_eq!((t, q.as_str()), (Trigger::Kind(Kind::Doc), "ps-man"));
+        let (t, q, _) = reference_at("@graph:beac", 11).unwrap();
+        assert_eq!((t, q.as_str()), (Trigger::Kind(Kind::Graph), "beac"));
+        let (t, q, _) = reference_at("@", 1).unwrap();
         assert_eq!((t, q.as_str()), (Trigger::File, ""));
         assert!(reference_at("no reference here", 5).is_none());
-        // A hash inside a word is not one.
-        assert!(reference_at("C#", 2).is_none());
+        // An at inside a word is not one.
+        assert!(reference_at("me@", 3).is_none());
     }
 
     #[test]
-    fn names_with_spaces_are_quoted_going_in() {
-        assert_eq!(written(Trigger::File, "a b.txt"), "#\"a b.txt\"");
-        assert_eq!(written(Trigger::Document, "m.pdf"), "#doc:m.pdf");
+    fn what_is_inserted_is_the_reference_with_its_at() {
+        assert_eq!(written("artifact:a%20b.txt"), "@artifact:a%20b.txt");
     }
 
     #[test]
@@ -197,6 +197,6 @@ mod tests {
     #[test]
     fn positions_count_lines_and_utf16_columns() {
         assert_eq!(position("ab\ncd", 4), (1, 1));
-        assert_eq!(position("é#", 3), (0, 2));
+        assert_eq!(position("é@", 3), (0, 2));
     }
 }

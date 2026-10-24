@@ -621,6 +621,17 @@ impl FilesPanel {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
+    /// The file's reference, in the form that names the case, so that it can leave it
+    /// (ADR-0066). Without a case to name, the short form.
+    fn copy_reference(&self, path: &VPath, cx: &mut Context<Self>) {
+        let r = reactor_db::reference::Reference::artifact(path.relative());
+        let text = match &self.backend {
+            Some(b) => r.canonical(&b.case.authority()),
+            None => r.short(),
+        };
+        self.copy(text, cx);
+    }
+
     fn properties(
         &mut self,
         path: &VPath,
@@ -859,12 +870,21 @@ impl FilesPanel {
         {
             let p = path.clone();
             let q = path.clone();
+            let r = path.clone();
             menu = menu
                 .item(
                     PopupMenuItem::new("Copy path")
                         .icon(IconName::Copy)
                         .on_click(act(Rc::new(move |t, _, c| {
                             t.copy(p.relative().to_owned(), c)
+                        }))),
+                )
+                .item(
+                    PopupMenuItem::new("Copy reference")
+                        .icon(IconName::Copy)
+                        .disabled(!local)
+                        .on_click(act(Rc::new(move |t, _, c| {
+                            t.copy_reference(&r, c);
                         }))),
                 )
                 .item(

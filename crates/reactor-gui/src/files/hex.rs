@@ -169,6 +169,29 @@ impl HexPanel {
         self.len.div_ceil(PER_ROW) as usize
     }
 
+    /// Select `length` bytes from `offset` and bring them into view: where a reference to a
+    /// place in the file lands (ADR-0066).
+    pub fn goto(&mut self, offset: u64, length: Option<u64>, cx: &mut Context<Self>) {
+        if self.len == 0 {
+            return;
+        }
+        let start = offset.min(self.len - 1);
+        let end = start
+            .saturating_add(length.unwrap_or(1).max(1) - 1)
+            .min(self.len - 1);
+        self.selection = Some(Selection {
+            anchor: start,
+            cursor: end,
+            column: match self.mode {
+                Mode::Text => Column::Text,
+                Mode::Hex => Column::Hex,
+            },
+        });
+        self.scroll
+            .scroll_to_item((start / PER_ROW) as usize, gpui_kit::ScrollStrategy::Center);
+        cx.notify();
+    }
+
     /// The bytes of page `index`, read on first use.
     fn page(&self, index: u64) -> Arc<Vec<u8>> {
         if let Some(page) = self.pages.borrow().get(&index) {

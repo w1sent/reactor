@@ -1709,24 +1709,26 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         Ok(outcome)
     }
 
-    /// Attach what the `#` references in `text` name. One that names nothing is left as the
+    /// Attach what the `@` references in `text` name. One that names nothing is left as the
     /// text it is, and a notice says so.
     async fn attach_references(&self, text: &str) -> Result<()> {
         let found = crate::references::find(text);
         if found.is_empty() {
             return Ok(());
         }
-        let (cwd, case) = (
-            self.cfg.cwd.clone(),
-            self.store.lock().unwrap().case().clone(),
-        );
+        let (cwd, store) = (self.cfg.cwd.clone(), self.store.clone());
         let resolved = tokio::task::spawn_blocking(move || {
             found
                 .into_iter()
                 .map(|r| match &r.target {
                     crate::references::Target::File(path) => crate::references::file(&cwd, path),
                     crate::references::Target::Doc { name, section } => {
+                        let case = store.lock().unwrap().case().clone();
                         crate::references::document(case.db(), name, section.as_deref())
+                    }
+                    crate::references::Target::Ref(reference) => {
+                        let store = store.lock().unwrap();
+                        crate::references::reference(&store, &cwd, reference)
                     }
                 })
                 .collect::<Vec<_>>()

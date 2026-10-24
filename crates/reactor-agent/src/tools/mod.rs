@@ -29,6 +29,7 @@ use crate::truncate::{self, Limit};
 
 pub mod agent;
 pub mod bash;
+pub mod case;
 pub mod docs;
 pub mod files;
 pub mod graph;
@@ -154,13 +155,15 @@ impl Tools {
             .with(session::HistoryIndex)
             .with(session::HistoryRead)
             .with(session::HistorySearch)
+            .with(case::CaseGet)
             .with(session::UpdateSteps)
             .with(scenario::PhaseComplete)
             .with(scenario::ScenarioList)
             .with(scenario::ScenarioSave)
             .with(scenario::ScenarioAmend)
-            .with(graph::GraphAdd)
-            .with(graph::GraphAnnotate)
+            .with(graph::GraphWrite)
+            .with(graph::GraphRevert)
+            .with(graph::DefineType)
             .with(graph::GraphQuery)
             .with(graph::GraphPull)
             .with(graph::ArtifactRegister)

@@ -43,18 +43,27 @@ pub fn short_id(id: &str) -> String {
     }
 }
 
-/// A session named across cases: `<case id>#<index>`. Inside its case `#<index>` is enough.
-pub fn reference(case_id: &str, session: &str) -> String {
-    format!("{case_id}#{session}")
+/// A session named across cases: its reference in the form that names the case
+/// (`reactor://<case>/session/<id>`, ADR-0066). Inside its case `session:<id>`, or the number,
+/// is enough.
+pub fn reference(case: &str, session: &str) -> String {
+    reactor_db::reference::Reference::new(reactor_db::reference::Target::Session {
+        session: session.to_string(),
+        entry: None,
+    })
+    .canonical(case)
 }
 
-/// The session id in a reference, whichever form it is given in: `3`, `#3` or
-/// `<case id>#3`.
+/// The session id in a reference, whichever form it is given in: `3`, `#3`, `session:3` or
+/// `reactor://<case>/session/3`.
 pub fn parse_reference(text: &str) -> String {
-    text.trim()
-        .rsplit_once('#')
-        .map_or(text.trim(), |(_, id)| id)
-        .to_string()
+    let text = text.trim();
+    if let Ok(r) = reactor_db::reference::parse(text)
+        && let reactor_db::reference::Target::Session { session, .. } = r.target
+    {
+        return session;
+    }
+    text.rsplit_once('#').map_or(text, |(_, id)| id).to_string()
 }
 
 /// An RFC 3339 time as local `YYYY-MM-DD HH:MM`; what cannot be read is shown as it is.
@@ -249,8 +258,15 @@ mod tests {
     fn a_session_is_named_by_its_number_and_across_cases_by_the_case_and_the_number() {
         assert_eq!(short_id("3"), "#3");
         assert_eq!(short_id("12"), "#12");
-        assert_eq!(reference("case-1", "3"), "case-1#3");
-        for form in ["3", "#3", " #3 ", "01a1-7fee#3"] {
+        assert_eq!(reference("case-1", "3"), "reactor://case-1/session/3");
+        for form in [
+            "3",
+            "#3",
+            " #3 ",
+            "session:3",
+            "reactor://case-1/session/3",
+            "01a1-7fee#3",
+        ] {
             assert_eq!(parse_reference(form), "3", "{form}");
         }
         assert_eq!(parse_reference("1759581234-4242"), "1759581234-4242");

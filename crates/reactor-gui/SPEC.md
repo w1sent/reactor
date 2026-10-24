@@ -361,14 +361,28 @@ place that executes them — and two views list them (`src/palette.rs`):
   scenario, identity and reduction in force, plus layouts, docks, context settings and so on.
   Choosing an entry runs it; one that needs arguments (`/goal`, `/tool`, …) puts `/name ` in
   the composer instead.
-- **`#` references.** A `#` after whitespace opens the same popup with the files of the working
-  directory (hidden folders, `target` and `node_modules` left out; ≈ 20 000 files at most), ranked
-  as the commands are; `#doc:` lists the case's imported documents by title and source, and
-  `#doc:<name>#<section>` names a section. Taking one replaces what was typed of it with
-  `#path ` (quoted when the name has a space) and puts the cursor after it. The reference stays
-  in the message as written; when it is sent, what it names goes with it as attachments ahead of
-  the message (`via: reference`), cut at about 20k tokens each, the same thing named twice sent
-  once. A name that matches nothing, or several documents, is left as text and a notice says why.
+- **`@` references.** An `@` after whitespace opens the same popup. A bare `@` offers the kinds
+  of reference (`artifact:`, `graph:`, `session:`, `doc:`, `change:`, `vocab:`) and the files of
+  the working directory (hidden folders, `target` and `node_modules` left out; ≈ 20 000 files at
+  most; the registered ones first and marked), ranked as the commands are. `@graph:` lists
+  elements of the graph by what they say, `@session:` the case's sessions, `@doc:` its imported
+  documents by title and source, `@change:` and `@vocab:` the changes and the types. Taking one
+  replaces what was typed of it with `@<reference> ` (a path is written percent-encoded, so a
+  space is `%20`) and puts the cursor after it
+  ([ADR-0066](../../docs/adr/0066-the-case-is-addressed-by-references.md)). The log keeps the
+  message as typed; the model reads it without the `@` of a reference, as the agent writes them.
+  When it is sent, what a reference names goes with it as attachments ahead of the message
+  (`via: reference`), cut at about 20k tokens each, the same thing named twice sent once. A
+  file the person typed by name (`@notes.txt`), and a document by title (`@doc:"Pump manual"` or
+  `@doc:<name>#<section>`, `#passage=<n>` for one passage), still work. A name that matches
+  nothing, or several documents, is left as text and a notice says why.
+- **References in the transcript.** A reference in the agent's text that names something in the
+  case (`graph:...`, `artifact:...#row=3`, `session:...#entry=7`) is a link: a file opens in its
+  viewer at the place the reference names (a line in the editor, a row of a table, bytes in the
+  hex view), a session in its tab, a graph element selected in the graph. Every file in the
+  explorer, every element in the graph inspector and every tool result has *Copy reference*,
+  which puts the form that names the case (`reactor://<alias>/...`) on the clipboard.
+  `/open <reference>` does what the click does.
 - **The `/` completion popup** — typing `/` in the prompt lists the bare commands above the
   input. `↑`/`↓` move, `Enter` or `Tab` take the highlighted one (a command that needs nothing
   more runs at once, the others are completed and wait for their arguments), `Esc` closes it.
@@ -870,7 +884,7 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   (`reactor_db::graph::vocab`, `src/graph/look.rs`), so a type somebody made up is drawn at once.
   Right-click a node to give its *type* a Lucide icon and one of twenty named colours — orange
   and red are not offered, they mean disputed and rejected. The agent does the same with
-  `define_type` of `graph_annotate`, and lists the vocabulary with `graph_query what=vocabulary`.
+  `define_type`, and lists the vocabulary with `graph_query what=vocabulary`.
 - **Filter layers.** *Filters* opens a panel at the bottom right (`src/graph/sift.rs`). Each layer is a
   filter and what it does with the nodes it matches — *show only*, *hide*, *dim*, *highlight* —
   applied top to bottom, each with an eye to switch it off and a count of what it matches. A

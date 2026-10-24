@@ -1,5 +1,10 @@
 # The analysis graph is the case's model: claims are nodes, and history is never overwritten
 
+> **Amended by [ADR-0066](0066-the-case-is-addressed-by-references.md):** the agent writes the
+> graph with one tool, `graph_write` (`graph_add` and `graph_annotate` are gone; `graph_revert`
+> and `define_type` took the rest), and elements, sources and files are named by references.
+> What is decided here about the model holds.
+
 The case ([ADR-0045](0045-a-case-is-the-working-directory.md)) carries an **analysis
 graph** in its database
 ([ADR-0046](0046-the-analysis-database-is-sqlite-inside-the-case.md)): what was seen,

@@ -1260,15 +1260,19 @@ pub fn source_target(uri: &str, locator: Option<&str>) -> SourceTarget {
     if uri.starts_with("http://") || uri.starts_with("https://") {
         return SourceTarget::Url(uri.to_string());
     }
-    if let Some(rest) = uri.strip_prefix("session:") {
-        let (id, fragment) = rest.split_once('#').unwrap_or((rest, ""));
-        let entry = fragment
-            .strip_prefix("entry=")
-            .and_then(|n| n.parse::<u64>().ok());
-        return SourceTarget::Session {
-            id: id.to_string(),
-            entry,
-        };
+    if let Ok(r) = reactor_db::reference::parse(uri) {
+        match r.target {
+            reactor_db::reference::Target::Session { session, entry } => {
+                return SourceTarget::Session { id: session, entry };
+            }
+            reactor_db::reference::Target::Artifact { path, locator: own } => {
+                return SourceTarget::File {
+                    path,
+                    line: locator.or(own.as_deref()).and_then(line_in),
+                };
+            }
+            _ => {}
+        }
     }
     let path = uri.split(['#', '?']).next().unwrap_or(uri).to_string();
     SourceTarget::File {
@@ -1304,7 +1308,7 @@ mod tests {
                 vec![
                     Link::entity("target", "host.name", "ws-042"),
                     Link::entity("actor", "account.user", "jdoe"),
-                    Link::source("csv:vpn.csv"),
+                    Link::source("artifact:vpn.csv"),
                 ],
             ))
             .put(claim(
@@ -1313,7 +1317,7 @@ mod tests {
                 vec![
                     Link::entity("src", "host.name", "ws-042"),
                     Link::entity("dst", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:fw.csv"),
+                    Link::source("artifact:fw.csv"),
                 ],
             ))
             .put(claim(
@@ -1322,7 +1326,7 @@ mod tests {
                 vec![
                     Link::entity("query", "net.domain", "cdn-sync.example"),
                     Link::entity("answer", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:pdns.csv").at("row=1", None),
+                    Link::source("artifact:pdns.csv").at("row=1", None),
                 ],
             ))
             .put(claim(
@@ -1331,7 +1335,7 @@ mod tests {
                 vec![
                     Link::entity("query", "net.domain", "cdn-sync.example"),
                     Link::entity("answer", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:pdns.csv").at("row=2", None),
+                    Link::source("artifact:pdns.csv").at("row=2", None),
                 ],
             ));
         graph::apply(case.db(), batch).unwrap().ids
@@ -1400,7 +1404,7 @@ mod tests {
                         Link::entity("parent", "process.name", "winword.exe"),
                         Link::entity("child", "process.name", "powershell.exe"),
                         Link::entity("actor", "account.user", "jdoe"),
-                        Link::source("jsonl:edr.jsonl"),
+                        Link::source("artifact:edr.jsonl"),
                     ],
                 )),
         )
@@ -1546,7 +1550,7 @@ mod tests {
                 vec![
                     Link::entity("actor", "account.user", "asmith"),
                     Link::entity("target", "host.name", "ws-042"),
-                    Link::source("csv:vpn.csv").at("row=9", None),
+                    Link::source("artifact:vpn.csv").at("row=9", None),
                 ],
             )),
         )

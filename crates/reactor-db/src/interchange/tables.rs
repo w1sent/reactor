@@ -1,6 +1,6 @@
 //! Elements and edges as CSV.
 
-use crate::db::Db;
+use crate::case::Case;
 use crate::error::{Error, Result};
 use crate::graph::query;
 
@@ -13,9 +13,17 @@ fn csv_of(rows: Vec<Vec<String>>) -> Result<String> {
     String::from_utf8(bytes).map_err(|e| Error::Io(e.to_string()))
 }
 
-/// Every element as it stands, one row each.
-pub fn elements(db: &Db, include_deleted: bool) -> Result<String> {
-    let (elements, _) = query::snapshot(db, include_deleted)?;
+/// A value as it leaves the case: a source named by its reference is written with the case's
+/// name, and so is any reference in a text (ADR-0066).
+fn leaving(text: &str, authority: &str) -> String {
+    crate::reference::canonicalize_text(text, authority)
+}
+
+/// Every element as it stands, one row each. `reference` is the version's reference in the
+/// form that names the case; an external's value, a source, is written that way too.
+pub fn elements(case: &Case, include_deleted: bool) -> Result<String> {
+    let authority = case.authority();
+    let (elements, _) = query::snapshot(case.db(), include_deleted)?;
     let mut rows = vec![
         [
             "id",
@@ -34,6 +42,7 @@ pub fn elements(db: &Db, include_deleted: bool) -> Result<String> {
             "recorded_at",
             "author",
             "props",
+            "reference",
         ]
         .map(String::from)
         .to_vec(),
@@ -44,7 +53,7 @@ pub fn elements(db: &Db, include_deleted: bool) -> Result<String> {
             e.id.clone(),
             e.kind.as_str().to_string(),
             e.type_.clone(),
-            c.value.clone().unwrap_or_default(),
+            leaving(c.value.as_deref().unwrap_or(""), &authority),
             c.status.clone(),
             c.confidence.clone().unwrap_or_default(),
             c.tags.join(";"),
@@ -59,21 +68,28 @@ pub fn elements(db: &Db, include_deleted: bool) -> Result<String> {
             if c.props.is_empty() {
                 String::new()
             } else {
-                serde_json::Value::Object(c.props.clone()).to_string()
+                leaving(&serde_json::Value::Object(c.props.clone()).to_string(), &authority)
             },
+            crate::reference::Reference::graph(&e.id)
+                .pinned(e.ver)
+                .canonical(&authority),
         ]);
     }
     csv_of(rows)
 }
 
 /// Every edge as it stands, with what its two ends are.
-pub fn edges(db: &Db, include_deleted: bool) -> Result<String> {
-    let (elements, edges) = query::snapshot(db, include_deleted)?;
+pub fn edges(case: &Case, include_deleted: bool) -> Result<String> {
+    let authority = case.authority();
+    let (elements, edges) = query::snapshot(case.db(), include_deleted)?;
     let by_id: std::collections::HashMap<&str, &query::Element> =
         elements.iter().map(|e| (e.id.as_str(), e)).collect();
     let label = |id: &str| -> (String, String) {
         by_id.get(id).map_or((String::new(), String::new()), |e| {
-            (e.type_.clone(), e.content.value.clone().unwrap_or_default())
+            (
+                e.type_.clone(),
+                leaving(e.content.value.as_deref().unwrap_or(""), &authority),
+            )
         })
     };
     let mut rows = vec![

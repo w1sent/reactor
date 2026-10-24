@@ -604,6 +604,19 @@ impl TablePanel {
         }
     }
 
+    /// Select row `row` of a delimited file, counted as RFC 7111 counts them: from 1, the
+    /// header rows among them. Where a reference to a row of the file lands (ADR-0066).
+    pub fn goto_row(&mut self, row: u64, cx: &mut Context<Self>) {
+        let Some(grid) = self.active_grid() else {
+            return;
+        };
+        let ix = (row.saturating_sub(1) as usize).saturating_sub(self.header_rows);
+        grid.update(cx, |table, cx| {
+            table.scroll_to_row(ix, cx);
+            table.set_selected_row(ix, cx);
+        });
+    }
+
     /// Parse the text again with the current delimiter and rebuild the table.
     fn reparse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match model::parse(&self.text, self.delimiter) {

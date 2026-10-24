@@ -280,7 +280,7 @@ pub struct ReactorApp {
     usage: Usage,
     /// The `/` completion popup over the composer.
     pub slash: SlashUi,
-    /// The working directory's files, for `#` in the composer.
+    /// The working directory's files, for `@` in the composer.
     file_index: crate::ref_index::FileIndex,
     /// What the person has sent, for up/down in the prompt.
     prompt_history: crate::prompt_history::PromptHistory,
@@ -369,7 +369,7 @@ struct PaletteUi {
 pub struct SlashUi {
     pub items: Vec<Entry>,
     pub selected: usize,
-    /// The items complete a `#` reference: what kind it is, and the span of the composer's text
+    /// The items complete an `@` reference: what kind it is, and the span of the composer's text
     /// that a completion replaces. Absent: they complete a `/` command.
     pub reference: Option<(crate::ref_index::Trigger, std::ops::Range<usize>)>,
     /// Esc closed it; it stays closed until the text changes.
@@ -1613,6 +1613,14 @@ impl ReactorApp {
         self.backend
             .as_ref()
             .map(|b| b.case.meta().id.clone())
+            .unwrap_or_default()
+    }
+
+    /// What a reference to this case calls it: its alias, else its id (ADR-0066).
+    pub fn case_authority(&self) -> String {
+        self.backend
+            .as_ref()
+            .map(|b| b.case.authority())
             .unwrap_or_default()
     }
 
@@ -2902,6 +2910,88 @@ impl ReactorApp {
         self.open_file(viewer, file, line, window, cx);
     }
 
+    /// Open what a reference of the case names: a file in its viewer (at the line it names), a
+    /// session in its tab, a graph element selected in the graph, the Documents panel for a
+    /// document. Anything else (a change, a type, stored bytes) has nothing to show, so its
+    /// reference is copied.
+    pub fn open_case_reference(
+        &mut self,
+        r: &reactor_db::reference::Reference,
+        modifiers: gpui_kit::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use reactor_db::reference::{GraphId, Locator, Target};
+        match &r.target {
+            Target::Artifact { path, locator } => {
+                let place = locator.as_deref().and_then(Locator::parse);
+                let line = match &place {
+                    Some(Locator::Line(n)) => Some(*n as u32),
+                    _ => None,
+                };
+                if place.is_some() && !modifiers.alt {
+                    // Where the file lands depends on what it is, so the viewer is chosen as
+                    // for a click on the file, unless a modifier asks for one.
+                    let file = self.resolve_file(
+                        &crate::files::refs::native_path(&self.cwd, path).to_string_lossy(),
+                    );
+                    let viewer = if modifiers.shift {
+                        Some(crate::files::Viewer::Hex)
+                    } else if modifiers.secondary() {
+                        Some(crate::files::Viewer::Editor)
+                    } else if matches!(place, Some(Locator::Bytes { .. })) {
+                        Some(crate::files::Viewer::Hex)
+                    } else {
+                        None
+                    };
+                    self.open_file_at(viewer, file, line, place, window, cx);
+                } else {
+                    self.open_reference(path, line, modifiers, window, cx);
+                }
+            }
+            Target::Session { session, .. } => {
+                self.open_session(Some(session.clone()), window, cx);
+            }
+            Target::Graph { id, .. } => {
+                let id = match (id, &self.backend) {
+                    (GraphId::Id(id), _) => Some(id.clone()),
+                    (id, Some(b)) => {
+                        reactor_db::reference::lookup::graph_id(&b.case, id).ok()
+                    }
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    self.reveal_panel(crate::layout::PanelKind::Graph, window, cx);
+                    self.graph_panel
+                        .update(cx, |g, cx| g.select_element(&id, cx));
+                }
+            }
+            Target::Doc { .. } | Target::Set { .. } => {
+                let kind = match r.kind() {
+                    reactor_db::reference::Kind::Doc => crate::layout::PanelKind::Docs,
+                    reactor_db::reference::Kind::Artifact => crate::layout::PanelKind::Files,
+                    reactor_db::reference::Kind::Session => crate::layout::PanelKind::Tree,
+                    _ => crate::layout::PanelKind::Graph,
+                };
+                self.reveal_panel(kind, window, cx);
+            }
+            Target::Blob { .. } | Target::Change { .. } | Target::Vocab { .. } => {
+                let text = match &self.backend {
+                    Some(b) => r.canonical(&b.case.authority()),
+                    None => r.short(),
+                };
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+                self.push_note("info", format!("{} copied: it has no view of its own", r.short()));
+                cx.notify();
+            }
+        }
+    }
+
+    /// The open case, for what is drawn from it each frame.
+    pub fn backend_case(&self) -> Option<reactor_db::Case> {
+        self.backend.as_ref().map(|b| b.case.clone())
+    }
+
     /// Open a file in a viewer — a new tab in the centre, however many there already are.
     /// `viewer` None picks by what the file is.
     pub fn open_file(
@@ -2912,22 +3002,47 @@ impl ReactorApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_file_at(viewer, file, line, None, window, cx);
+    }
+
+    /// Open a file in a viewer and go to a place in it: `line` for the editor, `place` for the
+    /// viewers that know their own kind of place (a row of a table, bytes of the hex view).
+    pub fn open_file_at(
+        &mut self,
+        viewer: Option<crate::files::Viewer>,
+        file: reactor_fs::FileRef,
+        line: Option<u32>,
+        place: Option<reactor_db::reference::Locator>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::files::Viewer;
+        use reactor_db::reference::Locator;
         let viewer = viewer.unwrap_or_else(|| crate::files::suggest(&file));
         let weak_app = cx.weak_entity();
         let handle = match viewer {
             Viewer::Editor => panel_handle(cx.new(|cx| {
                 crate::files::editor::EditorPanel::new(weak_app, file, line, window, cx)
             })),
-            Viewer::Table => panel_handle(
-                cx.new(|cx| crate::files::table::TablePanel::new(weak_app, file, window, cx)),
-            ),
+            Viewer::Table => {
+                let panel = cx
+                    .new(|cx| crate::files::table::TablePanel::new(weak_app, file, window, cx));
+                if let Some(Locator::Row(n) | Locator::Cell(n, _)) = place {
+                    panel.update(cx, |p, cx| p.goto_row(n, cx));
+                }
+                panel_handle(panel)
+            }
             Viewer::Data => {
                 panel_handle(cx.new(|cx| crate::files::data::DataPanel::new(weak_app, file, cx)))
             }
-            Viewer::Hex => panel_handle(
-                cx.new(|cx| crate::files::hex::HexPanel::new(weak_app, file, window, cx)),
-            ),
+            Viewer::Hex => {
+                let panel =
+                    cx.new(|cx| crate::files::hex::HexPanel::new(weak_app, file, window, cx));
+                if let Some(Locator::Bytes { offset, length }) = place {
+                    panel.update(cx, |p, cx| p.goto(offset, length, cx));
+                }
+                panel_handle(panel)
+            }
         };
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(handle, DockPlacement::Center, None, window, cx);
@@ -3753,7 +3868,7 @@ impl ReactorApp {
             }
             None => Vec::new(),
         };
-        // Not a command: a `#` reference being typed at the cursor.
+        // Not a command: an `@` reference being typed at the cursor.
         let mut reference = None;
         let items = if items.is_empty() && !text.starts_with('/') {
             let cursor = self.composer.read(cx).cursor();
@@ -3781,8 +3896,9 @@ impl ReactorApp {
         cx.notify();
     }
 
-    /// The completions of a `#` reference: files of the working directory, or the case's
-    /// documents, ranked as the commands are.
+    /// The completions of an `@` reference: files of the working directory, or the things of
+    /// one kind of reference, ranked as the commands are. Choosing one inserts the stable
+    /// reference (ADR-0066).
     fn reference_items(
         &mut self,
         trigger: crate::ref_index::Trigger,
@@ -3790,65 +3906,128 @@ impl ReactorApp {
         cx: &mut Context<Self>,
     ) -> Vec<Entry> {
         use crate::ref_index::{Trigger, plausible, size};
+        use reactor_db::reference::{Kind, Reference, Target, lookup};
         let Some(backend) = self.backend.clone() else {
             return Vec::new();
         };
         let mut entries: Vec<Entry> = Vec::new();
+        let entry = |run: String, title: String, detail: String, group: &'static str| Entry {
+            key: format!("@{run}"),
+            title,
+            name: None,
+            detail,
+            group,
+            args: Args::None,
+            run,
+        };
+        let kind_note = |k: Kind| match k {
+            Kind::Session => "Sessions of this case, and their entries",
+            Kind::Graph => "Elements of the case graph",
+            Kind::Artifact => "Files of the case",
+            Kind::Doc => "Documents imported into this case",
+            Kind::Blob => "Stored bytes",
+            Kind::Change => "Changes of the case graph",
+            Kind::Vocab => "Types of the vocabulary",
+        };
+        let files = |entries: &mut Vec<Entry>, this: &mut Self| {
+            if let Some(cwd) = backend.paths.cwd.clone() {
+                this.file_index.refresh(&cwd);
+            }
+            let registered: std::collections::HashSet<String> =
+                reactor_db::artifact::list(&backend.case)
+                    .map(|l| l.into_iter().map(|a| a.path).collect())
+                    .unwrap_or_default();
+            let mut rows: Vec<&crate::ref_index::FileRow> = this
+                .file_index
+                .files
+                .iter()
+                .filter(|f| plausible(query, &f.path))
+                .collect();
+            // The registered files first: they are the ones the case relies on.
+            rows.sort_by_key(|f| !registered.contains(&f.path));
+            for f in rows.into_iter().take(600) {
+                entries.push(entry(
+                    Reference::artifact(&f.path).short(),
+                    f.path.clone(),
+                    if registered.contains(&f.path) {
+                        format!("{} · registered", size(f.bytes))
+                    } else {
+                        size(f.bytes)
+                    },
+                    "File",
+                ));
+            }
+        };
         match trigger {
             Trigger::File => {
-                // Typing `#d` also offers `#doc:`: documents are reached through it.
-                if !query.is_empty() && "doc:".starts_with(&query.to_ascii_lowercase()) {
-                    entries.push(Entry {
-                        key: "#doc:".into(),
-                        title: "doc:".into(),
-                        name: None,
-                        detail: "Documents imported into this case".into(),
-                        group: "Reference",
-                        args: Args::None,
-                        run: "doc:".into(),
-                    });
-                }
-                if let Some(cwd) = backend.paths.cwd.clone() {
-                    self.file_index.refresh(&cwd);
-                }
-                for f in self.file_index.files.iter().filter(|f| plausible(query, &f.path)) {
-                    entries.push(Entry {
-                        key: format!("#{}", f.path),
-                        title: f.path.clone(),
-                        name: None,
-                        detail: size(f.bytes),
-                        group: "File",
-                        args: Args::None,
-                        run: f.path.clone(),
-                    });
-                    if entries.len() >= 600 {
-                        break;
+                // `@d` also offers `@doc:`, `@g` offers `@graph:`: the kinds are reached
+                // through their names.
+                for k in Kind::ALL.into_iter().filter(|k| *k != Kind::Blob) {
+                    if query.is_empty()
+                        || (k.scheme().starts_with(&query.to_ascii_lowercase()))
+                    {
+                        entries.push(entry(
+                            format!("{}:", k.scheme()),
+                            format!("{}:", k.scheme()),
+                            kind_note(k).to_string(),
+                            "Reference",
+                        ));
                     }
                 }
+                files(&mut entries, self);
             }
-            Trigger::Document => {
-                let docs =
-                    reactor_db::corpus::documents(backend.case.db()).unwrap_or_default();
+            Trigger::Kind(Kind::Artifact) => files(&mut entries, self),
+            Trigger::Kind(Kind::Doc) => {
+                let docs = reactor_db::corpus::documents(backend.case.db()).unwrap_or_default();
                 for d in docs {
                     let label = d.title.clone().filter(|t| !t.is_empty());
-                    entries.push(Entry {
-                        key: format!("#doc:{}", d.source_uri),
+                    entries.push(entry(
+                        Reference::new(Target::Doc {
+                            id: d.id.clone(),
+                            passage: None,
+                        })
+                        .short(),
                         // What the query is matched against: the title and the source.
-                        title: format!("{} {}", label.clone().unwrap_or_default(), d.source_uri),
-                        name: None,
-                        detail: format!(
+                        format!("{} {}", label.clone().unwrap_or_default(), d.source_uri),
+                        format!(
                             "{} passages{}",
                             d.chunks,
                             label.map(|l| format!(" · {l}")).unwrap_or_default()
                         ),
-                        group: "Document",
-                        args: Args::None,
-                        run: format!("doc:{}", d.source_uri),
-                    });
+                        "Document",
+                    ));
+                }
+            }
+            Trigger::Kind(Kind::Blob) => {}
+            Trigger::Kind(kind) => {
+                let mut params = Vec::new();
+                if !query.is_empty() {
+                    params.push(("text".to_string(), query.to_string()));
+                }
+                let page = lookup::Page {
+                    limit: 30,
+                    offset: 0,
+                };
+                if let Ok(found) = lookup::list(&backend.case, kind, &params, page) {
+                    for item in found.items {
+                        let short = item.reference.short();
+                        entries.push(entry(
+                            short.clone(),
+                            format!("{} {}", item.preview, short),
+                            item.preview,
+                            match kind {
+                                Kind::Graph => "Element",
+                                Kind::Session => "Session",
+                                Kind::Change => "Change",
+                                _ => "Type",
+                            },
+                        ));
+                    }
                 }
             }
         }
         let _ = cx;
+        // A kind that filters in the database has already matched; ranking again only orders.
         palette::rank(query, &entries, &self.usage, false)
             .into_iter()
             .take(SLASH_ROWS)
@@ -3859,17 +4038,16 @@ impl ReactorApp {
     /// Put the highlighted reference in the composer in place of what was typed of it, and the
     /// cursor after it.
     fn complete_reference(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((trigger, span)) = self.slash.reference.clone() else {
+        let Some((_trigger, span)) = self.slash.reference.clone() else {
             return;
         };
         let text = self.composer.read(cx).value().to_string();
         let span = span.start.min(text.len())..span.end.min(text.len());
         let (inserted, keep_open) = if entry.group == "Reference" {
-            // `#doc:` — the kind chosen, the name still to come.
-            ("#doc:".to_string(), true)
+            // `@graph:` -- the kind chosen, the thing still to come.
+            (crate::ref_index::written(&entry.run), true)
         } else {
-            let name = entry.run.strip_prefix("doc:").unwrap_or(&entry.run);
-            (format!("{} ", crate::ref_index::written(trigger, name)), false)
+            (format!("{} ", crate::ref_index::written(&entry.run)), false)
         };
         let mut new = String::with_capacity(text.len() + inserted.len());
         new.push_str(&text[..span.start]);
@@ -4030,6 +4208,21 @@ impl ReactorApp {
                 };
                 if path.trim().is_empty() {
                     self.push_note("warning", "open: which file?");
+                } else if reactor_db::reference::looks_like(path.trim()) {
+                    // A reference of the case: `/open graph:<id>`, `/open artifact:<path>#row=3`.
+                    match reactor_db::reference::parse(path.trim()) {
+                        Ok(r) => {
+                            let at = r.clone();
+                            match (viewer, &r.target) {
+                                (Some(v), reactor_db::reference::Target::Artifact { path, .. }) => {
+                                    let file = self.resolve_file(path);
+                                    self.open_file(Some(v), file, None, window, cx);
+                                }
+                                _ => self.open_case_reference(&at, Default::default(), window, cx),
+                            }
+                        }
+                        Err(e) => self.push_note("warning", format!("open: {e}")),
+                    }
                 } else {
                     let file = self.resolve_file(path);
                     self.open_file(viewer, file, None, window, cx);

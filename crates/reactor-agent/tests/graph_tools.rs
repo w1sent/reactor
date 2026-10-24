@@ -57,6 +57,7 @@ impl Rig {
 
     fn id_in(text: &str, prefix: &str) -> String {
         text.split_whitespace()
+            .map(|w| w.trim_start_matches("graph:"))
             .find(|w| w.starts_with(prefix))
             .unwrap_or_else(|| panic!("no {prefix} id in: {text}"))
             .to_string()
@@ -79,7 +80,7 @@ async fn a_finding_goes_in_with_its_source_gets_judged_and_can_be_read_back() {
 
     let added = r
         .ok(
-            "graph_add",
+            "graph_write",
             json!({ "elements": [{
                 "kind": "observation",
                 "type": "malware.c2_config",
@@ -93,7 +94,7 @@ async fn a_finding_goes_in_with_its_source_gets_judged_and_can_be_read_back() {
         )
         .await;
     assert!(
-        added.contains("malware.c2_config") && added.contains("change #"),
+        added.contains("malware.c2_config") && added.contains("change:"),
         "{added}"
     );
     let claim = Rig::id_in(&added, "observation--");
@@ -110,21 +111,23 @@ async fn a_finding_goes_in_with_its_source_gets_judged_and_can_be_read_back() {
 
     let hyp = r
         .ok(
-            "graph_annotate",
-            json!({ "type": "hypothesis", "text": "c2.example.net is the operator's C2" }),
+            "graph_write",
+            json!({ "elements": [{ "type": "hypothesis", "value": "c2.example.net is the operator's C2" }] }),
         )
         .await;
     let hypothesis = Rig::id_in(&hyp, "annotation--");
     let judged = r
         .ok(
-            "graph_annotate",
-            json!({
+            "graph_write",
+            json!({ "elements": [{
                 "type": "judgement",
-                "text": "the config is live: the domain resolves",
+                "value": "the config is live: the domain resolves",
                 "confidence": "likely",
-                "about": [claim],
-                "supports": [hypothesis]
-            }),
+                "links": [
+                    { "role": "about", "to": format!("graph:{claim}") },
+                    { "role": "supports", "to": hypothesis }
+                ]
+            }]}),
         )
         .await;
     assert!(
@@ -159,8 +162,8 @@ async fn a_finding_goes_in_with_its_source_gets_judged_and_can_be_read_back() {
     // Revising the claim flags the judgement that was about its earlier version.
     let changed = r
         .ok(
-            "graph_annotate",
-            json!({ "change": { "id": claim, "status": "conflicting", "reason": "the sandbox run shows another domain" } }),
+            "graph_write",
+            json!({ "elements": [{ "id": claim, "status": "conflicting", "reason": "the sandbox run shows another domain" }] }),
         )
         .await;
     assert!(
@@ -196,7 +199,7 @@ async fn a_conclusion_is_not_accepted_as_an_observation() {
     let r = rig();
     let out = r
         .call(
-            "graph_add",
+            "graph_write",
             json!({ "elements": [{
                 "kind": "observation", "type": "net.resolution",
                 "links": [{ "role": "query", "to": { "type": "net.domain", "value": "x.example" } }]
@@ -211,12 +214,12 @@ async fn a_conclusion_is_not_accepted_as_an_observation() {
     assert!(out.text.contains("annotation"), "{}", out.text);
     let out = r
         .call(
-            "graph_add",
+            "graph_write",
             json!({ "elements": [{ "kind": "annotation", "type": "analysis.note" }] }),
         )
         .await;
     assert!(
-        out.is_error && out.text.contains("graph_annotate"),
+        out.is_error && out.text.contains("needs its text"),
         "{}",
         out.text
     );
@@ -271,7 +274,7 @@ async fn rows_a_script_wrote_are_pulled_and_a_wrong_pull_is_taken_back() {
         )
         .await;
     assert!(
-        pulled.contains("csv:conns.csv: 2 row(s)") && pulled.contains("2 claim(s)"),
+        pulled.contains("artifact:conns.csv: 2 row(s)") && pulled.contains("2 claim(s)"),
         "{pulled}"
     );
     let again = r
@@ -299,15 +302,15 @@ async fn rows_a_script_wrote_are_pulled_and_a_wrong_pull_is_taken_back() {
 
     // The pull was change #1 in this fresh case.
     let seq: i64 = pulled
-        .split("change #")
+        .split("change:")
         .nth(1)
         .and_then(|t| t.trim_end_matches(')').split(')').next())
         .and_then(|n| n.trim().parse().ok())
         .unwrap();
     let preview = r
         .ok(
-            "graph_annotate",
-            json!({ "revert": { "change": seq, "preview": true } }),
+            "graph_revert",
+            json!({ "change": format!("change:{seq}"), "preview": true }),
         )
         .await;
     assert!(
@@ -322,7 +325,7 @@ async fn rows_a_script_wrote_are_pulled_and_a_wrong_pull_is_taken_back() {
         2
     );
     let done = r
-        .ok("graph_annotate", json!({ "revert": { "change": seq } }))
+        .ok("graph_revert", json!({ "change": seq }))
         .await;
     assert!(done.starts_with("taken back:"), "{done}");
     assert_eq!(
@@ -335,8 +338,8 @@ async fn rows_a_script_wrote_are_pulled_and_a_wrong_pull_is_taken_back() {
 async fn a_detached_session_has_no_graph_tools_and_a_stale_call_is_told_why() {
     let r = rig();
     r.ok(
-        "graph_annotate",
-        json!({ "type": "note", "text": "from the attached session" }),
+        "graph_write",
+        json!({ "elements": [{ "type": "note", "value": "from the attached session" }] }),
     )
     .await;
     let names = |r: &Rig| -> Vec<String> {
@@ -346,7 +349,7 @@ async fn a_detached_session_has_no_graph_tools_and_a_stale_call_is_told_why() {
         state.memory = state.memory.over(&global);
         r.tools.specs(&state).into_iter().map(|t| t.name).collect()
     };
-    assert!(names(&r).contains(&"graph_add".to_string()));
+    assert!(names(&r).contains(&"graph_write".to_string()));
 
     save_state(
         &mut r.ctx.store.lock().unwrap(),
@@ -367,11 +370,11 @@ async fn a_detached_session_has_no_graph_tools_and_a_stale_call_is_told_why() {
     for (tool, args) in [
         ("graph_query", json!({ "what": "find" })),
         (
-            "graph_annotate",
-            json!({ "type": "note", "text": "should not land" }),
+            "graph_write",
+            json!({ "elements": [{ "type": "note", "value": "should not land" }] }),
         ),
         (
-            "graph_add",
+            "graph_write",
             json!({ "elements": [{ "kind": "entity", "type": "net.domain", "value": "x.example" }] }),
         ),
         (
@@ -408,8 +411,8 @@ async fn a_detached_session_has_no_graph_tools_and_a_stale_call_is_told_why() {
 #[test]
 fn the_agent_is_told_to_write_markdown_only_for_a_long_text() {
     let tools = Tools::standard(std::path::PathBuf::from("."));
-    let spec = tools.find("graph_annotate").unwrap().spec();
-    let said = spec.parameters["properties"]["text"]["description"]
+    let spec = tools.find("graph_write").unwrap().spec();
+    let said = spec.parameters["properties"]["elements"]["items"]["properties"]["value"]["description"]
         .as_str()
         .unwrap();
     assert!(said.contains("Markdown") && said.contains("long"), "{said}");
@@ -443,8 +446,8 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
     // A new type needs a kind; then only what is given changes.
     let refused = r
         .call(
-            "graph_annotate",
-            json!({ "define_type": { "type": "ics.plc" } }),
+            "define_type",
+            json!({ "type": "ics.plc" }),
         )
         .await;
     assert!(
@@ -454,9 +457,9 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
     );
     let made = r
         .ok(
-            "graph_annotate",
-            json!({ "define_type": { "type": "ics.plc", "kind": "entity",
-                "definition": "A programmable logic controller.", "icon": "cpu", "colour": "teal" } }),
+            "define_type",
+            json!({ "type": "ics.plc", "kind": "entity",
+                "definition": "A programmable logic controller.", "icon": "cpu", "colour": "teal" }),
         )
         .await;
     assert!(
@@ -465,8 +468,8 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
     );
     let red = r
         .call(
-            "graph_annotate",
-            json!({ "define_type": { "type": "ics.plc", "colour": "red" } }),
+            "define_type",
+            json!({ "type": "ics.plc", "colour": "red" }),
         )
         .await;
     assert!(
@@ -477,8 +480,8 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
     // A known type's look falls back to its namespace where it says nothing itself.
     let known = r
         .ok(
-            "graph_annotate",
-            json!({ "define_type": { "type": "net.cidr", "definition": "A range." } }),
+            "define_type",
+            json!({ "type": "net.cidr", "definition": "A range." }),
         )
         .await;
     assert!(known.contains("icon waypoints, colour blue"), "{known}");
@@ -492,4 +495,104 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
         listed.contains("ics.plc (entity) A programmable logic controller."),
         "{listed}"
     );
+}
+
+#[tokio::test]
+async fn the_case_is_read_by_reference() {
+    let r = rig();
+    let added = r
+        .ok(
+            "graph_write",
+            json!({ "elements": [
+                { "kind": "entity", "type": "net.ipv4", "value": "198.51.100.7" },
+                { "kind": "observation", "type": "malware.c2_config", "value": "RC4 config",
+                  "links": [{ "role": "object", "to": "graph:entity/net.ipv4/198.51.100.7" }],
+                  "source": "artifact:samples/dropper.bin#offset=0x10&length=4" }
+            ]}),
+        )
+        .await;
+    assert!(added.contains("(change:1)"), "{added}");
+
+    // The source is the file; the place in it is on the edge.
+    let claim = Rig::id_in(&added, "observation--");
+    let shown = r.ok("case_get", json!({ "uri": format!("graph:{claim}") })).await;
+    assert!(
+        shown.contains("-object-> net.ipv4:198.51.100.7")
+            && shown.contains(
+                "-source-> external.artifact:artifact:samples/dropper.bin @offset=0x10&length=4"
+            ),
+        "{shown}"
+    );
+
+    // An entity by what it is, and one that was never recorded.
+    let ip = r
+        .ok("case_get", json!({ "uri": "graph:entity/net.ipv4/198.51.100.7" }))
+        .await;
+    assert!(ip.contains("<-object-"), "{ip}");
+    let none = r
+        .ok("case_get", json!({ "uri": "graph:entity/net.ipv4/203.0.113.9" }))
+        .await;
+    assert!(none.contains("is not recorded"), "{none}");
+
+    // A set lists references, and pages.
+    let set = r
+        .ok("case_get", json!({ "uri": "graph:?kind=entity", "limit": 1 }))
+        .await;
+    assert!(set.starts_with("graph:entity--") && set.contains("1 shown"), "{set}");
+    let none = r
+        .ok("case_get", json!({ "uri": "graph:?type=host." }))
+        .await;
+    assert!(none.starts_with("no match"), "{none}");
+
+    // A file's record, a change, and this session's own entry.
+    let file = r
+        .ok("case_get", json!({ "uri": "artifact:samples/dropper.bin" }))
+        .await;
+    assert!(file.contains("10 bytes") && file.contains("not registered"), "{file}");
+    let change = r.ok("case_get", json!({ "uri": "change:1" })).await;
+    assert!(change.contains("wrote graph:") && change.contains("version 1"), "{change}");
+    let entry = r
+        .ok("case_get", json!({ "uri": "session:s1#entry=0" }))
+        .await;
+    assert!(!entry.is_empty());
+
+    // What is not a reference, what names another case, what is not here.
+    assert!(r.call("case_get", json!({ "uri": "nonsense" })).await.is_error);
+    let other = r
+        .call("case_get", json!({ "uri": "reactor://elsewhere/graph/entity--x" }))
+        .await;
+    assert!(other.is_error && other.text.contains("another case"), "{}", other.text);
+}
+
+#[tokio::test]
+async fn a_canonical_reference_to_this_case_is_read_by_its_alias_or_id() {
+    let r = rig();
+    let case = r.ctx.store.lock().unwrap().case().clone();
+    r.ok(
+        "graph_write",
+        json!({ "elements": [{ "type": "note", "value": "n" }] }),
+    )
+    .await;
+    case.set_alias(Some("acme")).unwrap();
+    let by_alias = r.ok("case_get", json!({ "uri": "reactor://acme/change/1" })).await;
+    assert!(by_alias.starts_with("change:1"), "{by_alias}");
+    let by_id = r
+        .ok("case_get", json!({ "uri": format!("reactor://{}/change/1", case.meta().id) }))
+        .await;
+    assert!(by_id.starts_with("change:1"), "{by_id}");
+}
+
+#[tokio::test]
+async fn the_graph_switch_closes_the_graph_kinds_and_leaves_the_rest() {
+    let r = rig();
+    save_state(
+        &mut r.ctx.store.lock().unwrap(),
+        KEY_MEMORY,
+        json!({ "caseGraph": false }),
+    )
+    .unwrap();
+    let off = r.call("case_get", json!({ "uri": "graph:?kind=entity" })).await;
+    assert!(off.is_error && off.text.contains("case-graph"), "{}", off.text);
+    let file = r.call("case_get", json!({ "uri": "artifact:samples/dropper.bin" })).await;
+    assert!(!file.is_error, "{}", file.text);
 }

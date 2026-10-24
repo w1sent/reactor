@@ -445,6 +445,9 @@ pub struct ToolCallView<'a> {
     pub expanded: bool,
     /// The copy button was just pressed.
     pub copied: bool,
+    /// The result's reference, in the form that names the case: what *Copy reference* puts on
+    /// the clipboard (ADR-0066). Absent until the result is in the log.
+    pub reference: Option<String>,
 }
 
 /// A tool call: two lines, and, when opened, the whole command and its output. `docs`
@@ -618,6 +621,7 @@ pub fn tool_row(
             lines_label(total)
         );
         let raw = v.output.to_owned();
+        let reference = v.reference.clone();
         let output_block = match docs {
             Some((_, list)) => div().px_3().py_2().child(list),
             None if v.output.is_empty() => div()
@@ -694,6 +698,19 @@ pub fn tool_row(
                         .text_color(theme.muted_foreground)
                         .child(div().font_family(tools.family.clone()).child(footer))
                         .child(div().flex_1())
+                        .children(reference.map(|reference| {
+                            Button::new(("tool-copy-reference", index))
+                                .ghost()
+                                .small()
+                                .icon(IconName::Copy)
+                                .label("Copy reference")
+                                .tooltip("Copy this result's reference: it names the entry anywhere")
+                                .on_click(move |_, _window, cx| {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        reference.clone(),
+                                    ));
+                                })
+                        }))
                         .child(
                             Button::new(("tool-copy", index))
                                 .ghost()

@@ -581,6 +581,12 @@ impl GraphPanel {
         cx.notify();
     }
 
+    /// Select one element by id and show it, as a click on its node does: what a reference
+    /// to it opens (ADR-0066).
+    pub fn select_element(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.select(Some(Selected::Nodes(vec![id.to_string()])), cx);
+    }
+
     /// Select one element by id, as a click on its node does.
     #[doc(hidden)]
     pub fn select_id_for_test(&mut self, id: &str, cx: &mut Context<Self>) {

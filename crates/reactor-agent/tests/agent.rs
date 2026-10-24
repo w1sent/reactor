@@ -190,23 +190,25 @@ async fn a_turn_without_tools_records_the_exchange_and_streams_it() {
             "history_index",
             "history_read",
             "history_search",
+            "case_get",
             "scenario_list",
             "scenario_save",
             "tool_search"
         ],
-        "the state-gated tools are not advertised, and the graph's five wait for tool_search"
+        "the state-gated tools are not advertised, and the graph's six wait for tool_search"
     );
     let search = req.tools.last().unwrap();
     for name in [
-        "graph_add",
-        "graph_annotate",
+        "graph_write",
         "graph_query",
         "graph_pull",
+        "graph_revert",
+        "define_type",
         "artifact_register",
     ] {
         assert!(search.description.contains(name), "{name} is not listed");
     }
-    assert!(req.system.contains("select:graph_add"));
+    assert!(req.system.contains("select:graph_write"));
 }
 
 #[tokio::test]
@@ -609,6 +611,7 @@ async fn the_tools_that_can_print_much_advertise_the_limit_and_only_they() {
         // `docs_search` too, but it is offered only while the case has documents.
         [
             "bash",
+            "case_get",
             "graph_query",
             "history_index",
             "history_read",
@@ -1584,7 +1587,7 @@ async fn a_load_puts_the_tool_in_the_next_request_and_stays_loaded() {
         tool_names(&reqs[1])
     );
     assert!(
-        !tool_names(&reqs[1]).contains(&"graph_add"),
+        !tool_names(&reqs[1]).contains(&"graph_write"),
         "only what was asked for"
     );
     assert!(
@@ -1646,7 +1649,7 @@ async fn words_load_the_best_matches_and_a_miss_says_what_is_left() {
         res[0]
     );
     assert!(
-        res[1].contains("No tool matches `zebra`") && res[1].contains("graph_add"),
+        res[1].contains("No tool matches `zebra`") && res[1].contains("graph_write"),
         "{}",
         res[1]
     );
@@ -1670,7 +1673,7 @@ async fn a_group_under_the_threshold_is_advertised_and_there_is_nothing_to_searc
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    assert!(names.contains(&"graph_add".to_string()));
+    assert!(names.contains(&"graph_write".to_string()));
     assert!(!names.contains(&"tool_search".to_string()));
     assert!(!r.llm.requests()[0].system.contains("tool_search"));
 }
@@ -1695,7 +1698,7 @@ async fn a_threshold_of_zero_defers_every_group_and_a_detached_graph_has_none() 
         .find(|t| t.name == "tool_search")
         .expect("the scenario group is deferred too");
     assert!(search.description.contains("scenario_save"));
-    assert!(!search.description.contains("graph_add"));
+    assert!(!search.description.contains("graph_write"));
 }
 
 // -- settings layers and session scope (ADR-0038) ----------------------------------------------------
@@ -2213,21 +2216,21 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
 
     let ((with, block, n), (without, no_block, m)) = (cost(&on), cost(&off));
     assert!(block && !no_block);
-    assert_eq!((n, m), (14, 9), "five tools come and go with the switch");
+    assert_eq!((n, m), (16, 10), "six tools come and go with the switch");
     let graph = with - without;
     eprintln!("the case graph costs {graph} tokens of every request (estimated)");
     // A ceiling, so that growing it is a decision and not an accident.
     assert!(graph < 3_000, "{graph}");
 
-    // By default the five wait for tool_search: the block stays, the definitions go.
+    // By default the six wait for tool_search: the block stays, the definitions go.
     let waiting = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
     run(&waiting, "hi").await.unwrap();
     let (deferred, block, count) = cost(&waiting);
     let left = deferred - without;
     eprintln!("deferred, the case graph costs {left} tokens of every request (estimated)");
     assert!(
-        block && count == 10,
-        "{count} tools: the nine and tool_search"
+        block && count == 11,
+        "{count} tools: the ten and tool_search"
     );
     assert!(left + 1_000 < graph, "{left} against {graph}");
 }
@@ -2247,14 +2250,14 @@ fn given_text(label: &str, text: &str) -> reactor_agent::entry::Attachment {
 }
 
 #[tokio::test]
-async fn a_file_named_with_a_hash_goes_along_with_the_message_and_stays_text_in_it() {
+async fn a_file_named_with_an_at_goes_along_with_the_message_and_stays_text_in_it() {
     let r = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
     std::fs::write(
         r.root.join("work").join("notes.txt"),
         "the alarm was silenced",
     )
     .unwrap();
-    run(&r, "why? see #notes.txt").await.unwrap();
+    run(&r, "why? see @notes.txt").await.unwrap();
 
     assert_eq!(kinds(&r), ["session", "attachment", "user", "assistant"]);
     let req = &r.llm.requests()[0];
@@ -2269,13 +2272,13 @@ async fn a_file_named_with_a_hash_goes_along_with_the_message_and_stays_text_in_
     assert_eq!(texts.len(), 2);
     assert!(texts[0].contains("the alarm was silenced"));
     assert!(texts[0].contains("notes.txt"));
-    assert_eq!(texts[1], "why? see #notes.txt");
+    assert_eq!(texts[1], "why? see @notes.txt");
 }
 
 #[tokio::test]
 async fn a_reference_that_names_nothing_is_left_as_text_and_attaches_nothing() {
     let mut r = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);
-    run(&r, "look at #missing.txt and #doc:nothing.pdf")
+    run(&r, "look at @missing.txt and @doc:nothing.pdf")
         .await
         .unwrap();
     assert_eq!(kinds(&r), ["session", "user", "assistant"]);
@@ -4249,14 +4252,14 @@ async fn taking_input_back_is_a_tombstone_and_it_is_never_sent() {
 }
 
 #[tokio::test]
-async fn a_steer_names_a_file_with_a_hash_like_any_message_does() {
+async fn a_steer_names_a_file_with_an_at_like_any_message_does() {
     let r = rig(
         vec![bash_call("c1", "echo one"), ScriptedLlm::say("done")],
         Sum::says("-"),
         100_000,
     );
     std::fs::write(r.root.join("work").join("notes.txt"), "the sample was packed").unwrap();
-    r.agent.admit("a", Class::Steer, "see #notes.txt").unwrap();
+    r.agent.admit("a", Class::Steer, "see @notes.txt").unwrap();
     run(&r, "go").await.unwrap();
     let second = &r.llm.requests()[1];
     assert!(

@@ -63,7 +63,7 @@ fn rig(cx: &mut TestAppContext) -> Rig {
                 links: vec![
                     Link::entity("src", "host.name", "ws-042"),
                     Link::entity("dst", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:fw.csv"),
+                    Link::source("artifact:fw.csv"),
                 ],
                 ..Put::new(Kind::Event, "net.connection")
             }),

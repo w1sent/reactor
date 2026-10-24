@@ -76,7 +76,7 @@ marked † for that; each says in a note what it changed.
 | †&nbsp;[0044](0044-filesystem-panels-read-through-a-vfs.md) | The filesystem panels read through a `Vfs` |
 | [0045](0045-a-case-is-the-working-directory.md) | A case is the working directory, and it is created by saving |
 | [0046](0046-the-analysis-database-is-sqlite-inside-the-case.md) | The analysis database is SQLite inside the case, and the session log lives in it |
-| [0047](0047-the-analysis-graph-is-the-case-s-model.md) | The analysis graph is the case's model: claims are nodes, and history is never overwritten |
+| †&nbsp;[0047](0047-the-analysis-graph-is-the-case-s-model.md) | The analysis graph is the case's model: claims are nodes, and history is never overwritten |
 | †&nbsp;[0048](0048-mcp-tools-are-catalogue-entries-the-model-gets-as-definitions.md) | MCP tools are catalogue entries that the model gets as definitions, and nothing is active until asked for |
 | †&nbsp;[0049](0049-a-scenario-moved-by-hand-waits-for-the-next-prompt.md) | A scenario moved by hand waits for the next prompt, and that prompt is the summary |
 | [0050](0050-the-table-viewer-is-a-grid-over-sources.md) | The table viewer is a grid over sources, and SQL is one of them |

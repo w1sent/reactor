@@ -640,6 +640,16 @@ impl GraphPanel {
         rows.extend(i.facts.iter().map(|(l, v)| (l.clone(), v.clone(), false)));
         rows.push(("Recorded".into(), short_time(&i.recorded_at), false));
         rows.push(("Id".into(), i.id.clone(), true));
+        // The reference of this version, in the form that names the case (ADR-0066).
+        let reference = reactor_db::reference::Reference::graph(&i.id).pinned(i.ver);
+        rows.push((
+            "Reference".into(),
+            match &self.backend {
+                Some(b) => reference.canonical(&b.case.authority()),
+                None => reference.short(),
+            },
+            true,
+        ));
         let all: String = rows
             .iter()
             .map(|(l, v, _)| format!("{l}: {v}"))

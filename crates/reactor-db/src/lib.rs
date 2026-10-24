@@ -19,6 +19,7 @@ pub mod graph;
 pub mod interchange;
 pub mod manifest;
 pub mod migrate;
+pub mod reference;
 pub mod selfcheck;
 pub mod sessions;
 pub mod sqlite;

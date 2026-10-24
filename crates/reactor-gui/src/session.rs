@@ -48,7 +48,7 @@ pub enum ChatItem {
         active: bool,
         summary: Option<String>,
     },
-    /// Text the person gave the agent: from the Documents panel, or with a `#` reference in
+    /// Text the person gave the agent: from the Documents panel, or with an `@` reference in
     /// the message that follows. `active` is false once it was taken out again.
     Attachment {
         entry: u64,

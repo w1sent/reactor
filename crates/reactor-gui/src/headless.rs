@@ -16,6 +16,11 @@ const USAGE: &str = "usage:
   reactor-gui case save <dir> [--wait]           save a folder's unsaved state as its case
   reactor-gui case discard <dir> [--wait]        delete a folder's unsaved state
   reactor-gui case list                          the cases this machine knows
+  reactor-gui case alias <dir> [<alias>|--clear]  the name references to the case are written with
+                                                 (letters, digits, - and _); no argument shows it
+  reactor-gui case get <dir> <reference> [--limit N] [--offset N]
+                                                 read what a reference names (graph:<id>,
+                                                 session:<id>#entry=<n>, graph:?type=net., ...)
   reactor-gui case sessions <dir>                the sessions of a case
   reactor-gui case export-session <dir> <id>     a session as JSON lines, on stdout
   reactor-gui case export <dir> <file.zip> [--password P]
@@ -212,8 +217,8 @@ fn graph_command(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
                         .map_err(|e| Failure::Error(e.to_string()))?
                         + "\n"
                 }
-                "elements" => tables::elements(case.db(), deleted)?,
-                "edges" => tables::edges(case.db(), deleted)?,
+                "elements" => tables::elements(&case, deleted)?,
+                "edges" => tables::edges(&case, deleted)?,
                 "edge-list" | "graphml" => {
                     let p = projection::project(case.db(), &opts)?;
                     if p.skipped_large > 0 || !p.skipped_prevalent.is_empty() {
@@ -540,6 +545,47 @@ fn case_command(config_dir: &Path, args: &[String], out: &mut dyn Write) -> Resu
                     None => writeln!(out, "(gone)  {}", known.root.display())?,
                 }
             }
+            Ok(())
+        }
+        ("alias", [dir, rest @ ..]) if rest.len() <= 1 => {
+            let case = Case::open(Path::new(dir))?;
+            match rest.first().map(String::as_str) {
+                None => writeln!(
+                    out,
+                    "{}  {}",
+                    case.alias().unwrap_or_else(|| "(none)".into()),
+                    case.meta().id
+                )?,
+                Some(a) => {
+                    case.set_alias((a != "--clear").then_some(a))?;
+                    writeln!(out, "{}  {}", case.authority(), case.meta().id)?;
+                }
+            }
+            Ok(())
+        }
+        ("get", [dir, reference, flags @ ..]) => {
+            let (mut limit, mut offset, mut i) = (None, None, 0);
+            while i < flags.len() {
+                let n = flags.get(i + 1).and_then(|v| v.parse::<usize>().ok());
+                match flags[i].as_str() {
+                    "--limit" => limit = Some(n.ok_or(Failure::Usage)?),
+                    "--offset" => offset = Some(n.ok_or(Failure::Usage)?),
+                    _ => return Err(Failure::Usage),
+                }
+                i += 2;
+            }
+            let case = Case::open(Path::new(dir))?;
+            let r = reactor_db::reference::parse(reference)?;
+            let text = reactor_agent::tools::case::read(
+                &case,
+                None,
+                reactor_agent::tools::case::Access::ALL,
+                &r,
+                limit,
+                offset,
+            )
+            .map_err(Failure::Error)?;
+            writeln!(out, "{text}")?;
             Ok(())
         }
         ("sessions", [dir]) => {
@@ -1079,7 +1125,7 @@ mod tests {
                 links: vec![
                     Link::entity("src", "host.name", "ws-042"),
                     Link::entity("dst", "net.ipv4", "198.51.100.7"),
-                    Link::source("csv:fw.csv"),
+                    Link::source("artifact:fw.csv"),
                 ],
                 ..Put::new(Kind::Event, "net.connection")
             }),
@@ -1201,5 +1247,39 @@ mod tests {
         let (code, _, err) = run_in(config.path(), &["docs", "eval", dir, f]);
         assert_eq!(code, Some(1));
         assert!(err.contains("a list of"), "{err}");
+    }
+
+    #[test]
+    fn a_case_has_an_alias_and_a_reference_is_read_without_a_window() {
+        let config = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let dir = work.path().to_str().unwrap();
+        std::fs::write(work.path().join("a.csv"), "x\n1\n").unwrap();
+        run_in(config.path(), &["case", "create", dir]);
+
+        let (code, out, _) = run_in(config.path(), &["case", "alias", dir]);
+        assert_eq!(code, Some(0));
+        assert!(out.starts_with("(none)"), "{out}");
+        let (code, out, err) = run_in(config.path(), &["case", "alias", dir, "acme"]);
+        assert_eq!(code, Some(0), "{err}");
+        assert!(out.starts_with("acme  "), "{out}");
+        let (code, _, err) = run_in(config.path(), &["case", "alias", dir, "has space"]);
+        assert_eq!(code, Some(1));
+        assert!(err.contains("an alias is"), "{err}");
+
+        let (code, out, err) = run_in(
+            config.path(),
+            &["case", "get", dir, "reactor://acme/artifact/a.csv"],
+        );
+        assert_eq!(code, Some(0), "{err}");
+        assert!(out.contains("artifact:a.csv") && out.contains("not registered"), "{out}");
+        let (code, out, _) = run_in(config.path(), &["case", "get", dir, "graph:?kind=entity"]);
+        assert_eq!(code, Some(0));
+        assert!(out.contains("no match"), "{out}");
+        let (code, _, err) = run_in(config.path(), &["case", "get", dir, "reactor://other/graph/x"]);
+        assert_eq!(code, Some(1));
+        assert!(err.contains("another case"), "{err}");
+        let (code, _, _) = run_in(config.path(), &["case", "get", dir, "nonsense"]);
+        assert_eq!(code, Some(1));
     }
 }

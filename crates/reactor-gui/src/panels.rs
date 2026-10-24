@@ -375,12 +375,18 @@ pub struct ToolStyle {
 #[derive(Clone)]
 struct FileLinks {
     cwd: std::path::PathBuf,
+    /// What a reference to this case calls it, for *Copy reference* (ADR-0066).
+    authority: String,
     /// The window's app and this transcript's session: what a saved scenario's card starts it
     /// in or opens it with.
     app: gpui_kit::WeakEntity<ReactorApp>,
     session: String,
     /// Path as written, its line, the modifier keys held for the click.
     open: std::sync::Arc<OpenReference>,
+    /// The open case, to tell which references in the text name something (ADR-0066).
+    case: Option<reactor_db::Case>,
+    /// Open a reference of the case that was clicked.
+    open_case: std::sync::Arc<OpenCaseReference>,
     /// Open a `docs_search` result in the Documents panel: the query, its passages and the
     /// one to select.
     show_docs: std::sync::Arc<ShowDocs>,
@@ -398,6 +404,9 @@ type ShowDocs = dyn Fn(String, Vec<reactor_agent::tools::docs::ResultPassage>, u
     + Sync;
 
 type OpenReference = dyn Fn(String, Option<u32>, Modifiers, &mut Window, &mut App) + Send + Sync;
+
+type OpenCaseReference =
+    dyn Fn(reactor_db::reference::Reference, Modifiers, &mut Window, &mut App) + Send + Sync;
 
 /// Under a scenario the agent saved: *Start here*, *Start in a new session*, *Edit*.
 fn scenario_card(
@@ -516,10 +525,18 @@ fn render_item(
         }
         ChatItem::AssistantText { text, streaming } => {
             let streaming = *streaming;
-            let linked = crate::files::refs::linkify(text, &|path| {
+            // References of the case first, then the files the text names.
+            let with_refs = match &links.case {
+                Some(case) => crate::files::refs::linkify_references(text, &|r| {
+                    crate::files::refs::reference_exists(case, r)
+                }),
+                None => text.clone(),
+            };
+            let linked = crate::files::refs::linkify(&with_refs, &|path| {
                 crate::files::refs::exists(&links.cwd, path)
             });
             let open = links.open.clone();
+            let open_case = links.open_case.clone();
             // The text as the model wrote it — Markdown and all — for the clipboard.
             let (copy, raw) = (links.copy.clone(), text.clone());
             let copied = links.copied == Some(index);
@@ -564,6 +581,9 @@ fn render_item(
                                 TextView::markdown(format!("assistant-{index}"), linked)
                                     .style(crate::theme::text_view_style(theme))
                                     .on_link_click(move |url, event, window, cx| {
+                                        if let Some(r) = crate::files::refs::parse_ref_url(url) {
+                                            return open_case(r, event.modifiers(), window, cx);
+                                        }
                                         match crate::files::refs::parse_url(url) {
                                             Some((path, line)) => {
                                                 open(path, line, event.modifiers(), window, cx)
@@ -670,6 +690,12 @@ fn render_item(
                         out_of_context,
                         expanded: tool_expanded,
                         copied: links.copied == Some(index),
+                        reference: (*entry)
+                            .filter(|_| !links.session.is_empty() && !links.authority.is_empty())
+                            .map(|n| {
+                                reactor_db::reference::Reference::session(&links.session, n)
+                                    .canonical(&links.authority)
+                            }),
                     },
                     docs,
                     theme,
@@ -1110,11 +1136,27 @@ impl Render for TranscriptPanel {
             let links = FileLinks {
                 app: self.app.clone(),
                 session: self.session_id.clone(),
+                authority: self
+                    .app
+                    .upgrade()
+                    .map(|a| a.read(cx).case_authority())
+                    .unwrap_or_default(),
                 cwd: self
                     .app
                     .upgrade()
                     .map(|a| a.read(cx).cwd.clone())
                     .unwrap_or_default(),
+                case: self.app.upgrade().and_then(|a| a.read(cx).backend_case()),
+                open_case: {
+                    let app = self.app.clone();
+                    std::sync::Arc::new(move |reference, modifiers, window, cx| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |app, cx| {
+                                app.open_case_reference(&reference, modifiers, window, cx)
+                            });
+                        }
+                    })
+                },
                 open: {
                     let app = self.app.clone();
                     std::sync::Arc::new(move |path, line, modifiers, window, cx| {
@@ -1317,7 +1359,7 @@ impl Render for TranscriptPanel {
                                 .text_color(theme.accent)
                                 .child(format!(
                                     "{}{}",
-                                    if reference { "#" } else { "/" },
+                                    if reference { "@" } else { "/" },
                                     entry.run
                                 )),
                         )
@@ -1712,7 +1754,7 @@ impl Render for TreePanel {
         let case_id = self
             .app
             .upgrade()
-            .map(|a| a.read(cx).case_id())
+            .map(|a| a.read(cx).case_authority())
             .unwrap_or_default();
         for s in sessions.iter() {
             let id = s.id.clone();

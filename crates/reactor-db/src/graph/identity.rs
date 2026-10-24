@@ -104,12 +104,20 @@ pub fn normalize(normalizer: Option<&str>, type_: &str, value: &str) -> (String,
     }
 }
 
-/// An external's URI as it is stored, or why it cannot be one. Local resources are
-/// inside the case and are named relative to it; everything else is a network URI.
+/// An external's URI as it is stored, or why it cannot be one
+/// ([ADR-0066](../../../../docs/adr/0066-the-case-is-addressed-by-references.md)). A thing
+/// of the case is a reference (`artifact:data/raw/vpn.csv#row=12`, `session:3#entry=7`), and a
+/// bare relative path is a file of the case. A network URI keeps its `scheme://`, and so does
+/// a scheme a program registered ([`crate::reference::register_scheme`]).
 pub fn canonical_uri(raw: &str) -> Result<String> {
     let uri = raw.trim().replace('\\', "/");
     if uri.is_empty() {
         return Err(Error::Invalid("an external needs a URI".into()));
+    }
+    // A reference that names a case: kept as it is. Whether it is this case is for whoever
+    // knows the case to say (`reference::localize`); another case's stays another case's.
+    if uri.starts_with("reactor://") {
+        return Ok(crate::reference::parse(&uri)?.to_string());
     }
     if let Some((scheme, rest)) = uri.split_once("://") {
         if scheme.eq_ignore_ascii_case("file") {
@@ -125,27 +133,51 @@ pub fn canonical_uri(raw: &str) -> Result<String> {
         }
         return Ok(uri);
     }
-    if uri.to_ascii_lowercase().starts_with("file:") {
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("file:") {
         return Err(Error::Invalid(format!(
             "`{raw}`: no file: URIs -- name a file in the case by its relative path"
         )));
     }
-    // `scheme:path?query#locator`, or a bare relative path.
-    let path = match uri.split_once(':') {
-        Some((scheme, rest))
-            if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric()) =>
-        {
-            rest
+    let scheme = uri
+        .split_once(':')
+        .map(|(s, _)| s)
+        .filter(|s| {
+            s.len() > 1
+                && s.starts_with(|c: char| c.is_ascii_alphabetic())
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        });
+    if let Some(scheme) = scheme {
+        if crate::reference::Kind::from_scheme(scheme).is_some() {
+            return Ok(crate::reference::parse(&uri)?.short());
         }
-        _ => uri.as_str(),
-    };
-    let path = path.split(['?', '#']).next().unwrap_or("");
-    if path.starts_with('/') || path.split('/').any(|part| part == "..") {
+        if crate::reference::is_registered(scheme) {
+            return Ok(uri);
+        }
+        let hint = match scheme.to_ascii_lowercase().as_str() {
+            "csv" | "tsv" | "jsonl" | "json" | "sqlite" => {
+                " -- a file is `artifact:<path>`, with `#table=<t>`, `#/pointer` or `#row=<n>` for a place in it"
+            }
+            _ => "",
+        };
+        return Err(Error::Invalid(format!(
+            "`{raw}`: `{scheme}:` is not a kind of reference or a registered scheme{hint}"
+        )));
+    }
+    if uri.starts_with('/') || uri.split('/').any(|part| part == "..") {
         return Err(Error::Invalid(format!(
             "`{raw}`: a local resource is named relative to the case and stays inside it"
         )));
     }
-    Ok(uri)
+    let (path, frag) = match uri.split_once('#') {
+        Some((p, f)) => (p, Some(f)),
+        None => (uri.as_str(), None),
+    };
+    let mut r = crate::reference::Reference::artifact(path);
+    if let crate::reference::Target::Artifact { locator, .. } = &mut r.target {
+        *locator = frag.filter(|f| !f.is_empty()).map(str::to_string);
+    }
+    Ok(r.short())
 }
 
 #[cfg(test)]
@@ -201,25 +233,38 @@ mod tests {
     #[test]
     fn a_uri_stays_inside_the_case_or_is_a_network_uri() {
         for ok in [
-            "samples/dropper.bin",
-            "sqlite:reactor_data.sqlite?table=fw_conn",
-            "sqlite:?table=artifact",
-            "csv:data/raw/vpn.csv#row=12",
+            "artifact:samples/dropper.bin",
+            "artifact:reactor_data.sqlite#table=fw_conn",
+            "artifact:.reactor/analysis.db#table=artifact",
+            "artifact:data/raw/vpn.csv#row=12",
             "session:1759-1#entry=42",
+            "reactor://other/artifact/data/vpn.csv",
             "https://timesketch.internal/sketch/12",
             "smb://fileserver/cases/2026-17/day1.pcap",
         ] {
             assert_eq!(canonical_uri(ok).unwrap(), ok);
         }
-        assert_eq!(canonical_uri(r"data\raw\x.csv").unwrap(), "data/raw/x.csv");
+        // A bare path is a file of the case.
+        assert_eq!(
+            canonical_uri(r"data\raw\x.csv").unwrap(),
+            "artifact:data/raw/x.csv"
+        );
+        assert_eq!(
+            canonical_uri("data/a b.csv").unwrap(),
+            "artifact:data/a%20b.csv"
+        );
         for bad in [
             "",
             "file:///etc/passwd",
             "file:notes.txt",
             "/etc/passwd",
             "../other-case/x",
-            "csv:../../x.csv",
+            "artifact:../../x.csv",
             "https://user:pw@host/x",
+            "csv:data/raw/vpn.csv#row=12",
+            "sqlite:reactor_data.sqlite?table=t",
+            "reactor://bad name/artifact/x",
+            "nokind:thing",
         ] {
             assert!(canonical_uri(bad).is_err(), "{bad}");
         }

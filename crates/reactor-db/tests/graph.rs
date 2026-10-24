@@ -37,7 +37,7 @@ fn incident() -> Batch {
         vec![
             Link::entity("actor", "account.user", "jdoe"),
             Link::entity("target", "host.name", "WS-042"),
-            Link::source("sqlite:reactor_data.sqlite?table=vpn_auth").at("row=1204", Some("f1")),
+            Link::source("artifact:reactor_data.sqlite#table=vpn_auth").at("row=1204", Some("f1")),
         ],
     ))
     .put(claim(
@@ -46,7 +46,7 @@ fn incident() -> Batch {
         vec![
             Link::entity("src", "host.name", "ws-042"),
             Link::entity("dst", "net.ipv4", "198.51.100.7"),
-            Link::source("sqlite:reactor_data.sqlite?table=fw_conn"),
+            Link::source("artifact:reactor_data.sqlite#table=fw_conn"),
         ],
     ))
     .put(claim(
@@ -55,7 +55,7 @@ fn incident() -> Batch {
         vec![
             Link::entity("query", "net.domain", "CDN-Sync.Example."),
             Link::entity("answer", "ipv4", "::ffff:198.51.100.7"),
-            Link::source("csv:data/pdns.csv").at("row=7", None),
+            Link::source("artifact:data/pdns.csv").at("row=7", None),
         ],
     ))
 }
@@ -117,7 +117,7 @@ fn claims_from_three_sources_join_on_the_entities_they_share() {
     );
     let external = query::get(db, &source.to_id).unwrap().unwrap();
     assert_eq!(external.kind, Kind::External);
-    assert_eq!(external.type_, "external.sqlite");
+    assert_eq!(external.type_, "external.artifact");
 }
 
 #[test]
@@ -502,7 +502,7 @@ fn a_claim_with_three_participants_is_not_a_relation_and_orphans_are_found() {
         .filter(|t| !t.known)
         .map(|t| t.type_.as_str())
         .collect();
-    assert_eq!(unknown, ["external.file"]);
+    assert_eq!(unknown, ["external.artifact"]);
     assert_eq!(
         types
             .iter()

@@ -227,6 +227,8 @@ pub struct Filter {
     pub include_deleted: bool,
     /// 0 means no limit.
     pub limit: usize,
+    /// How many of the newest to skip: the start of a later page.
+    pub offset: usize,
 }
 
 /// Elements as they stand, newest first.
@@ -261,11 +263,11 @@ pub fn find(db: &Db, f: &Filter) -> Result<Vec<Element>> {
                 AND (?3 IS NULL OR v.value LIKE ?3 ESCAPE '\\' OR v.props LIKE ?3 ESCAPE '\\')
                 AND (?4 IS NULL OR EXISTS (SELECT 1 FROM json_each(v.tags) WHERE value = ?4))
                 AND (?5 OR v.status <> 'soft-deleted')
-              ORDER BY v.recorded_at DESC, e.id LIMIT ?6"
+              ORDER BY v.recorded_at DESC, e.id LIMIT ?6 OFFSET ?7"
         ))?;
         let rows = stmt
             .query_map(
-                params![kind, prefix, text, tag, f.include_deleted, limit],
+                params![kind, prefix, text, tag, f.include_deleted, limit, f.offset as i64],
                 element,
             )?
             .collect::<std::result::Result<_, _>>()?;

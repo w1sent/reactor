@@ -469,7 +469,7 @@ fn the_names_an_mcp_tool_may_not_take_are_the_agents_own() {
         "update_steps",
         "reactor_phase_complete",
         "scenario_amend",
-        "graph_add",
+        "graph_write",
         "tool_search",
     ] {
         assert!(

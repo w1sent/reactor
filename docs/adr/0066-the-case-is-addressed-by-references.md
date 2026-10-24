@@ -1,9 +1,10 @@
 # The case is addressed by references: one grammar for what a person, the agent and an export point at
 
-> Not implemented yet. Amends [ADR-0047](0047-the-analysis-graph-is-the-case-s-model.md) (the
-> graph's write tools become one), and replaces the `#` and `#doc:` references of the composer.
-> The integration interface (programs such as a disassembler that register a scheme) is left to
-> a following ADR; this one only leaves room for it.
+> Implemented, apart from what "Left for later" lists. Amends
+> [ADR-0047](0047-the-analysis-graph-is-the-case-s-model.md) (the graph's write tools become
+> one), and replaces the `#` and `#doc:` references of the composer. The integration interface
+> (programs such as a disassembler that register a scheme) is left to a following ADR; this one
+> only leaves room for it, in `reference::register_scheme`.
 
 The case has several addresses already, each made for one place. A session entry is `#id` in a
 stub and `session:<id>#entry=<n>` in a graph source. A file is a path to the tools, a `FileRef`
@@ -40,13 +41,20 @@ composer, the transcript, the grid and the agent write. The canonical form,
 `parse` reads both and `Display` prints either. A canonical reference to another case parses and
 resolves to "not this case"; it never opens another database.
 
-**A case has a hidden id and an optional alias.** A UUIDv7 is minted when the database is created
-and kept in a one-row table. The alias is a name the person may set: letters, digits, `-` and
-`_`, no spaces, compared without regard to case. `<case>` in the canonical form is the alias when
+**A case has a hidden id and an optional alias.** The id is the UUIDv7 `case.json` already
+held; the alias, and the aliases the case had before, are two more fields of that file, so there
+is no table and no migration. The alias is a name the person may set (`reactor-gui case alias`):
+letters, digits, `-` and `_`, no spaces, up to 64, compared without regard to case. `<case>` in the canonical form is the alias when
 there is one and the UUID otherwise. Renaming keeps the old aliases accepted. An export records
 both in its header, so two cases that chose the same alias are told apart. The alias is shown to
 the person before it is first used in an export, since a directory name can say more than they
 meant.
+
+**The place in a file is on the edge, the file is the External.** `graph_write` takes a source
+as `artifact:data/a.csv#row=12` and keeps the file as the External and `row=12` as the edge's
+locator (`reference::split_source`), so many rows of one file are one External and not one each.
+What names the thing itself (`#table=<t>` of a database, `#/pointer` of a JSON file) stays in the
+External, as `graph_pull` stores it.
 
 **A locator follows the file's media type.** A reference to a file may end in `#<locator>`,
 and what it means is decided by the file, not by the scheme: `line=`/`char=` for text (RFC 5147),
@@ -68,16 +76,19 @@ references. After `@` the menu lists the kinds and the files; with no kind it me
 `@vpn.csv` is `@artifact:data/raw/vpn.csv`. The registered files rank first. Each kind completes
 from the same query as the tool (below), so a menu and a call do not drift. Choosing an item
 inserts the stable reference, and when a message is sent the `@` is dropped: the stored text and
-the model see `artifact:data/raw/vpn.csv`, the same as the agent writes. A reference typed in
-full resolves too. Each resolved reference goes with the message as an attachment, cut to the
+the model see `artifact:data/raw/vpn.csv`, the same as the agent writes. The log keeps the message as typed
+([ADR-0061](0061-typed-input-is-a-fact-in-the-log-before-it-is-sent.md)); the `@` is dropped
+when the request is made. A reference typed in full resolves too. Each resolved reference goes with the message as an attachment, cut to the
 same 20,000 tokens as today, and one that names nothing is left as text. `#N` stays in stubs and
 in `history_read`'s text as the entry of this session; it is not a reference and the composer
 does not parse it.
 
 **A collection is a reference with a query.** `graph:?type=net.&tag=c2&text=beacon&limit=40` is
 a set, and what comes back is a page of references with a line of preview each. The filters are
-the ones `graph_query find` has (`kind`, `type` prefix, `text`, `tag`, `include_deleted`),
-plus `near=` for the vector search on documents, `order`, `limit`, `offset`. It is not SQL. SQL
+the ones `graph_query find` has (`kind`, `type` prefix, `text`, `tag`, `include_deleted`), plus
+`orphans` and `stale`, `text` for the other kinds and `changed` for artifacts; `limit` and
+`offset` are the tool's parameters. Search of the documents' passages by meaning stays
+`docs_search`'s, because it needs the embedding model the database does not have. It is not SQL. SQL
 stays in the table viewer, read-only (ADR-0050), and in `graph_pull`, where it is run over the
 data being brought in and not over the case.
 
@@ -86,8 +97,9 @@ entry, document passage or registry row in full; a collection returns a page. `l
 `offset` are parameters, not part of the string, so the model never has to encode a cursor, and
 the output follows ADR-0053. It never returns a file's bytes: for those the answer is a path and
 the agent's `read`. The switch of the kind decides whether it answers (*Case graph*, *Documents*,
-*Other sessions*), not the tool. A reference into another session is answered for the person, and
-for the agent only when that session is a child of this one (ADR-0063).
+*Other sessions*), not the tool. A reference into another session is answered
+under the same switch as `history_read` has for it (*Other sessions*), which is on unless
+the person turned it off; a person who types one in the composer is not held to a switch.
 The five reading tools stay at first and become aliases for `case_get` once it has been
 watched in use; the ladder's check for a result "read back with `history_read`" and the GUI's
 matches on tool names move with them.
@@ -102,13 +114,31 @@ needs `about` and a confidence. `graph_revert` and `define_type` are their own s
 because they write no element. `graph_pull` stays, with `source` an `artifact:` reference.
 Wherever a tool takes an id, it takes a reference.
 
+**An export writes every reference with the case's name.** The element tables get a `reference`
+column (pinned, canonical), a source is written canonical, a reference inside a text is
+rewritten, and a STIX bundle carries both names of the case in `x_reactor_case`. Restoring a
+bundle into another case turns the references that carried the bundle's own names back to short
+ones, so the sources are what they were; those that name another case stay as written.
+
+**A session has the reference it is shown with.** `<case id>#<n>` in the session list is
+`reactor://<case>/session/<n>`; `/open`, the command line and the composer read all of
+`3`, `#3`, `session:3` and the canonical form.
+
 **A native path is not a reference, and is not turned into one.** `read`, `write`, `edit` and
 `bash` keep paths. One that is given `kind:...` for a kind of this grammar answers with the tool
-to use. A `reactor get <reference>` command lets a pipeline resolve one.
+to use. A `reactor-gui case get <dir> <reference>` lets a pipeline resolve one.
 
 **The grammar is closed for the case and open for programs.** A scheme registered by an
 integration is a source the graph can hold as an External element, and is not scoped to a case.
 How one is registered, opened and completed is the next ADR.
+
+## Left for later
+
+- Folding `history_index`, `history_read`, `history_search`, `graph_query` and `docs_search` into
+  `case_get`. It is added beside them; they stay until it has been watched in use.
+- Opening at a place in a SQLite table or a JSON file, and in the data viewer: the editor
+  (a line), a delimited file's table (a row) and the hex view (bytes) do.
+- The interface for programs that register a scheme (the next ADR).
 
 ## Consequences
 

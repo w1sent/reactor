@@ -18,6 +18,7 @@ use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
@@ -27,6 +28,7 @@ use gpui_kit::{ClipboardItem, Entity, EventEmitter, FocusHandle, Focusable, Rend
 use gpui_kit::{Window, div, px};
 
 use reactor_db::artifact::{self, Artifact};
+use reactor_db::manifest::Author;
 use reactor_fs::{
     Algorithm, ContentHit, Entry, FileRef, Kind, SearchOptions, VPath, Vfs, search_content,
     search_names,
@@ -91,7 +93,8 @@ pub struct FilesPanel {
     focus: FocusHandle,
 }
 
-/// How tall the artifacts section is: a header and a few rows, scrolling beyond that.
+/// How tall the artifacts section starts: a header and a few rows, scrolling beyond that. The
+/// divider above it is dragged.
 const ARTIFACTS_HEIGHT: f32 = 170.;
 
 fn id_of(path: &VPath) -> SharedString {
@@ -256,6 +259,82 @@ impl FilesPanel {
         cx.notify();
     }
 
+    /// Register files in the case's registry on the person's say-so, hashing them off the
+    /// window's thread: `paths` are native or relative to the case root, and a folder stands
+    /// for every file below it. A path the registry refuses (outside the case, not a file) is
+    /// said, and the rest are still added.
+    pub fn add_artifacts(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            self.note("warning", "artifacts: the agent is not running".into(), cx);
+            return;
+        };
+        if paths.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let report = cx
+                .background_spawn(async move {
+                    let author = Author::analyst();
+                    let files = expand_folders(&backend.case, paths);
+                    let before = artifact::list(&backend.case).map(|l| l.len()).unwrap_or(0);
+                    let mut refused = Vec::new();
+                    let mut ok = 0usize;
+                    for p in &files {
+                        match artifact::register(
+                            &backend.case,
+                            p,
+                            None,
+                            None,
+                            &author,
+                            Some(&backend.session_id),
+                        ) {
+                            Ok(_) => ok += 1,
+                            Err(e) => refused.push(format!("{p}: {e}")),
+                        }
+                    }
+                    let after = artifact::list(&backend.case).map(|l| l.len()).unwrap_or(before);
+                    AddReport {
+                        added: after.saturating_sub(before),
+                        known: ok.saturating_sub(after.saturating_sub(before)),
+                        refused,
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |panel, cx| {
+                for (kind, message) in report.notes() {
+                    panel.note(kind, message, cx);
+                }
+                panel.refresh_artifacts(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Choose files in the system's picker and add them.
+    fn add_artifacts_from_picker(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Add".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await {
+                let _ = this.update(cx, |panel, cx| {
+                    // The picker may start anywhere; the registry takes only the case's files.
+                    panel.add_artifacts(
+                        paths
+                            .into_iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
+    }
+
     /// The registered file as the explorer's filesystem names it.
     fn artifact_path(artifact: &Artifact) -> VPath {
         VPath::new(&artifact.path)
@@ -341,8 +420,7 @@ impl FilesPanel {
                 .into_any_element()
         };
         v_flex()
-            .flex_none()
-            .h(px(ARTIFACTS_HEIGHT))
+            .size_full()
             .border_t_1()
             .border_color(theme.border)
             .child(
@@ -353,7 +431,20 @@ impl FilesPanel {
                     .items_center()
                     .child(Icon::new(IconName::Archive).small().flex_none())
                     .child(div().font_weight(FontWeight::MEDIUM).child("Artifacts"))
-                    .child(div().text_color(muted).child(count.to_string())),
+                    .child(div().text_color(muted).child(count.to_string()))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("files-artifact-add")
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .small()
+                            .tooltip(
+                                "Add files or folders of the case to the artifacts (or right-click one in the tree)",
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.add_artifacts_from_picker(cx)
+                            })),
+                    ),
             )
             .child(div().flex_1().min_h_0().child(list))
     }
@@ -796,6 +887,28 @@ impl FilesPanel {
                     .on_click(act(Rc::new(move |t, w, c| t.properties(&p, &[], w, c)))),
             );
         }
+        {
+            let p = path.clone();
+            menu = menu.separator().item(
+                PopupMenuItem::new(if is_file {
+                    "Add to artifacts"
+                } else {
+                    "Add folder to artifacts"
+                })
+                .disabled(!local)
+                    .icon(IconName::Archive)
+                    .on_click(act(Rc::new(move |t, _, c| {
+                        // A native path when there is one; the registry refuses what is
+                        // outside the case.
+                        let given = t
+                            .fs
+                            .local_path(&p)
+                            .map(|n| n.display().to_string())
+                            .unwrap_or_else(|| p.relative().to_owned());
+                        t.add_artifacts(vec![given], c)
+                    }))),
+            );
+        }
         if is_file {
             menu = menu.separator().label("Hash");
             for algorithm in Algorithm::ALL {
@@ -913,6 +1026,94 @@ impl Panel for FilesPanel {
             close_button(&self.app, cx.entity()),
         ])
     }
+}
+
+/// What adding files to the registry came to.
+struct AddReport {
+    /// Files that were not registered before.
+    added: usize,
+    /// Files that already were, and are as they were.
+    known: usize,
+    /// What the registry refused, one line each with its reason.
+    refused: Vec<String>,
+}
+
+/// The most refusals said one by one; the rest are counted.
+const REFUSALS_SHOWN: usize = 3;
+
+impl AddReport {
+    /// The notices to show: the refusals (the first few), then what was added.
+    fn notes(&self) -> Vec<(&'static str, String)> {
+        let mut out: Vec<(&'static str, String)> = self
+            .refused
+            .iter()
+            .take(REFUSALS_SHOWN)
+            .map(|r| ("warning", format!("artifacts: {r}")))
+            .collect();
+        if self.refused.len() > REFUSALS_SHOWN {
+            out.push((
+                "warning",
+                format!(
+                    "artifacts: and {} more were refused",
+                    self.refused.len() - REFUSALS_SHOWN
+                ),
+            ));
+        }
+        let files = |n: usize| format!("{n} file{}", if n == 1 { "" } else { "s" });
+        match (self.added, self.known) {
+            (0, 0) => {}
+            (n, 0) => out.push(("info", format!("artifacts: added {}", files(n)))),
+            (0, k) => out.push(("info", format!("artifacts: {} already registered", files(k)))),
+            (n, k) => out.push((
+                "info",
+                format!("artifacts: added {} ({k} already registered)", files(n)),
+            )),
+        }
+        out
+    }
+}
+
+/// `paths` with each folder replaced by the files below it, in name order. REactor's own
+/// `.reactor` folder is passed over, and a symlink to a folder is not followed, so a link
+/// out of the case does not pull the rest of the disk in. Anything else is left for the
+/// registry to accept or refuse.
+fn expand_folders(case: &reactor_db::Case, paths: Vec<String>) -> Vec<String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(read) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = read.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let Ok(kind) = e.file_type() else { continue };
+            let path = e.path();
+            if kind.is_dir() {
+                if e.file_name() != reactor_db::case::DIR {
+                    walk(&path, out);
+                }
+            } else {
+                out.push(path.display().to_string());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for p in paths {
+        let given = std::path::Path::new(p.trim());
+        let native = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            case.root().join(given)
+        };
+        // A link to a folder is a link, not a folder: the registry refuses it as it would a
+        // link out of the case.
+        let is_folder = std::fs::symlink_metadata(&native).is_ok_and(|m| m.is_dir());
+        if is_folder {
+            walk(&native, &mut out);
+        } else {
+            out.push(p);
+        }
+    }
+    out
 }
 
 fn file_icon(meta: &Meta, expanded: bool) -> IconName {
@@ -1116,11 +1317,87 @@ impl Render for FilesPanel {
             }
         };
 
+        // The tree above and the artifacts below, with a divider between them that is dragged.
+        let tree_part = v_flex()
+            .size_full()
+            .child(toolbar)
+            .child(div().flex_1().min_h_0().child(body));
+        let artifacts = self.artifacts_section(cx);
         v_flex()
             .size_full()
             .track_focus(&self.focus)
-            .child(toolbar)
-            .child(div().flex_1().min_h_0().child(body))
-            .child(self.artifacts_section(cx))
+            .child(
+                v_resizable("files-split")
+                    .child(
+                        resizable_panel()
+                            // The search box and a few rows stay in view.
+                            .size_range(px(240.)..px(4000.))
+                            .child(tree_part),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size(px(ARTIFACTS_HEIGHT))
+                            .size_range(px(60.)..px(4000.))
+                            .child(artifacts),
+                    ),
+            )
+    }
+}
+
+#[cfg(test)]
+mod add_tests {
+    // Not `super::*`: the glob brings gpui's own `test` into scope in place of the attribute.
+    use super::{AddReport, expand_folders};
+
+    #[test]
+    fn a_folder_stands_for_the_files_below_it_and_not_for_reactors_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("dump/deep")).unwrap();
+        std::fs::write(root.join("dump/b.bin"), "b").unwrap();
+        std::fs::write(root.join("dump/a.bin"), "a").unwrap();
+        std::fs::write(root.join("dump/deep/c.bin"), "c").unwrap();
+        std::fs::write(root.join("top.txt"), "t").unwrap();
+        let case = reactor_db::Case::create(root, None).unwrap();
+        let root = case.root().to_path_buf();
+        // A link to a folder is not followed.
+        std::os::unix::fs::symlink("/", root.join("dump/link")).unwrap();
+
+        let names = |paths: Vec<String>| -> Vec<String> {
+            paths
+                .into_iter()
+                .map(|p| p.strip_prefix(&format!("{}/", root.display())).unwrap_or(&p).to_string())
+                .collect()
+        };
+        let got = names(expand_folders(
+            &case,
+            vec!["dump".into(), "top.txt".into(), "missing.bin".into()],
+        ));
+        // `link` is a symlink, which the registry will refuse; its target is not walked.
+        assert_eq!(
+            got,
+            ["dump/a.bin", "dump/b.bin", "dump/deep/c.bin", "dump/link", "top.txt", "missing.bin"]
+        );
+        // The whole case: the case's own `.reactor` is left out.
+        let all = names(expand_folders(&case, vec![root.display().to_string()]));
+        assert!(all.iter().all(|p| !p.starts_with(".reactor")), "{all:?}");
+        assert!(all.contains(&"top.txt".to_string()));
+    }
+
+    #[test]
+    fn the_report_says_what_was_added_known_and_refused() {
+        let r = AddReport {
+            added: 2,
+            known: 1,
+            refused: (1..=5).map(|i| format!("f{i}: outside the case")).collect(),
+        };
+        let notes = r.notes();
+        assert_eq!(notes.len(), 5);
+        assert_eq!(notes[0].1, "artifacts: f1: outside the case");
+        assert_eq!(notes[3].1, "artifacts: and 2 more were refused");
+        assert_eq!(notes[4], ("info", "artifacts: added 2 files (1 already registered)".to_string()));
+        let only_known = AddReport { added: 0, known: 1, refused: vec![] };
+        assert_eq!(only_known.notes()[0].1, "artifacts: 1 file already registered");
+        assert!(AddReport { added: 0, known: 0, refused: vec![] }.notes().is_empty());
     }
 }

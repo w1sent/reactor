@@ -160,6 +160,13 @@ START WITH THE GUI (any licence; the only way with Personal). Start it with a bi
 
 START WITHOUT A GUI (Commercial or Ultimate licence, Linux or macOS only; not Free, Personal or native Windows packages, where WSL is the way). `binaryninja_mcp` is a stdio MCP server for a client to launch: give its full path in the client config unless it is on PATH. User and Extension Manager plugins load by default; `-p` or BN_DISABLE_USER_PLUGINS turns them off. It serves the built-in bn_* tools. The MCP Extender follows the GUI's open tabs, so without a GUI its scripts have no `bv` (they can still call `binaryninja.load(path)` themselves). With a Commercial licence the Python API also runs in plain scripts.
 """
+# The plugin only, and only under --auto-install-manual or --force-install-manual (ADR-0027); Binary Ninja
+# itself is licensed and cannot be installed for the person. It runs in a scratch directory, so the
+# clone lands there; install.py copies the plugin into Binary Ninja's plugin folder and fetches its
+# dependency for the Python Binary Ninja ships, so nothing depends on the scratch directory
+# afterwards. The import first: without the Python API set up (install_api.py) install.py cannot
+# tell which Python Binary Ninja runs. No binary is installed, so there is nothing to put on PATH.
+manual-install-oneliner = 'python3 -c "import binaryninja" && git clone https://github.com/w1sent/bn-mcp-extender && python3 bn-mcp-extender/install.py'
 
 [tool.bindiff]
 name    = "BinDiff"

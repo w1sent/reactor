@@ -309,5 +309,8 @@ fn a_source_that_changed_since_it_was_pulled_is_reported() {
         "domain,ip\nnew.example,1.2.3.4\n",
     )
     .unwrap();
-    assert_eq!(pull::changed_sources(&case).unwrap(), ["artifact:data/pdns.csv"]);
+    assert_eq!(
+        pull::changed_sources(&case).unwrap(),
+        ["artifact:data/pdns.csv"]
+    );
 }

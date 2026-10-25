@@ -7,7 +7,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Directories never listed: version control, build output, dependencies.
-const SKIPPED: [&str; 6] = [".git", "target", "node_modules", ".venv", "__pycache__", ".reactor"];
+const SKIPPED: [&str; 6] = [
+    ".git",
+    "target",
+    "node_modules",
+    ".venv",
+    "__pycache__",
+    ".reactor",
+];
 
 /// The most files listed, and the deepest folder looked in.
 const MAX_FILES: usize = 20_000;
@@ -82,7 +89,11 @@ fn scan(root: &Path, dir: &Path, depth: usize, out: &mut Vec<FileRow>) {
 /// them, in any order (the ranker is stricter). Keeps a typo from hiding a file, and keeps a
 /// keystroke from ranking every file.
 pub fn plausible(query: &str, candidate: &str) -> bool {
-    let q: Vec<char> = query.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+    let q: Vec<char> = query
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
     if q.is_empty() {
         return true;
     }
@@ -130,8 +141,16 @@ pub fn reference_at(text: &str, cursor: usize) -> Option<(Trigger, String, Range
         .split_once(':')
         .and_then(|(scheme, q)| reactor_db::reference::Kind::from_scheme(scheme).map(|k| (k, q)));
     Some(match kind {
-        Some((kind, q)) => (Trigger::Kind(kind), q.trim_matches('"').to_string(), start..end),
-        None => (Trigger::File, rest.trim_matches('"').to_string(), start..end),
+        Some((kind, q)) => (
+            Trigger::Kind(kind),
+            q.trim_matches('"').to_string(),
+            start..end,
+        ),
+        None => (
+            Trigger::File,
+            rest.trim_matches('"').to_string(),
+            start..end,
+        ),
     })
 }
 

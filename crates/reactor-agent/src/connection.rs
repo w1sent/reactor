@@ -377,26 +377,36 @@ pub async fn list_models(provider: &str) -> Result<Vec<String>, String> {
 
     let listing = async {
         let list = match provider {
-            "anthropic" => anthropic::Client::from_env()
-                .map_err(|e| e.to_string())?
-                .list_models()
-                .await,
-            "openai" => openai::Client::from_env()
-                .map_err(|e| e.to_string())?
-                .list_models()
-                .await,
-            "gemini" => gemini::Client::from_env()
-                .map_err(|e| e.to_string())?
-                .list_models()
-                .await,
-            "openrouter" => openrouter::Client::from_env()
-                .map_err(|e| e.to_string())?
-                .list_models()
-                .await,
-            "ollama" => ollama::Client::from_env()
-                .map_err(|e| e.to_string())?
-                .list_models()
-                .await,
+            "anthropic" => {
+                anthropic::Client::from_env()
+                    .map_err(|e| e.to_string())?
+                    .list_models()
+                    .await
+            }
+            "openai" => {
+                openai::Client::from_env()
+                    .map_err(|e| e.to_string())?
+                    .list_models()
+                    .await
+            }
+            "gemini" => {
+                gemini::Client::from_env()
+                    .map_err(|e| e.to_string())?
+                    .list_models()
+                    .await
+            }
+            "openrouter" => {
+                openrouter::Client::from_env()
+                    .map_err(|e| e.to_string())?
+                    .list_models()
+                    .await
+            }
+            "ollama" => {
+                ollama::Client::from_env()
+                    .map_err(|e| e.to_string())?
+                    .list_models()
+                    .await
+            }
             other => return Err(format!("unknown provider `{other}`")),
         };
         list.map_err(|e| e.to_string())
@@ -405,10 +415,7 @@ pub async fn list_models(provider: &str) -> Result<Vec<String>, String> {
         .await
         .map_err(|_| "no answer within 12 seconds".to_string())??;
 
-    let mut ids: Vec<String> = list
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let mut ids: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -499,12 +506,18 @@ mod tests {
             levels(json!({"thinking": {"values": [false, true]}})),
             Some(vec!["off".into(), "on".into()])
         );
-        assert_eq!(levels(json!({"thinking": {"values": [false]}})), Some(vec![]));
+        assert_eq!(
+            levels(json!({"thinking": {"values": [false]}})),
+            Some(vec![])
+        );
         assert_eq!(
             levels(json!({"capabilities": ["completion", "thinking"]})),
             Some(vec!["off".into(), "on".into()])
         );
-        assert_eq!(levels(json!({"capabilities": ["completion"]})), Some(vec![]));
+        assert_eq!(
+            levels(json!({"capabilities": ["completion"]})),
+            Some(vec![])
+        );
         assert_eq!(levels(json!({})), None);
     }
 
@@ -528,7 +541,13 @@ mod tests {
     #[test]
     fn a_value_says_where_it_came_from() {
         let none = HashSet::new();
-        let unset = resolve("OLLAMA_API_BASE_URL", Some("http://localhost:11434"), None, None, &none);
+        let unset = resolve(
+            "OLLAMA_API_BASE_URL",
+            Some("http://localhost:11434"),
+            None,
+            None,
+            &none,
+        );
         assert_eq!(unset.source, Source::Default);
         assert_eq!(unset.value.as_deref(), Some("http://localhost:11434"));
 
@@ -544,10 +563,16 @@ mod tests {
         assert_eq!(shadow.shadowed.as_deref(), Some("b"));
 
         let session: HashSet<String> = ["X".to_string()].into();
-        assert_eq!(resolve("X", None, Some("a"), None, &session).source, Source::Session);
+        assert_eq!(
+            resolve("X", None, Some("a"), None, &session).source,
+            Source::Session
+        );
 
         // An empty variable is not a value.
-        assert_eq!(resolve("X", None, Some(""), None, &none).source, Source::Default);
+        assert_eq!(
+            resolve("X", None, Some(""), None, &none).source,
+            Source::Default
+        );
     }
 
     #[test]
@@ -584,7 +609,10 @@ mod tests {
         )
         .unwrap();
         let again = EnvFile::load(dir.path());
-        assert_eq!(again.get("OLLAMA_API_BASE_URL"), Some("http://gpu-box.lan:11434"));
+        assert_eq!(
+            again.get("OLLAMA_API_BASE_URL"),
+            Some("http://gpu-box.lan:11434")
+        );
         assert_eq!(again.get("HOME"), None);
     }
 

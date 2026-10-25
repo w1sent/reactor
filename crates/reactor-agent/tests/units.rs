@@ -242,7 +242,9 @@ fn inputs<'a>(
         state,
         registry,
         skills,
-        scenarios: Box::leak(Box::new(reactor_core::scenarios::Library::single("/nonexistent"))),
+        scenarios: Box::leak(Box::new(reactor_core::scenarios::Library::single(
+            "/nonexistent",
+        ))),
         cwd: None,
         rules: &[],
         deferred: &[],

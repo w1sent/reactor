@@ -75,7 +75,10 @@ fn settings_default_to_what_the_extensions_defaulted_to() {
     let s = Settings::default();
     assert!(s.toolbox);
     assert!(s.hidden_services.is_empty());
-    assert_eq!((s.manifest.max_description, s.manifest.status_words), (80, 3));
+    assert_eq!(
+        (s.manifest.max_description, s.manifest.status_words),
+        (80, 3)
+    );
     assert_eq!(s.manifest.derive_context_chars, 24_000);
     assert_eq!(s.identity.default, "");
     assert_eq!(
@@ -228,10 +231,7 @@ fn state_serializes_without_unset_fields() {
 fn an_untouched_session_adds_nothing_to_the_prompt() {
     // The property the prompt cache depends on.
     let cfg = Settings::default();
-    assert_eq!(
-        manifest::block(&manifest::State::default()),
-        None
-    );
+    assert_eq!(manifest::block(&manifest::State::default()), None);
     assert_eq!(
         identity::block(&identity::State::default(), &cfg.identity),
         None
@@ -621,7 +621,11 @@ fn scenario_dir(phases: usize) -> tempfile::TempDir {
 }
 
 /// A runner on scenario `s`, started and standing at phase `at` (0-based) with `summaries`.
-fn running<'a>(lib: &'a scenario::Library, at: usize, summaries: &[&str]) -> scenario::Scenario<'a> {
+fn running<'a>(
+    lib: &'a scenario::Library,
+    at: usize,
+    summaries: &[&str],
+) -> scenario::Scenario<'a> {
     scenario::Scenario {
         lib,
         state: Some(scenario::State {
@@ -769,16 +773,30 @@ fn the_agents_own_advance_never_leaves_a_summary_pending() {
 fn the_cache_prefix_lifetime_is_one_of_the_two_the_providers_offer() {
     use reactor_context::settings::{CacheSettings, Settings};
     let n = |v: serde_json::Value| CacheSettings::normalize(&v);
-    assert_eq!(n(json!({"prefixTtl": "1h"})).prefix_ttl.as_deref(), Some("1h"));
+    assert_eq!(
+        n(json!({"prefixTtl": "1h"})).prefix_ttl.as_deref(),
+        Some("1h")
+    );
     assert!(n(json!({"prefixTtl": "1h"})).prefix_one_hour());
     assert!(!n(json!({"prefixTtl": "5m"})).prefix_one_hour());
-    assert_eq!(n(json!({"prefixTtl": "2h"})).prefix_ttl, None, "no other length");
-    assert_eq!(n(json!({"prefixTtl": 60})).prefix_ttl, None, "and only as text");
+    assert_eq!(
+        n(json!({"prefixTtl": "2h"})).prefix_ttl,
+        None,
+        "no other length"
+    );
+    assert_eq!(
+        n(json!({"prefixTtl": 60})).prefix_ttl,
+        None,
+        "and only as text"
+    );
     let s = Settings::from_json(&json!({"cache": {"prefixTtl": "1h"}}));
     assert!(s.cache.prefix_one_hour());
     assert!(Settings::default().cache.is_default());
     let out = serde_json::to_value(Settings::default()).unwrap();
-    assert!(out.get("cache").is_none(), "an unset cache section is not written");
+    assert!(
+        out.get("cache").is_none(),
+        "an unset cache section is not written"
+    );
 }
 
 #[test]
@@ -788,12 +806,32 @@ fn children_run_in_parallel_unless_switched_off_and_at_most_so_many_at_once() {
     assert!(d.parallel && d.max_parallel == 4);
     let n = |v: serde_json::Value| ChildrenSettings::normalize(&v);
     assert!(!n(json!({"parallel": false})).parallel);
-    assert_eq!(n(json!({"parallel": "no"})).parallel, true, "only a boolean counts");
+    assert_eq!(
+        n(json!({"parallel": "no"})).parallel,
+        true,
+        "only a boolean counts"
+    );
     assert_eq!(n(json!({"maxParallel": 2})).max_parallel, 2);
-    assert_eq!(n(json!({"maxParallel": 99})).max_parallel, ChildrenSettings::MAX);
-    assert_eq!(n(json!({"maxParallel": 0})).max_parallel, 4, "at least one, else the default");
-    assert!(!Settings::from_json(&json!({"children": {"parallel": false}})).children.parallel);
-    assert!(serde_json::to_value(Settings::default()).unwrap().get("children").is_none());
+    assert_eq!(
+        n(json!({"maxParallel": 99})).max_parallel,
+        ChildrenSettings::MAX
+    );
+    assert_eq!(
+        n(json!({"maxParallel": 0})).max_parallel,
+        4,
+        "at least one, else the default"
+    );
+    assert!(
+        !Settings::from_json(&json!({"children": {"parallel": false}}))
+            .children
+            .parallel
+    );
+    assert!(
+        serde_json::to_value(Settings::default())
+            .unwrap()
+            .get("children")
+            .is_none()
+    );
 }
 
 // -- scenario: starting from a question, leaving phases out (ADR-0065) ------------
@@ -802,29 +840,50 @@ fn children_run_in_parallel_unless_switched_off_and_at_most_so_many_at_once() {
 fn a_start_carries_a_question_and_phases_to_leave_out() {
     let dir = scenario_dir(4);
     let lib = scenario::Library::single(dir.path());
-    let mut sc = scenario::Scenario { lib: &lib, state: None };
+    let mut sc = scenario::Scenario {
+        lib: &lib,
+        state: None,
+    };
     let e = sc.command("start s skip=1,3 Was the VPN appliance\nthe entry point?");
-    assert_eq!(e.goal.as_deref(), Some("Was the VPN appliance\nthe entry point?"));
+    assert_eq!(
+        e.goal.as_deref(),
+        Some("Was the VPN appliance\nthe entry point?")
+    );
     let s = stored(&e);
     // Phase 1 is left out, so it starts on phase 2 with phase 1 recorded as skipped.
     assert_eq!((s.step_index, s.skip.clone()), (1, vec![0, 2]));
     assert_eq!(s.summaries, [scenario::SKIPPED]);
-    assert!(e.messages[0].content.starts_with("## Phase 2/4"), "{:?}", e.messages);
+    assert!(
+        e.messages[0].content.starts_with("## Phase 2/4"),
+        "{:?}",
+        e.messages
+    );
     assert_eq!(e.activate_toolsets, ["ts2"]);
 
     // Finishing phase 2 passes over phase 3.
     let adv = sc.advance("two done");
     assert!(adv.text.starts_with("## Phase 4/4"), "{}", adv.text);
-    let scenario::Persist::Set(s) = adv.persist else { panic!() };
-    assert_eq!(s.summaries, [scenario::SKIPPED, "two done", scenario::SKIPPED]);
+    let scenario::Persist::Set(s) = adv.persist else {
+        panic!()
+    };
+    assert_eq!(
+        s.summaries,
+        [scenario::SKIPPED, "two done", scenario::SKIPPED]
+    );
 }
 
 #[test]
 fn a_start_without_a_question_leaves_the_goal_and_everything_left_out_is_refused() {
     let dir = scenario_dir(2);
     let lib = scenario::Library::single(dir.path());
-    let mut sc = scenario::Scenario { lib: &lib, state: None };
-    assert_eq!(sc.command("start s skip=1,2").persist, scenario::Persist::Nothing);
+    let mut sc = scenario::Scenario {
+        lib: &lib,
+        state: None,
+    };
+    assert_eq!(
+        sc.command("start s skip=1,2").persist,
+        scenario::Persist::Nothing
+    );
     let e = sc.command("start s");
     assert_eq!(e.goal, None);
     assert_eq!(stored(&e).step_index, 0);
@@ -834,7 +893,10 @@ fn a_start_without_a_question_leaves_the_goal_and_everything_left_out_is_refused
 fn going_to_a_phase_left_out_takes_it_back_in_and_next_passes_over_the_rest() {
     let dir = scenario_dir(4);
     let lib = scenario::Library::single(dir.path());
-    let mut sc = scenario::Scenario { lib: &lib, state: None };
+    let mut sc = scenario::Scenario {
+        lib: &lib,
+        state: None,
+    };
     sc.command("start s skip=2,3");
     let s = stored(&sc.command("next done"));
     assert_eq!(s.step_index, 3);

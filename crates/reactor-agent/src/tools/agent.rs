@@ -73,7 +73,9 @@ impl Tool for AgentTool {
     }
 
     fn guidelines(&self) -> &'static [&'static str] {
-        &["Give `agent` bulk or output-heavy work and everything it needs in `task`; read its report, not its transcript."]
+        &[
+            "Give `agent` bulk or output-heavy work and everything it needs in `task`; read its report, not its transcript.",
+        ]
     }
 
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {

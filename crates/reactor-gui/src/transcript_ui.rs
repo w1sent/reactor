@@ -358,7 +358,8 @@ pub fn lines_label(n: usize) -> String {
 
 /// What stands for the cut in a result still being written: it has no log entry yet, so there is
 /// no `history_read` call to name.
-const RUNNING_CUT: &str = "\n… [output truncated; the rest: history_read, once the call has finished] …\n";
+const RUNNING_CUT: &str =
+    "\n… [output truncated; the rest: history_read, once the call has finished] …\n";
 
 /// Output cut to `max` bytes, as a head and a tail on character boundaries, with the same
 /// marker the loop puts in a result it cuts: the `history_read` call for the lines that are not
@@ -704,7 +705,9 @@ pub fn tool_row(
                                 .small()
                                 .icon(IconName::Copy)
                                 .label("Copy reference")
-                                .tooltip("Copy this result's reference: it names the entry anywhere")
+                                .tooltip(
+                                    "Copy this result's reference: it names the entry anywhere",
+                                )
                                 .on_click(move |_, _window, cx| {
                                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                                         reference.clone(),

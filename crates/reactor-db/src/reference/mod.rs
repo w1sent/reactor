@@ -231,10 +231,10 @@ pub fn register_scheme(scheme: &str) {
 pub fn is_registered(scheme: &str) -> bool {
     scheme.eq_ignore_ascii_case("stix")
         || REGISTERED
-        .read()
-        .unwrap()
-        .iter()
-        .any(|s| s.eq_ignore_ascii_case(scheme))
+            .read()
+            .unwrap()
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(scheme))
 }
 
 // -- writing ------------------------------------------------------------------------------
@@ -325,7 +325,9 @@ fn dec(s: &str) -> Result<String> {
             let hex = s
                 .get(i + 1..i + 3)
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
-                .ok_or_else(|| Error::Invalid(format!("`{s}`: a `%` must be followed by two hex digits")))?;
+                .ok_or_else(|| {
+                    Error::Invalid(format!("`{s}`: a `%` must be followed by two hex digits"))
+                })?;
             out.push(hex);
             i += 3;
         } else {
@@ -333,7 +335,8 @@ fn dec(s: &str) -> Result<String> {
             i += 1;
         }
     }
-    String::from_utf8(out).map_err(|_| Error::Invalid(format!("`{s}`: not valid UTF-8 once decoded")))
+    String::from_utf8(out)
+        .map_err(|_| Error::Invalid(format!("`{s}`: not valid UTF-8 once decoded")))
 }
 
 // -- reading ------------------------------------------------------------------------------
@@ -369,7 +372,10 @@ pub fn parse(raw: &str) -> Result<Reference> {
             .split_once('/')
             .ok_or_else(|| bad(raw, "a canonical reference is reactor://<case>/<kind>/..."))?;
         if !valid_authority(case) {
-            return Err(bad(raw, "the case is an alias or an id: letters, digits, `-` and `_`"));
+            return Err(bad(
+                raw,
+                "the case is an alias or an id: letters, digits, `-` and `_`",
+            ));
         }
         // `<kind>` ends at the first `/`, `?` or `#`; the rest is the short form's.
         let end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
@@ -400,7 +406,9 @@ fn parse_short(s: &str, raw: &str) -> Result<Reference> {
         Some((b, q)) => (b, Some(q)),
         None => (before_frag, None),
     };
-    if body.is_empty() && let Some(q) = query {
+    if body.is_empty()
+        && let Some(q) = query
+    {
         if frag.is_some() {
             return Err(bad(raw, "a set has no `#`"));
         }
@@ -421,10 +429,8 @@ fn parse_short(s: &str, raw: &str) -> Result<Reference> {
                 .ok_or_else(|| bad(raw, &format!("only `#{want}<n>` can follow this kind"))),
         }
     };
-    let number = |v: &str| -> Result<u64> {
-        v.parse::<u64>()
-            .map_err(|_| bad(raw, "expected a number"))
-    };
+    let number =
+        |v: &str| -> Result<u64> { v.parse::<u64>().map_err(|_| bad(raw, "expected a number")) };
     let target = match kind {
         Kind::Session => Target::Session {
             session: dec(body)?,
@@ -483,7 +489,10 @@ fn parse_short(s: &str, raw: &str) -> Result<Reference> {
             }
             let path = dec(body)?.replace('\\', "/");
             if path.starts_with('/') || path.split('/').any(|p| p == "..") {
-                return Err(bad(raw, "a file is named relative to the case and stays inside it"));
+                return Err(bad(
+                    raw,
+                    "a file is named relative to the case and stays inside it",
+                ));
             }
             Target::Artifact {
                 path,
@@ -556,10 +565,9 @@ pub fn find(text: &str) -> Vec<Found> {
     while i < bytes.len() {
         let starts = (text.is_char_boundary(i))
             && (i == 0
-                || text[..i]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_whitespace() || matches!(c, '(' | '[' | '"' | '\'' | '`' | '<')));
+                || text[..i].chars().next_back().is_some_and(|c| {
+                    c.is_whitespace() || matches!(c, '(' | '[' | '"' | '\'' | '`' | '<')
+                }));
         if !starts || !(bytes[i].is_ascii_alphabetic()) {
             i += 1;
             continue;
@@ -567,7 +575,8 @@ pub fn find(text: &str) -> Vec<Found> {
         let rest = &text[i..];
         let len = rest.find(char::is_whitespace).unwrap_or(rest.len());
         let word = &rest[..len];
-        let trimmed = word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '`', '>']);
+        let trimmed =
+            word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '`', '>']);
         if looks_like(trimmed)
             && let Ok(reference) = parse(trimmed)
         {
@@ -668,9 +677,15 @@ pub enum Locator {
     /// `/events/3`.
     JsonPointer(String),
     /// `table=fw_conn`, and `&row=<rowid>` for one row of it.
-    Table { table: String, row: Option<i64> },
+    Table {
+        table: String,
+        row: Option<i64>,
+    },
     /// `offset=0x1a0&length=16`.
-    Bytes { offset: u64, length: Option<u64> },
+    Bytes {
+        offset: u64,
+        length: Option<u64>,
+    },
 }
 
 impl Locator {
@@ -679,10 +694,7 @@ impl Locator {
         if s.starts_with('/') {
             return Some(Locator::JsonPointer(s.to_string()));
         }
-        let pairs: Vec<(&str, &str)> = s
-            .split('&')
-            .filter_map(|p| p.split_once('='))
-            .collect();
+        let pairs: Vec<(&str, &str)> = s.split('&').filter_map(|p| p.split_once('=')).collect();
         let get = |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| *v);
         let first = |v: &str| v.split([',', '-']).next().and_then(number);
         if let Some(t) = get("table") {
@@ -778,7 +790,13 @@ mod tests {
             }
         );
         let q = parse("reactor://0190-aa/graph?kind=entity").unwrap();
-        assert!(matches!(q.target, Target::Set { kind: Kind::Graph, .. }));
+        assert!(matches!(
+            q.target,
+            Target::Set {
+                kind: Kind::Graph,
+                ..
+            }
+        ));
         assert!(parse("reactor://bad name/graph/x").is_err());
         assert!(parse("reactor://acme").is_err());
     }
@@ -794,7 +812,10 @@ mod tests {
             ver: None,
         });
         let s = r.short();
-        assert!(!s.contains(' ') && !s.contains('#') && !s.contains('?'), "{s}");
+        assert!(
+            !s.contains(' ') && !s.contains('#') && !s.contains('?'),
+            "{s}"
+        );
         assert_eq!(parse(&s).unwrap().target, r.target);
     }
 
@@ -865,11 +886,17 @@ mod tests {
     fn a_source_is_split_into_what_it_is_and_where_in_it() {
         assert_eq!(
             split_source("artifact:data/a.csv#row=12"),
-            ("artifact:data/a.csv".to_string(), Some("row=12".to_string()))
+            (
+                "artifact:data/a.csv".to_string(),
+                Some("row=12".to_string())
+            )
         );
         assert_eq!(
             split_source("artifact:db.sqlite#table=t&row=7"),
-            ("artifact:db.sqlite#table=t".to_string(), Some("row=7".to_string()))
+            (
+                "artifact:db.sqlite#table=t".to_string(),
+                Some("row=7".to_string())
+            )
         );
         for whole in [
             "artifact:db.sqlite#table=t",

@@ -190,7 +190,12 @@ pub fn render_phase(p: &Phase) -> String {
     if let Some(t) = p.toolset.as_deref().map(one_line).filter(|t| !t.is_empty()) {
         out.push_str(&format!("toolset: {t}\n"));
     }
-    if let Some(d) = p.description.as_deref().map(one_line).filter(|d| !d.is_empty()) {
+    if let Some(d) = p
+        .description
+        .as_deref()
+        .map(one_line)
+        .filter(|d| !d.is_empty())
+    {
         out.push_str(&format!("description: {d}\n"));
     }
     out.push_str("---\n");
@@ -265,13 +270,22 @@ pub fn save(
         ));
     }
     if phases.is_empty() {
-        return Err(Error::new(ErrorKind::InvalidInput, "a scenario needs at least one phase"));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "a scenario needs at least one phase",
+        ));
     }
     if let Some(n) = phases.iter().position(|p| trim(&p.title).is_empty()) {
-        return Err(Error::new(ErrorKind::InvalidInput, format!("phase {} has no title", n + 1)));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("phase {} has no title", n + 1),
+        ));
     }
     if let Some(n) = phases.iter().position(|p| trim(&p.body).is_empty()) {
-        return Err(Error::new(ErrorKind::InvalidInput, format!("phase {} has no body", n + 1)));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("phase {} has no body", n + 1),
+        ));
     }
     std::fs::create_dir_all(scope_dir)?;
     let target = scope_dir.join(id);
@@ -282,7 +296,9 @@ pub fn save(
     for (i, p) in phases.iter().enumerate() {
         let mut p = p.clone();
         p.description = if i == 0 {
-            description.map(str::to_string).filter(|d| !trim(d).is_empty())
+            description
+                .map(str::to_string)
+                .filter(|d| !trim(d).is_empty())
         } else {
             None
         };
@@ -489,7 +505,10 @@ pub fn lint(dir: &Path, toolsets: &[String]) -> Vec<Issue> {
         }
         match phase_name_re().captures(n) {
             Some(c) => numbers.push(c[1].parse::<usize>().unwrap_or(0)),
-            None => issue(dir.join(n), "not named `NN-name.md`: it is ordered by name only".into()),
+            None => issue(
+                dir.join(n),
+                "not named `NN-name.md`: it is ordered by name only".into(),
+            ),
         }
     }
     let files = phase_files(dir);
@@ -501,7 +520,10 @@ pub fn lint(dir: &Path, toolsets: &[String]) -> Vec<Issue> {
     sorted.sort_unstable();
     for w in sorted.windows(2) {
         if w[0] == w[1] {
-            issue(dir.to_path_buf(), format!("two phases are numbered {:02}", w[0]));
+            issue(
+                dir.to_path_buf(),
+                format!("two phases are numbered {:02}", w[0]),
+            );
         } else if w[1] != w[0] + 1 {
             issue(
                 dir.to_path_buf(),
@@ -521,10 +543,16 @@ pub fn lint(dir: &Path, toolsets: &[String]) -> Vec<Issue> {
         if let Some(t) = &p.toolset
             && !toolsets.contains(t)
         {
-            issue(path.clone(), format!("names toolset `{t}`, which is not in toolsets.toml"));
+            issue(
+                path.clone(),
+                format!("names toolset `{t}`, which is not in toolsets.toml"),
+            );
         }
         if i == 0 && p.description.is_none() {
-            issue(path, "has no `description:`: the chooser cannot say what the scenario is for".into());
+            issue(
+                path,
+                "has no `description:`: the chooser cannot say what the scenario is for".into(),
+            );
         }
     }
     issues
@@ -565,7 +593,11 @@ pub fn lint_installed(paths: &Paths, toolsets: &[String]) -> Vec<(String, Scope,
             if as_shipped {
                 continue;
             }
-            out.extend(lint(&dir.join(&id), toolsets).into_iter().map(|i| (id.clone(), *scope, i)));
+            out.extend(
+                lint(&dir.join(&id), toolsets)
+                    .into_iter()
+                    .map(|i| (id.clone(), *scope, i)),
+            );
         }
     }
     out
@@ -602,8 +634,18 @@ mod tests {
     #[test]
     fn the_case_wins_then_the_config_directory_then_the_checkout() {
         let root = tempfile::tempdir().unwrap();
-        let (case, global, shipped) = (root.path().join("c"), root.path().join("g"), root.path().join("s"));
-        let one = |t: &str| vec![Phase { title: t.into(), body: "b".into(), ..Phase::default() }];
+        let (case, global, shipped) = (
+            root.path().join("c"),
+            root.path().join("g"),
+            root.path().join("s"),
+        );
+        let one = |t: &str| {
+            vec![Phase {
+                title: t.into(),
+                body: "b".into(),
+                ..Phase::default()
+            }]
+        };
         save(&shipped, "x", Some("shipped"), &one("S")).unwrap();
         save(&global, "x", None, &one("G")).unwrap();
         save(&global, "y", None, &one("Y")).unwrap();
@@ -611,7 +653,10 @@ mod tests {
         let lib = Library::new(Some(&case), global.clone(), Some(shipped));
         assert_eq!(lib.load("x")[0].title, "C");
         let listed = lib.list();
-        assert_eq!(listed.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["x", "y"]);
+        assert_eq!(
+            listed.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["x", "y"]
+        );
         assert_eq!(listed[0].scope, Scope::Case);
         assert_eq!(listed[0].shadows, [Scope::Global, Scope::Shipped]);
         assert!(lib.find("../g/x").is_none());
@@ -623,15 +668,39 @@ mod tests {
     #[test]
     fn saving_replaces_and_numbers_the_phases() {
         let root = tempfile::tempdir().unwrap();
-        let ph = |t: &str| Phase { title: t.into(), body: "b".into(), ..Phase::default() };
-        save(root.path(), "s", Some("d"), &[ph("One"), ph("Two"), ph("Three")]).unwrap();
+        let ph = |t: &str| Phase {
+            title: t.into(),
+            body: "b".into(),
+            ..Phase::default()
+        };
+        save(
+            root.path(),
+            "s",
+            Some("d"),
+            &[ph("One"), ph("Two"), ph("Three")],
+        )
+        .unwrap();
         save(root.path(), "s", Some("d"), &[ph("Only / phase")]).unwrap();
         let names = phase_files(&root.path().join("s"));
         assert_eq!(names, ["01-only-phase.md"]);
-        assert_eq!(load_dir(&root.path().join("s"))[0].description.as_deref(), Some("d"));
+        assert_eq!(
+            load_dir(&root.path().join("s"))[0].description.as_deref(),
+            Some("d")
+        );
         assert!(save(root.path(), "Bad Id", None, &[ph("x")]).is_err());
         assert!(save(root.path(), "s", None, &[]).is_err());
-        assert!(save(root.path(), "s", None, &[Phase { title: "t".into(), ..Phase::default() }]).is_err());
+        assert!(
+            save(
+                root.path(),
+                "s",
+                None,
+                &[Phase {
+                    title: "t".into(),
+                    ..Phase::default()
+                }]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -644,14 +713,44 @@ mod tests {
         std::fs::write(d.join("notes.txt"), "x").unwrap();
         let issues: Vec<String> = lint(&d, &["triage".into()])
             .into_iter()
-            .map(|i| format!("{}: {}", i.path.file_name().unwrap().to_string_lossy(), i.message))
+            .map(|i| {
+                format!(
+                    "{}: {}",
+                    i.path.file_name().unwrap().to_string_lossy(),
+                    i.message
+                )
+            })
             .collect();
-        assert!(issues.iter().any(|i| i.starts_with("notes.txt: not a phase")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("skip from 01 to 03")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.starts_with("01-a.md: names toolset `nope`")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.starts_with("01-a.md: has no `description:`")), "{issues:?}");
-        assert!(issues.iter().any(|i| i == "03-c.md: has no `title:`"), "{issues:?}");
-        assert!(issues.iter().any(|i| i.starts_with("03-c.md: has no body")), "{issues:?}");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("notes.txt: not a phase")),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.contains("skip from 01 to 03")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("01-a.md: names toolset `nope`")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("01-a.md: has no `description:`")),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i == "03-c.md: has no `title:`"),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.starts_with("03-c.md: has no body")),
+            "{issues:?}"
+        );
     }
 
     #[test]

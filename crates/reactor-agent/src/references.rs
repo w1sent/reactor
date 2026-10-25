@@ -28,7 +28,10 @@ pub enum Target {
     File(String),
     /// A document by id, source, filename or title, and optionally a section of it
     /// (`passage=<n>` for one passage by its number).
-    Doc { name: String, section: Option<String> },
+    Doc {
+        name: String,
+        section: Option<String>,
+    },
     /// A reference of the case's grammar.
     Ref(Reference_),
 }
@@ -56,7 +59,11 @@ pub fn find(text: &str) -> Vec<Reference> {
             i += 1;
             continue;
         }
-        let at_start = i == 0 || text[..i].chars().next_back().is_some_and(char::is_whitespace);
+        let at_start = i == 0
+            || text[..i]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
         if !at_start {
             i += 1;
             continue;
@@ -112,7 +119,10 @@ pub fn find(text: &str) -> Vec<Reference> {
                     name: n.to_string(),
                     section: Some(s.to_string()),
                 },
-                _ => Target::Doc { name, section: None },
+                _ => Target::Doc {
+                    name,
+                    section: None,
+                },
             }
         } else {
             Target::File(name)
@@ -147,7 +157,11 @@ pub fn match_documents<'a>(docs: &'a [DocumentInfo], name: &str) -> Vec<&'a Docu
                 .as_deref()
                 .is_some_and(|t| t.eq_ignore_ascii_case(name))
         }),
-        Box::new(|d| d.source_uri.to_ascii_lowercase().ends_with(&format!("/{lower}"))),
+        Box::new(|d| {
+            d.source_uri
+                .to_ascii_lowercase()
+                .ends_with(&format!("/{lower}"))
+        }),
     ];
     for tier in tiers {
         let found: Vec<&DocumentInfo> = docs.iter().filter(|d| tier(d)).collect();
@@ -223,15 +237,20 @@ pub fn limit(text: String) -> (String, bool) {
 pub fn file(cwd: &Path, written: &str) -> Result<Attachment, String> {
     let path: PathBuf = {
         let p = Path::new(written);
-        if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
     };
     let meta = std::fs::metadata(&path).map_err(|e| format!("{written}: {e}"))?;
     if meta.is_dir() {
         return Err(format!("{written} is a folder"));
     }
     let bytes = std::fs::read(&path).map_err(|e| format!("{written}: {e}"))?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| format!("{written} is not a text file: ask the agent to open it with a tool"))?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        format!("{written} is not a text file: ask the agent to open it with a tool")
+    })?;
     let (text, truncated) = limit(text);
     Ok(Attachment {
         label: written.to_string(),
@@ -292,7 +311,11 @@ pub fn document(db: &Db, name: &str, section: Option<&str>) -> Result<Attachment
         .join("\n\n");
     let (text, truncated) = limit(text);
     Ok(Attachment {
-        label: doc.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| doc.source_uri.clone()),
+        label: doc
+            .title
+            .clone()
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| doc.source_uri.clone()),
         source: doc.source_uri.clone(),
         part: match section {
             Some(s) => s.to_string(),
@@ -324,14 +347,18 @@ mod tests {
     #[test]
     fn text_with_multi_byte_characters_before_and_around_an_at_does_not_panic() {
         // An em dash is three bytes; a scan that steps by byte lands inside it.
-        let text = "Task — enumerate the imports — then @notes.txt — and “quoted” @doc:\"Pump — manual\"";
+        let text =
+            "Task — enumerate the imports — then @notes.txt — and “quoted” @doc:\"Pump — manual\"";
         let found = find(text);
         let targets: Vec<_> = found.iter().map(|r| r.target.clone()).collect();
         assert_eq!(
             targets,
             vec![
                 Target::File("notes.txt".into()),
-                Target::Doc { name: "Pump — manual".into(), section: None }
+                Target::Doc {
+                    name: "Pump — manual".into(),
+                    section: None
+                }
             ]
         );
         for r in &found {
@@ -342,7 +369,9 @@ mod tests {
 
     #[test]
     fn an_at_after_whitespace_with_something_after_it_is_a_reference() {
-        let found = find("## Phase 1/7\n\nsee @logs/a.txt, and @doc:manual.pdf#2.2. # Heading, me@example.com, C# and @");
+        let found = find(
+            "## Phase 1/7\n\nsee @logs/a.txt, and @doc:manual.pdf#2.2. # Heading, me@example.com, C# and @",
+        );
         let targets: Vec<_> = found.iter().map(|r| r.target.clone()).collect();
         assert_eq!(
             targets,

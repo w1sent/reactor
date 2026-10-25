@@ -13,9 +13,9 @@
 
 use reactor_context::settings::Settings;
 use reactor_db::artifact;
+use reactor_db::graph::fields;
 use reactor_db::graph::pull::{self, Request};
 use reactor_db::graph::revert::{self, What};
-use reactor_db::graph::fields;
 use reactor_db::graph::vocab::{self, Define};
 use reactor_db::graph::{
     self, Batch, Change, Content, Element, Filter, Kind, Link, Put, Target, query,
@@ -118,9 +118,7 @@ fn from_reference(raw: &str, case: &Case) -> Result<Target, String> {
     // Written with this case's name: the same thing as without it.
     if let Some(named) = &r.case {
         if !case.is_named(named) {
-            return Ok(Target::External {
-                uri: r.to_string(),
-            });
+            return Ok(Target::External { uri: r.to_string() });
         }
         r.case = None;
     }
@@ -143,9 +141,7 @@ fn from_reference(raw: &str, case: &Case) -> Result<Target, String> {
             scope,
         }),
         reference::Target::Set { .. } => Err(format!("`{raw}` is a set, not one thing")),
-        _ => Ok(Target::External {
-            uri: r.short(),
-        }),
+        _ => Ok(Target::External { uri: r.short() }),
     }
 }
 
@@ -960,7 +956,9 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
                     type_prefix: str_arg(args, "type").map(str::to_string),
                     text: str_arg(args, "text").map(str::to_string),
                     tag: str_arg(args, "tag").map(str::to_string),
-                    props: str_arg(args, "prop").map(|p| vec![p.to_string()]).unwrap_or_default(),
+                    props: str_arg(args, "prop")
+                        .map(|p| vec![p.to_string()])
+                        .unwrap_or_default(),
                     include_deleted: args
                         .get("include_deleted")
                         .and_then(Value::as_bool)

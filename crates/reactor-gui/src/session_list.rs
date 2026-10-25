@@ -234,7 +234,10 @@ mod tests {
         let rows = in_hierarchy(vec![row("7", Some("gone")), row("8", None)]);
         assert_eq!(rows.iter().map(|r| r.depth).collect::<Vec<_>>(), vec![0, 0]);
         let looped = in_hierarchy(vec![row("a", Some("b")), row("b", Some("a"))]);
-        assert!(looped.is_empty(), "a ring has no root, and listing it must still end");
+        assert!(
+            looped.is_empty(),
+            "a ring has no root, and listing it must still end"
+        );
     }
 
     #[test]
@@ -249,7 +252,8 @@ mod tests {
         assert_eq!(by("2").parent.as_deref(), Some("1"));
         assert_eq!((by("1").depth, by("2").depth), (0, 1));
         assert!(
-            sessions::set_parent(case.db(), "1", "1").is_err() && sessions::set_parent(case.db(), "9", "1").is_err(),
+            sessions::set_parent(case.db(), "1", "1").is_err()
+                && sessions::set_parent(case.db(), "9", "1").is_err(),
             "not itself, and not a session that is not there"
         );
     }

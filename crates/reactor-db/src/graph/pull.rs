@@ -122,7 +122,9 @@ fn resolve(case: &Case, raw: &str) -> Result<(String, Source, PathBuf)> {
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let place = locator.as_deref().and_then(crate::reference::Locator::parse);
+    let place = locator
+        .as_deref()
+        .and_then(crate::reference::Locator::parse);
     let uri = |loc: Option<String>| {
         let mut r = crate::reference::Reference::artifact(&stored);
         if let crate::reference::Target::Artifact { locator, .. } = &mut r.target {

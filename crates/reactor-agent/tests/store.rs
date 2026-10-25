@@ -540,7 +540,10 @@ fn admitted_input_waits_in_the_log_and_is_still_there_after_a_reopen() {
     let s = Store::open(&case, "s1").unwrap();
     let waiting = inbox::pending(&s);
     assert_eq!(
-        waiting.iter().map(|p| (p.item.as_str(), p.class)).collect::<Vec<_>>(),
+        waiting
+            .iter()
+            .map(|p| (p.item.as_str(), p.class))
+            .collect::<Vec<_>>(),
         vec![("a", Class::Steer), ("b", Class::Queue)],
         "oldest first, with the class each was given"
     );
@@ -576,7 +579,10 @@ fn waiting_input_belongs_to_the_branch_it_was_admitted_on() {
     inbox::admit(&mut s, "a", Class::Queue, "on the first branch").unwrap();
     assert_eq!(inbox::pending(&s).len(), 1);
     s.set_head(root).unwrap();
-    assert!(inbox::pending(&s).is_empty(), "the other branch does not have it");
+    assert!(
+        inbox::pending(&s).is_empty(),
+        "the other branch does not have it"
+    );
 }
 
 #[test]

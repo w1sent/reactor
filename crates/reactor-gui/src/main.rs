@@ -241,10 +241,16 @@ fn install_menus(cx: &mut App) {
 
     // Panels: every panel, shown or closed where it is kept — the rail's in the drawer, then
     // the workspace's as tabs — and another terminal.
-    let panel = |kind: &PanelKind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind });
+    let panel =
+        |kind: &PanelKind| MenuItem::action(kind.label(), TogglePanelAction { panel: *kind });
     let mut panels: Vec<MenuItem> = PanelKind::RAIL.iter().map(panel).collect();
     panels.push(MenuItem::Separator);
-    panels.extend(PanelKind::ALL.iter().filter(|kind| !kind.on_rail()).map(panel));
+    panels.extend(
+        PanelKind::ALL
+            .iter()
+            .filter(|kind| !kind.on_rail())
+            .map(panel),
+    );
     panels.push(MenuItem::Separator);
     panels.push(MenuItem::action("New Console", NewConsole));
 

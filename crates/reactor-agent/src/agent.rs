@@ -1353,7 +1353,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
     /// waiting for is over. `None` when nothing waits
     /// ([ADR-0061](../../../docs/adr/0061-typed-input-is-a-fact-in-the-log-before-it-is-sent.md)).
     pub async fn prompt_pending(&self, cancel: CancellationToken) -> Option<Result<Outcome>> {
-        let first = inbox::pending(&self.store.lock().unwrap()).into_iter().next()?;
+        let first = inbox::pending(&self.store.lock().unwrap())
+            .into_iter()
+            .next()?;
         Some(
             self.guarded(self.prompt_from(&first.text, Some(first.item.as_str()), cancel))
                 .await,
@@ -1516,8 +1518,7 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 let at = sc.pending_summary;
                 if scenario::record_summary(&mut sc, text) {
                     save_state(&mut store, KEY_SCENARIO, serde_json::to_value(&sc).unwrap())?;
-                    if let Some((at, summary)) = at.and_then(|i| Some((i, sc.summaries.get(i)?)))
-                    {
+                    if let Some((at, summary)) = at.and_then(|i| Some((i, sc.summaries.get(i)?))) {
                         let title = self
                             .scenarios_of(&store)
                             .load(&sc.scenario_id)
@@ -2089,11 +2090,12 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 if args.split_whitespace().next() == Some("start")
                     && let Some(m) = e.messages.iter_mut().find(|m| m.trigger_turn)
                 {
-                    m.content.push_str(&crate::tools::scenario::earlier_conclusions(
-                        &self.cfg.paths,
-                        &state,
-                        store.case(),
-                    ));
+                    m.content
+                        .push_str(&crate::tools::scenario::earlier_conclusions(
+                            &self.cfg.paths,
+                            &state,
+                            store.case(),
+                        ));
                 }
                 match &e.persist {
                     scenario::Persist::Nothing => {}
@@ -2138,7 +2140,13 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                                 c.session,
                                 if c.background { " (background)" } else { "" },
                                 c.started.elapsed().as_secs(),
-                                c.task.lines().next().unwrap_or("").chars().take(100).collect::<String>()
+                                c.task
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(100)
+                                    .collect::<String>()
                             )));
                         }
                     }
@@ -2157,7 +2165,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                                 "no agent of session {session} is running"
                             ))
                         } else {
-                            reactor_context::Notice::info(format!("stopping the agent of session {session}"))
+                            reactor_context::Notice::info(format!(
+                                "stopping the agent of session {session}"
+                            ))
                         });
                     }
                     _ => return Err(Error::Store("agents: | stop [all|<session>]".into())),
@@ -2201,11 +2211,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                 }
                 result.notices.push(reactor_context::Notice::info(line));
             }
-            "cache" => result
-                .notices
-                .push(reactor_context::Notice::info(
-                    context::cache_report(&store).as_text(),
-                )),
+            "cache" => result.notices.push(reactor_context::Notice::info(
+                context::cache_report(&store).as_text(),
+            )),
             other => return Err(Error::Store(format!("unknown command `{other}`"))),
         }
         Ok(result)
@@ -2268,7 +2276,6 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
         project(&self.store.lock().unwrap())
     }
 }
-
 
 // -- children (ADR-0062, ADR-0063) ---------------------------------------------------------------
 
@@ -2575,12 +2582,7 @@ impl<L: Llm + Clone + 'static, S: Summarizer + Clone + 'static> crate::tools::ag
                 .unwrap()
                 .running
                 .push(session.clone());
-            let work = self.drive(
-                prepared,
-                request.task,
-                Arc::new(|_: &str| {}),
-                cancel,
-            );
+            let work = self.drive(prepared, request.task, Arc::new(|_: &str| {}), cancel);
             let running = self.running.clone();
             let id = session.clone();
             tokio::spawn(async move {

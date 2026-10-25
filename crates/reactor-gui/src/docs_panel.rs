@@ -202,7 +202,8 @@ fn kind_of(doc: &DocumentInfo) -> String {
         .next()
         .filter(|e| e.len() <= 5 && !e.contains('/'))
         .map(|e| e.to_ascii_uppercase());
-    ext.or_else(|| doc.mime.clone()).unwrap_or_else(|| "—".into())
+    ext.or_else(|| doc.mime.clone())
+        .unwrap_or_else(|| "—".into())
 }
 
 pub struct DocsPanel {
@@ -277,14 +278,17 @@ impl DocsPanel {
             }
         })
         .detach();
-        let library_filter = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter by filename, path or title")
-        });
-        cx.subscribe_in(&library_filter, window, |_, _, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })
+        let library_filter = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Filter by filename, path or title"));
+        cx.subscribe_in(
+            &library_filter,
+            window,
+            |_, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        )
         .detach();
         Self {
             app,
@@ -336,7 +340,8 @@ impl DocsPanel {
         };
         self.counts = corpus::counts(b.case.db()).unwrap_or((0, 0));
         self.docs = corpus::documents(b.case.db()).unwrap_or_default();
-        self.scope.retain(|id| self.docs.iter().any(|d| &d.id == id));
+        self.scope
+            .retain(|id| self.docs.iter().any(|d| &d.id == id));
         self.given = b.attachments().into_iter().map(|(_, a)| a.text).collect();
         self.meaning = b.meaning_status();
         if self.meaning.is_err() && self.choice == Choice::Meaning {
@@ -360,7 +365,11 @@ impl DocsPanel {
         self.error = None;
         self.status = "searching…".into();
         // A scope is applied after the search, so it asks for more to have enough left.
-        let asked = if self.scope.is_empty() { LIMIT } else { LIMIT * 8 };
+        let asked = if self.scope.is_empty() {
+            LIMIT
+        } else {
+            LIMIT * 8
+        };
         let handle = b.search_docs(text.clone(), asked, self.choice.mode());
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -472,7 +481,11 @@ impl DocsPanel {
             .filter(|h| !self.is_given(h))
             .map(|h| h.chunk_id)
             .collect();
-        self.checked = if self.checked == all { BTreeSet::new() } else { all };
+        self.checked = if self.checked == all {
+            BTreeSet::new()
+        } else {
+            all
+        };
         cx.notify();
     }
 
@@ -480,13 +493,22 @@ impl DocsPanel {
     /// reading order.
     fn checked_attachments(&self) -> Vec<Attachment> {
         let mut by_doc: Vec<(String, Vec<&Hit>)> = Vec::new();
-        for hit in self.hits.iter().filter(|h| self.checked.contains(&h.chunk_id)) {
+        for hit in self
+            .hits
+            .iter()
+            .filter(|h| self.checked.contains(&h.chunk_id))
+        {
             match by_doc.iter_mut().find(|(d, _)| *d == hit.document_id) {
                 Some((_, hits)) => hits.push(hit),
                 None => by_doc.push((hit.document_id.clone(), vec![hit])),
             }
         }
-        by_doc.sort_by_key(|(d, _)| self.docs.iter().position(|x| &x.id == d).unwrap_or(usize::MAX));
+        by_doc.sort_by_key(|(d, _)| {
+            self.docs
+                .iter()
+                .position(|x| &x.id == d)
+                .unwrap_or(usize::MAX)
+        });
         by_doc
             .into_iter()
             .map(|(_, mut hits)| {
@@ -550,7 +572,9 @@ impl DocsPanel {
             .collect();
         if pairs.is_empty() {
             if let Some(app) = self.app.upgrade() {
-                app.update(cx, |app, _| app.push_note("warning", "that document has no text"));
+                app.update(cx, |app, _| {
+                    app.push_note("warning", "that document has no text")
+                });
             }
             return;
         }
@@ -1279,7 +1303,11 @@ impl Render for DocsPanel {
         // Tabs: Search is where it opens.
         let tab_button = |id: &'static str, label: &'static str, tab: Tab| {
             let b = Button::new(id).small().label(label);
-            let b = if self.tab == tab { b.primary() } else { b.ghost() };
+            let b = if self.tab == tab {
+                b.primary()
+            } else {
+                b.ghost()
+            };
             b.on_click(cx.listener(move |this, _, _, cx| {
                 this.tab = tab;
                 cx.notify();
@@ -1390,7 +1418,12 @@ impl Render for DocsPanel {
                 })
         };
         let scope_picker = self.scope_open.then(|| {
-            let filter = self.scope_filter.read(cx).value().trim().to_ascii_lowercase();
+            let filter = self
+                .scope_filter
+                .read(cx)
+                .value()
+                .trim()
+                .to_ascii_lowercase();
             let shown: Vec<&DocumentInfo> = self
                 .docs
                 .iter()
@@ -1421,14 +1454,18 @@ impl Render for DocsPanel {
                             h_flex()
                                 .gap_2()
                                 .items_center()
+                                .child(Checkbox::new(("docs-scope-check", i)).checked(on).on_click(
+                                    cx.listener(move |this, _: &bool, _, cx| {
+                                        this.toggle_scope(&id, cx)
+                                    }),
+                                ))
                                 .child(
-                                    Checkbox::new(("docs-scope-check", i))
-                                        .checked(on)
-                                        .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                                            this.toggle_scope(&id, cx)
-                                        })),
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(SharedString::from(name)),
                                 )
-                                .child(div().flex_1().min_w_0().truncate().child(SharedString::from(name)))
                                 .child(
                                     div()
                                         .text_size(small)
@@ -1538,9 +1575,18 @@ impl Render for DocsPanel {
 impl DocsPanel {
     /// The Library tab: every document of the case, filtered by filename, with what can be done
     /// with the one chosen.
-    fn render_library(&mut self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_library(
+        &mut self,
+        theme: &gpui_kit::component::Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let small = theme.font_size * 0.85;
-        let filter = self.library_filter.read(cx).value().trim().to_ascii_lowercase();
+        let filter = self
+            .library_filter
+            .read(cx)
+            .value()
+            .trim()
+            .to_ascii_lowercase();
         let shown: Vec<DocumentInfo> = self
             .docs
             .iter()
@@ -1566,7 +1612,11 @@ impl DocsPanel {
             .items_center()
             .border_b_1()
             .border_color(theme.border)
-            .child(div().flex_1().child(Input::new(&self.library_filter).small()))
+            .child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&self.library_filter).small()),
+            )
             .child(
                 div()
                     .text_size(small)
@@ -1574,69 +1624,73 @@ impl DocsPanel {
                     .child(format!("{} of {total}", shown.len())),
             );
 
-        let rows = v_flex()
-            .id("docs-library")
-            .size_full()
-            .overflow_y_scrollbar()
-            .children(shown.iter().enumerate().map(|(i, d)| {
-                let id = d.id.clone();
-                let on = selected.as_ref().is_some_and(|s| s.id == d.id);
-                let hollow = d.chunks == 0;
-                v_flex()
-                    .id(("docs-doc", i))
-                    .gap_0p5()
-                    .px_2()
-                    .py_1p5()
-                    .border_b_1()
-                    .border_color(theme.border.opacity(0.5))
-                    .cursor_pointer()
-                    .when(on, |r| r.bg(theme.primary.opacity(0.15)))
-                    .hover(|s| s.bg(theme.list_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_document(Some(id.clone()), cx)
-                    }))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .child(SharedString::from(document_label(&d.title, &d.source_uri))),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(small)
-                                    .text_color(if hollow { theme.danger } else { theme.muted_foreground })
-                                    .child(if hollow {
-                                        "no text found".to_string()
-                                    } else {
-                                        format!("{} · {} passages", kind_of(d), d.chunks)
-                                    }),
-                            ),
-                    )
-                    .child(
+        let rows =
+            v_flex()
+                .id("docs-library")
+                .size_full()
+                .overflow_y_scrollbar()
+                .children(shown.iter().enumerate().map(|(i, d)| {
+                    let id = d.id.clone();
+                    let on = selected.as_ref().is_some_and(|s| s.id == d.id);
+                    let hollow = d.chunks == 0;
+                    v_flex()
+                        .id(("docs-doc", i))
+                        .gap_0p5()
+                        .px_2()
+                        .py_1p5()
+                        .border_b_1()
+                        .border_color(theme.border.opacity(0.5))
+                        .cursor_pointer()
+                        .when(on, |r| r.bg(theme.primary.opacity(0.15)))
+                        .hover(|s| s.bg(theme.list_hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_document(Some(id.clone()), cx)
+                        }))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .justify_between()
+                                .child(div().truncate().child(SharedString::from(document_label(
+                                    &d.title,
+                                    &d.source_uri,
+                                ))))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(small)
+                                        .text_color(if hollow {
+                                            theme.danger
+                                        } else {
+                                            theme.muted_foreground
+                                        })
+                                        .child(if hollow {
+                                            "no text found".to_string()
+                                        } else {
+                                            format!("{} · {} passages", kind_of(d), d.chunks)
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(small)
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(theme.muted_foreground)
+                                .child(SharedString::from(d.source_uri.clone())),
+                        )
+                }))
+                .when(shown.is_empty(), |r| {
+                    r.child(
                         div()
-                            .truncate()
-                            .text_size(small)
-                            .font_family(theme.mono_font_family.clone())
+                            .p_3()
                             .text_color(theme.muted_foreground)
-                            .child(SharedString::from(d.source_uri.clone())),
+                            .child(if total == 0 {
+                                "No documents in this case: import some with the + above."
+                            } else {
+                                "No document matches that filename."
+                            }),
                     )
-            }))
-            .when(shown.is_empty(), |r| {
-                r.child(
-                    div()
-                        .p_3()
-                        .text_color(theme.muted_foreground)
-                        .child(if total == 0 {
-                            "No documents in this case: import some with the + above."
-                        } else {
-                            "No document matches that filename."
-                        }),
-                )
-            });
+                });
 
         let detail = selected.map(|d| {
             let id = d.id.clone();
@@ -1722,10 +1776,9 @@ impl DocsPanel {
                     .h_full()
                     .border_l_1()
                     .border_color(theme.border)
-                    .child(detail.map_or_else(
-                        || div().into_any_element(),
-                        |d| d.into_any_element(),
-                    )),
+                    .child(
+                        detail.map_or_else(|| div().into_any_element(), |d| d.into_any_element()),
+                    ),
             )
             .into_any_element()
     }

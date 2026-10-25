@@ -585,7 +585,9 @@ pub fn cache_report(store: &Store) -> CacheReport {
 }
 
 /// The account of replies given as (time in ms, usage), oldest first.
-pub fn cache_report_of(replies: impl IntoIterator<Item = (u64, crate::entry::Usage)>) -> CacheReport {
+pub fn cache_report_of(
+    replies: impl IntoIterator<Item = (u64, crate::entry::Usage)>,
+) -> CacheReport {
     let mut r = CacheReport::default();
     let mut previous: Option<u64> = None;
     for (ts, u) in replies {

@@ -13,9 +13,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Root, Sizable as _,
-};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Root, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, SharedString, WeakEntity, Window, div, px, size};
 use reactor_core::scenarios::{Phase, Scope};

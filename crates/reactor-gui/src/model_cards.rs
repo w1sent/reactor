@@ -20,8 +20,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, Hsla, IntoElement, Pixels, Render, SharedString, Window,
-    div, px,
+    AnyElement, App, Context, Entity, Hsla, IntoElement, Pixels, Render, SharedString, Window, div,
+    px,
 };
 
 use reactor_agent::connection::{self, EnvFile, ProviderSpec, Source};
@@ -128,21 +128,33 @@ impl ModelCards {
                     .and_then(|v| v.value.clone())
                     .unwrap_or_default();
                 let state = field(spec.default_endpoint, &set, window, cx);
-                cx.subscribe_in(&state, window, move |this, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                        this.commit_endpoint(ix, window, cx);
-                    }
-                })
+                cx.subscribe_in(
+                    &state,
+                    window,
+                    move |this, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                            this.commit_endpoint(ix, window, cx);
+                        }
+                    },
+                )
                 .detach();
                 state
             });
             let placeholder = SharedString::from(key_placeholder(spec, &file));
-            let key = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(placeholder));
-            cx.subscribe_in(&key, window, move |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    this.commit_key(ix, window, cx);
-                }
-            })
+            let key = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder(placeholder)
+            });
+            cx.subscribe_in(
+                &key,
+                window,
+                move |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                        this.commit_key(ix, window, cx);
+                    }
+                },
+            )
             .detach();
             let filter = field("Filter by name…", "", window, cx);
             cx.subscribe_in(&filter, window, |_, _, event: &InputEvent, _, cx| {
@@ -162,11 +174,15 @@ impl ModelCards {
             });
         }
         let manual_input = field("provider model name, Enter to add", "", window, cx);
-        cx.subscribe_in(&manual_input, window, |this, _, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.add_manual(window, cx);
-            }
-        })
+        cx.subscribe_in(
+            &manual_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.add_manual(window, cx);
+                }
+            },
+        )
         .detach();
         let mut this = Self {
             app,
@@ -205,7 +221,12 @@ impl ModelCards {
             return;
         };
         let spec = card.spec;
-        let typed = state.read(cx).value().trim().trim_end_matches('/').to_string();
+        let typed = state
+            .read(cx)
+            .value()
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
         let current = connection::endpoint(spec.name, &self.file);
         let shown = current
             .as_ref()
@@ -219,14 +240,21 @@ impl ModelCards {
             self.app.update(cx, |app, _| {
                 app.push_note(
                     "warning",
-                    format!("{}: an endpoint is an http:// or https:// address", spec.name),
+                    format!(
+                        "{}: an endpoint is an http:// or https:// address",
+                        spec.name
+                    ),
                 )
             });
             state.update(cx, |s, cx| s.set_value(shown.as_str(), window, cx));
             return;
         }
         // The default typed out is the default: nothing to keep.
-        let value = if typed == spec.default_endpoint { "" } else { typed.as_str() };
+        let value = if typed == spec.default_endpoint {
+            ""
+        } else {
+            typed.as_str()
+        };
         self.write(var, value, cx);
         if value.is_empty() {
             state.update(cx, |s, cx| s.set_value("", window, cx));
@@ -430,30 +458,48 @@ impl ModelCards {
         let status: AnyElement = match &card.listing {
             Listing::Loading => Spinner::new().small().color(p.muted).into_any_element(),
             Listing::Failed(why) => crate::hints::tip(
-                div()
-                    .id(("failed", ix))
-                    .child(Icon::new(IconName::TriangleAlert).small().text_color(p.warning)),
+                div().id(("failed", ix)).child(
+                    Icon::new(IconName::TriangleAlert)
+                        .small()
+                        .text_color(p.warning),
+                ),
                 format!("Could not list the models: {why}. Add one by name with +."),
             )
             .into_any_element(),
-            Listing::Loaded(_) => {
-                Self::badge(("ok", ix), "reachable", p.success, "The endpoint answered", p)
-                    .into_any_element()
-            }
-            Listing::Idle if missing => {
-                Self::badge(("key", ix), "key missing", p.warning, format!("Set {}", spec.key_var), p)
-                    .into_any_element()
-            }
+            Listing::Loaded(_) => Self::badge(
+                ("ok", ix),
+                "reachable",
+                p.success,
+                "The endpoint answered",
+                p,
+            )
+            .into_any_element(),
+            Listing::Idle if missing => Self::badge(
+                ("key", ix),
+                "key missing",
+                p.warning,
+                format!("Set {}", spec.key_var),
+                p,
+            )
+            .into_any_element(),
             Listing::Idle => div().into_any_element(),
         };
         let header = h_flex()
             .items_center()
             .gap_2()
-            .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(spec.name))
+            .child(
+                div()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(spec.name),
+            )
             .when(used, |h| {
                 h.child(Self::badge(
                     ("used", ix),
-                    if purpose == Purpose::Chat { "this session" } else { "in use" },
+                    if purpose == Purpose::Chat {
+                        "this session"
+                    } else {
+                        "in use"
+                    },
                     p.accent,
                     if purpose == Purpose::Chat {
                         "The session's model comes from this provider"
@@ -467,9 +513,9 @@ impl ModelCards {
             .child(div().flex_1())
             .when(card.saved, |h| {
                 h.child(crate::hints::tip(
-                    div().id(("saved", ix)).child(
-                        Icon::new(IconName::Check).small().text_color(p.success),
-                    ),
+                    div()
+                        .id(("saved", ix))
+                        .child(Icon::new(IconName::Check).small().text_color(p.success)),
                     "Saved",
                 ))
             });
@@ -574,9 +620,7 @@ impl ModelCards {
                                     .xsmall()
                                     .tooltip("Remove the key")
                                     .on_click(move |_, window, cx| {
-                                        weak.update(cx, |this, cx| {
-                                            this.clear_key(ix, window, cx)
-                                        });
+                                        weak.update(cx, |this, cx| this.clear_key(ix, window, cx));
                                     }),
                             )
                         }),
@@ -639,12 +683,12 @@ impl ModelCards {
                 .small()
                 .tooltip("Add a model by name — for one the endpoint does not list")
                 .on_click(move |_, window, cx| {
-                this.update(cx, |this, cx| {
-                    this.manual = (this.manual != Some((ix, purpose))).then_some((ix, purpose));
-                    let input = this.manual_input.clone();
-                    input.update(cx, |s, cx| s.focus(window, cx));
-                    cx.notify();
-                })
+                    this.update(cx, |this, cx| {
+                        this.manual = (this.manual != Some((ix, purpose))).then_some((ix, purpose));
+                        let input = this.manual_input.clone();
+                        input.update(cx, |s, cx| s.focus(window, cx));
+                        cx.notify();
+                    })
                 })
         };
         let models_header = h_flex()
@@ -689,15 +733,20 @@ impl ModelCards {
             .child(refresh)
             .child(add);
 
-        let chips = h_flex().flex_wrap().gap_1p5().children(
-            names
-                .into_iter()
-                .enumerate()
-                .map(|(n, name)| match purpose {
-                    Purpose::Chat => self.chip(ix, n, spec.name, &name, default, p, cx),
-                    Purpose::Embedding => self.embedding_chip(ix, n, spec.name, &name, st, p, cx),
-                }),
-        );
+        let chips = h_flex()
+            .flex_wrap()
+            .gap_1p5()
+            .children(
+                names
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, name)| match purpose {
+                        Purpose::Chat => self.chip(ix, n, spec.name, &name, default, p, cx),
+                        Purpose::Embedding => {
+                            self.embedding_chip(ix, n, spec.name, &name, st, p, cx)
+                        }
+                    }),
+            );
 
         let manual_row = (self.manual == Some((ix, purpose))).then(|| {
             h_flex()
@@ -762,7 +811,13 @@ impl ModelCards {
         let in_use = st.chosen == Some(spec.as_str());
         let pending = !in_use && st.draft == Some(spec.as_str());
         let this = cx.entity();
-        let color = if in_use { p.accent } else if pending { p.info } else { p.border };
+        let color = if in_use {
+            p.accent
+        } else if pending {
+            p.info
+        } else {
+            p.border
+        };
         crate::hints::tip(
             h_flex()
                 .id(("embedding-chip", card * 1000 + n))
@@ -858,11 +913,11 @@ impl ModelCards {
                     "Make this the default for new sessions"
                 })
                 .on_click(move |_, _w, cx| {
-                let spec = spec.clone();
-                app.update(cx, |app, cx| {
-                    app.set_default_model((!is_default).then_some(spec), cx)
-                });
-            })
+                    let spec = spec.clone();
+                    app.update(cx, |app, cx| {
+                        app.set_default_model((!is_default).then_some(spec), cx)
+                    });
+                })
         };
         let play = {
             let (app, spec) = (app, spec.clone());
@@ -872,9 +927,9 @@ impl ModelCards {
                 .xsmall()
                 .tooltip("Use it in this session now")
                 .on_click(move |_, _w, cx| {
-                let spec = spec.clone();
-                app.update(cx, |app, cx| app.set_model(&spec, cx));
-            })
+                    let spec = spec.clone();
+                    app.update(cx, |app, cx| app.set_model(&spec, cx));
+                })
         };
 
         h_flex()
@@ -982,7 +1037,10 @@ impl ModelCards {
                 let active = session.as_ref().map(|m| (m.clone(), at(m, &self.file)));
                 strip
                     .child("Default")
-                    .child(mono(default.clone().unwrap_or_else(|| "none".to_string()), p.foreground))
+                    .child(mono(
+                        default.clone().unwrap_or_else(|| "none".to_string()),
+                        p.foreground,
+                    ))
                     .when_some(active, |h, (model, at)| {
                         h.child("· this session")
                             .child(mono(model, p.foreground))
@@ -1073,7 +1131,13 @@ impl ModelCards {
         v_flex()
             .gap_3()
             .w_full()
-            .child(h_flex().justify_between().items_center().child(summary).child(keep_switch))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(summary)
+                    .child(keep_switch),
+            )
             .children(cards)
             .into_any_element()
     }

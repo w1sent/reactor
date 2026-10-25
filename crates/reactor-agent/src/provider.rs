@@ -167,36 +167,44 @@ impl AnyLlm {
                 .with_cache_counted_apart(true)
                 .with_params(thinking_params(provider, model, thinking)),
             ),
-            "openai" => AnyLlm::OpenAi(RigLlm::new(
-                openai::Client::from_env()
-                    .map_err(fail)?
-                    .completion_model(model),
-                spec,
-            )
-            .with_params(thinking_params(provider, model, thinking))),
-            "gemini" => AnyLlm::Gemini(RigLlm::new(
-                gemini::Client::from_env()
-                    .map_err(fail)?
-                    .completion_model(model),
-                spec,
-            )
-            .with_params(thinking_params(provider, model, thinking))),
-            "openrouter" => AnyLlm::OpenRouter(RigLlm::new(
-                openrouter::Client::from_env()
-                    .map_err(fail)?
-                    .completion_model(model),
-                spec,
-            )
-            .with_params(thinking_params(provider, model, thinking))),
-            "ollama" => AnyLlm::Ollama(RigLlm::new(
-                ollama::Client::from_env()
-                    .map_err(fail)?
-                    .completion_model(model),
-                spec,
-            )
-            // Without it Ollama serves its own default window and silently cuts the prompt.
-            .with_num_ctx(true)
-            .with_params(thinking_params(provider, model, thinking))),
+            "openai" => AnyLlm::OpenAi(
+                RigLlm::new(
+                    openai::Client::from_env()
+                        .map_err(fail)?
+                        .completion_model(model),
+                    spec,
+                )
+                .with_params(thinking_params(provider, model, thinking)),
+            ),
+            "gemini" => AnyLlm::Gemini(
+                RigLlm::new(
+                    gemini::Client::from_env()
+                        .map_err(fail)?
+                        .completion_model(model),
+                    spec,
+                )
+                .with_params(thinking_params(provider, model, thinking)),
+            ),
+            "openrouter" => AnyLlm::OpenRouter(
+                RigLlm::new(
+                    openrouter::Client::from_env()
+                        .map_err(fail)?
+                        .completion_model(model),
+                    spec,
+                )
+                .with_params(thinking_params(provider, model, thinking)),
+            ),
+            "ollama" => AnyLlm::Ollama(
+                RigLlm::new(
+                    ollama::Client::from_env()
+                        .map_err(fail)?
+                        .completion_model(model),
+                    spec,
+                )
+                // Without it Ollama serves its own default window and silently cuts the prompt.
+                .with_num_ctx(true)
+                .with_params(thinking_params(provider, model, thinking)),
+            ),
             other => {
                 return Err(Error::Model(format!(
                     "unknown provider `{other}` (providers: {})",
@@ -244,7 +252,10 @@ mod thinking_tests {
     fn a_level_becomes_the_providers_own_parameter() {
         let p = thinking_params("anthropic", "m", Some("low")).unwrap();
         assert_eq!(p["thinking"]["budget_tokens"], 1024);
-        assert_eq!(thinking_params("ollama", "llama3", Some("off")).unwrap()["think"], false);
+        assert_eq!(
+            thinking_params("ollama", "llama3", Some("off")).unwrap()["think"],
+            false
+        );
         assert_eq!(
             thinking_params("openai", "m", Some("high")).unwrap()["reasoning"]["effort"],
             "high"

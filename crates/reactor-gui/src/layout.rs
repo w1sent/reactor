@@ -304,10 +304,7 @@ impl LayoutPreset {
             // the rail. A rail panel a preset names is made a tab of the workspace by it.
             LayoutPreset::Default => (&[Transcript, Graph], [(&[], 0.), (&[], 0.), CONSOLE]),
             LayoutPreset::Focus => (&[Transcript], [(&[], 0.), (&[], 0.), CONSOLE]),
-            LayoutPreset::Analysis => (
-                &[Transcript, Graph, Docs],
-                [(&[], 0.), (&[], 0.), CONSOLE],
-            ),
+            LayoutPreset::Analysis => (&[Transcript, Graph, Docs], [(&[], 0.), (&[], 0.), CONSOLE]),
             LayoutPreset::Catalogue => (&[Toolbox], [(&[], 0.), (&[], 0.), CONSOLE]),
         }
     }
@@ -489,7 +486,11 @@ mod tests {
         let mut rail = PanelKind::RAIL.to_vec();
         rail.sort_by_key(|k| k.slug());
         rail.dedup();
-        assert_eq!(rail.len(), PanelKind::RAIL.len(), "a panel is on the rail twice");
+        assert_eq!(
+            rail.len(),
+            PanelKind::RAIL.len(),
+            "a panel is on the rail twice"
+        );
         for kind in [
             PanelKind::Transcript,
             PanelKind::Graph,

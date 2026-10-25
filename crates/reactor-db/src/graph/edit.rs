@@ -135,7 +135,10 @@ pub fn add_element(db: &Db, at: &At, kind: Kind, type_: &str, text: &str) -> Res
                 content: Content::value(text),
                 ..Put::new(Kind::Annotation, type_)
             };
-            if type_.trim().eq_ignore_ascii_case(AnnotationKind::Hypothesis.type_name()) {
+            if type_
+                .trim()
+                .eq_ignore_ascii_case(AnnotationKind::Hypothesis.type_name())
+            {
                 put.content
                     .props
                     .insert("hypothesis_status".into(), json!("open"));
@@ -152,7 +155,10 @@ pub fn add_element(db: &Db, at: &At, kind: Kind, type_: &str, text: &str) -> Res
                 db,
                 at.batch().put(Put {
                     content: Content::value(text),
-                    ..Put::new(Kind::External, &format!("external.{}", scheme.to_lowercase()))
+                    ..Put::new(
+                        Kind::External,
+                        &format!("external.{}", scheme.to_lowercase()),
+                    )
                 }),
             )?)
         }
@@ -660,12 +666,18 @@ pub fn find_types(choices: &[TypeChoice], typed: &str, limit: usize) -> Vec<Stri
         })
         .collect();
     ranked.sort_by(|a, b| {
-        (a.1.name != typed, a.0, std::cmp::Reverse(a.1.uses), &a.1.name).cmp(&(
-            b.1.name != typed,
-            b.0,
-            std::cmp::Reverse(b.1.uses),
-            &b.1.name,
-        ))
+        (
+            a.1.name != typed,
+            a.0,
+            std::cmp::Reverse(a.1.uses),
+            &a.1.name,
+        )
+            .cmp(&(
+                b.1.name != typed,
+                b.0,
+                std::cmp::Reverse(b.1.uses),
+                &b.1.name,
+            ))
     });
     ranked
         .into_iter()

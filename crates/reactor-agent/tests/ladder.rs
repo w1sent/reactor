@@ -908,7 +908,10 @@ fn a_cache_report_counts_reads_writes_and_the_requests_that_read_nothing() {
         // Nothing read after twenty minutes: the cache had expired.
         (22 * MIN, sent(12_500, 0, 12_500)),
     ]);
-    assert_eq!((r.replies, r.input, r.read, r.written), (4, 45_500, 10_000, 35_500));
+    assert_eq!(
+        (r.replies, r.input, r.read, r.written),
+        (4, 45_500, 10_000, 35_500)
+    );
     assert_eq!((r.cold, r.cold_after_pause), (2, 1));
     assert!((r.hit_share() - 10_000.0 / 45_500.0).abs() < 1e-9);
 }

@@ -651,8 +651,11 @@ impl GraphPanel {
                                 .flex_wrap()
                                 .gap(px(0.2 * f))
                                 .children(parts.map(|p| {
-                                    let colour =
-                                        prop_draw::category_colour(&self.vocabulary, &p.text, &theme);
+                                    let colour = prop_draw::category_colour(
+                                        &self.vocabulary,
+                                        &p.text,
+                                        &theme,
+                                    );
                                     prop_draw::chip(&p.text, colour, small, px(card::CHIP_H * f))
                                 }))
                                 .into_any_element(),
@@ -669,9 +672,7 @@ impl GraphPanel {
                                 .children(parts.map(|p| {
                                     div()
                                         .when(p.go.is_some(), |d| d.text_color(theme.primary))
-                                        .when(p.mismatch, |d| {
-                                            d.text_color(muted).line_through()
-                                        })
+                                        .when(p.mismatch, |d| d.text_color(muted).line_through())
                                         .child(marked(&p.text))
                                 }))
                                 .into_any_element(),

@@ -191,7 +191,8 @@ impl Scenario<'_> {
         let mut summaries = state.summaries.clone();
         summaries.push(summary.to_string());
         let next = next_unskipped(&state.skip, state.step_index + 1);
-        summaries.extend((state.step_index + 1..next.min(steps.len())).map(|_| SKIPPED.to_string()));
+        summaries
+            .extend((state.step_index + 1..next.min(steps.len())).map(|_| SKIPPED.to_string()));
 
         if next >= steps.len() {
             self.state = None;
@@ -326,7 +327,11 @@ impl Scenario<'_> {
                         "reactor-scenario: unknown scenario \"{id}\" -- try `list`"
                     )));
                 }
-                let skip: Vec<usize> = start.skip.into_iter().filter(|&i| i < steps.len()).collect();
+                let skip: Vec<usize> = start
+                    .skip
+                    .into_iter()
+                    .filter(|&i| i < steps.len())
+                    .collect();
                 let first = next_unskipped(&skip, 0);
                 if first >= steps.len() {
                     return Effects::notice(Notice::error(

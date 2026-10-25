@@ -295,7 +295,10 @@ pub fn goal_line(
             .whitespace_nowrap()
             .text_ellipsis()
             .child(SharedString::from(g.clone())),
-        (None, _) => div().flex_1().text_color(muted).child("No goal, guidelines only"),
+        (None, _) => div()
+            .flex_1()
+            .text_color(muted)
+            .child("No goal, guidelines only"),
     };
     let row = h_flex()
         .h(px(32.))
@@ -897,8 +900,10 @@ pub fn chips(
                     if !goal_shown(&plan) {
                         // Switched off with something set: switch it on again. Nothing set:
                         // there is no manifest until there is a goal, so write one.
-                        let (switch_on, write) =
-                            (!plan.manifest_on, plan.goal.is_none() && plan.guidelines.is_none());
+                        let (switch_on, write) = (
+                            !plan.manifest_on,
+                            plan.goal.is_none() && plan.guidelines.is_none(),
+                        );
                         menu = menu.item(PopupMenuItem::new("Goal").on_click(on_session(
                             &app,
                             &id,

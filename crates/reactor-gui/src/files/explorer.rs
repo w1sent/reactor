@@ -292,7 +292,9 @@ impl FilesPanel {
                             Err(e) => refused.push(format!("{p}: {e}")),
                         }
                     }
-                    let after = artifact::list(&backend.case).map(|l| l.len()).unwrap_or(before);
+                    let after = artifact::list(&backend.case)
+                        .map(|l| l.len())
+                        .unwrap_or(before);
                     AddReport {
                         added: after.saturating_sub(before),
                         known: ok.saturating_sub(after.saturating_sub(before)),
@@ -380,8 +382,8 @@ impl FilesPanel {
                                     }
                                 })
                                 .on_click(move |_, window, cx| {
-                                    let _ = this
-                                        .update(cx, |p, cx| p.open(&path, None, window, cx));
+                                    let _ =
+                                        this.update(cx, |p, cx| p.open(&path, None, window, cx));
                                 })
                                 .child(Icon::new(IconName::File).small().flex_none())
                                 .child(
@@ -916,17 +918,16 @@ impl FilesPanel {
                     "Add folder to artifacts"
                 })
                 .disabled(!local)
-                    .icon(IconName::Archive)
-                    .on_click(act(Rc::new(move |t, _, c| {
-                        // A native path when there is one; the registry refuses what is
-                        // outside the case.
-                        let given = t
-                            .fs
-                            .local_path(&p)
+                .icon(IconName::Archive)
+                .on_click(act(Rc::new(move |t, _, c| {
+                    // A native path when there is one; the registry refuses what is
+                    // outside the case.
+                    let given =
+                        t.fs.local_path(&p)
                             .map(|n| n.display().to_string())
                             .unwrap_or_else(|| p.relative().to_owned());
-                        t.add_artifacts(vec![given], c)
-                    }))),
+                    t.add_artifacts(vec![given], c)
+                }))),
             );
         }
         if is_file {
@@ -1083,7 +1084,10 @@ impl AddReport {
         match (self.added, self.known) {
             (0, 0) => {}
             (n, 0) => out.push(("info", format!("artifacts: added {}", files(n)))),
-            (0, k) => out.push(("info", format!("artifacts: {} already registered", files(k)))),
+            (0, k) => out.push((
+                "info",
+                format!("artifacts: {} already registered", files(k)),
+            )),
             (n, k) => out.push((
                 "info",
                 format!("artifacts: added {} ({k} already registered)", files(n)),
@@ -1343,24 +1347,21 @@ impl Render for FilesPanel {
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(body));
         let artifacts = self.artifacts_section(cx);
-        v_flex()
-            .size_full()
-            .track_focus(&self.focus)
-            .child(
-                v_resizable("files-split")
-                    .child(
-                        resizable_panel()
-                            // The search box and a few rows stay in view.
-                            .size_range(px(240.)..px(4000.))
-                            .child(tree_part),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size(px(ARTIFACTS_HEIGHT))
-                            .size_range(px(60.)..px(4000.))
-                            .child(artifacts),
-                    ),
-            )
+        v_flex().size_full().track_focus(&self.focus).child(
+            v_resizable("files-split")
+                .child(
+                    resizable_panel()
+                        // The search box and a few rows stay in view.
+                        .size_range(px(240.)..px(4000.))
+                        .child(tree_part),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(ARTIFACTS_HEIGHT))
+                        .size_range(px(60.)..px(4000.))
+                        .child(artifacts),
+                ),
+        )
     }
 }
 
@@ -1386,7 +1387,11 @@ mod add_tests {
         let names = |paths: Vec<String>| -> Vec<String> {
             paths
                 .into_iter()
-                .map(|p| p.strip_prefix(&format!("{}/", root.display())).unwrap_or(&p).to_string())
+                .map(|p| {
+                    p.strip_prefix(&format!("{}/", root.display()))
+                        .unwrap_or(&p)
+                        .to_string()
+                })
                 .collect()
         };
         let got = names(expand_folders(
@@ -1396,7 +1401,14 @@ mod add_tests {
         // `link` is a symlink, which the registry will refuse; its target is not walked.
         assert_eq!(
             got,
-            ["dump/a.bin", "dump/b.bin", "dump/deep/c.bin", "dump/link", "top.txt", "missing.bin"]
+            [
+                "dump/a.bin",
+                "dump/b.bin",
+                "dump/deep/c.bin",
+                "dump/link",
+                "top.txt",
+                "missing.bin"
+            ]
         );
         // The whole case: the case's own `.reactor` is left out.
         let all = names(expand_folders(&case, vec![root.display().to_string()]));
@@ -1415,9 +1427,30 @@ mod add_tests {
         assert_eq!(notes.len(), 5);
         assert_eq!(notes[0].1, "artifacts: f1: outside the case");
         assert_eq!(notes[3].1, "artifacts: and 2 more were refused");
-        assert_eq!(notes[4], ("info", "artifacts: added 2 files (1 already registered)".to_string()));
-        let only_known = AddReport { added: 0, known: 1, refused: vec![] };
-        assert_eq!(only_known.notes()[0].1, "artifacts: 1 file already registered");
-        assert!(AddReport { added: 0, known: 0, refused: vec![] }.notes().is_empty());
+        assert_eq!(
+            notes[4],
+            (
+                "info",
+                "artifacts: added 2 files (1 already registered)".to_string()
+            )
+        );
+        let only_known = AddReport {
+            added: 0,
+            known: 1,
+            refused: vec![],
+        };
+        assert_eq!(
+            only_known.notes()[0].1,
+            "artifacts: 1 file already registered"
+        );
+        assert!(
+            AddReport {
+                added: 0,
+                known: 0,
+                refused: vec![]
+            }
+            .notes()
+            .is_empty()
+        );
     }
 }

@@ -215,7 +215,10 @@ pub fn parse_ref_url(url: &str) -> Option<reactor_db::reference::Reference> {
     reactor_db::reference::parse(&text).ok()
 }
 
-fn link_refs_plain(text: &str, exists: &dyn Fn(&reactor_db::reference::Reference) -> bool) -> String {
+fn link_refs_plain(
+    text: &str,
+    exists: &dyn Fn(&reactor_db::reference::Reference) -> bool,
+) -> String {
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
     for found in reactor_db::reference::find(text) {
@@ -360,12 +363,20 @@ mod tests {
             "see graph:abc, `artifact:data/a.csv#row=2` and graph:missing.\n```\nsession:3\n```",
             &exists,
         );
-        assert!(out.contains("[graph:abc](reactor-ref:graph%3Aabc)"), "{out}");
         assert!(
-            out.contains("[`artifact:data/a.csv#row=2`](reactor-ref:artifact%3Adata%2Fa.csv%23row%3D2)"),
+            out.contains("[graph:abc](reactor-ref:graph%3Aabc)"),
             "{out}"
         );
-        assert!(out.contains("graph:missing.") && !out.contains("](reactor-ref:graph%3Amissing"), "{out}");
+        assert!(
+            out.contains(
+                "[`artifact:data/a.csv#row=2`](reactor-ref:artifact%3Adata%2Fa.csv%23row%3D2)"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("graph:missing.") && !out.contains("](reactor-ref:graph%3Amissing"),
+            "{out}"
+        );
         assert!(out.ends_with("session:3\n```"), "{out}");
         let url = out.split("](").nth(1).unwrap().split(')').next().unwrap();
         assert_eq!(parse_ref_url(url).unwrap().short(), "graph:abc");

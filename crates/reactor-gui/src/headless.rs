@@ -1272,11 +1272,17 @@ mod tests {
             &["case", "get", dir, "reactor://acme/artifact/a.csv"],
         );
         assert_eq!(code, Some(0), "{err}");
-        assert!(out.contains("artifact:a.csv") && out.contains("not registered"), "{out}");
+        assert!(
+            out.contains("artifact:a.csv") && out.contains("not registered"),
+            "{out}"
+        );
         let (code, out, _) = run_in(config.path(), &["case", "get", dir, "graph:?kind=entity"]);
         assert_eq!(code, Some(0));
         assert!(out.contains("no match"), "{out}");
-        let (code, _, err) = run_in(config.path(), &["case", "get", dir, "reactor://other/graph/x"]);
+        let (code, _, err) = run_in(
+            config.path(),
+            &["case", "get", dir, "reactor://other/graph/x"],
+        );
         assert_eq!(code, Some(1));
         assert!(err.contains("another case"), "{err}");
         let (code, _, _) = run_in(config.path(), &["case", "get", dir, "nonsense"]);

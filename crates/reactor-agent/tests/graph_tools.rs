@@ -324,9 +324,7 @@ async fn rows_a_script_wrote_are_pulled_and_a_wrong_pull_is_taken_back() {
             .count(),
         2
     );
-    let done = r
-        .ok("graph_revert", json!({ "change": seq }))
-        .await;
+    let done = r.ok("graph_revert", json!({ "change": seq })).await;
     assert!(done.starts_with("taken back:"), "{done}");
     assert_eq!(
         r.ok("graph_query", json!({ "what": "find" })).await,
@@ -412,9 +410,10 @@ async fn a_detached_session_has_no_graph_tools_and_a_stale_call_is_told_why() {
 fn the_agent_is_told_to_write_markdown_only_for_a_long_text() {
     let tools = Tools::standard(std::path::PathBuf::from("."));
     let spec = tools.find("graph_write").unwrap().spec();
-    let said = spec.parameters["properties"]["elements"]["items"]["properties"]["value"]["description"]
-        .as_str()
-        .unwrap();
+    let said =
+        spec.parameters["properties"]["elements"]["items"]["properties"]["value"]["description"]
+            .as_str()
+            .unwrap();
     assert!(said.contains("Markdown") && said.contains("long"), "{said}");
     assert!(said.contains("Plain text"), "{said}");
 }
@@ -444,12 +443,7 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
     );
 
     // A new type needs a kind; then only what is given changes.
-    let refused = r
-        .call(
-            "define_type",
-            json!({ "type": "ics.plc" }),
-        )
-        .await;
+    let refused = r.call("define_type", json!({ "type": "ics.plc" })).await;
     assert!(
         refused.is_error && refused.text.contains("kind"),
         "{}",
@@ -467,10 +461,7 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
         "{made}"
     );
     let red = r
-        .call(
-            "define_type",
-            json!({ "type": "ics.plc", "colour": "red" }),
-        )
+        .call("define_type", json!({ "type": "ics.plc", "colour": "red" }))
         .await;
     assert!(
         red.is_error && red.text.contains("disputed"),
@@ -506,7 +497,10 @@ async fn a_property_is_named_in_a_namespace_and_the_write_says_what_has_none() {
         "{listed}"
     );
     let under = r
-        .ok("graph_query", json!({ "what": "fields", "under": "verbatim" }))
+        .ok(
+            "graph_query",
+            json!({ "what": "fields", "under": "verbatim" }),
+        )
         .await;
     assert!(under.contains("verbatim.command_line") && !under.contains("time.first_seen"));
 
@@ -532,11 +526,17 @@ async fn a_property_is_named_in_a_namespace_and_the_write_says_what_has_none() {
 
     // Found by what a property means, not how it was spelled.
     let big = r
-        .ok("graph_query", json!({ "what": "find", "prop": "bytes>100KiB" }))
+        .ok(
+            "graph_query",
+            json!({ "what": "find", "prop": "bytes>100KiB" }),
+        )
         .await;
     assert!(big.contains("dropper facts"), "{big}");
     let small = r
-        .ok("graph_query", json!({ "what": "find", "prop": "size<1KiB" }))
+        .ok(
+            "graph_query",
+            json!({ "what": "find", "prop": "size<1KiB" }),
+        )
         .await;
     assert!(!small.contains("dropper facts"), "{small}");
     let bad = r
@@ -564,8 +564,13 @@ async fn a_property_is_named_in_a_namespace_and_the_write_says_what_has_none() {
                 "aliases": ["payload_size"] }),
         )
         .await;
-    assert!(made.contains("size.payload") && made.contains("drawn as size"), "{made}");
-    let again = r.ok("graph_query", json!({ "what": "fields", "under": "size" })).await;
+    assert!(
+        made.contains("size.payload") && made.contains("drawn as size"),
+        "{made}"
+    );
+    let again = r
+        .ok("graph_query", json!({ "what": "fields", "under": "size" }))
+        .await;
     assert!(
         again.contains("size.payload Bytes of a payload. (also payload_size)"),
         "{again}"
@@ -590,7 +595,9 @@ async fn the_case_is_read_by_reference() {
 
     // The source is the file; the place in it is on the edge.
     let claim = Rig::id_in(&added, "observation--");
-    let shown = r.ok("case_get", json!({ "uri": format!("graph:{claim}") })).await;
+    let shown = r
+        .ok("case_get", json!({ "uri": format!("graph:{claim}") }))
+        .await;
     assert!(
         shown.contains("-object-> net.ipv4:198.51.100.7")
             && shown.contains(
@@ -601,19 +608,31 @@ async fn the_case_is_read_by_reference() {
 
     // An entity by what it is, and one that was never recorded.
     let ip = r
-        .ok("case_get", json!({ "uri": "graph:entity/net.ipv4/198.51.100.7" }))
+        .ok(
+            "case_get",
+            json!({ "uri": "graph:entity/net.ipv4/198.51.100.7" }),
+        )
         .await;
     assert!(ip.contains("<-object-"), "{ip}");
     let none = r
-        .ok("case_get", json!({ "uri": "graph:entity/net.ipv4/203.0.113.9" }))
+        .ok(
+            "case_get",
+            json!({ "uri": "graph:entity/net.ipv4/203.0.113.9" }),
+        )
         .await;
     assert!(none.contains("is not recorded"), "{none}");
 
     // A set lists references, and pages.
     let set = r
-        .ok("case_get", json!({ "uri": "graph:?kind=entity", "limit": 1 }))
+        .ok(
+            "case_get",
+            json!({ "uri": "graph:?kind=entity", "limit": 1 }),
+        )
         .await;
-    assert!(set.starts_with("graph:entity--") && set.contains("1 shown"), "{set}");
+    assert!(
+        set.starts_with("graph:entity--") && set.contains("1 shown"),
+        "{set}"
+    );
     let none = r
         .ok("case_get", json!({ "uri": "graph:?type=host." }))
         .await;
@@ -623,20 +642,37 @@ async fn the_case_is_read_by_reference() {
     let file = r
         .ok("case_get", json!({ "uri": "artifact:samples/dropper.bin" }))
         .await;
-    assert!(file.contains("10 bytes") && file.contains("not registered"), "{file}");
+    assert!(
+        file.contains("10 bytes") && file.contains("not registered"),
+        "{file}"
+    );
     let change = r.ok("case_get", json!({ "uri": "change:1" })).await;
-    assert!(change.contains("wrote graph:") && change.contains("version 1"), "{change}");
+    assert!(
+        change.contains("wrote graph:") && change.contains("version 1"),
+        "{change}"
+    );
     let entry = r
         .ok("case_get", json!({ "uri": "session:s1#entry=0" }))
         .await;
     assert!(!entry.is_empty());
 
     // What is not a reference, what names another case, what is not here.
-    assert!(r.call("case_get", json!({ "uri": "nonsense" })).await.is_error);
+    assert!(
+        r.call("case_get", json!({ "uri": "nonsense" }))
+            .await
+            .is_error
+    );
     let other = r
-        .call("case_get", json!({ "uri": "reactor://elsewhere/graph/entity--x" }))
+        .call(
+            "case_get",
+            json!({ "uri": "reactor://elsewhere/graph/entity--x" }),
+        )
         .await;
-    assert!(other.is_error && other.text.contains("another case"), "{}", other.text);
+    assert!(
+        other.is_error && other.text.contains("another case"),
+        "{}",
+        other.text
+    );
 }
 
 #[tokio::test]
@@ -649,10 +685,15 @@ async fn a_canonical_reference_to_this_case_is_read_by_its_alias_or_id() {
     )
     .await;
     case.set_alias(Some("acme")).unwrap();
-    let by_alias = r.ok("case_get", json!({ "uri": "reactor://acme/change/1" })).await;
+    let by_alias = r
+        .ok("case_get", json!({ "uri": "reactor://acme/change/1" }))
+        .await;
     assert!(by_alias.starts_with("change:1"), "{by_alias}");
     let by_id = r
-        .ok("case_get", json!({ "uri": format!("reactor://{}/change/1", case.meta().id) }))
+        .ok(
+            "case_get",
+            json!({ "uri": format!("reactor://{}/change/1", case.meta().id) }),
+        )
         .await;
     assert!(by_id.starts_with("change:1"), "{by_id}");
 }
@@ -666,8 +707,16 @@ async fn the_graph_switch_closes_the_graph_kinds_and_leaves_the_rest() {
         json!({ "caseGraph": false }),
     )
     .unwrap();
-    let off = r.call("case_get", json!({ "uri": "graph:?kind=entity" })).await;
-    assert!(off.is_error && off.text.contains("case-graph"), "{}", off.text);
-    let file = r.call("case_get", json!({ "uri": "artifact:samples/dropper.bin" })).await;
+    let off = r
+        .call("case_get", json!({ "uri": "graph:?kind=entity" }))
+        .await;
+    assert!(
+        off.is_error && off.text.contains("case-graph"),
+        "{}",
+        off.text
+    );
+    let file = r
+        .call("case_get", json!({ "uri": "artifact:samples/dropper.bin" }))
+        .await;
     assert!(!file.is_error, "{}", file.text);
 }

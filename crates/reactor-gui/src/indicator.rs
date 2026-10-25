@@ -185,9 +185,10 @@ impl Element for Shimmer {
                         .size;
                     for (glyph_index, glyph) in run.glyphs.iter().enumerate() {
                         glyph_origin.x += glyph.position.x - previous.x;
-                        if wraps.peek().is_some_and(|w| {
-                            w.run_ix == run_index && w.glyph_ix == glyph_index
-                        }) {
+                        if wraps
+                            .peek()
+                            .is_some_and(|w| w.run_ix == run_index && w.glyph_ix == glyph_index)
+                        {
                             wraps.next();
                             glyph_origin.x = line_origin.x;
                             glyph_origin.y += line_height;

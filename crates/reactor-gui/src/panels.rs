@@ -10,14 +10,14 @@ use serde_json::Value;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::marker::{Marker, MarkerContent, MarkerIcon};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::TextView;
@@ -84,7 +84,9 @@ fn mcp_tag(
                 .small()
                 .text_color(tint),
             )
-            .when(up, |el| el.child(SharedString::from(format!("~{tokens} tok")))),
+            .when(up, |el| {
+                el.child(SharedString::from(format!("~{tokens} tok")))
+            }),
         SharedString::from(tip),
     )
     .into_any_element()
@@ -400,10 +402,9 @@ fn scenario_card(
                     app.activate_session(&session, window, cx);
                     app.open_scenario_start(&id, new, window, cx);
                 }
-                None => app.open_scenario_editor(
-                    crate::scenario_editor::Start::Edit(id.clone()),
-                    cx,
-                ),
+                None => {
+                    app.open_scenario_editor(crate::scenario_editor::Start::Edit(id.clone()), cx)
+                }
             });
         }
     };
@@ -522,11 +523,11 @@ fn render_item(
                 v_flex()
                     .py_1()
                     .when(!continues_agent, |el| {
-                        el.child(
-                            div()
-                                .px_2()
-                                .child(ui::speaker("REACTOR", theme.muted_foreground, theme)),
-                        )
+                        el.child(div().px_2().child(ui::speaker(
+                            "REACTOR",
+                            theme.muted_foreground,
+                            theme,
+                        )))
                     })
                     .child(
                         div()
@@ -655,32 +656,36 @@ fn render_item(
                 .map(|id| scenario_card(index, id, links, theme));
             ui::lane(
                 Node::Tool(ui::tool_state(*done, *is_error)),
-                v_flex().py_0p5().child(ui::tool_row(
-                    ui::ToolCallView {
-                        index,
-                        name,
-                        args,
-                        output,
-                        entry: *entry,
-                        is_error: *is_error,
-                        done: *done,
-                        out_of_context,
-                        expanded: tool_expanded,
-                        copied: links.copied == Some(index),
-                        reference: (*entry)
-                            .filter(|_| !links.session.is_empty() && !links.authority.is_empty())
-                            .map(|n| {
-                                reactor_db::reference::Reference::session(&links.session, n)
-                                    .canonical(&links.authority)
-                            }),
-                    },
-                    docs,
-                    theme,
-                    tools,
-                    move |window, cx| toggle_tool(index, window, cx),
-                    move |text, window, cx| copy(index, text, window, cx),
-                ))
-                .children(saved_scenario),
+                v_flex()
+                    .py_0p5()
+                    .child(ui::tool_row(
+                        ui::ToolCallView {
+                            index,
+                            name,
+                            args,
+                            output,
+                            entry: *entry,
+                            is_error: *is_error,
+                            done: *done,
+                            out_of_context,
+                            expanded: tool_expanded,
+                            copied: links.copied == Some(index),
+                            reference: (*entry)
+                                .filter(|_| {
+                                    !links.session.is_empty() && !links.authority.is_empty()
+                                })
+                                .map(|n| {
+                                    reactor_db::reference::Reference::session(&links.session, n)
+                                        .canonical(&links.authority)
+                                }),
+                        },
+                        docs,
+                        theme,
+                        tools,
+                        move |window, cx| toggle_tool(index, window, cx),
+                        move |text, window, cx| copy(index, text, window, cx),
+                    ))
+                    .children(saved_scenario),
                 theme,
             )
         }
@@ -1832,7 +1837,10 @@ impl Render for TreePanel {
                     .child({
                         let mut tags: Vec<String> = Vec::new();
                         if let Some(parent) = &s.parent {
-                            tags.push(format!("agent of {}", crate::session_list::short_id(parent)));
+                            tags.push(format!(
+                                "agent of {}",
+                                crate::session_list::short_id(parent)
+                            ));
                         }
                         if s.current {
                             tags.push("active".into());

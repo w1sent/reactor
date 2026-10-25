@@ -139,14 +139,12 @@ pub fn canonical_uri(raw: &str) -> Result<String> {
             "`{raw}`: no file: URIs -- name a file in the case by its relative path"
         )));
     }
-    let scheme = uri
-        .split_once(':')
-        .map(|(s, _)| s)
-        .filter(|s| {
-            s.len() > 1
-                && s.starts_with(|c: char| c.is_ascii_alphabetic())
-                && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
-        });
+    let scheme = uri.split_once(':').map(|(s, _)| s).filter(|s| {
+        s.len() > 1
+            && s.starts_with(|c: char| c.is_ascii_alphabetic())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    });
     if let Some(scheme) = scheme {
         if crate::reference::Kind::from_scheme(scheme).is_some() {
             return Ok(crate::reference::parse(&uri)?.short());

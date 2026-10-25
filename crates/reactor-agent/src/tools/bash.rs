@@ -373,10 +373,16 @@ mod spill_tests {
         assert_ne!(a, b);
         std::io::Write::write_all(&mut first, b"x").unwrap();
         let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "what an investigation printed is for its owner");
+        assert_eq!(
+            mode, 0o600,
+            "what an investigation printed is for its owner"
+        );
         // Created exclusively: opening the same name again is refused, not truncated, which
         // is also what keeps a link planted at a guessed name from being followed.
-        let again = std::fs::OpenOptions::new().write(true).create_new(true).open(&a);
+        let again = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&a);
         assert_eq!(
             again.err().map(|e| e.kind()),
             Some(std::io::ErrorKind::AlreadyExists)

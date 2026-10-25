@@ -675,39 +675,40 @@ impl GraphPanel {
             .join("\n");
         // A row has 8 pixels of room at each side, for its shade.
         let value_w = px((self.dock_value() - 32. - 16.).max(100.));
-        let plain_row = move |ix: usize, label: String, value: String, mono: bool, theme: &Theme| {
-            h_flex()
-                .gap_3()
-                .items_start()
-                .px_2()
-                .py_1p5()
-                .rounded_md()
-                .when_some(prop_draw::stripe(theme, ix), |d, shade| d.bg(shade))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(88.))
-                        .text_size(small)
-                        .text_color(theme.muted_foreground)
-                        .child(SharedString::from(label)),
-                )
-                .child(
-                    div()
-                        .w(value_w)
-                        .flex_none()
-                        .when(mono, |d| {
-                            d.font_family(theme.mono_font_family.clone())
-                                .text_size(small)
-                        })
-                        .child(SharedString::from(value.clone())),
-                )
-                .child(
-                    Clipboard::new(("graph-copy-detail", ix))
-                        .value(SharedString::from(value))
-                        .tooltip("Copy this value"),
-                )
-                .into_any_element()
-        };
+        let plain_row =
+            move |ix: usize, label: String, value: String, mono: bool, theme: &Theme| {
+                h_flex()
+                    .gap_3()
+                    .items_start()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .when_some(prop_draw::stripe(theme, ix), |d, shade| d.bg(shade))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(88.))
+                            .text_size(small)
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(label)),
+                    )
+                    .child(
+                        div()
+                            .w(value_w)
+                            .flex_none()
+                            .when(mono, |d| {
+                                d.font_family(theme.mono_font_family.clone())
+                                    .text_size(small)
+                            })
+                            .child(SharedString::from(value.clone())),
+                    )
+                    .child(
+                        Clipboard::new(("graph-copy-detail", ix))
+                            .value(SharedString::from(value))
+                            .tooltip("Copy this value"),
+                    )
+                    .into_any_element()
+            };
         let head_n = head.len();
         let props_n = i.props.len();
         v_flex()
@@ -761,9 +762,9 @@ impl GraphPanel {
                     .icon(gpui_kit::assets::IconName::Plus)
                     .label("Property")
                     .tooltip("Add a detail: a size, a time, a reference, a command…")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.start_prop_edit(None, window, cx)
-                    })),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.start_prop_edit(None, window, cx)),
+                    ),
             )
             .into_any_element()
     }
@@ -795,7 +796,12 @@ impl GraphPanel {
                         .text_color(theme.muted_foreground)
                         .child(SharedString::from(p.label.clone())),
                 )
-                .child(div().w(value_w).flex_none().child(self.prop_form(theme, cx)))
+                .child(
+                    div()
+                        .w(value_w)
+                        .flex_none()
+                        .child(self.prop_form(theme, cx)),
+                )
                 .into_any_element();
         }
         // The edit and remove buttons take room beside the copy button.
@@ -843,13 +849,20 @@ impl GraphPanel {
                 .text_size(small)
                 .hover(|d| d.underline())
                 .child(text)
-                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.follow(&go, event.modifiers(), window, cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                        this.follow(&go, event.modifiers(), window, cx)
+                    }),
+                )
                 .into_any_element()
         });
         let value = if chips {
-            h_flex().w(value_w).flex_none().flex_wrap().gap_1().children(parts)
+            h_flex()
+                .w(value_w)
+                .flex_none()
+                .flex_wrap()
+                .gap_1()
+                .children(parts)
         } else {
             v_flex().w(value_w).flex_none().gap_0p5().children(parts)
         };
@@ -887,9 +900,9 @@ impl GraphPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::X)
                             .tooltip("Remove this property (the earlier version is kept)")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.remove_prop(&drop_name, cx)
-                            })),
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.remove_prop(&drop_name, cx)),
+                            ),
                     ),
             )
             .into_any_element()
@@ -913,9 +926,8 @@ impl GraphPanel {
                 .unwrap_or_default(),
             None => Default::default(),
         };
-        let name_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("namespace.name, e.g. size.payload")
-        });
+        let name_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder("namespace.name, e.g. size.payload"));
         let value_input = cx.new(|cx| {
             let mut s = TextareaState::new(window, cx)
                 .auto_grow(1, 8)
@@ -924,8 +936,10 @@ impl GraphPanel {
             s.set_value(&text, window, cx);
             s
         });
-        cx.subscribe_in(&name_input, window, |this, _, event: &InputEvent, window, cx| {
-            match event {
+        cx.subscribe_in(
+            &name_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { .. } => {
                     if let Some(e) = &this.prop_edit {
                         e.value_input.update(cx, |s, cx| s.focus(window, cx));
@@ -933,14 +947,18 @@ impl GraphPanel {
                 }
                 InputEvent::Change => cx.notify(),
                 _ => {}
-            }
-        })
+            },
+        )
         .detach();
-        cx.subscribe_in(&value_input, window, |this, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                this.save_prop(window, cx);
-            }
-        })
+        cx.subscribe_in(
+            &value_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.save_prop(window, cx);
+                }
+            },
+        )
         .detach();
         let editing = name.is_some();
         self.prop_edit = Some(PropEdit {
@@ -996,7 +1014,10 @@ impl GraphPanel {
         let Some(id) = self.single() else {
             return;
         };
-        if self.edit(cx, |db, at| edit::remove_prop(db, at, &id, name)).is_some() {
+        if self
+            .edit(cx, |db, at| edit::remove_prop(db, at, &id, name))
+            .is_some()
+        {
             self.prop_edit = None;
             self.error = None;
             cx.notify();
@@ -1025,7 +1046,9 @@ impl GraphPanel {
         let typed = pe.name_input.read(cx).value().trim().to_lowercase();
         let hint = match &pe.name {
             Some(n) => self.name_hint(n),
-            None if typed.is_empty() => "named <namespace>.<name>; the namespace says how it is drawn".into(),
+            None if typed.is_empty() => {
+                "named <namespace>.<name>; the namespace says how it is drawn".into()
+            }
             None => self.name_hint(&typed),
         };
         let offers: Vec<(String, String)> = if pe.name.is_some() {
@@ -1053,7 +1076,9 @@ impl GraphPanel {
             .border_1()
             .border_color(theme.border)
             .bg(theme.muted)
-            .when(pe.name.is_none(), |d| d.child(Input::new(&pe.name_input).small()))
+            .when(pe.name.is_none(), |d| {
+                d.child(Input::new(&pe.name_input).small())
+            })
             .when(pe.name.is_some(), |d| {
                 d.child(
                     div()
@@ -1068,40 +1093,45 @@ impl GraphPanel {
                     .text_color(theme.muted_foreground)
                     .child(SharedString::from(hint)),
             )
-            .children(offers.into_iter().enumerate().map(|(n, (name, definition))| {
-                let pick = name.clone();
-                h_flex()
-                    .id(("graph-prop-offer", n))
-                    .gap_2()
-                    .px_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_size(small)
-                    .hover(|d| d.bg(theme.secondary))
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(theme.mono_font_family.clone())
-                            .child(SharedString::from(name)),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted_foreground)
-                            .child(SharedString::from(definition)),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(e) = &this.prop_edit {
-                            let v = pick.clone();
-                            e.name_input.update(cx, |s, cx| {
-                                s.set_value(&v, window, cx);
-                                s.focus(window, cx)
-                            });
-                        }
-                        cx.notify();
-                    }))
-            }))
+            .children(
+                offers
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, (name, definition))| {
+                        let pick = name.clone();
+                        h_flex()
+                            .id(("graph-prop-offer", n))
+                            .gap_2()
+                            .px_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_size(small)
+                            .hover(|d| d.bg(theme.secondary))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_family(theme.mono_font_family.clone())
+                                    .child(SharedString::from(name)),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(definition)),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(e) = &this.prop_edit {
+                                    let v = pick.clone();
+                                    e.name_input.update(cx, |s, cx| {
+                                        s.set_value(&v, window, cx);
+                                        s.focus(window, cx)
+                                    });
+                                }
+                                cx.notify();
+                            }))
+                    }),
+            )
             .child(Textarea::new(&pe.value_input))
             .child(
                 h_flex()
@@ -1111,9 +1141,9 @@ impl GraphPanel {
                             .small()
                             .primary()
                             .label("Save")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_prop(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.save_prop(window, cx)),
+                            ),
                     )
                     .child(
                         Button::new("graph-prop-cancel")

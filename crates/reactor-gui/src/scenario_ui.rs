@@ -192,7 +192,11 @@ mod tests {
             skip: vec![],
         };
         assert_eq!(
-            view_of(Some(&s), &Library::single(d.path())).run.unwrap().phases[0].outcome,
+            view_of(Some(&s), &Library::single(d.path()))
+                .run
+                .unwrap()
+                .phases[0]
+                .outcome,
             Outcome::Awaiting
         );
     }
@@ -207,7 +211,11 @@ mod tests {
             pending_summary: None,
             skip: vec![],
         };
-        assert!(view_of(Some(&gone), &Library::single(d.path())).run.is_none());
+        assert!(
+            view_of(Some(&gone), &Library::single(d.path()))
+                .run
+                .is_none()
+        );
         let stale = scenario::State {
             scenario_id: "beta".into(),
             step_index: 9,
@@ -215,7 +223,13 @@ mod tests {
             pending_summary: None,
             skip: vec![],
         };
-        assert_eq!(view_of(Some(&stale), &Library::single(d.path())).run.unwrap().current, 0);
+        assert_eq!(
+            view_of(Some(&stale), &Library::single(d.path()))
+                .run
+                .unwrap()
+                .current,
+            0
+        );
     }
 }
 

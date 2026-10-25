@@ -39,7 +39,10 @@ fn a_case_answers_to_its_id_its_alias_and_the_aliases_it_had() {
     assert!(!case.is_named("other"));
 
     assert!(case.set_alias(Some("has space")).is_err());
-    assert!(case.set_alias(Some("")).is_ok(), "an empty alias takes it away");
+    assert!(
+        case.set_alias(Some("")).is_ok(),
+        "an empty alias takes it away"
+    );
     assert_eq!(case.authority(), id);
 
     // It is in case.json, so it survives a reopen.
@@ -77,7 +80,13 @@ fn what_exists_is_told_from_what_does_not() {
 fn a_set_is_a_page_of_references() {
     let (_d, case) = case();
     for i in 0..5 {
-        write(&case, Kind::Entity, "net.ipv4", &format!("198.51.100.{i}"), vec![]);
+        write(
+            &case,
+            Kind::Entity,
+            "net.ipv4",
+            &format!("198.51.100.{i}"),
+            vec![],
+        );
     }
     write(&case, Kind::Entity, "host.name", "ws-042", vec![]);
 
@@ -87,22 +96,49 @@ fn a_set_is_a_page_of_references() {
         };
         lookup::list(&case, kind, &params, page).unwrap()
     };
-    let all = set("graph:?type=net.", Page { limit: 3, offset: 0 });
+    let all = set(
+        "graph:?type=net.",
+        Page {
+            limit: 3,
+            offset: 0,
+        },
+    );
     assert_eq!(all.items.len(), 3);
     assert!(all.more);
-    let rest = set("graph:?type=net.", Page { limit: 3, offset: 3 });
+    let rest = set(
+        "graph:?type=net.",
+        Page {
+            limit: 3,
+            offset: 3,
+        },
+    );
     assert_eq!(rest.items.len(), 2);
     assert!(!rest.more);
-    assert!(all.items[0].preview.starts_with("entity net.ipv4 198.51.100."));
+    assert!(
+        all.items[0]
+            .preview
+            .starts_with("entity net.ipv4 198.51.100.")
+    );
     assert!(matches!(
         &rest.items[0].reference.target,
-        Target::Graph { id: GraphId::Id(_), ver: None }
+        Target::Graph {
+            id: GraphId::Id(_),
+            ver: None
+        }
     ));
 
     let one = set("graph:?text=ws-042", Page::default());
     assert_eq!(one.items.len(), 1);
     assert!(lookup::list(&case, reference::Kind::Blob, &[], Page::default()).is_err());
-    assert!(lookup::list(&case, reference::Kind::Graph, &[("kind".into(), "x".into())], Page::default()).is_err());
+    assert!(
+        lookup::list(
+            &case,
+            reference::Kind::Graph,
+            &[("kind".into(), "x".into())],
+            Page::default()
+        )
+        .is_err()
+    );
 
     // The references it returns resolve.
     for item in all.items {
@@ -134,18 +170,33 @@ fn an_export_names_the_case_in_every_reference() {
         elements.contains(&format!("reactor://acme/graph/{ip}@1")),
         "{elements}"
     );
-    assert!(elements.contains("reactor://acme/artifact/data/a.csv"), "{elements}");
+    assert!(
+        elements.contains("reactor://acme/artifact/data/a.csv"),
+        "{elements}"
+    );
     assert!(
         elements.contains("see reactor://acme/graph/entity/net.ipv4/198.51.100.7"),
         "a reference in a text is written out too: {elements}"
     );
     let edges = tables::edges(&case, false).unwrap();
-    assert!(edges.contains("reactor://acme/artifact/data/a.csv"), "{edges}");
+    assert!(
+        edges.contains("reactor://acme/artifact/data/a.csv"),
+        "{edges}"
+    );
 
     // A bundle of the case restores into another case with the sources as they were.
-    let bundle = stix::export(&case, &stix::ExportOptions { include_deleted: false }).unwrap();
+    let bundle = stix::export(
+        &case,
+        &stix::ExportOptions {
+            include_deleted: false,
+        },
+    )
+    .unwrap();
     let text = bundle.to_string();
-    assert!(text.contains("reactor://acme/artifact/data/a.csv"), "{text}");
+    assert!(
+        text.contains("reactor://acme/artifact/data/a.csv"),
+        "{text}"
+    );
     assert!(text.contains("\"alias\":\"acme\""), "{text}");
 
     let dir = tempfile::tempdir().unwrap();

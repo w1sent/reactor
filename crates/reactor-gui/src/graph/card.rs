@@ -1132,10 +1132,7 @@ mod tests {
             );
         }
         Node {
-            props: props
-                .iter()
-                .map(|(k, v)| Prop::of(&fields, k, v))
-                .collect(),
+            props: props.iter().map(|(k, v)| Prop::of(&fields, k, v)).collect(),
             ..entity("file.path", "/tmp/a")
         }
     }
@@ -1143,8 +1140,14 @@ mod tests {
     #[test]
     fn a_card_draws_the_parts_of_a_property_as_the_inspector_does() {
         let node = with_props(&[
-            ("category.technique", serde_json::json!(["T1059.001", "T1105"])),
-            ("verbatim.command_line", serde_json::json!("rundll32.exe a.dll,Start\n  /beacon 198.51.100.7")),
+            (
+                "category.technique",
+                serde_json::json!(["T1059.001", "T1105"]),
+            ),
+            (
+                "verbatim.command_line",
+                serde_json::json!("rundll32.exe a.dll,Start\n  /beacon 198.51.100.7"),
+            ),
             ("size", serde_json::json!(184_320)),
         ]);
         let xl = card(&node, Size::Xl, None, false, &m());
@@ -1190,7 +1193,10 @@ mod tests {
                 .collect(),
         };
         let (a, b) = (row(1).height(200.0, &m()), row(3).height(200.0, &m()));
-        assert!((b - a - 2.0 * (LINE * SMALL + PART_GAP)).abs() < 1e-4, "{a} {b}");
+        assert!(
+            (b - a - 2.0 * (LINE * SMALL + PART_GAP)).abs() < 1e-4,
+            "{a} {b}"
+        );
     }
 
     #[test]
@@ -1209,11 +1215,9 @@ mod tests {
             ..entity("host.name", "ws-042")
         };
         let xl = card(&short, Size::Xl, None, false, &m());
-        let least = (2.0 * PAD_X
-            + 2.0 * ROW_PX
-            + KEY_W * SMALL
-            + PROP_VALUE_MIN * m().mono * SMALL)
-            * m().font;
+        let least =
+            (2.0 * PAD_X + 2.0 * ROW_PX + KEY_W * SMALL + PROP_VALUE_MIN * m().mono * SMALL)
+                * m().font;
         assert!(xl.w >= least, "{} < {least}", xl.w);
         // A card with none says what it says in the width it needs.
         let m_card = card(&short, Size::M, None, false, &m());

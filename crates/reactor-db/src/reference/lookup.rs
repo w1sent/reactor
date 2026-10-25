@@ -182,7 +182,9 @@ pub fn list(case: &Case, kind: Kind, params: &[(String, String)], page: Page) ->
                         type_prefix: param(params, "type").map(str::to_string),
                         text: param(params, "text").map(str::to_string),
                         tag: param(params, "tag").map(str::to_string),
-                        props: param(params, "prop").map(|p| vec![p.to_string()]).unwrap_or_default(),
+                        props: param(params, "prop")
+                            .map(|p| vec![p.to_string()])
+                            .unwrap_or_default(),
                         include_deleted: flag(params, "include_deleted"),
                         limit: want,
                         offset: page.offset,
@@ -238,14 +240,20 @@ pub fn list(case: &Case, kind: Kind, params: &[(String, String)], page: Page) ->
                 artifact::list(case)?
             };
             rows.into_iter()
-                .filter(|a| text.as_ref().is_none_or(|t| a.path.to_lowercase().contains(t)))
+                .filter(|a| {
+                    text.as_ref()
+                        .is_none_or(|t| a.path.to_lowercase().contains(t))
+                })
                 .skip(page.offset)
                 .take(want)
                 .map(|a| Item {
                     preview: format!(
                         "{} bytes{}",
                         a.size,
-                        a.kind.as_deref().map(|k| format!(", {k}")).unwrap_or_default()
+                        a.kind
+                            .as_deref()
+                            .map(|k| format!(", {k}"))
+                            .unwrap_or_default()
                     ),
                     reference: Reference::artifact(&a.path),
                 })
@@ -279,7 +287,11 @@ pub fn list(case: &Case, kind: Kind, params: &[(String, String)], page: Page) ->
             vocab
                 .types
                 .values()
-                .filter(|t| prefix.as_ref().is_none_or(|p| t.name.starts_with(p.as_str())))
+                .filter(|t| {
+                    prefix
+                        .as_ref()
+                        .is_none_or(|p| t.name.starts_with(p.as_str()))
+                })
                 .filter(|t| {
                     text.as_ref().is_none_or(|x| {
                         t.name.contains(x.as_str()) || t.definition.to_lowercase().contains(x)
@@ -296,14 +308,16 @@ pub fn list(case: &Case, kind: Kind, params: &[(String, String)], page: Page) ->
                 .collect()
         }
         Kind::Change => db.read(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT seq, ts, type FROM event ORDER BY seq DESC LIMIT ?1 OFFSET ?2",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT seq, ts, type FROM event ORDER BY seq DESC LIMIT ?1 OFFSET ?2")?;
             let rows = stmt
-                .query_map(
-                    rusqlite::params![want as i64, page.offset as i64],
-                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-                )?
+                .query_map(rusqlite::params![want as i64, page.offset as i64], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows
                 .into_iter()

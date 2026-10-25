@@ -713,7 +713,11 @@ fn parse_author(s: &str) -> Author {
 /// was the same thing inside that case, and is the same thing inside this one.
 fn unqualify(uri: &str, own: &[String]) -> String {
     match crate::reference::parse(uri) {
-        Ok(r) if r.case.as_deref().is_some_and(|c| own.iter().any(|o| o.eq_ignore_ascii_case(c))) => {
+        Ok(r)
+            if r.case
+                .as_deref()
+                .is_some_and(|c| own.iter().any(|o| o.eq_ignore_ascii_case(c))) =>
+        {
             r.short()
         }
         _ => uri.to_string(),

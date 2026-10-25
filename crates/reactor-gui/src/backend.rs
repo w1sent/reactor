@@ -190,12 +190,11 @@ impl Backend {
             .clone()
             .or_else(|| settings.default_model.clone())
             .or_else(|| std::env::var("REACTOR_MODEL").ok());
-        let (llm, model, window) =
-            llm_for(
-                spec.as_deref(),
-                settings.default_thinking.as_deref(),
-                &provider_options(&settings),
-            );
+        let (llm, model, window) = llm_for(
+            spec.as_deref(),
+            settings.default_thinking.as_deref(),
+            &provider_options(&settings),
+        );
         let llm = Switchable::new(llm);
         let summarizer = Switchable::new(llm.current());
 
@@ -686,7 +685,11 @@ impl Backend {
     }
 
     /// Admit input typed while a turn runs; it is in the log when this returns.
-    pub fn admit(&self, class: reactor_agent::inbox::Class, text: &str) -> std::result::Result<(), String> {
+    pub fn admit(
+        &self,
+        class: reactor_agent::inbox::Class,
+        text: &str,
+    ) -> std::result::Result<(), String> {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let item = format!(
             "{}-{}",

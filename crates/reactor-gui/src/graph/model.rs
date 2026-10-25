@@ -401,7 +401,9 @@ fn spring(
     // the picture is the same whichever way they are: every row adds its pairs in the order
     // the nodes are numbered, which is the order a single pass over all pairs would.
     let threads = if free.len() * n >= 600_000 {
-        std::thread::available_parallelism().map_or(1, |t| t.get()).min(free.len())
+        std::thread::available_parallelism()
+            .map_or(1, |t| t.get())
+            .min(free.len())
     } else {
         1
     };
@@ -1528,13 +1530,19 @@ mod tests {
             ("Loose", "x"),
         ] {
             assert!(
-                drawn.iter().any(|(l, t, bad)| (l.as_str(), t.as_str()) == want && !bad),
+                drawn
+                    .iter()
+                    .any(|(l, t, bad)| (l.as_str(), t.as_str()) == want && !bad),
                 "no {want:?} in {drawn:?}"
             );
         }
         // A reference that parses is followable, and one that names nothing is still a
         // reference to draw, as written.
-        let see = m.nodes[0].props.iter().find(|p| p.name == "ref.see").unwrap();
+        let see = m.nodes[0]
+            .props
+            .iter()
+            .find(|p| p.name == "ref.see")
+            .unwrap();
         assert!(see.parts()[0].go.is_some());
     }
 
@@ -1603,10 +1611,18 @@ mod tests {
     fn the_force_layout_gives_the_picture_it_always_did_to_the_last_bit() {
         // Sizes of 40 nodes up to 700 (the last is large enough to be shared over threads),
         // with nothing placed, with most placed, and with some nodes exactly on one another.
-        for (n, placed, stacked) in [(40, 0, false), (40, 33, false), (60, 10, true), (700, 0, false), (700, 690, false)] {
+        for (n, placed, stacked) in [
+            (40, 0, false),
+            (40, 33, false),
+            (60, 10, true),
+            (700, 0, false),
+            (700, 690, false),
+        ] {
             let mut state = 0x9e37_79b9_u64 + n as u64;
             let mut next = || {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (state >> 33) as u32
             };
             let ids: Vec<String> = (0..n).map(|i| format!("id-{i}")).collect();
@@ -1619,12 +1635,17 @@ mod tests {
                     if stacked && i % 3 == 0 {
                         (0.0, 0.0)
                     } else {
-                        ((next() % 2000) as f32 - 1000.0, (next() % 2000) as f32 - 1000.0)
+                        (
+                            (next() % 2000) as f32 - 1000.0,
+                            (next() % 2000) as f32 - 1000.0,
+                        )
                     }
                 })
                 .collect();
             // Placed nodes come first, or (when some are stacked) are scattered among the rest.
-            let fixed: Vec<bool> = (0..n).map(|i| i < placed || (stacked && i % 7 == 1)).collect();
+            let fixed: Vec<bool> = (0..n)
+                .map(|i| i < placed || (stacked && i % 7 == 1))
+                .collect();
             let edges: Vec<(usize, usize)> = (0..n * 3 / 2)
                 .map(|_| (next() as usize % n, next() as usize % n))
                 .filter(|(a, b)| a != b)
@@ -1635,7 +1656,11 @@ mod tests {
             let bits = |p: &[(f32, f32)]| -> Vec<(u32, u32)> {
                 p.iter().map(|q| (q.0.to_bits(), q.1.to_bits())).collect()
             };
-            assert_eq!(bits(&now), bits(&then), "n={n} placed={placed} stacked={stacked}");
+            assert_eq!(
+                bits(&now),
+                bits(&then),
+                "n={n} placed={placed} stacked={stacked}"
+            );
         }
     }
 

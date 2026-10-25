@@ -527,7 +527,10 @@ pub fn value_from_text(shape: Shape, text: &str, list: bool) -> Result<Value> {
     if free && !list {
         return Ok(Value::String(whole.to_string()));
     }
-    let items: Vec<Value> = lines().into_iter().map(|l| item_from_text(shape, l)).collect();
+    let items: Vec<Value> = lines()
+        .into_iter()
+        .map(|l| item_from_text(shape, l))
+        .collect();
     Ok(match items.len() {
         1 if !list => items.into_iter().next().unwrap_or(Value::Null),
         _ => Value::Array(items),
@@ -561,7 +564,9 @@ fn number(f: f64) -> Value {
     if f.fract() == 0.0 && f.abs() < 9e15 {
         Value::from(f as i64)
     } else {
-        serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
+        serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 

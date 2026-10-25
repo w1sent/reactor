@@ -312,7 +312,10 @@ fn what_a_person_types_is_stored_as_the_shape_of_its_name_says() {
         v(Shape::Verbatim, "a.exe  -x\n  -y\n", false).unwrap(),
         json!("a.exe  -x\n  -y")
     );
-    assert_eq!(v(Shape::Text, "one\ntwo", true).unwrap(), json!(["one", "two"]));
+    assert_eq!(
+        v(Shape::Text, "one\ntwo", true).unwrap(),
+        json!(["one", "two"])
+    );
     assert!(v(Shape::Text, "  \n ", false).is_err());
 }
 
@@ -325,7 +328,14 @@ fn a_person_sets_and_removes_a_property_and_every_step_is_a_version() {
     let id = note(&case, "evidence", json!({"loose": "x"}));
 
     edit::set_prop(db, &at, &id, "size_bytes", json!(184_320)).unwrap();
-    edit::set_prop(db, &at, &id, "time.first_seen", json!("2026-03-12T09:14:00Z")).unwrap();
+    edit::set_prop(
+        db,
+        &at,
+        &id,
+        "time.first_seen",
+        json!("2026-03-12T09:14:00Z"),
+    )
+    .unwrap();
     let e = query::get(db, &id).unwrap().unwrap();
     // The alias was folded; what was there stays.
     assert_eq!(e.content.props.get("size"), Some(&json!(184_320)));
@@ -338,7 +348,10 @@ fn a_person_sets_and_removes_a_property_and_every_step_is_a_version() {
 
     // A name must be words joined by dots; the graph's own names are not for hand.
     for bad in ["Size Bytes", "", "a..b", "scope", "hypothesis_status"] {
-        assert!(edit::set_prop(db, &at, &id, bad, json!(1)).is_err(), "{bad:?}");
+        assert!(
+            edit::set_prop(db, &at, &id, bad, json!(1)).is_err(),
+            "{bad:?}"
+        );
     }
     assert!(edit::set_prop(db, &at, "nothing", "size", json!(1)).is_err());
 
@@ -350,7 +363,12 @@ fn a_person_sets_and_removes_a_property_and_every_step_is_a_version() {
     assert!(edit::remove_prop(db, &at, &id, "size").is_err());
     assert_eq!(query::history(db, &id).unwrap().len(), 5);
     // The old versions keep what was removed.
-    assert!(query::history(db, &id).unwrap()[0].content.props.contains_key("loose"));
+    assert!(
+        query::history(db, &id).unwrap()[0]
+            .content
+            .props
+            .contains_key("loose")
+    );
 }
 
 #[test]
@@ -363,5 +381,8 @@ fn an_entitys_key_cannot_be_set_by_hand_but_its_details_can() {
     edit::set_prop(db, &at, &id, "category.severity", json!("high")).unwrap();
     assert!(edit::set_prop(db, &at, &id, "scope", json!("lab")).is_err());
     let e = query::get(db, &id).unwrap().unwrap();
-    assert_eq!(e.content.props.get("category.severity"), Some(&json!("high")));
+    assert_eq!(
+        e.content.props.get("category.severity"),
+        Some(&json!("high"))
+    );
 }

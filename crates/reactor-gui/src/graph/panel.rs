@@ -28,9 +28,9 @@ use gpui_kit::{
     div, point, px,
 };
 use reactor_db::graph::edit::{self, Annotate, AnnotationKind, At, TypeChoice};
+use reactor_db::graph::fields::{self, Fields};
 use reactor_db::graph::layout;
 use reactor_db::graph::views::{self, SavedView};
-use reactor_db::graph::fields::{self, Fields};
 use reactor_db::graph::vocab::{self, Vocabulary};
 use reactor_db::graph::{self, query};
 use serde::Deserialize;
@@ -440,7 +440,8 @@ impl GraphPanel {
             InputState::new(window, cx).placeholder("a type, or what to add: agent, ipv4, note…")
         });
         let entity_value = cx.new(|cx| InputState::new(window, cx).placeholder("name"));
-        let add_where = cx.new(|cx| InputState::new(window, cx).placeholder("where: a file, a URL…"));
+        let add_where =
+            cx.new(|cx| InputState::new(window, cx).placeholder("where: a file, a URL…"));
         let relation_type =
             cx.new(|cx| InputState::new(window, cx).placeholder("type, e.g. net.connection"));
         for input in [&entity_type, &relation_type] {
@@ -476,11 +477,15 @@ impl GraphPanel {
             },
         )
         .detach();
-        cx.subscribe_in(&tag, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { .. } => this.add_typed_tag(window, cx),
-            InputEvent::Change => cx.notify(),
-            _ => {}
-        })
+        cx.subscribe_in(
+            &tag,
+            window,
+            |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.add_typed_tag(window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            },
+        )
         .detach();
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("find in the graph"));
         cx.subscribe_in(

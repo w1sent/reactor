@@ -274,7 +274,10 @@ impl Case {
         let mut next = m.clone();
         if let Some(old) = next.alias.take()
             && !old.eq_ignore_ascii_case(alias.unwrap_or(""))
-            && !next.former_aliases.iter().any(|f| f.eq_ignore_ascii_case(&old))
+            && !next
+                .former_aliases
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case(&old))
         {
             next.former_aliases.push(old);
         }

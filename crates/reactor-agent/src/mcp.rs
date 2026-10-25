@@ -253,19 +253,14 @@ impl McpHost {
         self.handle.spawn(async move {
             let mut down = Vec::new();
             for (name, attempt, client) in asked {
-                let answer =
-                    tokio::time::timeout(PING_TIMEOUT, client.list_all_tools()).await;
+                let answer = tokio::time::timeout(PING_TIMEOUT, client.list_all_tools()).await;
                 let why = match answer {
                     Ok(Ok(_)) => continue,
                     Ok(Err(e)) => format!("{e}"),
                     Err(_) => format!("no answer in {} seconds", PING_TIMEOUT.as_secs()),
                 };
                 let mut inner = host.inner.lock().unwrap();
-                if let Some(live) = inner
-                    .live
-                    .get_mut(&name)
-                    .filter(|l| l.attempt == attempt)
-                {
+                if let Some(live) = inner.live.get_mut(&name).filter(|l| l.attempt == attempt) {
                     live.standing = Standing::Failed(why);
                     live.client = None;
                     down.push(name);

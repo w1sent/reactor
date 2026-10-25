@@ -21,8 +21,8 @@ use super::docs::{attr, defang};
 use super::graph::detail;
 use super::{BoxFut, Tool, ToolCtx, ToolOutput, str_arg, usize_arg};
 use crate::history;
-use crate::store::Store;
 use crate::llm::ToolSpec;
+use crate::store::Store;
 
 /// How much of a blob is shown: it is a read of stored bytes, not a dump.
 const BLOB_CHARS: usize = 8_000;
@@ -35,7 +35,9 @@ impl Tool for CaseGet {
     }
 
     fn guidelines(&self) -> &'static [&'static str] {
-        &["Quote what you refer to as a reference (`graph:<id>`, `artifact:<path>`, `session:<id>#entry=<n>`), and use `case_get` to look one up."]
+        &[
+            "Quote what you refer to as a reference (`graph:<id>`, `artifact:<path>`, `session:<id>#entry=<n>`), and use `case_get` to look one up.",
+        ]
     }
 
     fn spec(&self) -> ToolSpec {
@@ -56,7 +58,10 @@ impl Tool for CaseGet {
 
     fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
         Box::pin(async move {
-            let Some(uri) = str_arg(&args, "uri").map(str::trim).filter(|u| !u.is_empty()) else {
+            let Some(uri) = str_arg(&args, "uri")
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+            else {
                 return ToolOutput::err("case_get needs a `uri`: a reference such as graph:<id>");
             };
             let r = match reference::parse(uri) {
@@ -70,7 +75,14 @@ impl Tool for CaseGet {
                 sessions: sessions_on(ctx),
             };
             let store = ctx.store.lock().unwrap();
-            match read(&store.case().clone(), Some(&store), access, &r, limit, offset) {
+            match read(
+                &store.case().clone(),
+                Some(&store),
+                access,
+                &r,
+                limit,
+                offset,
+            ) {
                 Ok(text) => ToolOutput::ok(text),
                 Err(why) => ToolOutput::err(why),
             }
@@ -230,7 +242,9 @@ pub fn read(
                     a.mime.as_deref().unwrap_or("unknown type"),
                     a.kind.map(|k| format!(" · {k}")).unwrap_or_default()
                 )),
-                Ok(None) => out.push("not registered (artifact_register records its hashes)".into()),
+                Ok(None) => {
+                    out.push("not registered (artifact_register records its hashes)".into())
+                }
                 Err(e) => return Err(err(&e)),
             }
             if let Some(l) = locator {
@@ -257,7 +271,11 @@ pub fn read(
                     ),
                     None => format!(
                         "`{}` has no passage {n} (it has {})",
-                        Reference::new(Target::Doc { id: id.clone(), passage: None }).short(),
+                        Reference::new(Target::Doc {
+                            id: id.clone(),
+                            passage: None
+                        })
+                        .short(),
                         passages.len()
                     ),
                 }),
@@ -300,7 +318,10 @@ pub fn read(
                     out.push(format!("from {}", Reference::session(s, e).short()));
                 }
                 for (id, ver) in &c.versions {
-                    out.push(format!("  wrote {} version {ver}", Reference::graph(id).short()));
+                    out.push(format!(
+                        "  wrote {} version {ver}",
+                        Reference::graph(id).short()
+                    ));
                 }
                 if c.payload.trim() != "{}" {
                     out.push(format!("  {}", c.payload));

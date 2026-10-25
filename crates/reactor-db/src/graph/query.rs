@@ -301,7 +301,15 @@ fn find_where(db: &Db, f: &Filter) -> Result<Vec<Element>> {
         ))?;
         let rows = stmt
             .query_map(
-                params![kind, prefix, text, tag, f.include_deleted, limit, f.offset as i64],
+                params![
+                    kind,
+                    prefix,
+                    text,
+                    tag,
+                    f.include_deleted,
+                    limit,
+                    f.offset as i64
+                ],
                 element,
             )?
             .collect::<std::result::Result<_, _>>()?;

@@ -32,10 +32,7 @@ use reactor_context::settings::{ContextSettings, Settings};
 
 use crate::backend::{Backend, ContextView, PlanView, StartOptions, TreeRow, UiEvent};
 use crate::palette::{self, Args, Entry, Usage};
-use crate::panels::{
-    ConsolePanel, ServicesPanel, TranscriptPanel,
-    TreePanel,
-};
+use crate::panels::{ConsolePanel, ServicesPanel, TranscriptPanel, TreePanel};
 use crate::session::{AgentPhase, ChatItem, Session};
 
 /// How often the event pump drains the backend's channel (SPEC.md §2).
@@ -1043,8 +1040,7 @@ impl ReactorApp {
         let slot_for_remove = transcript_slot.clone();
         let tree = cx.new(|cx| TreePanel::new(weak_app.clone(), window, cx));
         let tree_panel = tree.clone();
-        let toolbox =
-            cx.new(|cx| crate::toolbox::ToolboxPanel::new(weak_app.clone(), window, cx));
+        let toolbox = cx.new(|cx| crate::toolbox::ToolboxPanel::new(weak_app.clone(), window, cx));
         let toolbox_panel = toolbox.clone();
         let services = cx.new(|cx| ServicesPanel::new(weak_app.clone(), window, cx));
         let services_panel = services.clone();
@@ -1092,7 +1088,15 @@ impl ReactorApp {
         };
         let drawer_view = {
             let (app, tree) = (weak_app.clone(), tree_panel.clone());
-            cx.new(|_| crate::rail::Drawer::new(app, tree, toolbox_panel, services_panel, files_panel.clone()))
+            cx.new(|_| {
+                crate::rail::Drawer::new(
+                    app,
+                    tree,
+                    toolbox_panel,
+                    services_panel,
+                    files_panel.clone(),
+                )
+            })
         };
         let ui = crate::start::GuiConfig::load_ui();
         let layout = ui.start_layout();
@@ -1356,8 +1360,7 @@ impl ReactorApp {
                 // A tool may have written to the case's graph: show it as it happens.
                 if matches!(e, Event::ToolEnd { .. }) {
                     self.graph_panel.update(cx, |g, cx| g.refresh(cx));
-                    self.files_panel
-                        .update(cx, |f, cx| f.refresh_artifacts(cx));
+                    self.files_panel.update(cx, |f, cx| f.refresh_artifacts(cx));
                 }
             }
             UiEvent::TurnEnded(result) => {
@@ -2062,9 +2065,15 @@ impl ReactorApp {
         self.push_note(
             if stopped > 0 { "info" } else { "warning" },
             if stopped > 0 {
-                format!("stopping the agent of session {}…", crate::session_list::short_id(id))
+                format!(
+                    "stopping the agent of session {}…",
+                    crate::session_list::short_id(id)
+                )
             } else {
-                format!("no agent of session {} is running", crate::session_list::short_id(id))
+                format!(
+                    "no agent of session {} is running",
+                    crate::session_list::short_id(id)
+                )
             },
         );
         cx.notify();
@@ -2449,7 +2458,10 @@ impl ReactorApp {
             .scenario_library()
             .and_then(|l| l.list().into_iter().find(|l| l.id == id))
         else {
-            self.push_note("warning", format!("scenario: there is no scenario \"{id}\""));
+            self.push_note(
+                "warning",
+                format!("scenario: there is no scenario \"{id}\""),
+            );
             return;
         };
         let goal = self.plan.goal.clone().unwrap_or_default();
@@ -2497,11 +2509,16 @@ impl ReactorApp {
                         )
                         .child(
                             Button::new("scenario-start-go")
-                                .label(if new_session { "Start in a new session" } else { "Start" })
+                                .label(if new_session {
+                                    "Start in a new session"
+                                } else {
+                                    "Start"
+                                })
                                 .primary()
                                 .on_click(move |_, window, cx| {
-                                    let _ = w_start
-                                        .update(cx, |app, cx| app.scenario_start_confirm(window, cx));
+                                    let _ = w_start.update(cx, |app, cx| {
+                                        app.scenario_start_confirm(window, cx)
+                                    });
                                 }),
                         ),
                 )
@@ -2528,7 +2545,8 @@ impl ReactorApp {
         }
         if self.session.read(cx).phase != AgentPhase::Idle && !st.new_session {
             if let Some(st) = self.scenario_starter.as_mut() {
-                st.error = Some("The agent is working: wait for it, or interrupt it, first.".into());
+                st.error =
+                    Some("The agent is working: wait for it, or interrupt it, first.".into());
             }
             window.refresh();
             return;
@@ -2724,9 +2742,7 @@ impl ReactorApp {
                 };
                 tree.root().walk(&mut |node| {
                     if let gpui_kit::base::dock::PaneRef::Tabs { panels, active_ix } = node.kind()
-                        && let Some(front) = panels
-                            .get(active_ix)
-                            .and_then(|id| area.panel(*id))
+                        && let Some(front) = panels.get(active_ix).and_then(|id| area.panel(*id))
                     {
                         fronts.push((placement, front.clone()));
                     }
@@ -2961,9 +2977,7 @@ impl ReactorApp {
             Target::Graph { id, .. } => {
                 let id = match (id, &self.backend) {
                     (GraphId::Id(id), _) => Some(id.clone()),
-                    (id, Some(b)) => {
-                        reactor_db::reference::lookup::graph_id(&b.case, id).ok()
-                    }
+                    (id, Some(b)) => reactor_db::reference::lookup::graph_id(&b.case, id).ok(),
                     _ => None,
                 };
                 if let Some(id) = id {
@@ -2987,7 +3001,10 @@ impl ReactorApp {
                     None => r.short(),
                 };
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-                self.push_note("info", format!("{} copied: it has no view of its own", r.short()));
+                self.push_note(
+                    "info",
+                    format!("{} copied: it has no view of its own", r.short()),
+                );
                 cx.notify();
             }
         }
@@ -3031,8 +3048,8 @@ impl ReactorApp {
                 crate::files::editor::EditorPanel::new(weak_app, file, line, window, cx)
             })),
             Viewer::Table => {
-                let panel = cx
-                    .new(|cx| crate::files::table::TablePanel::new(weak_app, file, window, cx));
+                let panel =
+                    cx.new(|cx| crate::files::table::TablePanel::new(weak_app, file, window, cx));
                 if let Some(Locator::Row(n) | Locator::Cell(n, _)) = place {
                     panel.update(cx, |p, cx| p.goto_row(n, cx));
                 }
@@ -3103,12 +3120,19 @@ impl ReactorApp {
             } else {
                 reactor_agent::inbox::Class::Steer
             };
-            match self.backend.clone().map(|b| (b.admit(class, &text), b.store())) {
+            match self
+                .backend
+                .clone()
+                .map(|b| (b.admit(class, &text), b.store()))
+            {
                 Some((Ok(()), store)) => {
-                    self.session
-                        .update(cx, |s, _| s.waiting = reactor_agent::inbox::pending(&store.lock().unwrap()));
+                    self.session.update(cx, |s, _| {
+                        s.waiting = reactor_agent::inbox::pending(&store.lock().unwrap())
+                    });
                 }
-                Some((Err(e), _)) => self.push_note("error", format!("could not keep that message: {e}")),
+                Some((Err(e), _)) => {
+                    self.push_note("error", format!("could not keep that message: {e}"))
+                }
                 None => self.push_note("error", "the agent is not running"),
             }
             cx.notify();
@@ -3211,8 +3235,9 @@ impl ReactorApp {
     fn refresh_waiting(&mut self, cx: &mut Context<Self>) {
         if let Some(backend) = self.backend.clone() {
             let store = backend.store();
-            self.session
-                .update(cx, |s, _| s.waiting = reactor_agent::inbox::pending(&store.lock().unwrap()));
+            self.session.update(cx, |s, _| {
+                s.waiting = reactor_agent::inbox::pending(&store.lock().unwrap())
+            });
         }
     }
 
@@ -3969,9 +3994,7 @@ impl ReactorApp {
                 // `@d` also offers `@doc:`, `@g` offers `@graph:`: the kinds are reached
                 // through their names.
                 for k in Kind::ALL.into_iter().filter(|k| *k != Kind::Blob) {
-                    if query.is_empty()
-                        || (k.scheme().starts_with(&query.to_ascii_lowercase()))
-                    {
+                    if query.is_empty() || (k.scheme().starts_with(&query.to_ascii_lowercase())) {
                         entries.push(entry(
                             format!("{}:", k.scheme()),
                             format!("{}:", k.scheme()),
@@ -5423,27 +5446,29 @@ impl Render for ReactorApp {
                     .flex_1()
                     .min_h_0()
                     .child(rail)
-                    .child(div().flex_1().min_w_0().h_full().child(match drawer {
-                        // The drawer's edge is dragged to resize it. Each panel keeps its
-                        // own width: the split is named after the panel.
-                        Some(kind) => h_resizable(SharedString::from(format!(
-                            "drawer-split-{}",
-                            kind.slug()
-                        )))
-                        .child(
-                            resizable_panel()
-                                .size(px(kind.drawer_width()))
-                                .size_range(px(180.)..px(900.))
-                                .child(self.drawer_view.clone()),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(320.)..px(8000.))
-                                .child(self.dock_area.clone()),
-                        )
-                        .into_any_element(),
-                        None => self.dock_area.clone().into_any_element(),
-                    })),
+                    .child(
+                        div().flex_1().min_w_0().h_full().child(match drawer {
+                            // The drawer's edge is dragged to resize it. Each panel keeps its
+                            // own width: the split is named after the panel.
+                            Some(kind) => h_resizable(SharedString::from(format!(
+                                "drawer-split-{}",
+                                kind.slug()
+                            )))
+                            .child(
+                                resizable_panel()
+                                    .size(px(kind.drawer_width()))
+                                    .size_range(px(180.)..px(900.))
+                                    .child(self.drawer_view.clone()),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size_range(px(320.)..px(8000.))
+                                    .child(self.dock_area.clone()),
+                            )
+                            .into_any_element(),
+                            None => self.dock_area.clone().into_any_element(),
+                        }),
+                    ),
             )
             .when_some(
                 crate::notices_ui::history(self, cx.weak_entity(), cx),

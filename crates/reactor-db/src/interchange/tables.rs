@@ -68,7 +68,10 @@ pub fn elements(case: &Case, include_deleted: bool) -> Result<String> {
             if c.props.is_empty() {
                 String::new()
             } else {
-                leaving(&serde_json::Value::Object(c.props.clone()).to_string(), &authority)
+                leaving(
+                    &serde_json::Value::Object(c.props.clone()).to_string(),
+                    &authority,
+                )
             },
             crate::reference::Reference::graph(&e.id)
                 .pinned(e.ver)

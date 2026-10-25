@@ -847,7 +847,11 @@ async fn a_scenario_started_with_a_question_sets_the_goal_and_its_summaries_outl
         vec![
             ScriptedLlm::call(
                 "",
-                &[("p", "reactor_phase_complete", json!({"summary": "the VPN box was the way in"}))],
+                &[(
+                    "p",
+                    "reactor_phase_complete",
+                    json!({"summary": "the VPN box was the way in"}),
+                )],
             ),
             ScriptedLlm::say("done"),
             ScriptedLlm::say("again"),
@@ -860,9 +864,17 @@ async fn a_scenario_started_with_a_question_sets_the_goal_and_its_summaries_outl
     // Scoping is left out: it starts on Triage, and the question is the goal.
     let started = r
         .agent
-        .command("reactor-scenario", "start inv skip=1 Was the VPN appliance\nthe entry point?")
+        .command(
+            "reactor-scenario",
+            "start inv skip=1 Was the VPN appliance\nthe entry point?",
+        )
         .unwrap();
-    assert!(started.trigger_turn.unwrap().starts_with("## Phase 2/2: Triage"));
+    assert!(
+        started
+            .trigger_turn
+            .unwrap()
+            .starts_with("## Phase 2/2: Triage")
+    );
     assert_eq!(
         r.agent.session_state().manifest.goal.as_deref(),
         Some("Was the VPN appliance\nthe entry point?")
@@ -896,7 +908,11 @@ async fn the_agent_writes_a_scenario_for_the_case_and_amends_only_what_is_ahead(
             ScriptedLlm::say("saved"),
             ScriptedLlm::call(
                 "",
-                &[("a", "scenario_amend", json!({"phases": [phase("Mail"), phase("Report")]}))],
+                &[(
+                    "a",
+                    "scenario_amend",
+                    json!({"phases": [phase("Mail"), phase("Report")]}),
+                )],
             ),
             ScriptedLlm::say("amended"),
         ],
@@ -907,14 +923,30 @@ async fn the_agent_writes_a_scenario_for_the_case_and_amends_only_what_is_ahead(
     // A global `inv` exists; the case's own, saved by the agent, wins over it.
     write_scenario(&r.root);
     run(&r, "write the plan down").await.unwrap();
-    assert!(results(&r)[0].contains("saved scenario \"inv\" (case, 2 phases)"), "{:?}", results(&r));
+    assert!(
+        results(&r)[0].contains("saved scenario \"inv\" (case, 2 phases)"),
+        "{:?}",
+        results(&r)
+    );
     let lib = r.agent.scenarios();
-    assert_eq!(lib.find("inv").unwrap().0, reactor_core::scenarios::Scope::Case);
-    assert_eq!(lib.load("inv")[0].description.as_deref(), Some("This case's plan"));
+    assert_eq!(
+        lib.find("inv").unwrap().0,
+        reactor_core::scenarios::Scope::Case
+    );
+    assert_eq!(
+        lib.load("inv")[0].description.as_deref(),
+        Some("This case's plan")
+    );
 
     r.agent.command("reactor-scenario", "start inv").unwrap();
     run(&r, "change what is left").await.unwrap();
-    let titles: Vec<String> = r.agent.scenarios().load("inv").into_iter().map(|p| p.title).collect();
+    let titles: Vec<String> = r
+        .agent
+        .scenarios()
+        .load("inv")
+        .into_iter()
+        .map(|p| p.title)
+        .collect();
     assert_eq!(titles, ["Hosts", "Mail", "Report"]);
     // The global one is untouched.
     assert_eq!(
@@ -947,7 +979,11 @@ async fn the_scenario_editing_switch_withdraws_the_authoring_tools_and_refuses_a
     let reqs = r.llm.requests();
     let names = tool_names(&reqs[0]);
     assert!(!names.contains(&"scenario_list") && !names.contains(&"scenario_save"));
-    assert!(results(&r)[0].contains("scenario-editing switch is off"), "{:?}", results(&r));
+    assert!(
+        results(&r)[0].contains("scenario-editing switch is off"),
+        "{:?}",
+        results(&r)
+    );
     // Running one is not editing: the phase tool is still there.
     r.agent.command("reactor-scenario", "start inv").unwrap();
     assert!(r.agent.session_state().scenario.is_some());
@@ -958,12 +994,24 @@ async fn promoting_asks_the_agent_to_rewrite_a_case_scenario_for_every_case() {
     let r = rig(vec![], Sum::says("-"), 100_000);
     write_scenario(&r.root);
     let refused = r.agent.command("reactor-scenario", "promote inv").unwrap();
-    assert!(refused.trigger_turn.is_none(), "a global one is not promoted");
+    assert!(
+        refused.trigger_turn.is_none(),
+        "a global one is not promoted"
+    );
     let case_dir = r.agent.store().lock().unwrap().case().dir().to_path_buf();
-    let p = reactor_core::scenarios::Phase { title: "A".into(), body: "b".into(), ..Default::default() };
+    let p = reactor_core::scenarios::Phase {
+        title: "A".into(),
+        body: "b".into(),
+        ..Default::default()
+    };
     reactor_core::scenarios::save(&case_dir.join("scenarios"), "mine", None, &[p]).unwrap();
     let asked = r.agent.command("reactor-scenario", "promote mine").unwrap();
-    assert!(asked.trigger_turn.unwrap().contains("scope global, id `mine`"));
+    assert!(
+        asked
+            .trigger_turn
+            .unwrap()
+            .contains("scope global, id `mine`")
+    );
 }
 
 #[tokio::test]
@@ -3619,7 +3667,10 @@ async fn arguments_in_another_order_are_the_same_call() {
     let b = json!({"session": "main", "command": "echo same"});
     let mut replies: Vec<Result<Reply>> = Vec::new();
     for (i, args) in [a.clone(), b.clone(), a, b].iter().enumerate() {
-        replies.push(ScriptedLlm::call("", &[(&format!("c{i}"), "bash", args.clone())]));
+        replies.push(ScriptedLlm::call(
+            "",
+            &[(&format!("c{i}"), "bash", args.clone())],
+        ));
     }
     replies.push(ScriptedLlm::say("done"));
     let r = rig(replies, Sum::says("-"), 100_000);
@@ -3641,7 +3692,8 @@ async fn the_same_tool_failing_three_times_in_a_row_is_noticed_even_with_other_a
 
 #[tokio::test]
 async fn a_success_in_between_starts_the_failures_again() {
-    let fail = |i: usize| ScriptedLlm::call("", &[(&format!("f{i}"), "no_such_tool", json!({"n": i}))]);
+    let fail =
+        |i: usize| ScriptedLlm::call("", &[(&format!("f{i}"), "no_such_tool", json!({"n": i}))]);
     let replies = vec![
         fail(0),
         fail(1),
@@ -4168,11 +4220,19 @@ async fn a_steer_is_delivered_after_the_tool_call_settles_and_before_the_next_re
         Sum::says("-"),
         100_000,
     );
-    assert!(r.agent.admit("s1", Class::Steer, "also look at the imports").unwrap());
+    assert!(
+        r.agent
+            .admit("s1", Class::Steer, "also look at the imports")
+            .unwrap()
+    );
     run(&r, "start").await.unwrap();
     let reqs = r.llm.requests();
     assert_eq!(reqs.len(), 2, "the turn went on; nothing was interrupted");
-    assert_eq!(user_texts(&reqs[0]), vec!["start"], "the first request did not have it");
+    assert_eq!(
+        user_texts(&reqs[0]),
+        vec!["start"],
+        "the first request did not have it"
+    );
     assert_eq!(
         user_texts(&reqs[1]),
         vec!["start", "also look at the imports"],
@@ -4184,11 +4244,16 @@ async fn a_steer_is_delivered_after_the_tool_call_settles_and_before_the_next_re
 #[tokio::test]
 async fn a_steer_that_arrives_with_the_final_answer_gets_one_more_round_not_a_new_turn() {
     let r = rig(
-        vec![ScriptedLlm::say("all done"), ScriptedLlm::say("and the imports")],
+        vec![
+            ScriptedLlm::say("all done"),
+            ScriptedLlm::say("and the imports"),
+        ],
         Sum::says("-"),
         100_000,
     );
-    r.agent.admit("s1", Class::Steer, "what about the imports?").unwrap();
+    r.agent
+        .admit("s1", Class::Steer, "what about the imports?")
+        .unwrap();
     let out = run(&r, "go").await.unwrap();
     assert_eq!(out.rounds, 2);
     assert!(r.agent.pending_inbox().is_empty());
@@ -4205,10 +4270,15 @@ async fn a_queued_message_waits_for_the_turn_to_end_and_then_runs_as_a_turn_of_i
         Sum::says("-"),
         100_000,
     );
-    r.agent.admit("q1", Class::Queue, "now the strings").unwrap();
+    r.agent
+        .admit("q1", Class::Queue, "now the strings")
+        .unwrap();
     run(&r, "start").await.unwrap();
     assert!(
-        r.llm.requests().iter().all(|q| !user_texts(q).contains(&"now the strings".to_string())),
+        r.llm
+            .requests()
+            .iter()
+            .all(|q| !user_texts(q).contains(&"now the strings".to_string())),
         "not seen by the turn it waited behind"
     );
     assert_eq!(r.agent.pending_inbox().len(), 1, "and still waiting");
@@ -4223,7 +4293,10 @@ async fn a_queued_message_waits_for_the_turn_to_end_and_then_runs_as_a_turn_of_i
     assert!(r.agent.pending_inbox().is_empty());
     assert!(user_texts(r.llm.requests().last().unwrap()).contains(&"now the strings".to_string()));
     assert!(
-        r.agent.prompt_pending(CancellationToken::new()).await.is_none(),
+        r.agent
+            .prompt_pending(CancellationToken::new())
+            .await
+            .is_none(),
         "nothing left to run"
     );
 }
@@ -4233,9 +4306,20 @@ async fn taking_input_back_is_a_tombstone_and_it_is_never_sent() {
     let r = rig(vec![ScriptedLlm::say("done")], Sum::says("-"), 100_000);
     r.agent.admit("a", Class::Steer, "first thought").unwrap();
     r.agent.admit("b", Class::Queue, "second thought").unwrap();
-    assert_eq!(r.agent.withdraw(None).unwrap().as_deref(), Some("second thought"), "the latest");
-    assert_eq!(r.agent.withdraw(Some("zzz")).unwrap(), None, "an unknown item is nothing");
-    assert_eq!(r.agent.withdraw_all().unwrap(), vec!["first thought".to_string()]);
+    assert_eq!(
+        r.agent.withdraw(None).unwrap().as_deref(),
+        Some("second thought"),
+        "the latest"
+    );
+    assert_eq!(
+        r.agent.withdraw(Some("zzz")).unwrap(),
+        None,
+        "an unknown item is nothing"
+    );
+    assert_eq!(
+        r.agent.withdraw_all().unwrap(),
+        vec!["first thought".to_string()]
+    );
     run(&r, "go").await.unwrap();
     assert!(user_texts(&r.llm.requests()[0]) == vec!["go"]);
     // The entries are still in the log: nothing was deleted.
@@ -4258,7 +4342,11 @@ async fn a_steer_names_a_file_with_an_at_like_any_message_does() {
         Sum::says("-"),
         100_000,
     );
-    std::fs::write(r.root.join("work").join("notes.txt"), "the sample was packed").unwrap();
+    std::fs::write(
+        r.root.join("work").join("notes.txt"),
+        "the sample was packed",
+    )
+    .unwrap();
     r.agent.admit("a", Class::Steer, "see @notes.txt").unwrap();
     run(&r, "go").await.unwrap();
     let second = &r.llm.requests()[1];
@@ -4299,7 +4387,10 @@ async fn a_child_works_in_a_session_of_its_own_and_only_its_report_returns() {
 
     let reqs = r.llm.requests();
     assert_eq!(reqs.len(), 3);
-    assert!(names_of(&reqs[0]).contains(&"agent".to_string()), "the parent has it");
+    assert!(
+        names_of(&reqs[0]).contains(&"agent".to_string()),
+        "the parent has it"
+    );
     assert_eq!(
         user_texts(&reqs[1]),
         vec!["list the imports of dropper.bin"],
@@ -4322,7 +4413,11 @@ async fn a_child_works_in_a_session_of_its_own_and_only_its_report_returns() {
     let all = reactor_db::sessions::list(case.db()).unwrap();
     let child = all.iter().find(|s| s.id != "s").expect("a second session");
     let log = Store::open(&case, &child.id).unwrap();
-    assert!(log.all().iter().any(|e| matches!(&e.kind, Kind::User { text } if text.contains("dropper.bin"))));
+    assert!(
+        log.all()
+            .iter()
+            .any(|e| matches!(&e.kind, Kind::User { text } if text.contains("dropper.bin")))
+    );
     assert!(log.all().iter().any(|e| matches!(&e.kind, Kind::Custom { key, data } if key == "origin" && data["parent"] == "s")));
     assert!(result.contains(&format!("[agent session {}", child.id)));
 }
@@ -4331,7 +4426,10 @@ async fn a_child_works_in_a_session_of_its_own_and_only_its_report_returns() {
 async fn a_child_gets_only_the_tools_it_was_given_and_is_told_of_the_ones_that_do_not_exist() {
     let mut r = rig(
         vec![
-            agent_call("a1", json!({"task": "read it", "tools": ["read", "no_such_tool"]})),
+            agent_call(
+                "a1",
+                json!({"task": "read it", "tools": ["read", "no_such_tool"]}),
+            ),
             ScriptedLlm::say("read nothing"),
             ScriptedLlm::say("done"),
         ],
@@ -4341,7 +4439,12 @@ async fn a_child_gets_only_the_tools_it_was_given_and_is_told_of_the_ones_that_d
     r.agent.enable_children();
     run(&r, "go").await.unwrap();
     assert_eq!(names_of(&r.llm.requests()[1]), vec!["read".to_string()]);
-    assert!(results(&r).pop().unwrap().contains("left out: no_such_tool"));
+    assert!(
+        results(&r)
+            .pop()
+            .unwrap()
+            .contains("left out: no_such_tool")
+    );
 }
 
 #[tokio::test]
@@ -4365,7 +4468,10 @@ async fn a_child_that_fails_gives_the_parent_an_error_result_not_a_failed_turn()
     r.agent.enable_children();
     run(&r, "go").await.unwrap();
     let result = results(&r).pop().unwrap();
-    assert!(result.contains("it stopped") && result.contains("the model is down"), "{result}");
+    assert!(
+        result.contains("it stopped") && result.contains("the model is down"),
+        "{result}"
+    );
 }
 
 // -- children in parallel, in the background, and linked to their parent (ADR-0063) -------------------------
@@ -4418,7 +4524,13 @@ fn split_rig(parent: Vec<Result<Reply>>, child: Vec<Result<Reply>>) -> SplitRig 
         parent: ScriptedLlm::new(parent),
         child: ScriptedLlm::new(child),
     });
-    let (mut agent, _events) = Agent::new(llm.clone(), Sum::says("-"), store, Tools::standard(cwd), cfg);
+    let (mut agent, _events) = Agent::new(
+        llm.clone(),
+        Sum::says("-"),
+        store,
+        Tools::standard(cwd),
+        cfg,
+    );
     agent.enable_children();
     SplitRig {
         _dir: dir,
@@ -4480,7 +4592,8 @@ async fn children_asked_for_together_run_together_and_are_entered_in_the_order_t
     assert_eq!(res.len(), 2);
     assert!(res.iter().all(|c| c.contains("[agent session ")), "{res:?}");
     assert!(
-        res.iter().any(|c| c.starts_with("report A")) && res.iter().any(|c| c.starts_with("report B")),
+        res.iter().any(|c| c.starts_with("report A"))
+            && res.iter().any(|c| c.starts_with("report B")),
         "{res:?}"
     );
     assert_eq!(r.llm.parent.requests().len(), 2, "the parent asked twice");
@@ -4494,13 +4607,20 @@ async fn switched_to_serial_they_run_one_after_another_in_order() {
     );
     let said = r.agent.command("children", "serial").unwrap();
     assert!(said.notices[0].message.contains("one after another"));
-    assert!(!reactor_context::settings::Settings::load(&r.agent.config().paths).children.parallel);
+    assert!(
+        !reactor_context::settings::Settings::load(&r.agent.config().paths)
+            .children
+            .parallel
+    );
     r.agent
         .prompt("go", CancellationToken::new())
         .await
         .unwrap();
     let res = split_results(&r);
-    assert!(res[0].starts_with("report A") && res[1].starts_with("report B"), "{res:?}");
+    assert!(
+        res[0].starts_with("report A") && res[1].starts_with("report B"),
+        "{res:?}"
+    );
     // And back on, with a limit.
     r.agent.command("children", "parallel on").unwrap();
     r.agent.command("children", "max 2").unwrap();
@@ -4513,7 +4633,14 @@ async fn switched_to_serial_they_run_one_after_another_in_order() {
 async fn a_child_started_in_the_background_is_collected_with_wait() {
     let r = split_rig(
         vec![
-            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "enumerate", "background": true}))]),
+            ScriptedLlm::call(
+                "",
+                &[(
+                    "a1",
+                    "agent",
+                    json!({"task": "enumerate", "background": true}),
+                )],
+            ),
             ScriptedLlm::call("", &[("w1", "wait", json!({}))]),
             ScriptedLlm::say("collected"),
         ],
@@ -4524,7 +4651,10 @@ async fn a_child_started_in_the_background_is_collected_with_wait() {
         .await
         .unwrap();
     let res = split_results(&r);
-    assert!(res[0].contains("started in the background as session"), "{res:?}");
+    assert!(
+        res[0].contains("started in the background as session"),
+        "{res:?}"
+    );
     assert!(res[1].starts_with("the enumeration"), "{res:?}");
 }
 
@@ -4533,7 +4663,10 @@ async fn wait_names_a_child_or_takes_the_next_and_says_when_there_is_none() {
     let r = split_rig(
         vec![
             ScriptedLlm::call("", &[("w0", "wait", json!({}))]),
-            ScriptedLlm::call("", &[("a1", "agent", json!({"task": "one", "background": true}))]),
+            ScriptedLlm::call(
+                "",
+                &[("a1", "agent", json!({"task": "one", "background": true}))],
+            ),
             ScriptedLlm::call("", &[("w1", "wait", json!({"session": "999"}))]),
             ScriptedLlm::say("done"),
         ],
@@ -4544,7 +4677,10 @@ async fn wait_names_a_child_or_takes_the_next_and_says_when_there_is_none() {
         .await
         .unwrap();
     let res = split_results(&r);
-    assert!(res[0].contains("no agent is running in the background"), "{res:?}");
+    assert!(
+        res[0].contains("no agent is running in the background"),
+        "{res:?}"
+    );
     assert!(res[2].contains("no agent `999`"), "{res:?}");
 }
 
@@ -4601,8 +4737,15 @@ async fn a_running_child_is_listed_and_can_be_stopped_without_ending_the_parents
     assert_eq!(stopped, 1);
     let res = split_results(&r);
     assert!(res[0].contains("cancelled before it finished"), "{res:?}");
-    assert!(r.agent.running_children().is_empty(), "and it is off the list");
-    assert_eq!(r.llm.parent.requests().len(), 2, "the parent went on to its next reply");
+    assert!(
+        r.agent.running_children().is_empty(),
+        "and it is off the list"
+    );
+    assert_eq!(
+        r.llm.parent.requests().len(),
+        2,
+        "the parent went on to its next reply"
+    );
 }
 
 #[tokio::test]
@@ -4612,7 +4755,11 @@ async fn stopping_names_a_session_and_an_unknown_one_stops_nothing() {
     assert_eq!(r.agent.stop_children(None), 0);
     let said = r.agent.command("agents", "").unwrap();
     assert!(said.notices[0].message.contains("no agent is running"));
-    assert!(r.agent.command("agents", "stop 99").unwrap().notices[0].message.contains("no agent of session 99"));
+    assert!(
+        r.agent.command("agents", "stop 99").unwrap().notices[0]
+            .message
+            .contains("no agent of session 99")
+    );
 }
 
 #[tokio::test]
@@ -4623,13 +4770,25 @@ async fn a_child_that_keeps_going_is_stopped_at_its_round_limit_and_returns_what
             ScriptedLlm::say("done"),
         ],
         (0..10)
-            .map(|i| ScriptedLlm::call("still working", &[(&format!("b{i}"), "bash", json!({"command": format!("echo {i}")}))]))
+            .map(|i| {
+                ScriptedLlm::call(
+                    "still working",
+                    &[(
+                        &format!("b{i}"),
+                        "bash",
+                        json!({"command": format!("echo {i}")}),
+                    )],
+                )
+            })
             .collect(),
     );
     let mut settings = reactor_context::settings::Settings::load(&r.agent.config().paths);
     settings.children.max_rounds = 3;
     settings.save(&r.agent.config().paths).unwrap();
-    r.agent.prompt("go", CancellationToken::new()).await.unwrap();
+    r.agent
+        .prompt("go", CancellationToken::new())
+        .await
+        .unwrap();
     let res = split_results(&r);
     assert!(
         res[0].contains("it stopped: stopped after 3 model round trips")
@@ -4668,7 +4827,11 @@ async fn a_turn_that_panics_ends_with_an_error_and_the_agent_goes_on_working() {
     std::fs::create_dir_all(&cwd).unwrap();
     let case = reactor_db::Case::create(&cwd, None).unwrap();
     let store = Store::create(&case, "s").unwrap();
-    let mut cfg = AgentConfig::new(cwd.clone(), Paths::new(dir.path().join("cfg"), Shipped::Embedded), 100_000);
+    let mut cfg = AgentConfig::new(
+        cwd.clone(),
+        Paths::new(dir.path().join("cfg"), Shipped::Embedded),
+        100_000,
+    );
     cfg.registry = registry("## Available tools (this machine)\n\nsh   shell", &["sh"]);
     cfg.scenarios_dir = dir.path().join("scenarios");
     let llm = Arc::new(PanicsOnce {
@@ -4676,8 +4839,14 @@ async fn a_turn_that_panics_ends_with_an_error_and_the_agent_goes_on_working() {
         inner: ScriptedLlm::new(vec![ScriptedLlm::say("back again")]),
     });
     let (agent, _events) = Agent::new(llm, Sum::says("-"), store, Tools::standard(cwd), cfg);
-    let e = agent.prompt("first", CancellationToken::new()).await.unwrap_err();
+    let e = agent
+        .prompt("first", CancellationToken::new())
+        .await
+        .unwrap_err();
     assert!(e.to_string().contains("internal error: boom"), "{e}");
     // The log is whole and the next turn works.
-    agent.prompt("second", CancellationToken::new()).await.unwrap();
+    agent
+        .prompt("second", CancellationToken::new())
+        .await
+        .unwrap();
 }

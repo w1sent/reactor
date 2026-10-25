@@ -95,6 +95,160 @@ pub struct UiSettings {
     /// default; empty keys mean none (`crate::shortcuts`).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub shortcuts: BTreeMap<String, String>,
+    /// The console: scrollback, cursor, and the few things a terminal lets a person decide.
+    #[serde(skip_serializing_if = "TerminalSettings::is_default")]
+    pub terminal: TerminalSettings,
+}
+
+/// The shape of the cursor until a program asks for another.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorPref {
+    #[default]
+    Block,
+    Underline,
+    Beam,
+    Hollow,
+}
+
+impl CursorPref {
+    pub const ALL: [CursorPref; 4] = [
+        CursorPref::Block,
+        CursorPref::Underline,
+        CursorPref::Beam,
+        CursorPref::Hollow,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CursorPref::Block => "Block",
+            CursorPref::Underline => "Underline",
+            CursorPref::Beam => "Beam",
+            CursorPref::Hollow => "Hollow block",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            CursorPref::Block => "block",
+            CursorPref::Underline => "underline",
+            CursorPref::Beam => "beam",
+            CursorPref::Hollow => "hollow",
+        }
+    }
+
+    pub fn from_key(key: &str) -> CursorPref {
+        CursorPref::ALL
+            .into_iter()
+            .find(|c| c.key() == key)
+            .unwrap_or_default()
+    }
+
+    fn shape(self) -> crate::terminal::types::CursorShape {
+        use crate::terminal::types::CursorShape;
+        match self {
+            CursorPref::Block => CursorShape::Block,
+            CursorPref::Underline => CursorShape::Underline,
+            CursorPref::Beam => CursorShape::Beam,
+            CursorPref::Hollow => CursorShape::Hollow,
+        }
+    }
+}
+
+/// Whether the cursor blinks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlinkPref {
+    Off,
+    On,
+    /// As the program in the terminal asks for.
+    #[default]
+    Terminal,
+}
+
+impl BlinkPref {
+    pub const ALL: [BlinkPref; 3] = [BlinkPref::Off, BlinkPref::On, BlinkPref::Terminal];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BlinkPref::Off => "Off",
+            BlinkPref::On => "On",
+            BlinkPref::Terminal => "As the program asks",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            BlinkPref::Off => "off",
+            BlinkPref::On => "on",
+            BlinkPref::Terminal => "terminal",
+        }
+    }
+
+    pub fn from_key(key: &str) -> BlinkPref {
+        BlinkPref::ALL
+            .into_iter()
+            .find(|b| b.key() == key)
+            .unwrap_or_default()
+    }
+}
+
+/// What a person decides about the console beyond its font (`Slot::Console`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalSettings {
+    /// Rows of history kept, for every console that has run.
+    pub scrollback: usize,
+    pub cursor: CursorPref,
+    pub blink: BlinkPref,
+    /// On macOS, let Option act as Alt (Escape before the key) instead of typing the character
+    /// it types. Elsewhere Alt always is.
+    pub option_as_alt: bool,
+    /// Push text away from its background until the contrast reaches this (1 draws what the
+    /// program asked for; WCAG's ratio, up to 21).
+    pub min_contrast: f32,
+    /// Copy a selection to the clipboard as soon as it is made.
+    pub copy_on_select: bool,
+    /// A shell to run in a new console instead of `$SHELL`; empty is the platform's.
+    pub shell: String,
+}
+
+/// The scrollback a console may keep: the bounds the settings accept.
+pub const SCROLLBACK: std::ops::RangeInclusive<usize> =
+    100..=crate::terminal::types::MAX_SCROLLBACK;
+pub const MIN_CONTRAST: std::ops::RangeInclusive<f32> = 1.0..=21.0;
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        TerminalSettings {
+            scrollback: crate::terminal::types::DEFAULT_SCROLLBACK,
+            cursor: CursorPref::Block,
+            blink: BlinkPref::Terminal,
+            option_as_alt: false,
+            min_contrast: 3.0,
+            copy_on_select: false,
+            shell: String::new(),
+        }
+    }
+}
+
+impl TerminalSettings {
+    fn is_default(&self) -> bool {
+        *self == TerminalSettings::default()
+    }
+
+    fn normalize(&mut self) {
+        self.scrollback = self
+            .scrollback
+            .clamp(*SCROLLBACK.start(), *SCROLLBACK.end());
+        self.min_contrast = if self.min_contrast.is_finite() {
+            self.min_contrast
+                .clamp(*MIN_CONTRAST.start(), *MIN_CONTRAST.end())
+        } else {
+            1.0
+        };
+        self.shell = self.shell.trim().to_owned();
+    }
 }
 
 /// How the window is drawn. The light mode drops what costs fill rate and repaint rate on a
@@ -182,6 +336,7 @@ impl Default for UiSettings {
             rendering: Rendering::Auto,
             keep_keys: true,
             shortcuts: BTreeMap::new(),
+            terminal: TerminalSettings::default(),
         }
     }
 }
@@ -238,6 +393,7 @@ impl UiSettings {
         }
         self.fonts.retain(|_, p| *p != FontPref::default());
         crate::shortcuts::normalize(&mut self.shortcuts);
+        self.terminal.normalize();
         self.tool_output_chars = self
             .tool_output_chars
             .clamp(*OUTPUT_CHARS.start(), *OUTPUT_CHARS.end());
@@ -249,6 +405,28 @@ impl UiSettings {
             .all(|p| !p.label().eq_ignore_ascii_case(&self.start_layout))
         {
             self.start_layout = "default".into();
+        }
+    }
+
+    /// How a console looks and behaves under these settings and this theme.
+    pub fn console_look(&self, theme: &Theme) -> crate::terminal::Look {
+        use crate::terminal::Blink;
+        let (family, size) = self.text(Slot::Console, theme);
+        let t = &self.terminal;
+        crate::terminal::Look {
+            family,
+            size,
+            min_contrast: t.min_contrast,
+            cursor: t.cursor.shape(),
+            blink: match t.blink {
+                BlinkPref::Off => Blink::Off,
+                BlinkPref::On => Blink::On,
+                BlinkPref::Terminal => Blink::Terminal,
+            },
+            option_as_alt: t.option_as_alt,
+            shell: (!t.shell.is_empty()).then(|| t.shell.clone()),
+            scrollback: t.scrollback,
+            copy_on_select: t.copy_on_select,
         }
     }
 
@@ -438,6 +616,39 @@ mod tests {
         );
         assert_eq!(s.tool_output_chars, *OUTPUT_CHARS.start());
         assert_eq!(s.start_layout, "default");
+    }
+
+    #[test]
+    fn the_terminal_settings_are_kept_in_range_and_missing_ones_fill_in() {
+        let mut s: UiSettings = serde_json::from_str(
+            r#"{"terminal":{"scrollback":3,"min_contrast":99,"shell":"  /bin/fish ","cursor":"beam"}}"#,
+        )
+        .unwrap();
+        s.normalize();
+        assert_eq!(s.terminal.scrollback, *SCROLLBACK.start());
+        assert_eq!(s.terminal.min_contrast, 21.0);
+        assert_eq!(s.terminal.shell, "/bin/fish");
+        assert_eq!(s.terminal.cursor, CursorPref::Beam);
+        assert_eq!(
+            s.terminal.blink,
+            BlinkPref::Terminal,
+            "what was not written is the default"
+        );
+        let mut huge = UiSettings::default();
+        huge.terminal.scrollback = usize::MAX;
+        huge.terminal.min_contrast = f32::NAN;
+        huge.normalize();
+        assert_eq!(
+            huge.terminal.scrollback,
+            crate::terminal::types::MAX_SCROLLBACK
+        );
+        assert_eq!(huge.terminal.min_contrast, 1.0);
+        for c in CursorPref::ALL {
+            assert_eq!(CursorPref::from_key(c.key()), c);
+        }
+        for b in BlinkPref::ALL {
+            assert_eq!(BlinkPref::from_key(b.key()), b);
+        }
     }
 
     #[test]

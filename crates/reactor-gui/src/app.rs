@@ -406,6 +406,7 @@ pub fn bind_keys(cx: &mut App) {
         // Esc always closes the palette — the list's own Esc only clears a typed query first.
         KeyBinding::new("escape", ClosePalette, Some("ReactorPalette > Input")),
     ]);
+    crate::terminal::bind_keys(cx);
     // The window's own shortcuts (the panels, the palette, the settings) are the person's
     // to choose, and are installed apart so a change replaces only them.
     crate::shortcuts::install(&crate::start::GuiConfig::load_ui().shortcuts, cx);
@@ -925,7 +926,12 @@ impl ReactorApp {
     /// Open the main window: theme, dock, agent, event pump — in the order the spec's §6
     /// anatomy needs.
     pub fn open(cx: &mut App, args: &crate::start::ResolvedLaunch) -> anyhow::Result<()> {
-        cx.bind_keys(vec![KeyBinding::new("escape", ComposerEsc, None)]);
+        // Escape belongs to the program in a terminal (vim leaves insert mode with it).
+        cx.bind_keys(vec![KeyBinding::new(
+            "escape",
+            ComposerEsc,
+            Some("!Terminal"),
+        )]);
 
         // Record the workdir as recent here: this is the one choke point every launch path
         // funnels through (a positional cwd, the chooser, the session picker).

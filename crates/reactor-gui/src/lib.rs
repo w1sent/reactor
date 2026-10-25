@@ -6,7 +6,6 @@
 pub mod app;
 pub mod backend;
 pub mod chrome;
-pub mod console;
 pub mod docs_panel;
 pub mod files;
 pub mod graph;
@@ -39,6 +38,7 @@ pub mod settings;
 pub mod settings_window;
 pub mod shortcuts;
 pub mod start;
+pub mod terminal;
 pub mod theme;
 pub mod toolbox;
 pub mod transcript_ui;

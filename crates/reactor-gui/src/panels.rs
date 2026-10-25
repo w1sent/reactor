@@ -9,12 +9,12 @@
 use serde_json::Value;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{SelectableText, h_flex, v_flex};
+use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::dock::{Panel, PanelEvent};
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::marker::{Marker, MarkerContent, MarkerIcon};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
@@ -182,29 +182,6 @@ pub(crate) fn install_row(
                 .tooltip("Run `reactor install` in the console")
                 .on_click(move |_, window, cx| on_install(window, cx)),
         )
-}
-
-/// Resolve an ANSI colour index against the theme.
-///
-/// The palette is already there and already curated: `base.red`, `.green`,
-/// `.yellow`, `.blue`, `.magenta`, `.cyan` are the six chromatic terminal
-/// colours in Ayu's own hues, so a command's output lands in the window's
-/// palette rather than importing xterm's. Black and white bend to the
-/// theme's own foreground/muted so neither disappears into the background,
-/// and the bright half reuses the same hues — this is a log, not a terminal
-/// that owes anyone sixteen distinguishable colours.
-fn ansi_color(index: Option<u8>, theme: &Theme) -> Option<gpui_kit::Hsla> {
-    let index = index?;
-    Some(match index % 8 {
-        0 => theme.muted_foreground,
-        1 => theme.red,
-        2 => theme.green,
-        3 => theme.yellow,
-        4 => theme.blue,
-        5 => theme.magenta,
-        6 => theme.cyan,
-        _ => theme.foreground,
-    })
 }
 
 /// The docked chrome every panel's [`Panel::title`] draws: an icon plus a
@@ -2369,35 +2346,27 @@ pub(crate) fn tokens_short(n: u64) -> String {
     }
 }
 
-/// How often an idle-or-not console checks its session for new output.
-/// Matches `PUMP_TICK` in spirit — a console has nothing to synchronize with
-/// the agent-event pump, so it keeps its own timer rather than borrowing one.
-const CONSOLE_POLL_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+/// How long the tab's icon shows a bell after a program rang it.
+const BELL_FLASH: std::time::Duration = std::time::Duration::from_millis(900);
+/// A second press of *Stop* within this long of the first, with the program still there, hangs it up.
+const STOP_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// A terminal in the bottom dock (docs/adr/0068): an interactive shell, or one program that keeps
+/// its output when it ends. The emulation is `crate::terminal`; this is the tab around it.
 pub struct ConsolePanel {
     app: gpui_kit::WeakEntity<ReactorApp>,
-    /// Given at construction rather than read from `app` on demand: a new
-    /// console is often built from inside an `app.update` (opening one from
-    /// the Tools panel, or the very first console at startup, built while
-    /// `ReactorApp` itself is still under construction) — reading the same
-    /// entity mid-update panics ("already being updated"), and the cwd never
-    /// changes for the life of a window anyway.
-    cwd: Option<std::path::PathBuf>,
-    input: Entity<InputState>,
-    scroller: Entity<MessageScrollerState>,
-    last_line_count: usize,
-    buffer: crate::console::ConsoleBuffer,
-    session: Option<crate::console::ConsoleSession>,
-    /// The command currently running, shown as this console's tab title so
-    /// several of them are told apart at a glance instead of all reading
-    /// "Console".
-    command: Option<String>,
+    terminal: Entity<crate::terminal::TerminalView>,
+    bell: bool,
+    stopped_at: Option<std::time::Instant>,
+    _events: Subscription,
 }
 
 impl ConsolePanel {
-    /// `initial`, when given, is run immediately rather than leaving the
-    /// console at an idle prompt — how installing a catalogued tool opens a
-    /// terminal already running `reactor install <id>`.
+    /// `initial`, when given, is a program to run rather than the shell: how installing a
+    /// catalogued tool opens a terminal already running `reactor install <id>`. The cwd is given
+    /// at construction rather than read from `app`: a console is often built from inside an
+    /// `app.update` (the Tools panel, or the first one at startup while `ReactorApp` is still
+    /// being made), and reading that entity then panics.
     pub fn new(
         app: gpui_kit::WeakEntity<ReactorApp>,
         cwd: Option<std::path::PathBuf>,
@@ -2405,165 +2374,108 @@ impl ConsolePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(""));
-        cx.subscribe_in(
-            &input,
-            window,
-            |this, _input, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit(window, cx);
-                }
-            },
-        )
-        .detach();
-
-        let mut this = Self {
-            app,
-            cwd: cwd.clone(),
-            input,
-            // One row of "item count" more than lines held, always: the
-            // prompt is the scroller's own last row (render's doc), and even
-            // an empty console still shows one — the idle prompt.
-            scroller: cx.new(|cx| MessageScrollerState::new(1, cx)),
-            last_line_count: 0,
-            buffer: crate::console::ConsoleBuffer::default(),
-            session: None,
-            command: None,
+        let kind = match initial {
+            Some((program, args)) => crate::terminal::Kind::task(&program, &args),
+            None => crate::terminal::Kind::Shell,
         };
-
-        if let Some((program, args)) = initial {
-            let shown = std::iter::once(program.clone())
-                .chain(args.iter().cloned())
-                .collect::<Vec<_>>()
-                .join(" ");
-            this.start(
-                shown,
-                crate::console::ConsoleSession::program(&program, &args, cwd),
-                cx,
-            );
+        // The settings are applied on every render; this is only the look until the first one.
+        let look = crate::settings::UiSettings::default().console_look(cx.theme());
+        let terminal = cx.new(|cx| crate::terminal::TerminalView::new(kind, cwd, look, window, cx));
+        let events = cx.subscribe(
+            &terminal,
+            |this, _terminal, event: &crate::terminal::TerminalEvent, cx| {
+                this.on_terminal_event(event, cx)
+            },
+        );
+        Self {
+            app,
+            terminal,
+            bell: false,
+            stopped_at: None,
+            _events: events,
         }
-
-        // Self-polling: every console owns its own timer, draining its own
-        // session on the same cadence `ReactorApp`'s RPC pump uses. Nothing
-        // routes through the app entity for this — the reason a second
-        // console's command cannot interleave into this one's buffer is
-        // that there is no shared state left for it to interleave into.
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(CONSOLE_POLL_TICK).await;
-                let alive = this.update(cx, |this, cx| this.poll(cx)).is_ok();
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
-
-        this
     }
 
-    /// Enter: run the line, or answer the command that is already running.
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let line = self.input.read(cx).value().to_string();
-        if line.trim().is_empty() {
-            return;
-        }
-        // Cleared before dispatching, so a second Enter for the same
-        // keystroke finds nothing to run (see `ReactorApp::send_composer`).
-        self.input.update(cx, |state, cx| {
-            state.set_value("", window, cx);
-            state.focus(window, cx);
-        });
-        if let Some(session) = self.session.as_mut() {
-            // Not echoed here: the pty's line discipline echoes what is
-            // written to it, so the answer already appears where the
-            // program asked for it. Echoing locally too would show it twice.
-            if let Err(e) = session.write_line(&line) {
-                self.buffer.push_line(format!("could not send: {e}"));
-            }
-        } else {
-            let cwd = self.cwd.clone();
-            self.start(
-                line.clone(),
-                crate::console::ConsoleSession::shell(&line, cwd),
-                cx,
-            );
-        }
-        cx.notify();
-    }
-
-    fn start(
+    fn on_terminal_event(
         &mut self,
-        shown: String,
-        spawned: anyhow::Result<crate::console::ConsoleSession>,
+        event: &crate::terminal::TerminalEvent,
         cx: &mut Context<Self>,
     ) {
-        self.buffer.push_line(format!("$ {shown}"));
-        match spawned {
-            Ok(session) => {
-                self.session = Some(session);
-                self.command = Some(shown);
+        use crate::terminal::TerminalEvent;
+        match event {
+            TerminalEvent::Title => {}
+            TerminalEvent::Bell => {
+                self.bell = true;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(BELL_FLASH).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.bell = false;
+                        cx.notify();
+                    });
+                })
+                .detach();
             }
-            Err(e) => self.buffer.push_line(format!("could not run: {e}")),
+            // A command that just ended may well have changed what is installed: an install
+            // certainly did, and a hand-typed `brew install` counts too. A shell that stays has
+            // no such signal, so it is also read when the terminal is left after it printed.
+            TerminalEvent::Finished(_) | TerminalEvent::Idle => {
+                if let Some(app) = self.app.upgrade() {
+                    app.update(cx, |app, cx| {
+                        app.refresh_catalogue(cx);
+                        app.refresh_services(false, cx);
+                    });
+                }
+            }
         }
         cx.notify();
     }
 
+    /// Ctrl-C to the foreground program; asked twice, it hangs up.
     fn stop(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = self.session.as_mut() {
-            session.kill();
-            self.buffer.push_line("^C");
+        let again = self.stopped_at.is_some_and(|at| at.elapsed() < STOP_AGAIN);
+        if again {
+            self.terminal.update(cx, |t, cx| t.hang_up(cx));
+            self.stopped_at = None;
+        } else {
+            self.terminal.read(cx).interrupt();
+            self.stopped_at = Some(std::time::Instant::now());
         }
         cx.notify();
     }
 
-    fn clear(&mut self, cx: &mut Context<Self>) {
-        self.buffer.clear();
-        cx.notify();
+    fn find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |t, cx| t.show_find(window, cx));
     }
 
-    /// Move whatever the running command has produced into the buffer, and
-    /// notice when it finishes.
-    fn poll(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let before = self.buffer.lines().len();
-        let finished = session.drain(&mut self.buffer);
-        let grew = self.buffer.lines().len() != before;
-        let Some(code) = finished else {
-            if grew {
-                cx.notify();
-            }
-            return;
-        };
-        self.session = None;
-        self.command = None;
-        match code {
-            // Success stays silent, the way a shell does not announce that
-            // a command worked — only that it did not (the "[done]" noise
-            // this removed).
-            Some(0) => {}
-            Some(code) => self.buffer.push_line(format!("[exit {code}]")),
-            None => self.buffer.push_line("[killed]".to_owned()),
-        }
-        // A command that just finished may well have changed what is
-        // installed — an install certainly did, and a hand-typed `brew
-        // install` counts too. Re-reading the catalogue is cheap and keeps
-        // the Tools panel honest without the user knowing to refresh it.
-        if let Some(app) = self.app.upgrade() {
-            app.update(cx, |app, cx| {
-                app.refresh_catalogue(cx);
-                app.refresh_services(false, cx);
-            });
-        }
-        cx.notify();
+    /// The program's exit code once it ended: `Some(None)` for one that was killed.
+    pub fn exit_code(&self, cx: &App) -> Option<Option<i32>> {
+        self.terminal.read(cx).exit().map(|e| e.code)
+    }
+
+    pub fn is_running(&self, cx: &App) -> bool {
+        self.terminal.read(cx).running()
+    }
+
+    /// What is on the grid and in the history, as text.
+    pub fn screen_text(&self, cx: &App) -> String {
+        self.terminal.read(cx).all_text()
+    }
+
+    /// What the tab says: what the program calls itself, else the command it runs, else "Console".
+    pub fn tab_label(&self, cx: &App) -> String {
+        let terminal = self.terminal.read(cx);
+        terminal
+            .title()
+            .filter(|t| !t.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(|| terminal.kind().label())
+            .unwrap_or_else(|| "Console".to_owned())
     }
 }
 
 impl Focusable for ConsolePanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.input.read(cx).focus_handle(cx)
+        self.terminal.read(cx).focus_handle(cx)
     }
 }
 
@@ -2576,12 +2488,17 @@ impl gpui_kit::base::dock::Panel for ConsolePanel {
 }
 
 impl Panel for ConsolePanel {
-    /// Shows the running command rather than a fixed "Console" — the tab
-    /// label that tells several terminals apart from one another.
+    /// What the program calls itself, else the command it runs, else "Console": the label that
+    /// tells several terminals apart from one another.
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = self.tab_label(cx);
         panel_title_closing(
-            IconName::SquareTerminal,
-            self.command.as_deref().unwrap_or("Console"),
+            if self.bell {
+                IconName::Bell
+            } else {
+                IconName::SquareTerminal
+            },
+            &label,
             closer(&self.app, cx.entity()),
         )
     }
@@ -2591,7 +2508,13 @@ impl Panel for ConsolePanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        let busy = self.session.is_some();
+        let (running, ended) = {
+            let t = self.terminal.read(cx);
+            (
+                t.running(),
+                t.exit().is_some() || t.error().is_some() || t.engine_stopped(),
+            )
+        };
         let new_app = self.app.clone();
         Some(vec![
             Button::new("console-new")
@@ -2608,15 +2531,38 @@ impl Panel for ConsolePanel {
                 .icon(IconName::CircleStop)
                 .ghost()
                 .small()
-                .disabled(!busy)
-                .tooltip("Stop the running command")
+                .disabled(!running)
+                .tooltip("Stop the running command (Ctrl-C); again, hang it up")
                 .on_click(cx.listener(|this, _, _window, cx| this.stop(cx))),
+            Button::new("console-rerun")
+                .icon(IconName::RotateCw)
+                .ghost()
+                .small()
+                .disabled(!ended)
+                .tooltip("Run it again")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.terminal.update(cx, |t, cx| {
+                        if t.engine_stopped() {
+                            t.restart(cx)
+                        } else {
+                            t.rerun(cx)
+                        }
+                    })
+                })),
+            Button::new("console-find")
+                .icon(IconName::Search)
+                .ghost()
+                .small()
+                .tooltip("Find in this terminal")
+                .on_click(cx.listener(|this, _, window, cx| this.find(window, cx))),
             Button::new("console-clear")
                 .icon(IconName::Eraser)
                 .ghost()
                 .small()
-                .tooltip("Clear this terminal")
-                .on_click(cx.listener(|this, _, _window, cx| this.clear(cx))),
+                .tooltip("Clear the screen and the history")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.terminal.update(cx, |t, cx| t.clear(cx))
+                })),
             close_button(&self.app, cx.entity()),
         ])
     }
@@ -2625,134 +2571,74 @@ impl Panel for ConsolePanel {
 impl Render for ConsolePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let lines = self.buffer.lines().to_vec();
-        let busy = self.session.is_some();
-
-        // Same tail-following bookkeeping the transcript uses: output should
-        // stay pinned to the newest line unless the user has scrolled away.
-        let new_len = lines.len();
-        if new_len > self.last_line_count {
-            let grew_by = new_len - self.last_line_count;
-            self.scroller.update(cx, |state, cx| {
-                state.append(grew_by, cx);
-            });
-        } else if new_len < self.last_line_count {
-            self.scroller
-                .update(cx, |state, cx| state.reset(new_len + 1, cx));
-        } else {
-            self.scroller.update(cx, |state, cx| state.remeasure(cx));
+        // The settings may have changed since the last frame.
+        if let Some(app) = self.app.upgrade() {
+            let look = app.read(cx).ui.console_look(&theme);
+            self.terminal.update(cx, |t, cx| t.set_look(look, cx));
         }
-        self.last_line_count = new_len;
 
-        let row_theme = theme.clone();
-        let ui = self
-            .app
-            .upgrade()
-            .map(|a| a.read(cx).ui.clone())
-            .unwrap_or_default();
-        let (console_family, console_size) = ui.text(Slot::Console, &theme);
-        let input = self.input.clone();
-        let row_count = lines.len();
+        // A strip under the grid says how a program ended, and what can be done about it. A
+        // program that ended well says nothing, as before.
+        let (exit, stopped, is_shell) = {
+            let t = self.terminal.read(cx);
+            (
+                t.exit(),
+                t.engine_stopped(),
+                matches!(t.kind(), crate::terminal::Kind::Shell),
+            )
+        };
+        let note: Option<(String, bool)> = if stopped {
+            Some(("the terminal engine stopped".to_owned(), true))
+        } else {
+            exit.and_then(|e| match (e.code, e.signal) {
+                (Some(0), _) if !is_shell => None,
+                (Some(0), _) => Some(("the shell exited".to_owned(), false)),
+                (Some(code), _) => Some((format!("exited with code {code}"), true)),
+                (None, Some(_)) => Some(("killed".to_owned(), true)),
+                (None, None) => Some(("ended".to_owned(), false)),
+            })
+        };
 
-        // The prompt is this scroller's own last row rather than a control
-        // bolted on below it — it reads as the log's own next line and moves
-        // with the scrollback exactly the way a real terminal's cursor does,
-        // instead of sitting in a separate area the user has to look away
-        // from the output to reach. It is still a real `InputState`
-        // underneath (full cursor/editing/IME support), not a hand-rolled
-        // text renderer: only where it sits changed.
-        let output = MessageScroller::new(
-            "console-output",
-            self.scroller.clone(),
-            move |at, _window, _cx| {
-                if at < row_count {
-                    // Every span is its own selectable run, ordered by line
-                    // then position in it — the plain `div().child(string)`
-                    // this replaced could not be selected or copied at all
-                    // (`TextSelectionLayer`, which `Root` already renders,
-                    // only picks up runs made of this). Each span gets its
-                    // own participant (`SelectableText::new`, not a document
-                    // shared via `with_handle`): a handle is one hitbox and
-                    // one run slot, so several spans sharing one clobbered
-                    // every span but whichever painted last each frame — the
-                    // bug behind "selection works most of the time".
-                    let mut row = h_flex()
-                        .id(("console-line", at))
-                        .font_family(console_family.clone())
-                        .text_size(console_size);
-                    for (index, span) in lines[at].iter().enumerate() {
-                        let order = (at as u64) * 1000 + index as u64;
-                        let style = TextStyleRefinement {
-                            color: Some(
-                                ansi_color(span.color, &row_theme).unwrap_or(row_theme.foreground),
-                            ),
-                            font_weight: span.bold.then_some(gpui_kit::FontWeight::BOLD),
-                            ..Default::default()
-                        };
-                        row = row.child(
-                            SelectableText::new(("console-span", order), span.text.clone())
-                                .document_order(order)
-                                .text_style(style),
-                        );
-                    }
-                    row.into_any_element()
-                } else {
-                    h_flex()
-                        .id("console-prompt")
-                        .gap_1()
-                        .items_center()
-                        .font_family(console_family.clone())
-                        .text_size(console_size)
-                        .child(
-                            Label::new("$")
-                                .font_family(console_family.clone())
-                                .text_size(console_size)
-                                .text_color(if busy {
-                                    row_theme.accent
-                                } else {
-                                    row_theme.muted_foreground
-                                }),
-                        )
-                        .child(
-                            // `appearance(false)` is load-bearing, not
-                            // cosmetic: `Input`'s default chrome is a
-                            // bordered, backgrounded box with its own focus
-                            // ring, which painted a visible search-box
-                            // outline around the prompt — this row still
-                            // looked like a control sitting in the
-                            // scrollback rather than the scrollback's own
-                            // text, even after moving it into the same list
-                            // as the output. Stripped, plus the font, size
-                            // and padding matched to a plain output row, it
-                            // reads as one more line of terminal text with a
-                            // cursor in it.
-                            Input::new(&input)
-                                .appearance(false)
-                                .bordered(false)
-                                .focus_bordered(false)
-                                .font_family(console_family.clone())
-                                .text_size(console_size)
-                                .px_0()
-                                .py_0()
-                                .flex_1(),
-                        )
-                        .when(busy, |el| {
-                            el.child(Spinner::new().small().color(row_theme.accent))
-                        })
-                        .into_any_element()
-                }
-            },
-        )
-        .with_row_style({
-            // The scroller spaces rows like chat messages; console lines
-            // are lines, and must sit directly under one another.
-            let mut style = gpui_kit::StyleRefinement::default();
-            style.padding.bottom = Some(px(0.).into());
-            style
-        })
-        .flex_1()
-        .min_h_0();
-
-        v_flex().size_full().child(output)
+        let mut column = v_flex()
+            .size_full()
+            .child(div().flex_1().min_h_0().child(self.terminal.clone()));
+        if let Some((text, failed)) = note {
+            column = column.child(
+                h_flex()
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(if failed {
+                                theme.danger
+                            } else {
+                                theme.muted_foreground
+                            })
+                            .child(text),
+                    )
+                    .child(
+                        Button::new("console-note-rerun")
+                            .label(if stopped { "Restart" } else { "Rerun" })
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.terminal.update(cx, |t, cx| {
+                                    if t.engine_stopped() {
+                                        t.restart(cx)
+                                    } else {
+                                        t.rerun(cx)
+                                    }
+                                })
+                            })),
+                    ),
+            );
+        }
+        column
     }
 }

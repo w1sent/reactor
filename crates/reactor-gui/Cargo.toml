@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "graph_model"
 harness = false
 
+[[bench]]
+name = "terminal"
+harness = false
+
 [dependencies]
 gpui-kit = { version = "=0.7.0", features = ["tree-sitter-languages"] }
 reactor-client = { path = "../reactor-client" }
@@ -35,7 +39,8 @@ serde_json.workspace = true
 regex.workspace = true
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-portable-pty = "0.9.0"
+# The terminal console: emulation and the pty loop. Pinned exactly, the API changes between minors (docs/adr/0068).
+alacritty_terminal = "=0.26.0"
 # Decodes the window icon (assets/icon.ico), which gpui takes as RGBA pixels.
 csv = "1"
 # Reads XML property lists in the data viewer.

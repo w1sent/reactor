@@ -65,6 +65,13 @@ summary of the step that was left, and the stepper is disabled while the agent w
 embedding progress, which the status bar showed as two numbers, is a ring on the rail while
 documents are being embedded, with the numbers on a click.
 
+**The console starts collapsed.** Every layout preset puts the console in the bottom dock and
+leaves that dock collapsed, so what is being read (the graph, a long answer) has the room and
+the inspector's panes are not cut to a few rows. Nothing about the console changes: its dock
+still holds it, and the Panels item and its key, a command that needs a terminal and the
+Layout menu's dock switch expand it ([ADR-0054](0054-the-window-s-shortcuts-are-the-person-s-to-choose.md)).
+Added after the first version of this record; a layout saved earlier keeps what it saved.
+
 **Panels this does not name are not redrawn.** The graph, the console, the file explorer,
 the session tree and the services list are moved, not changed; the documents panel stays a
 workspace tab, where its passages have the room to be read.

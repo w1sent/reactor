@@ -353,6 +353,12 @@ impl LayoutPreset {
                     Some((layout, size)) => {
                         area.set_dock(side.placement(), layout, window, cx);
                         area.set_dock_size(side.placement(), size, window, cx);
+                        // The console is there to be opened, not to take the room of what
+                        // is being read: a preset starts with the bottom dock collapsed.
+                        // Asking for the console, by menu, key or an install, expands it.
+                        if side == DockSide::Bottom && area.is_dock_open(side.placement()) {
+                            area.toggle_dock(side.placement(), window, cx);
+                        }
                     }
                     None => area.remove_dock(side.placement(), window, cx),
                 }

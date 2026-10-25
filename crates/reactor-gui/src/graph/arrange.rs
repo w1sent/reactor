@@ -15,7 +15,9 @@
 
 use std::collections::HashMap;
 
-use super::model::{CLEAR, Loose, Model, connected_groups, layout, place_loose, reach, separate};
+use super::model::{
+    CLEAR, Loose, Model, connected_groups, layout, lines_by_group, place_loose, reach, separate,
+};
 
 /// The space between the edges of two nodes side by side. A line's label and its arrowhead sit
 /// between two nodes, so the boxes never touch.
@@ -107,16 +109,11 @@ fn arranged(model: &Model, kind: LayoutKind, sizes: &[(f32, f32)]) -> Vec<(f32, 
     let n = model.nodes.len();
     let mut pos = vec![(0.0, 0.0); n];
     let (groups, group_of, _) = connected_groups(model);
+    // The lines of each group, as ends of nodes in it, `from` to `to` as drawn.
+    let mut group_edges = lines_by_group(model, &group_of, groups.len());
     let mut loose: Vec<Loose> = Vec::new();
-    for members in &groups {
-        let local = |global: usize| members.binary_search(&global).unwrap();
-        // The lines, as ends of nodes in this group, `from` to `to` as drawn.
-        let edges: Vec<(usize, usize)> = model
-            .lines
-            .iter()
-            .filter(|l| l.from != l.to && group_of[l.from] == group_of[members[0]])
-            .map(|l| (local(l.from), local(l.to)))
-            .collect();
+    for (g, members) in groups.iter().enumerate() {
+        let edges = std::mem::take(&mut group_edges[g]);
         let here: Vec<(f32, f32)> = members.iter().map(|&i| sizes[i]).collect();
         let local_pos = match kind {
             LayoutKind::Hierarchical => layered(&here, &edges).0,

@@ -134,12 +134,7 @@ impl Capture {
         }
         self.mem.extend_from_slice(bytes);
         if self.mem.len() > SPILL_AT {
-            let path = std::env::temp_dir().join(format!(
-                "reactor-out-{}-{}.txt",
-                std::process::id(),
-                unique()
-            ));
-            if let Ok(mut file) = std::fs::File::create(&path) {
+            if let Some((mut file, path)) = spill_file() {
                 let _ = file.write_all(&self.mem);
                 self.head = self.mem[..self.limit.head().min(self.mem.len())].to_vec();
                 let start = self.mem.len().saturating_sub(2 * self.limit.tail());
@@ -167,6 +162,30 @@ impl Capture {
             }
         }
     }
+}
+
+/// A new file in the temp directory for the whole of an output. The directory is shared and
+/// the name guessable, so the file is created exclusively (an existing file or a planted link
+/// is never opened) and readable by this user only: the output is what the investigation
+/// printed.
+fn spill_file() -> Option<(std::fs::File, PathBuf)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    for _ in 0..16 {
+        let path = std::env::temp_dir().join(format!(
+            "reactor-out-{}-{}.txt",
+            std::process::id(),
+            unique()
+        ));
+        match options.open(&path) {
+            Ok(file) => return Some((file, path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 fn unique() -> u64 {
@@ -339,5 +358,31 @@ impl Tool for Bash {
                 full,
             }
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod spill_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn an_output_spills_to_a_new_file_for_its_owner_alone() {
+        let (mut first, a) = spill_file().expect("a file");
+        let (_second, b) = spill_file().expect("another");
+        assert_ne!(a, b);
+        std::io::Write::write_all(&mut first, b"x").unwrap();
+        let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "what an investigation printed is for its owner");
+        // Created exclusively: opening the same name again is refused, not truncated, which
+        // is also what keeps a link planted at a guessed name from being followed.
+        let again = std::fs::OpenOptions::new().write(true).create_new(true).open(&a);
+        assert_eq!(
+            again.err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::AlreadyExists)
+        );
+        for p in [&a, &b] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }

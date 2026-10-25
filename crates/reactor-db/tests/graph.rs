@@ -603,3 +603,26 @@ fn node_positions_are_kept_with_the_case_and_replaced_by_the_next() {
     layout::clear(again.db()).unwrap();
     assert!(layout::load(again.db()).unwrap().is_empty());
 }
+
+#[test]
+fn looking_for_the_edge_between_two_elements_uses_the_index_on_the_pair() {
+    // Writing a link asks for the edge from one element to another. Without an index on
+    // both ends that reads every edge into the target, and a source that thousands of claims
+    // cite is such a target: the cost of a write grew with the size of the graph.
+    let (_d, case) = case();
+    let plan: Vec<String> = case
+        .db()
+        .read(|conn| {
+            let mut stmt = conn.prepare(
+                "EXPLAIN QUERY PLAN SELECT count(*) FROM edge WHERE from_id = ?1 AND to_id = ?2",
+            )?;
+            Ok(stmt
+                .query_map(["a", "b"], |r| r.get::<_, String>(3))?
+                .collect::<std::result::Result<_, _>>()?)
+        })
+        .unwrap();
+    assert!(
+        plan.iter().any(|p| p.contains("edge_from_to")),
+        "the lookup does not use the pair index: {plan:?}"
+    );
+}

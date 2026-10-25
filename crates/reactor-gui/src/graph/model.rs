@@ -183,6 +183,19 @@ pub fn build(
             })
     };
 
+    // How many drawn things say each element is supported or refuted, counted once.
+    let mut told: HashMap<(&'static str, &str), usize> = HashMap::new();
+    for g in edges {
+        let role = match g.role.as_str() {
+            "supports" => "supports",
+            "refutes" => "refutes",
+            _ => continue,
+        };
+        if drawn(&g.from_id) {
+            *told.entry((role, g.to_id.as_str())).or_default() += 1;
+        }
+    }
+
     let mut model = Model::default();
     let mut index: HashMap<&str, usize> = HashMap::new();
     for e in elements {
@@ -199,12 +212,7 @@ pub fn build(
             (None, _) => e.type_.clone(),
         };
         index.insert(e.id.as_str(), model.nodes.len());
-        let told = |role: &str| {
-            edges
-                .iter()
-                .filter(|g| g.role == role && g.to_id == e.id && drawn(&g.from_id))
-                .count()
-        };
+        let told = |role: &'static str| told.get(&(role, e.id.as_str())).copied().unwrap_or(0);
         let mut hypothesis = None;
         let mut props = Vec::new();
         for (key, value) in &e.content.props {
@@ -381,31 +389,79 @@ fn spring(
     if fixed.iter().all(|f| *f) {
         return;
     }
+    // Only these move, so only their sums are needed: a pair of placed nodes pushes on two
+    // sums nobody reads.
+    let free: Vec<usize> = (0..n).filter(|&i| !fixed[i]).collect();
+    let edges: Vec<(usize, usize)> = edges
+        .iter()
+        .copied()
+        .filter(|&(a, b)| !(fixed[a] && fixed[b]))
+        .collect();
+    // Each free node's sum is made on its own, so the rows can be shared out over threads and
+    // the picture is the same whichever way they are: every row adds its pairs in the order
+    // the nodes are numbered, which is the order a single pass over all pairs would.
+    let threads = if free.len() * n >= 600_000 {
+        std::thread::available_parallelism().map_or(1, |t| t.get()).min(free.len())
+    } else {
+        1
+    };
     let rounds = 220;
     let mut heat = spread * 0.25;
+    let mut push = vec![(0.0f32, 0.0f32); n];
+    let mut sums = vec![(0.0f32, 0.0f32); free.len()];
     for _ in 0..rounds {
-        let mut push = vec![(0.0f32, 0.0f32); n];
-        for a in 0..n {
-            for b in (a + 1)..n {
-                let (mut dx, mut dy) = (pos[a].0 - pos[b].0, pos[a].1 - pos[b].1);
-                let mut d = (dx * dx + dy * dy).sqrt();
-                if d < 0.01 {
-                    // Exactly on top of each other: part them along a direction that
-                    // depends only on which two they are.
-                    let (sx, sy) = seed(&format!("{}{}", ids[a], ids[b]));
-                    (dx, dy, d) = (sx, sy, (sx * sx + sy * sy).sqrt().max(0.01));
+        let rows = |free: &[usize], out: &mut [(f32, f32)]| {
+            for (&i, sum) in free.iter().zip(out) {
+                *sum = repulsion(i, pos, sizes, fixed, ids);
+            }
+        };
+        push.fill((0.0, 0.0));
+        if threads > 1 {
+            let per = free.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                for (rows_of, out) in free.chunks(per).zip(sums.chunks_mut(per)) {
+                    scope.spawn(move || rows(rows_of, out));
                 }
-                let u = (dx / d, dy / d);
-                let space = d - reach(sizes[a], u) - reach(sizes[b], u);
-                let f = CLEAR * CLEAR / space.max(1.0);
-                let (fx, fy) = (u.0 * f, u.1 * f);
-                push[a].0 += fx;
-                push[a].1 += fy;
-                push[b].0 -= fx;
-                push[b].1 -= fy;
+            });
+            for (&i, sum) in free.iter().zip(&sums) {
+                push[i] = *sum;
+            }
+        } else {
+            // One thread: each pair once, to both its nodes.
+            // The pair `(a, b)`, a < b, worked out in the loop itself: this is where the time
+            // goes, and a call here costs a fifth.
+            macro_rules! pair {
+                ($a:expr, $b:expr) => {{
+                    let (a, b) = ($a, $b);
+                    let (mut dx, mut dy) = (pos[a].0 - pos[b].0, pos[a].1 - pos[b].1);
+                    let mut d = (dx * dx + dy * dy).sqrt();
+                    if d < 0.01 {
+                        (dx, dy, d) = apart(ids[a], ids[b]);
+                    }
+                    let u = (dx / d, dy / d);
+                    let space = d - reach(sizes[a], u) - reach(sizes[b], u);
+                    let f = CLEAR * CLEAR / space.max(1.0);
+                    let (fx, fy) = (u.0 * f, u.1 * f);
+                    push[a].0 += fx;
+                    push[a].1 += fy;
+                    push[b].0 -= fx;
+                    push[b].1 -= fy;
+                }};
+            }
+            for a in 0..n {
+                if fixed[a] {
+                    // Only the free nodes after it: two placed nodes need no push.
+                    for &b in &free[free.partition_point(|&b| b <= a)..] {
+                        pair!(a, b);
+                    }
+                } else {
+                    for b in (a + 1)..n {
+                        pair!(a, b);
+                    }
+                }
             }
         }
-        for &(from, to) in edges {
+        for &(from, to) in &edges {
             let (dx, dy) = (pos[from].0 - pos[to].0, pos[from].1 - pos[to].1);
             let d = (dx * dx + dy * dy).sqrt().max(0.01);
             let u = (dx / d, dy / d);
@@ -417,10 +473,7 @@ fn spring(
             push[to].0 += fx;
             push[to].1 += fy;
         }
-        for i in 0..n {
-            if fixed[i] {
-                continue;
-            }
+        for &i in &free {
             let (fx, fy) = push[i];
             let len = (fx * fx + fy * fy).sqrt().max(0.01);
             let step = len.min(heat);
@@ -429,6 +482,62 @@ fn spring(
         }
         heat *= 0.975;
     }
+}
+
+/// What every other node pushes node `i` with: the sum over the others, nearer-numbered
+/// first, each pair's push worked out as [`pair_push`] does for the lower-numbered of the two.
+fn repulsion(
+    i: usize,
+    pos: &[(f32, f32)],
+    sizes: &[(f32, f32)],
+    fixed: &[bool],
+    ids: &[&str],
+) -> (f32, f32) {
+    let (mut sx, mut sy) = (0.0f32, 0.0f32);
+    for j in 0..pos.len() {
+        if j == i || (fixed[i] && fixed[j]) {
+            continue;
+        }
+        if j < i {
+            let (fx, fy) = pair_push(j, i, pos, sizes, ids);
+            sx -= fx;
+            sy -= fy;
+        } else {
+            let (fx, fy) = pair_push(i, j, pos, sizes, ids);
+            sx += fx;
+            sy += fy;
+        }
+    }
+    (sx, sy)
+}
+
+/// How hard the pair `a < b` pushes apart: given to `a` and taken from `b`.
+#[inline(always)]
+fn pair_push(
+    a: usize,
+    b: usize,
+    pos: &[(f32, f32)],
+    sizes: &[(f32, f32)],
+    ids: &[&str],
+) -> (f32, f32) {
+    let (mut dx, mut dy) = (pos[a].0 - pos[b].0, pos[a].1 - pos[b].1);
+    let mut d = (dx * dx + dy * dy).sqrt();
+    if d < 0.01 {
+        (dx, dy, d) = apart(ids[a], ids[b]);
+    }
+    let u = (dx / d, dy / d);
+    let space = d - reach(sizes[a], u) - reach(sizes[b], u);
+    let f = CLEAR * CLEAR / space.max(1.0);
+    (u.0 * f, u.1 * f)
+}
+
+/// Two nodes exactly on top of each other: the direction to part them along, which depends
+/// only on which two they are, and its length.
+#[cold]
+#[inline(never)]
+fn apart(a: &str, b: &str) -> (f32, f32, f32) {
+    let (px, py) = seed(&format!("{a}{b}"));
+    (px, py, (px * px + py * py).sqrt().max(0.01))
 }
 
 /// Lay boxes of these sizes out in rows, close together, wider than tall: the offset of each
@@ -501,20 +610,16 @@ pub fn layout(
 
     let (groups, group_of, neighbours) = connected_groups(model);
 
+    let mut group_edges = lines_by_group(model, &group_of, groups.len());
+
     // Groups that hold something placed already are settled in place; the others are laid
     // out alone, to be packed.
     let mut loose: Vec<Loose> = Vec::new();
     // Where the settled groups are, for putting the loose ones beside them.
     let mut settled: Vec<usize> = Vec::new();
-    for members in &groups {
+    for (g, members) in groups.iter().enumerate() {
         let m = members.len();
-        let local = |global: usize| members.binary_search(&global).unwrap();
-        let edges: Vec<(usize, usize)> = model
-            .lines
-            .iter()
-            .filter(|l| l.from != l.to && group_of[l.from] == group_of[members[0]])
-            .map(|l| (local(l.from), local(l.to)))
-            .collect();
+        let edges = std::mem::take(&mut group_edges[g]);
         let ids: Vec<&str> = members
             .iter()
             .map(|&i| model.nodes[i].id.as_str())
@@ -553,9 +658,31 @@ pub fn layout(
     pos
 }
 
+/// The lines of each group as pairs of places within it (a node's place is its rank among the
+/// group's members), in the order the model has them: one pass over the lines, not one per group.
+pub(super) fn lines_by_group(
+    model: &Model,
+    group_of: &[usize],
+    groups: usize,
+) -> Vec<Vec<(usize, usize)>> {
+    // `connected_groups` lists members in index order, so a node's place is the count of
+    // members of its group before it.
+    let mut place = vec![0usize; model.nodes.len()];
+    let mut seen = vec![0usize; groups];
+    for (i, &g) in group_of.iter().enumerate() {
+        place[i] = seen[g];
+        seen[g] += 1;
+    }
+    let mut out: Vec<Vec<(usize, usize)>> = vec![Vec::new(); groups];
+    for l in model.lines.iter().filter(|l| l.from != l.to) {
+        out[group_of[l.from]].push((place[l.from], place[l.to]));
+    }
+    out
+}
+
 /// The connected groups of the model, as lists of node indices in order; which group each
 /// node is in; and each node's neighbours.
-pub(super) fn connected_groups(model: &Model) -> (Vec<Vec<usize>>, Vec<usize>, Vec<Vec<usize>>) {
+pub fn connected_groups(model: &Model) -> (Vec<Vec<usize>>, Vec<usize>, Vec<Vec<usize>>) {
     let n = model.nodes.len();
     let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); n];
     for l in &model.lines {
@@ -1048,15 +1175,19 @@ pub fn disclose(model: &Model, detail: Detail) -> Disclosure {
     let mut extra = Vec::new();
     // The participants of each claim that is not drawn.
     let mut standing_in: HashMap<usize, (usize, usize)> = HashMap::new();
+    let mut roles_of: HashMap<usize, Vec<&Line>> = HashMap::new();
+    if shown.iter().any(|s| !s) {
+        for l in model.lines.iter().filter(|l| l.kind == LineKind::Role) {
+            if !shown[l.from] {
+                roles_of.entry(l.from).or_default().push(l);
+            }
+        }
+    }
     for (i, node) in model.nodes.iter().enumerate() {
         if shown[i] || node.kind != NodeKind::Claim {
             continue;
         }
-        let roles: Vec<&Line> = model
-            .lines
-            .iter()
-            .filter(|l| l.kind == LineKind::Role && l.from == i)
-            .collect();
+        let roles: &[&Line] = roles_of.get(&i).map_or(&[], Vec::as_slice);
         let mut ends: Vec<(usize, &str)> = roles.iter().map(|l| (l.to, l.label.as_str())).collect();
         ends.sort_unstable();
         ends.dedup_by_key(|e| e.0);
@@ -1405,6 +1536,107 @@ mod tests {
         // reference to draw, as written.
         let see = m.nodes[0].props.iter().find(|p| p.name == "ref.see").unwrap();
         assert!(see.parts()[0].go.is_some());
+    }
+
+    /// The force layout as it was first written: every pair once, all in one thread. The one
+    /// now in use must give the same picture to the last bit.
+    fn spring_reference(
+        pos: &mut [(f32, f32)],
+        sizes: &[(f32, f32)],
+        fixed: &[bool],
+        edges: &[(usize, usize)],
+        ids: &[&str],
+        spread: f32,
+    ) {
+        let n = pos.len();
+        if fixed.iter().all(|f| *f) {
+            return;
+        }
+        let mut heat = spread * 0.25;
+        for _ in 0..220 {
+            let mut push = vec![(0.0f32, 0.0f32); n];
+            for a in 0..n {
+                for b in (a + 1)..n {
+                    let (mut dx, mut dy) = (pos[a].0 - pos[b].0, pos[a].1 - pos[b].1);
+                    let mut d = (dx * dx + dy * dy).sqrt();
+                    if d < 0.01 {
+                        let (sx, sy) = seed(&format!("{}{}", ids[a], ids[b]));
+                        (dx, dy, d) = (sx, sy, (sx * sx + sy * sy).sqrt().max(0.01));
+                    }
+                    let u = (dx / d, dy / d);
+                    let space = d - reach(sizes[a], u) - reach(sizes[b], u);
+                    let f = CLEAR * CLEAR / space.max(1.0);
+                    let (fx, fy) = (u.0 * f, u.1 * f);
+                    push[a].0 += fx;
+                    push[a].1 += fy;
+                    push[b].0 -= fx;
+                    push[b].1 -= fy;
+                }
+            }
+            for &(from, to) in edges {
+                let (dx, dy) = (pos[from].0 - pos[to].0, pos[from].1 - pos[to].1);
+                let d = (dx * dx + dy * dy).sqrt().max(0.01);
+                let u = (dx / d, dy / d);
+                let space = (d - reach(sizes[from], u) - reach(sizes[to], u)).max(0.0);
+                let f = space * space / CLEAR;
+                let (fx, fy) = (u.0 * f, u.1 * f);
+                push[from].0 -= fx;
+                push[from].1 -= fy;
+                push[to].0 += fx;
+                push[to].1 += fy;
+            }
+            for i in 0..n {
+                if fixed[i] {
+                    continue;
+                }
+                let (fx, fy) = push[i];
+                let len = (fx * fx + fy * fy).sqrt().max(0.01);
+                let step = len.min(heat);
+                pos[i].0 += fx / len * step;
+                pos[i].1 += fy / len * step;
+            }
+            heat *= 0.975;
+        }
+    }
+
+    #[test]
+    fn the_force_layout_gives_the_picture_it_always_did_to_the_last_bit() {
+        // Sizes of 40 nodes up to 700 (the last is large enough to be shared over threads),
+        // with nothing placed, with most placed, and with some nodes exactly on one another.
+        for (n, placed, stacked) in [(40, 0, false), (40, 33, false), (60, 10, true), (700, 0, false), (700, 690, false)] {
+            let mut state = 0x9e37_79b9_u64 + n as u64;
+            let mut next = || {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 33) as u32
+            };
+            let ids: Vec<String> = (0..n).map(|i| format!("id-{i}")).collect();
+            let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let sizes: Vec<(f32, f32)> = (0..n)
+                .map(|_| (60.0 + (next() % 200) as f32, 30.0 + (next() % 120) as f32))
+                .collect();
+            let start: Vec<(f32, f32)> = (0..n)
+                .map(|i| {
+                    if stacked && i % 3 == 0 {
+                        (0.0, 0.0)
+                    } else {
+                        ((next() % 2000) as f32 - 1000.0, (next() % 2000) as f32 - 1000.0)
+                    }
+                })
+                .collect();
+            // Placed nodes come first, or (when some are stacked) are scattered among the rest.
+            let fixed: Vec<bool> = (0..n).map(|i| i < placed || (stacked && i % 7 == 1)).collect();
+            let edges: Vec<(usize, usize)> = (0..n * 3 / 2)
+                .map(|_| (next() as usize % n, next() as usize % n))
+                .filter(|(a, b)| a != b)
+                .collect();
+            let (mut now, mut then) = (start.clone(), start);
+            spring(&mut now, &sizes, &fixed, &edges, &id_refs, 800.0);
+            spring_reference(&mut then, &sizes, &fixed, &edges, &id_refs, 800.0);
+            let bits = |p: &[(f32, f32)]| -> Vec<(u32, u32)> {
+                p.iter().map(|q| (q.0.to_bits(), q.1.to_bits())).collect()
+            };
+            assert_eq!(bits(&now), bits(&then), "n={n} placed={placed} stacked={stacked}");
+        }
     }
 
     fn label(m: &Model, i: usize) -> &str {

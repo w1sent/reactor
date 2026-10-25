@@ -740,6 +740,20 @@ impl GraphPanel {
         self.relayout(cx);
     }
 
+    /// Put the view at this zoom and pan, for the benchmark that times frames.
+    #[doc(hidden)]
+    pub fn view_for_test(&mut self, zoom: f32, pan: (f32, f32), cx: &mut Context<Self>) {
+        self.zoom = zoom;
+        self.pan = pan;
+        cx.notify();
+    }
+
+    /// Bring everything into view, as the Fit button does.
+    #[doc(hidden)]
+    pub fn fit_for_test(&mut self, cx: &mut Context<Self>) {
+        self.fit(cx);
+    }
+
     /// Keep what the filter layers, size and level are now as a view, as the panel's Save does.
     #[doc(hidden)]
     pub fn save_view_for_test(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1488,15 +1502,6 @@ impl GraphPanel {
         )
     }
 
-    fn node_at(&self, index: usize) -> (f32, f32) {
-        self.to_view(
-            self.positions
-                .get(&self.model.nodes[index].id)
-                .copied()
-                .unwrap_or((0., 0.)),
-        )
-    }
-
     /// Lay the whole graph out afresh, forgetting where things were -- including where
     /// they were dragged to -- and bring it into view.
     fn relayout(&mut self, cx: &mut Context<Self>) {
@@ -1724,6 +1729,17 @@ impl Render for GraphPanel {
         let labels_shown = z >= 0.6;
         let selected_nodes = self.selected_nodes();
 
+        // Where each node is in the drawing area, worked out once for the lines and the nodes.
+        let view_at: Vec<(f32, f32)> = self
+            .model
+            .nodes
+            .iter()
+            .map(|n| self.to_view(self.positions.get(&n.id).copied().unwrap_or((0., 0.))))
+            .collect();
+        let selected_set: HashSet<&str> = selected_nodes.iter().map(String::as_str).collect();
+        let area = self.bounds.get().size;
+        let (area_w, area_h) = (f32::from(area.width), f32::from(area.height));
+
         // Lines: painted under everything, each ending at the edge of the node it
         // points to so an arrowhead is not hidden under the box.
         let mut strokes = Vec::with_capacity(self.model.lines.len());
@@ -1734,7 +1750,7 @@ impl Render for GraphPanel {
             if !(shown[line.from] && shown[line.to]) {
                 continue;
             }
-            let (a, b) = (self.node_at(line.from), self.node_at(line.to));
+            let (a, b) = (view_at[line.from], view_at[line.to]);
             let half = |index: usize| {
                 let (w, h) = (cards[index].w, cards[index].h);
                 ((w / 2. + 3.) * z, (h / 2. + 3.) * z)
@@ -1751,6 +1767,23 @@ impl Render for GraphPanel {
                     edge_of_box(b, half(line.to), a),
                 )
             };
+            // What is wholly out of sight is not built, as nodes are not: the box round the
+            // line and its label against the drawing area.
+            if area_w > 0. {
+                let (mut lo, mut hi) = (from, from);
+                for p in bends.iter().chain(std::iter::once(&to)) {
+                    lo = (lo.0.min(p.0), lo.1.min(p.1));
+                    hi = (hi.0.max(p.0), hi.1.max(p.1));
+                }
+                let margin = 220. * z.max(0.6) / 2. + 40.;
+                if hi.0 + margin < 0.
+                    || lo.0 - margin > area_w
+                    || hi.1 + margin < 0.
+                    || lo.1 - margin > area_h
+                {
+                    continue;
+                }
+            }
             let selected = line_selected(line);
             let disputed = line.status == "conflicting" && !plain;
             // A disputed relation says so on its label; the lines of a disputed node only
@@ -2017,8 +2050,6 @@ impl Render for GraphPanel {
         .size_full();
 
         // Nodes: a card each, as big as what it says. What is out of sight is not built.
-        let area = self.bounds.get().size;
-        let (area_w, area_h) = (f32::from(area.width), f32::from(area.height));
         let alone = match selected_nodes.as_slice() {
             [one] => Some(one.clone()),
             _ => None,
@@ -2028,7 +2059,7 @@ impl Render for GraphPanel {
             if !shown[i] {
                 continue;
             }
-            let at = self.node_at(i);
+            let at = view_at[i];
             let (w, h) = (cards[i].w * z, cards[i].h * z);
             if area_w > 0.
                 && (at.0 + w < -40.
@@ -2039,7 +2070,7 @@ impl Render for GraphPanel {
                 continue;
             }
             let look = look::look(&self.vocabulary, &node.type_, node.element);
-            let selected = selected_nodes.contains(&node.id);
+            let selected = selected_set.contains(node.id.as_str());
             nodes.push(self.node_element(
                 node,
                 &look,

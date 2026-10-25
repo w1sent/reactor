@@ -7,7 +7,7 @@ notes, and how-to material.
 |---|---|
 | [`concept.md`](concept.md) | The idea in full — the problem, the inversion it rests on, the architecture, and what REactor deliberately does not do. Start here. |
 | [`adr/`](adr/) | Architecture decision records, numbered in the order taken. One per significant decision, each closing with the alternatives that were walked and why they lost. |
-| [`howto/`](howto/) | Task-oriented guides: adding a tool, adding a toolset. |
+| [`howto/`](howto/) | Task-oriented guides: adding a tool, adding a toolset, [benchmarking the graph](howto/benchmark-the-graph.md). |
 
 Project-level material lives at the repo root rather than here: `README.md`
 (orientation), `CONTEXT.md` (glossary), `TODO.md` (milestones, open questions).

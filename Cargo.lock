@@ -6471,6 +6471,7 @@ dependencies = [
  "csv",
  "infer",
  "md-5",
+ "reactor-db",
  "rusqlite",
  "serde",
  "serde_json",

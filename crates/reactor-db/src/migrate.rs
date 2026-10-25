@@ -738,6 +738,14 @@ const MIGRATIONS: &[&str] = &[
       ('raw_line', 'verbatim.raw'),
       ('mitre', 'category.technique');
     "#,
+    // 10: the edge between two given elements. Writing a link looks for the edge from one
+    // element to another; with only `edge_to` to go by, that read every edge pointing at the
+    // target, and a source that thousands of claims cite is such a target. The pair index
+    // answers it directly and also serves everything `edge_from` did (a prefix of it).
+    r#"
+    CREATE INDEX edge_from_to ON edge(from_id, to_id);
+    DROP INDEX edge_from;
+    "#,
 ];
 
 /// The schema version this binary writes.

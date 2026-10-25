@@ -8,6 +8,8 @@
 //! and the GUI sit above it.
 
 pub mod artifact;
+#[cfg(feature = "bench")]
+pub mod bench;
 pub mod blob;
 pub mod browse;
 pub mod case;

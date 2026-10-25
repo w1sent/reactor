@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "reactor-gui"
 path = "src/main.rs"
 
+[[bench]]
+name = "graph_model"
+harness = false
+
 [dependencies]
 gpui-kit = { version = "=0.7.0", features = ["tree-sitter-languages"] }
 reactor-client = { path = "../reactor-client" }
@@ -48,6 +52,8 @@ identifier = "io.github.w1sent.reactor"
 icon = ["../../assets/icon.icns"]
 
 [dev-dependencies]
+# Benchmark support: a synthetic case of any size and the timing harness (`cargo bench -p reactor-gui`).
+reactor-db = { path = "../reactor-db", features = ["bench"] }
 # Drives the real views in a headless window (clicks, hit testing), for the ones whose bugs are about the pointer.
 gpui-kit = { version = "=0.7.0", features = ["tree-sitter-languages", "test-support"] }
 tempfile = "3"

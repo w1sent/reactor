@@ -5,6 +5,15 @@ edition.workspace = true
 license.workspace = true
 description = "REactor's analysis database: SQLite, FTS5 and sqlite-vec compiled into the binary"
 
+[features]
+# Benchmark support (`reactor_db::bench`): a synthetic case of any size and a small timing
+# harness. Off in every build that ships; the benches turn it on.
+bench = []
+
+[[bench]]
+name = "graph"
+harness = false
+
 [dependencies]
 # `bundled` builds SQLite from source into the binary (ADR-0046: a single executable,
 # nothing to install). This is the workspace's one SQLite binding; `libsqlite3-sys`
@@ -27,5 +36,7 @@ zip = { version = "8.6.0", default-features = false, features = ["aes-crypto", "
 tempfile.workspace = true
 
 [dev-dependencies]
+# Turns the `bench` feature on for this crate's own benches and tests, so `cargo bench` needs no flag.
+reactor-db = { path = ".", features = ["bench"] }
 serde_json.workspace = true
 sha2 = "0.10"

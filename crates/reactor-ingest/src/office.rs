@@ -21,13 +21,24 @@ pub fn pdf(bytes: &[u8]) -> Result<String> {
     }
 }
 
+/// The most one part of a document is read as: a few hundred bytes of archive can claim to
+/// unpack to gigabytes, and the text of a real document is a small fraction of this.
+const MAX_ENTRY: u64 = 256 << 20;
+
 fn read_entry(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Vec<u8>> {
-    let mut file = zip
+    let file = zip
         .by_name(name)
         .map_err(|_| Error::Unreadable(format!("no {name} in the file")))?;
     let mut out = Vec::new();
-    file.read_to_end(&mut out)
+    file.take(MAX_ENTRY + 1)
+        .read_to_end(&mut out)
         .map_err(|e| Error::Unreadable(format!("{name}: {e}")))?;
+    if out.len() as u64 > MAX_ENTRY {
+        return Err(Error::Unreadable(format!(
+            "{name}: over {} MiB unpacked",
+            MAX_ENTRY >> 20
+        )));
+    }
     Ok(out)
 }
 

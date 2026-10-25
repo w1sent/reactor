@@ -654,6 +654,10 @@ The GUI's own contribution on top of that freedom is the way back:
     toolsets, context and services on the right, the console below.
   - **Catalogue** — tools in the centre, services on the left, toolsets on
     the right, the console below.
+
+  In every preset the console's dock starts **collapsed**: only its header strip shows, so the
+  work above has the room. The Console menu item and its key, a command that needs a terminal
+  (an install) and the dock switch of the Layout menu expand it.
 - **A `Layout` menu** carrying the presets and a switch per dock. Defined
   once through `cx.set_menus`, which is the real menu bar on macOS and the
   same menus drawn in-window by `AppMenuBar` on Windows and Linux. Because
@@ -798,7 +802,7 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   Markdown, with *Copy*, *Read* and *Edit*), **Evidence** (*Relations* for other kinds): what it
   is related to, grouped by what it says — supports and refutes first, then about, mentioned by,
   other roles — a click selects that element; **History**: every version and what it changed;
-  **Details**: its type, when it happened or held, properties, id. A property is drawn as the namespace of its name says (ADR-0067): a time short with the full value on hover, a size in units, a flag as yes/no, an id shortened from the middle, a category as a chip; a reference, a URL or a path is followed by a click. A value that does not suit its name is shown as stored, struck through. A card shows the same as one line of text. The actions stay pinned below.
+  **Details**: its type, when it happened or held, properties, id. A property is drawn as the namespace of its name says (ADR-0067): a time short with the full value on hover, a size in units, a flag as yes/no, an id shortened from the middle, a category as a chip, a command or record (`verbatim`) as a code block with the muted fill of markdown code blocks and a gutter of line numbers; a reference, a URL or a path is followed by a click. A value that does not suit its name is shown as stored, struck through. A person adds a property with the *Property* button (a name field that says what the name would be drawn as and offers the namespaces and known names, and a value field), edits one with the pencil on its row and removes it with the cross; each is a new version in their name, and what is typed is stored as its namespace says (`180KiB` under `size` is bytes). A card draws the same, at its largest size. Rows of properties are spaced apart and every second one is shaded, in the inspector and on a card, so a row can be followed from label to value. The actions stay pinned below.
   A text is the title when it is one short line; a long or multi-line one has a title of its own
   (its first line) and is the Text tab. *Read* and *Edit* open a popup with the text large, an
   outline of its headings and the evidence at its side; saving writes a new version and the old
@@ -872,7 +876,12 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   hash is shown whole over as many lines as it takes. How much it says is its size — **S** the
   name (a path's last part), **M** the whole value and a text's first three lines with a count of
   the rest, **L** plus tags and a text's first paragraph, **XL** everything: the whole text (400
-  wide, headings and list items marked) and every property. `[` and `]` step the selected nodes,
+  wide, headings and list items marked) and every property. A property is drawn under its label as
+  its name's namespace says, as in the inspector (ADR-0067): `size` as `180 KiB`, a time short, a
+  flag yes/no, an id shortened, a `category` as chips, a command or record as a code block with
+  line numbers, a reference, URL or path in the link colour, a value that does not suit its name
+  struck through. A card with properties is at least as wide as a label and sixteen characters of
+  value. Following a link is the inspector's: a click on a card selects it. `[` and `]` step the selected nodes,
   or every node when none is selected; `0` puts them back; a selected node's right edge (or
   Alt+drag) sets its width and the height follows. A node's own size and width are kept with the
   case (`graph_node_size`). Nodes that would overlap after a change are moved apart as little as

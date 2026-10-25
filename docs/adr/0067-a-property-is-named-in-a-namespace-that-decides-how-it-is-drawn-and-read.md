@@ -3,9 +3,8 @@
 > Implemented, apart from what "Left for later" lists. Extends the vocabulary of [ADR-0047](0047-the-analysis-graph-is-the-case-s-model.md)
 > with a catalogue of property names, built the way the type namespaces are, and uses the
 > reference grammar of [ADR-0066](0066-the-case-is-addressed-by-references.md) for the values
-> that point at something. Nothing here is built. The GUI's graph panel is touched in two
-> places only, the properties of a card and the *Details* pane of the inspector; the rest of
-> that panel stands.
+> that point at something. The GUI's graph panel is touched in two places only, the
+> properties of a card and the *Details* pane of the inspector; the rest of that panel stands.
 
 An element carries `props`, a JSON object of whatever the writer chose to record. The agent
 uses it a great deal, and it is useful: a size, a path, a command line, a source line that
@@ -119,15 +118,54 @@ aligned by its shape.
 
 **The drawing reads typed values.** The GUI's node keeps the property as a JSON value, not a
 string; the card and the inspector ask the vocabulary for the shape of each name and draw it
-as the table says. The card measures a property from its shape (a chip row is one line, a
-hash is one line, `verbatim` is its lines) where it now wraps a string, so the height a card is
-given still comes from what it draws. In the inspector's *Details*, a reference chip and a
-uri open as they do from anywhere else in the window
+as the table says, and draw it alike:
+
+- **A `category` is a chip**, in the colour the case gave the same text as a tag and neutral
+  where it gave none. It draws no outline around anything.
+- **A `verbatim` value is a code block**: the muted fill markdown code blocks have, a border, the
+  text as written and a gutter of line numbers, a long line wrapping with its number at its
+  first row.
+- **Anything else is text**, one part under another: a size in units, a time short, a flag as
+  yes/no, an id shortened; a reference, URL or path in the link colour; a value that does not
+  suit its name struck through.
+
+Rows of properties are spaced apart and every second one has a shade (the theme's secondary fill,
+half as strong), so the eye can follow a row from its label to its value; a card counts the
+padding in its height and its width. The two places differ in where this is drawn and what a
+click does. **A card** draws it at its
+largest size (XL, where a card says everything), in the same code as the inspector
+(`panel/prop_draw.rs`), with sizes taken from the card's font so it holds at any zoom. It is
+measured from the parts, so the height a card is given comes from what it draws: a chip row wraps
+like tags, a code block is its lines, each as many rows as it wraps to, and a card with
+properties is never narrower than a label and sixteen characters of value. A card is dragged, so
+a click on a link there selects the node, and following the link is the inspector's. **The
+inspector's *Details*** is where a part is followed. A reference
+chip and a uri open as they do from anywhere else in the window
 ([ADR-0066](0066-the-case-is-addressed-by-references.md),
 [ADR-0044](0044-filesystem-panels-read-through-a-vfs.md)); *Copy* stays on every row and
 copies the stored value, not the drawn one. Colours and icons come from the theme's tokens
 and the components already in use (`Tag` for `category` and `flag`); no colour is added, and a
 namespace's icon and colour are given in the same way a type namespace's are.
+
+**A person writes properties too, in the inspector's *Details*.** The agent was the only one who
+could; the person now has the same three steps, each a new version in their own name with the
+old one kept:
+
+- **Add** with a *Property* button: a name field, which says as it is typed what the name would
+  be drawn as (`drawn as size`, `stored as size`, or `no known namespace: drawn as text`) and
+  offers the namespaces, or the known names that match what is typed; and a value field.
+- **Edit** with a pencil on the row, which opens the value as text (an array as one item per
+  line). Enter saves, Shift+Enter adds a line.
+- **Remove** with a cross on the row.
+
+What is typed is stored as its namespace says (`edit::set_prop`, `fields::value_from_text`):
+`180KiB` under `size` is the number of bytes, a time is an RFC 3339 instant, `yes` under `flag`
+is a boolean, lines are the items of an array (except under `text` and `verbatim`, where the
+whole text is one value unless the property already held an array). Text that does not suit the
+shape is kept as typed and drawn struck through, as for the agent; only a name that is not
+words joined by dots, an empty value, an entity's key fields and the graph's own names
+(`scope`, `hypothesis_status`) are refused, each with its reason. A spelling that is an alias is
+folded, as it is for the agent. Only one element is edited at a time.
 
 **The seed is a small, chosen set.** It is what an analyst records about things, written
 here, not counted. Where a name has a counterpart in STIX 2.1, its row says which, so that an
@@ -199,6 +237,8 @@ not replace a role: a link that the graph should follow, count or contradict is 
 
 ## Left for later
 
+- Following a reference, URL or path from a card. A card is dragged and its click selects it;
+  a link on it would have to claim the click without breaking the drag.
 - Not built yet: the `stix` column is stored on the seeded names but the STIX export still
   writes properties only into `x_reactor`; the grid's column per name in use; a JSON object
   drawn as a collapsible tree (it is written compactly); and a reference chip's label (it shows
@@ -209,8 +249,8 @@ not replace a role: a link that the graph should follow, count or contradict is 
 - What a sub-namespace can add to its shape: `verbatim.sql`, `verbatim.yara` as the language to
   highlight, and the same for `number.latitude`. The names are allowed now; what they do is
   not decided.
-- Editing a property in the inspector with a control for its shape (a date picker for
-  `time`). The first step draws; the person edits as text, as now.
+- A control for the shape when a person edits (a date picker for `time`, a switch for `flag`).
+  The person types text, which is read by the shape; see above.
 - The integration interface of ADR-0066, where a program registering a reference scheme could
   also register names under a namespace.
 

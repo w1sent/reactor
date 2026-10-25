@@ -281,3 +281,87 @@ fn a_search_compares_a_property_by_its_shape() {
     .unwrap();
     assert_eq!(page.len(), 1);
 }
+
+// -- a person writes a property --------------------------------------------------------------
+
+#[test]
+fn what_a_person_types_is_stored_as_the_shape_of_its_name_says() {
+    use reactor_db::graph::fields::value_from_text as v;
+    assert_eq!(v(Shape::Size, "180KiB", false).unwrap(), json!(184_320));
+    assert_eq!(v(Shape::Size, "184320", false).unwrap(), json!(184_320));
+    assert_eq!(v(Shape::Duration, "4.2s", false).unwrap(), json!(4200));
+    assert_eq!(v(Shape::Number, "8080", false).unwrap(), json!(8080));
+    assert_eq!(v(Shape::Number, "7.42", false).unwrap(), json!(7.42));
+    assert_eq!(v(Shape::Flag, "Yes", false).unwrap(), json!(true));
+    assert_eq!(v(Shape::Flag, "no", false).unwrap(), json!(false));
+    assert_eq!(
+        v(Shape::Time, "2026-03-12 09:14", false).unwrap(),
+        json!("2026-03-12T09:14:00.000Z")
+    );
+    // Text that does not suit the shape is kept as typed, not refused.
+    assert_eq!(v(Shape::Size, "big", false).unwrap(), json!("big"));
+    assert_eq!(v(Shape::Flag, "maybe", false).unwrap(), json!("maybe"));
+    // Lines are items, except for text kept whole.
+    assert_eq!(
+        v(Shape::Category, "T1059.001\nT1105\n\n", false).unwrap(),
+        json!(["T1059.001", "T1105"])
+    );
+    assert_eq!(v(Shape::Category, "T1105", false).unwrap(), json!("T1105"));
+    assert_eq!(v(Shape::Category, "T1105", true).unwrap(), json!(["T1105"]));
+    assert_eq!(
+        v(Shape::Verbatim, "a.exe  -x\n  -y\n", false).unwrap(),
+        json!("a.exe  -x\n  -y")
+    );
+    assert_eq!(v(Shape::Text, "one\ntwo", true).unwrap(), json!(["one", "two"]));
+    assert!(v(Shape::Text, "  \n ", false).is_err());
+}
+
+#[test]
+fn a_person_sets_and_removes_a_property_and_every_step_is_a_version() {
+    use reactor_db::graph::edit::{self, At};
+    let (_d, case) = case();
+    let db = case.db();
+    let at = At::new("s1", 3);
+    let id = note(&case, "evidence", json!({"loose": "x"}));
+
+    edit::set_prop(db, &at, &id, "size_bytes", json!(184_320)).unwrap();
+    edit::set_prop(db, &at, &id, "time.first_seen", json!("2026-03-12T09:14:00Z")).unwrap();
+    let e = query::get(db, &id).unwrap().unwrap();
+    // The alias was folded; what was there stays.
+    assert_eq!(e.content.props.get("size"), Some(&json!(184_320)));
+    assert_eq!(e.content.props.get("loose"), Some(&json!("x")));
+    assert_eq!(e.ver, 3);
+
+    // The same value again is no new version.
+    let again = edit::set_prop(db, &at, &id, "size", json!(184_320)).unwrap();
+    assert_eq!(again.event_seq, None);
+
+    // A name must be words joined by dots; the graph's own names are not for hand.
+    for bad in ["Size Bytes", "", "a..b", "scope", "hypothesis_status"] {
+        assert!(edit::set_prop(db, &at, &id, bad, json!(1)).is_err(), "{bad:?}");
+    }
+    assert!(edit::set_prop(db, &at, "nothing", "size", json!(1)).is_err());
+
+    // Removing takes it away in a new version, by an alias too, and says if it was not there.
+    edit::remove_prop(db, &at, &id, "bytes").unwrap();
+    edit::remove_prop(db, &at, &id, "loose").unwrap();
+    let e = query::get(db, &id).unwrap().unwrap();
+    assert_eq!(e.content.props.len(), 1);
+    assert!(edit::remove_prop(db, &at, &id, "size").is_err());
+    assert_eq!(query::history(db, &id).unwrap().len(), 5);
+    // The old versions keep what was removed.
+    assert!(query::history(db, &id).unwrap()[0].content.props.contains_key("loose"));
+}
+
+#[test]
+fn an_entitys_key_cannot_be_set_by_hand_but_its_details_can() {
+    use reactor_db::graph::edit::{self, At};
+    let (_d, case) = case();
+    let db = case.db();
+    let at = At::new("s1", 3);
+    let id = edit::add_entity(db, &at, "net.ipv4", "198.51.100.7").unwrap();
+    edit::set_prop(db, &at, &id, "category.severity", json!("high")).unwrap();
+    assert!(edit::set_prop(db, &at, &id, "scope", json!("lab")).is_err());
+    let e = query::get(db, &id).unwrap().unwrap();
+    assert_eq!(e.content.props.get("category.severity"), Some(&json!("high")));
+}

@@ -269,6 +269,57 @@ pub fn set_text(db: &Db, at: &At, id: &str, text: &str) -> Result<Applied> {
     )
 }
 
+/// Names a person cannot set by hand: the graph reads them (`scope`) or the header owns them
+/// (`hypothesis_status`, which `set_hypothesis_status` moves).
+const NOT_BY_HAND: [&str; 2] = ["scope", "hypothesis_status"];
+
+/// Set a property of an element, as a person: a new version, and the old one is kept. The name
+/// is `<namespace>.<name>` (lowercase words joined by dots); a spelling the vocabulary has as an
+/// alias is folded to the name it stands for, and a name with no known namespace is accepted
+/// and drawn as text. An entity's key fields never change.
+pub fn set_prop(db: &Db, at: &At, id: &str, name: &str, value: Value) -> Result<Applied> {
+    let name = super::vocab::check_name("property name", name)?;
+    if NOT_BY_HAND.contains(&name.as_str()) {
+        return Err(Error::Invalid(format!(
+            "`{name}` is not a property to set by hand"
+        )));
+    }
+    query::get(db, id)?.ok_or_else(|| Error::Invalid(format!("no element {id}")))?;
+    let mut set = serde_json::Map::new();
+    set.insert(name, value);
+    apply(
+        db,
+        at.batch().change(Change {
+            id: id.to_string(),
+            set_props: set,
+            ..Change::default()
+        }),
+    )
+}
+
+/// Take a property away from an element, as a person: a new version without it, the old one
+/// kept. The name may be an alias.
+pub fn remove_prop(db: &Db, at: &At, id: &str, name: &str) -> Result<Applied> {
+    let e = query::get(db, id)?.ok_or_else(|| Error::Invalid(format!("no element {id}")))?;
+    let name = db.read(|conn| super::fields::fold_name(conn, name.trim()))?;
+    if !e.content.props.contains_key(&name) {
+        return Err(Error::Invalid(format!("{id} has no property `{name}`")));
+    }
+    if NOT_BY_HAND.contains(&name.as_str()) {
+        return Err(Error::Invalid(format!(
+            "`{name}` is not a property to take away by hand"
+        )));
+    }
+    apply(
+        db,
+        at.batch().change(Change {
+            id: id.to_string(),
+            remove_props: vec![name],
+            ..Change::default()
+        }),
+    )
+}
+
 /// Add and remove tags on each.
 pub fn tag(db: &Db, at: &At, ids: &[String], add: &[String], remove: &[String]) -> Result<Applied> {
     changes(db, at, ids, |id| Change {

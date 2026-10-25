@@ -500,6 +500,71 @@ pub fn describe(db: &Db, under: Option<&str>) -> Result<String> {
     Ok(out.trim_end().to_string())
 }
 
+// -- writing a value a person typed ----------------------------------------------------------
+
+/// The value a person's text stands for, as its shape stores it: `180KiB` under `size` is
+/// the number of bytes, `2026-03-12 09:14` under `time` is an RFC 3339 instant, `yes` under
+/// `flag` is a boolean, a number under `number` is a number. Text that does not suit the
+/// shape is kept as typed, and is drawn as not suiting it; nothing is refused for that.
+///
+/// One value, or several: lines are the items of an array, except under `verbatim` and `text`,
+/// where the whole text is one value unless `list` says the property already holds an array.
+pub fn value_from_text(shape: Shape, text: &str, list: bool) -> Result<Value> {
+    let whole = text.trim_matches(['\r', '\n']);
+    if whole.trim().is_empty() {
+        return Err(Error::Invalid(
+            "a property needs a value; to take it away, remove it".into(),
+        ));
+    }
+    let lines = || -> Vec<&str> {
+        whole
+            .split('\n')
+            .map(|l| l.trim_end_matches('\r').trim())
+            .filter(|l| !l.is_empty())
+            .collect()
+    };
+    let free = matches!(shape, Shape::Text | Shape::Verbatim);
+    if free && !list {
+        return Ok(Value::String(whole.to_string()));
+    }
+    let items: Vec<Value> = lines().into_iter().map(|l| item_from_text(shape, l)).collect();
+    Ok(match items.len() {
+        1 if !list => items.into_iter().next().unwrap_or(Value::Null),
+        _ => Value::Array(items),
+    })
+}
+
+fn item_from_text(shape: Shape, text: &str) -> Value {
+    let kept = || Value::String(text.to_string());
+    match shape {
+        Shape::Size => parse_size(text).map(Value::from).unwrap_or_else(kept),
+        Shape::Duration => parse_duration(text).map(number).unwrap_or_else(kept),
+        Shape::Number => text
+            .parse::<i64>()
+            .map(Value::from)
+            .or_else(|_| text.parse::<f64>().map(number))
+            .unwrap_or_else(|_| kept()),
+        Shape::Time => crate::time::parse_source_time(text)
+            .map(|p| Value::String(p.utc))
+            .unwrap_or_else(kept),
+        Shape::Flag => match text.to_lowercase().as_str() {
+            "true" | "yes" => Value::Bool(true),
+            "false" | "no" => Value::Bool(false),
+            _ => kept(),
+        },
+        _ => kept(),
+    }
+}
+
+/// A float that is whole is stored as an integer, so `4200` does not become `4200.0`.
+fn number(f: f64) -> Value {
+    if f.fract() == 0.0 && f.abs() < 9e15 {
+        Value::from(f as i64)
+    } else {
+        serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
+    }
+}
+
 // -- finding by property --------------------------------------------------------------------
 
 /// How a property is compared in a search.

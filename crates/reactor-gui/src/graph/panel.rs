@@ -30,6 +30,7 @@ use gpui_kit::{
 use reactor_db::graph::edit::{self, Annotate, AnnotationKind, At, TypeChoice};
 use reactor_db::graph::layout;
 use reactor_db::graph::views::{self, SavedView};
+use reactor_db::graph::fields::{self, Fields};
 use reactor_db::graph::vocab::{self, Vocabulary};
 use reactor_db::graph::{self, query};
 use serde::Deserialize;
@@ -262,6 +263,8 @@ pub struct GraphPanel {
     tag: Entity<InputState>,
     /// How the vocabulary says types are drawn: their icons and colours.
     vocabulary: Vocabulary,
+    /// How property names are drawn and read (ADR-0067).
+    fields: Fields,
     /// How much a node says, unless it has a size of its own.
     size: Size,
     /// The nodes with a size or a width of their own.
@@ -527,6 +530,7 @@ impl GraphPanel {
             note: cx.new(|cx| InputState::new(window, cx).placeholder("a note about this…")),
             tag,
             vocabulary: Vocabulary::default(),
+            fields: Fields::default(),
             size: Size::default(),
             own_size: HashMap::new(),
             metrics: Rc::new(Cell::new(Metrics::default())),
@@ -824,6 +828,7 @@ impl GraphPanel {
         let db = b.case.db();
         self.scale = edit::scale(db, "confidence").unwrap_or_default();
         self.vocabulary = vocab::load(db).unwrap_or_default();
+        self.fields = fields::load(db).unwrap_or_default();
         self.views = views::list(db).unwrap_or_default();
         self.entity_choices = edit::type_choices(db, &[graph::Kind::Entity]).unwrap_or_default();
         self.add_choices = edit::type_choices(
@@ -852,7 +857,7 @@ impl GraphPanel {
                         Ok(rows)
                     })
                     .unwrap_or_else(|_| model::FROM_ROLES.iter().map(|r| r.to_string()).collect());
-                self.model = model::build(&elements, &edges, &from_roles);
+                self.model = model::build(&elements, &edges, &from_roles, &self.fields);
                 // What has no place yet is placed now, and keeps it.
                 let unplaced: Vec<String> = self
                     .model

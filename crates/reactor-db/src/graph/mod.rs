@@ -16,6 +16,7 @@
 //! makes a pull safe to repeat.
 
 pub mod edit;
+pub mod fields;
 pub mod identity;
 pub mod layout;
 pub mod pull;
@@ -588,7 +589,8 @@ impl Writer<'_> {
 
     fn put(&mut self, put: &Put) -> Result<(String, Kind)> {
         check_status(&put.content.status)?;
-        let content = put.content.clone().tidy();
+        let mut content = put.content.clone().tidy();
+        fields::fold(self.tx, &mut content.props)?;
         let (id, type_, content) = match put.kind {
             Kind::Entity => {
                 self.entity(&put.type_, content, put.scope.as_deref(), put.id.as_deref())?
@@ -855,11 +857,13 @@ impl Writer<'_> {
                 )));
             }
         }
-        for (k, v) in &change.set_props {
-            next.props.insert(k.clone(), v.clone());
+        let mut set = change.set_props.clone();
+        fields::fold(self.tx, &mut set)?;
+        for (k, v) in set {
+            next.props.insert(k, v);
         }
         for k in &change.remove_props {
-            next.props.remove(k);
+            next.props.remove(&fields::fold_name(self.tx, k)?);
         }
         next.tags.extend(change.add_tags.iter().cloned());
         let gone: Vec<String> = change

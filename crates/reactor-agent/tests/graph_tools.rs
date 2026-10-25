@@ -498,6 +498,81 @@ async fn the_vocabulary_is_listed_by_namespace_and_a_type_of_ones_own_is_defined
 }
 
 #[tokio::test]
+async fn a_property_is_named_in_a_namespace_and_the_write_says_what_has_none() {
+    let r = rig();
+    let listed = r.ok("graph_query", json!({ "what": "fields" })).await;
+    assert!(
+        listed.contains("time (time) --") && listed.contains("  size "),
+        "{listed}"
+    );
+    let under = r
+        .ok("graph_query", json!({ "what": "fields", "under": "verbatim" }))
+        .await;
+    assert!(under.contains("verbatim.command_line") && !under.contains("time.first_seen"));
+
+    // An alias is folded, a name under a known namespace is accepted silently, and a name
+    // with no namespace is drawn as text -- and the write says so.
+    let wrote = r
+        .ok(
+            "graph_write",
+            json!({ "elements": [{ "type": "note", "value": "dropper facts",
+                "props": { "size_bytes": 184320, "time.first_seen": "2026-03-12T09:14:00Z",
+                           "size.unpacked": 1048576, "loose_thing": "x" } }] }),
+        )
+        .await;
+    assert!(wrote.contains("loose_thing has no namespace"), "{wrote}");
+    assert!(
+        !wrote.contains("size_bytes has") && !wrote.contains("size.unpacked has"),
+        "{wrote}"
+    );
+    assert!(
+        wrote.contains("\"size\":184320") && !wrote.contains("size_bytes\":"),
+        "{wrote}"
+    );
+
+    // Found by what a property means, not how it was spelled.
+    let big = r
+        .ok("graph_query", json!({ "what": "find", "prop": "bytes>100KiB" }))
+        .await;
+    assert!(big.contains("dropper facts"), "{big}");
+    let small = r
+        .ok("graph_query", json!({ "what": "find", "prop": "size<1KiB" }))
+        .await;
+    assert!(!small.contains("dropper facts"), "{small}");
+    let bad = r
+        .call("graph_query", json!({ "what": "find", "prop": "=3" }))
+        .await;
+    assert!(bad.is_error, "{}", bad.text);
+
+    // A property name of one's own: needs a namespace, then is known with its aliases.
+    let refused = r
+        .call("define_type", json!({ "property": "loose_thing" }))
+        .await;
+    assert!(
+        refused.is_error && refused.text.contains("namespace"),
+        "{}",
+        refused.text
+    );
+    let clash = r
+        .call("define_type", json!({ "property": "file.size" }))
+        .await;
+    assert!(clash.is_error, "{}", clash.text);
+    let made = r
+        .ok(
+            "define_type",
+            json!({ "property": "size.payload", "definition": "Bytes of a payload.",
+                "aliases": ["payload_size"] }),
+        )
+        .await;
+    assert!(made.contains("size.payload") && made.contains("drawn as size"), "{made}");
+    let again = r.ok("graph_query", json!({ "what": "fields", "under": "size" })).await;
+    assert!(
+        again.contains("size.payload Bytes of a payload. (also payload_size)"),
+        "{again}"
+    );
+}
+
+#[tokio::test]
 async fn the_case_is_read_by_reference() {
     let r = rig();
     let added = r

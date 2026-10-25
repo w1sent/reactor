@@ -7,4 +7,5 @@ pub mod inspector;
 pub mod look;
 pub mod model;
 pub mod panel;
+pub mod props;
 pub mod sift;

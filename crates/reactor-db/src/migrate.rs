@@ -652,6 +652,92 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE session ADD COLUMN parent_session TEXT REFERENCES session(id);
     CREATE INDEX session_parent ON session(parent_session);
     "#,
+    // 9: how a property is named, drawn and read (ADR-0067). A property's name is a dotted
+    // path, and its first segment -- a *field namespace* -- is one of the shapes the drawing
+    // has a renderer for; what follows is the writer's. A known field says what a name is for,
+    // and an alias folds a spelling to it when a property is written. Presentation and
+    // conventions, like the type vocabulary: no versions and no row in the change log.
+    r#"
+    CREATE TABLE field_namespace (
+      prefix TEXT PRIMARY KEY,
+      shape TEXT NOT NULL CHECK (shape IN
+        ('text','time','duration','size','number','id','flag','ref','uri','verbatim','category')),
+      definition TEXT NOT NULL DEFAULT '',
+      icon TEXT,
+      colour TEXT
+    );
+    CREATE TABLE known_field (
+      name TEXT PRIMARY KEY,
+      definition TEXT NOT NULL DEFAULT '',
+      stix TEXT,                          -- the STIX 2.1 property it corresponds to, if any
+      icon TEXT,
+      colour TEXT
+    );
+    CREATE TABLE field_alias (alias TEXT PRIMARY KEY, name TEXT NOT NULL);
+
+    INSERT INTO field_namespace(prefix, shape, definition, icon) VALUES
+      ('text', 'text', 'Prose or a short label, wrapped.', 'type'),
+      ('time', 'time', 'An instant, ISO 8601; compared and sorted as one.', 'clock'),
+      ('duration', 'duration', 'A length of time, in milliseconds.', 'timer'),
+      ('size', 'size', 'A number of bytes.', 'hard-drive'),
+      ('number', 'number', 'A number, a count included; drawn as written.', 'calculator'),
+      ('id', 'id', 'An opaque identifier: a pid, a SID, a digest.', 'fingerprint'),
+      ('flag', 'flag', 'True or false.', 'flag'),
+      ('ref', 'ref', 'A source reference into the case''s own evidence (ADR-0066).', 'quote'),
+      ('uri', 'uri', 'A technical location: a URL or a path, opened by its scheme.', 'link'),
+      ('verbatim', 'verbatim', 'A command, source or record, kept exactly as written.', 'terminal'),
+      ('category', 'category', 'A short classification; a chip that clusters nothing.', 'shapes');
+
+    INSERT INTO known_field(name, definition, stix) VALUES
+      ('text.description', 'A short description that does not need a note of its own.', 'description'),
+      ('text.reason', 'Why it was recorded or judged so.', NULL),
+      ('text.version', 'A version string of a file, tool or protocol.', 'version'),
+      ('text.mime_type', 'What kind of content a file or blob is.', 'mime_type'),
+      ('text.alias', 'Other names a thing is known by.', 'aliases'),
+      ('time.first_seen', 'The earliest sighting in the evidence.', 'first_seen'),
+      ('time.last_seen', 'The latest sighting in the evidence.', 'last_seen'),
+      ('time.ctime', 'When a file or key was created, as the source says.', 'ctime'),
+      ('time.mtime', 'When it was last changed, as the source says.', 'mtime'),
+      ('time.compiled', 'When an executable was built, as its header says.', 'time_date_stamp'),
+      ('time.window_from', 'Where the span a search covered begins.', NULL),
+      ('time.window_to', 'Where the span a search covered ends.', NULL),
+      ('duration', 'How long it lasted.', NULL),
+      ('size', 'How big a file, blob or transfer is.', 'size'),
+      ('number.count', 'How many times.', 'number_observed'),
+      ('number.port', 'A port; `.src` and `.dst` for the two ends of a connection.', 'src_port'),
+      ('number.exit_code', 'How a run ended.', NULL),
+      ('number.entropy', 'Shannon entropy of a section or file.', 'entropy'),
+      ('id.pid', 'The process id of a run.', 'pid'),
+      ('id.sid', 'A Windows security identifier, or a user id.', 'user_id'),
+      ('id.imphash', 'The import hash of an executable.', 'imphash'),
+      ('flag.hidden', 'Hidden from a normal listing.', 'is_hidden'),
+      ('flag.privileged', 'Holds more rights than usual.', 'is_privileged'),
+      ('flag.defanged', 'The value was written defanged (hxxp://), as it was found.', 'defanged'),
+      ('ref.see', 'Other places worth a look, as references.', NULL),
+      ('uri.cwd', 'The working directory of a run.', 'cwd'),
+      ('verbatim.command_line', 'The command as it was run.', 'command_line'),
+      ('verbatim.raw', 'The line or record as logged, before any reading of it.', NULL),
+      ('verbatim.pattern', 'A detection pattern; `.yara`, `.sigma` and so on.', 'pattern'),
+      ('verbatim.query', 'What a search asked, as written.', NULL),
+      ('category.technique', 'ATT&CK technique ids, such as T1059.001.', 'external_references'),
+      ('category.tactic', 'ATT&CK tactics, or a kill-chain phase.', 'kill_chain_phases'),
+      ('category.severity', 'How bad the source rates it.', NULL),
+      ('category.protocol', 'What was spoken.', 'protocols');
+
+    INSERT INTO field_alias(alias, name) VALUES
+      ('comment', 'text.description'), ('remark', 'text.description'),
+      ('mime', 'text.mime_type'), ('media_type', 'text.mime_type'),
+      ('content_type', 'text.mime_type'),
+      ('first_observed', 'time.first_seen'), ('last_observed', 'time.last_seen'),
+      ('elapsed', 'duration'),
+      ('size_bytes', 'size'), ('file_size', 'size'), ('bytes', 'size'),
+      ('occurrences', 'number.count'),
+      ('exit_status', 'number.exit_code'), ('returncode', 'number.exit_code'),
+      ('cmdline', 'verbatim.command_line'), ('command', 'verbatim.command_line'),
+      ('cmd', 'verbatim.command_line'),
+      ('raw_line', 'verbatim.raw'),
+      ('mitre', 'category.technique');
+    "#,
 ];
 
 /// The schema version this binary writes.

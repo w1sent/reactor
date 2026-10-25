@@ -203,6 +203,15 @@ list); every file in the directory can be referred to as `artifact:<path>`. What
 artifacts of the case.
 _Avoid_: sample (a kind of artifact), upload.
 
+**Property namespace**:
+The first segment of a property's name, `time` in `time.first_seen`, which says how the value is
+drawn and read: a time, a size, a reference, a command kept as written. There are eleven, one
+renderer each; what follows is the writer's, so `size.unpacked` is a size without being defined.
+A name with no known namespace is text. A namespace is a shape, never a kind of thing: a
+file, an address or an account is an element, not a property
+([ADR-0067](docs/adr/0067-a-property-is-named-in-a-namespace-that-decides-how-it-is-drawn-and-read.md)).
+_Avoid_: field type, tag (a node tag outlines and clusters; a `category` property does not).
+
 **Case alias**:
 The name the person gives a case, which a reference written out of it carries instead of the
 case's id (`reactor://acme/...`). Letters, digits, `-` and `_`. Renaming keeps the old ones

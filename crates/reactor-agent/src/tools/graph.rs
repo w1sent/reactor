@@ -15,6 +15,7 @@ use reactor_context::settings::Settings;
 use reactor_db::artifact;
 use reactor_db::graph::pull::{self, Request};
 use reactor_db::graph::revert::{self, What};
+use reactor_db::graph::fields;
 use reactor_db::graph::vocab::{self, Define};
 use reactor_db::graph::{
     self, Batch, Change, Content, Element, Filter, Kind, Link, Put, Target, query,
@@ -397,7 +398,7 @@ impl Tool for GraphWrite {
                                 "valid_to": { "type": "string", "description": "Observations: when it stopped." },
                                 "confidence": { "type": "string", "description": format!("Of an annotation: {}.", CONFIDENCE.join(", ")) },
                                 "tags": { "type": "array", "items": { "type": "string" } },
-                                "props": { "type": "object", "description": "E.g. for search_negative: {query, window_from, window_to}." },
+                                "props": { "type": "object", "description": "Details, each named `<namespace>.<name>` (`graph_query` with `what: fields` lists them). The namespace is how a value is drawn: time, size, ref, ..." },
                                 "links": {
                                     "type": "array",
                                     "items": {
@@ -456,6 +457,7 @@ impl Tool for GraphWrite {
             if batch.puts.is_empty() && batch.changes.is_empty() {
                 return ToolOutput::err("graph_write needs `elements`");
             }
+            let unnamed = unnamespaced(db, &batch);
             match graph::apply(db, batch) {
                 Ok(done) => {
                     let mut out: Vec<String> = Vec::new();
@@ -482,12 +484,34 @@ impl Tool for GraphWrite {
                         ),
                         None => "nothing new: the graph already says this".into(),
                     });
+                    if !unnamed.is_empty() {
+                        out.push(format!(
+                            "{} {} no namespace and {} drawn as text; name a property `<namespace>.<name>` (`graph_query` with `what: fields`)",
+                            unnamed.join(", "),
+                            if unnamed.len() == 1 { "has" } else { "have" },
+                            if unnamed.len() == 1 { "is" } else { "are" },
+                        ));
+                    }
                     ToolOutput::ok(out.join("\n"))
                 }
                 Err(e) => fail(e),
             }
         })
     }
+}
+
+/// The property names of a batch that no known namespace speaks for, once aliases are
+/// folded: what the write says is drawn as text (ADR-0067).
+fn unnamespaced(db: &reactor_db::Db, batch: &Batch) -> Vec<String> {
+    let Ok(fields) = fields::load(db) else {
+        return Vec::new();
+    };
+    let names = batch
+        .puts
+        .iter()
+        .flat_map(|p| p.content.props.keys())
+        .chain(batch.changes.iter().flat_map(|c| c.set_props.keys()));
+    fields.without_namespace(names)
 }
 
 /// The element id a reference or id argument names.
@@ -671,17 +695,18 @@ impl Tool for DefineType {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "define_type".into(),
-            description: "Make a recurring type of your own known to the graph, or say more about one that is.".into(),
+            description: "Make a recurring type of your own known to the graph, or say more about one that is. With `property` instead of `type`, the same for a property name.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "type": { "type": "string" },
                     "kind": { "type": "string", "enum": ["entity", "event", "observation"] },
+                    "property": { "type": "string", "description": "A property name, `<namespace>.<name>`, in place of `type`." },
+                    "aliases": { "type": "array", "items": { "type": "string" }, "description": "property: spellings that become this name when written." },
                     "definition": { "type": "string", "description": "One line." },
                     "icon": { "type": "string", "description": "A Lucide icon name." },
                     "colour": { "type": "string", "description": "How it is drawn." }
-                },
-                "required": ["type"]
+                }
             }),
         }
     }
@@ -711,8 +736,41 @@ fn define_type_call(s: &Scope, d: &Map<String, Value>) -> ToolOutput {
             .filter(|t| !t.is_empty())
             .map(str::to_string)
     };
+    if let Some(name) = text("property") {
+        let aliases = d
+            .get("aliases")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return match fields::define_field(
+            s.case.db(),
+            fields::Define {
+                name,
+                definition: text("definition"),
+                icon: text("icon"),
+                colour: text("colour"),
+                aliases,
+                ..fields::Define::default()
+            },
+        ) {
+            Ok(f) => ToolOutput::ok(format!(
+                "{} -- {} (drawn as {})",
+                f.name,
+                f.definition,
+                fields::load(s.case.db())
+                    .map(|v| v.shape(&f.name).as_str())
+                    .unwrap_or("text")
+            )),
+            Err(e) => fail(e),
+        };
+    }
     let Some(name) = text("type") else {
-        return ToolOutput::err("`define_type` needs the `type`");
+        return ToolOutput::err("`define_type` needs the `type` or a `property`");
     };
     let kind = match text("kind") {
         Some(k) => match Kind::parse(&k) {
@@ -836,12 +894,14 @@ impl Tool for GraphQuery {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "what": { "type": "string", "enum": ["find", "element", "relations", "stale", "orphans", "types", "vocabulary", "files"], "description": "find: list elements (filter by `kind`, `type` prefix such as `net.` or `analysis.hypothesis`, `text`, `tag`). element: one in full, with what it links to and what links to it (`as_of`, `history`). relations: claims between two things, as `from --type--> to`. stale: what may no longer hold. orphans: entities nothing mentions. types: the types in use. vocabulary: the known types by namespace (`type` narrows it). files: the registered files and whether they changed." },
+                    "what": { "type": "string", "enum": ["find", "element", "relations", "stale", "orphans", "types", "vocabulary", "fields", "files"], "description": "find: list elements (filter by `kind`, `type` prefix such as `net.` or `analysis.hypothesis`, `text`, `tag`, `prop`). element: one in full, with what it links to and what links to it (`as_of`, `history`). relations: claims between two things, as `from --type--> to`. stale: what may no longer hold. orphans: entities nothing mentions. types: the types in use. vocabulary: the known types by namespace (`type` narrows it). fields: the property namespaces and the known names under them (`under` narrows it). files: the registered files and whether they changed." },
                     "id": { "description": "element, relations: an element id, or {type, value} for an entity." },
                     "kind": { "type": "string", "enum": ["entity", "event", "observation", "annotation", "external"] },
                     "type": { "type": "string", "description": "find: a type or its prefix." },
                     "text": { "type": "string", "description": "find: text the element contains." },
                     "tag": { "type": "string", "description": "find: a tag." },
+                    "prop": { "type": "string", "description": "find: a property it has: `name`, `name=value`, `name>value` or `name<value`; `time.` takes any name under it. Compared by its namespace: `size>1MiB`, `time.first_seen<2026-03-01`." },
+                    "under": { "type": "string", "description": "fields: a namespace or name prefix." },
                     "include_deleted": { "type": "boolean", "description": "Also soft-deleted elements (default false)." },
                     "limit": { "type": "integer", "description": "find: default 40." },
                     "as_of": { "type": "string", "description": "element: a UTC timestamp; what was recorded by then." },
@@ -900,6 +960,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
                     type_prefix: str_arg(args, "type").map(str::to_string),
                     text: str_arg(args, "text").map(str::to_string),
                     tag: str_arg(args, "tag").map(str::to_string),
+                    props: str_arg(args, "prop").map(|p| vec![p.to_string()]).unwrap_or_default(),
                     include_deleted: args
                         .get("include_deleted")
                         .and_then(Value::as_bool)
@@ -1011,6 +1072,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
             .collect::<Vec<_>>()
             .join("\n")),
         "vocabulary" => vocab::describe(db, str_arg(args, "type")).map_err(err),
+        "fields" => fields::describe(db, str_arg(args, "under")).map_err(err),
         "files" => {
             let files = artifact::verify(&s.case).map_err(err)?;
             Ok(if files.is_empty() {
@@ -1037,7 +1099,7 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
             })
         }
         other => Err(format!(
-            "`what` is find, element, relations, stale, orphans, types or files -- not `{other}`"
+            "`what` is find, element, relations, stale, orphans, types, vocabulary, fields or files -- not `{other}`"
         )),
     }
 }

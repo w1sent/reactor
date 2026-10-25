@@ -1,6 +1,6 @@
 # A property is named in a namespace that decides how it is drawn and read
 
-> Proposed. Extends the vocabulary of [ADR-0047](0047-the-analysis-graph-is-the-case-s-model.md)
+> Implemented, apart from what "Left for later" lists. Extends the vocabulary of [ADR-0047](0047-the-analysis-graph-is-the-case-s-model.md)
 > with a catalogue of property names, built the way the type namespaces are, and uses the
 > reference grammar of [ADR-0066](0066-the-case-is-addressed-by-references.md) for the values
 > that point at something. Nothing here is built. The GUI's graph panel is touched in two
@@ -29,7 +29,7 @@ applies the same to the names of properties. The namespace of a property name is
 ## Decisions
 
 **A property name is dot-namespaced, and its namespace is a shape.** `time.first_seen`,
-`size`, `size.sent`, `code.command_line`, `ref.see`, `flag.hidden`. A name is lowercase
+`size`, `size.sent`, `verbatim.command_line`, `ref.see`, `flag.hidden`. A name is lowercase
 `snake_case` segments joined by dots. The first segment is the namespace; a name that is
 only a namespace (`size`, `duration`) is valid and is that shape with nothing
 more said. The namespaces are the same for every element: the catalogue does not look at the
@@ -39,9 +39,9 @@ element's kind or type, so `size` is a size on a file, a blob, a transfer and a 
 namespace row is `(prefix, shape, definition, icon, colour)`. The shape is one of the
 renderers the GUI has; the person or the agent can add a prefix that points at one of them,
 but not a shape. Under a namespace, anything goes: `size.payload`, `time.last_logon`,
-`code.yara`, `category.threat_group`. A name inherits the shape of its longest known prefix, the
+`verbatim.yara`, `category.threat_group`. A name inherits the shape of its longest known prefix, the
 way `Vocabulary::look` finds a type's icon, so a sub-namespace could say something more
-specific (`code.sql`) without the agent having to know it.
+specific (`verbatim.sql`) without the agent having to know it.
 
 | Namespace | The value is | Drawn as | Read as |
 |---|---|---|---|
@@ -54,7 +54,7 @@ specific (`code.sql`) without the agent having to know it.
 | `flag` | true or false | a yes/no chip | a boolean |
 | `ref` | a source reference of ADR-0066: a place in the case's own evidence | a chip with the kind's icon and a label; a click opens it in the window | a reference |
 | `uri` | a technical location: a URL or a path; a value with no scheme (`/etc/hosts`, `C:\Users`) is a file path | monospace, shortened (host and path for a URL, from the middle for a path), copy; a click opens it by its scheme: `http` and `https` in the browser, `file` and plain paths in the explorer when the file is registered | a URI; compared as text |
-| `code` | source, a command or a record | a monospace block, as many lines as it has | text, kept as written |
+| `verbatim` | source, a command or a record, kept exactly as written | a monospace block, as many lines as it has | text, kept as written |
 | `category` | a short classification (a severity, a protocol, an ATT&CK id) | a chip, coloured as the same text is as a node tag; it draws no group around anything | text, compared without case |
 
 `ref` and `uri` are kept apart on purpose. A `ref` points at the case's own evidence (a graph element, a session entry, a registered file) and is the source of a claim; a `uri` is a technical value the evidence mentioned (a download URL, a working directory) and may point at nothing the case holds.
@@ -91,7 +91,7 @@ value: what the writer wants drawn as a time or a reference, it names in that na
 
 **An alias folds a spelling to a known name when a property is written.** Seeded names carry
 the spellings that come to mind (`size_bytes`, `file_size` to `size`; `cmdline`, `command` to
-`code.command_line`). The folding happens in the write path, so what is stored, hashed,
+`verbatim.command_line`). The folding happens in the write path, so what is stored, hashed,
 exported and diffed is the known name, and a version that differs only in an alias is not a
 new version. The namespace makes a spelling *drawn* right; the alias makes it *found* with the
 others. A name cannot be both an alias and a known name.
@@ -104,7 +104,9 @@ role (`src`, `actor`, `target`), so that it can be found, merged and contradicte
 is what is *said about* an element and has no other home: how big, when first seen, the
 command line, the exit code. So defining a name or a prefix refuses one that is a type, a type
 alias, or the first segment of a type (`file`, `net`, `host`, `account`, `process`,
-`registry`, `analysis`); the namespaces above are chosen not to be any of them. (The `host`, `pid` and `start`
+`registry`, `analysis`); the namespaces above are chosen not to be any of them (the one for
+text that is kept exactly as written is `verbatim` and not `code` for that reason: `code` is the
+root of the reverse-engineering types). (The `host`, `pid` and `start`
 that `process.instance` uses as key fields are existing identity keys and are not touched.)
 
 **The namespace says how a value is compared.** `graph_query` with `what: find` takes
@@ -118,7 +120,7 @@ aligned by its shape.
 **The drawing reads typed values.** The GUI's node keeps the property as a JSON value, not a
 string; the card and the inspector ask the vocabulary for the shape of each name and draw it
 as the table says. The card measures a property from its shape (a chip row is one line, a
-hash is one line, `code` is its lines) where it now wraps a string, so the height a card is
+hash is one line, `verbatim` is its lines) where it now wraps a string, so the height a card is
 given still comes from what it draws. In the inspector's *Details*, a reference chip and a
 uri open as they do from anywhere else in the window
 ([ADR-0066](0066-the-case-is-addressed-by-references.md),
@@ -158,10 +160,10 @@ export can write the property of the object and not only `x_reactor`
 | `ref.see` | Other places worth a look, as references | |
 | `uri.cwd` | The working directory of a run | `cwd` |
 | `id.imphash` | The import hash of an executable | `imphash` |
-| `code.command_line` | The command as it was run (aliases `cmdline`, `command`, `cmd`) | `command_line` |
-| `code.raw` | The line or record as logged, before any reading of it (alias `raw_line`) | |
-| `code.pattern` | A detection pattern; `code.pattern.yara`, `code.pattern.sigma` and so on | `pattern` |
-| `code.query` | What a search asked, as written | |
+| `verbatim.command_line` | The command as it was run (aliases `cmdline`, `command`, `cmd`) | `command_line` |
+| `verbatim.raw` | The line or record as logged, before any reading of it (alias `raw_line`) | |
+| `verbatim.pattern` | A detection pattern; `verbatim.pattern.yara`, `verbatim.pattern.sigma` and so on | `pattern` |
+| `verbatim.query` | What a search asked, as written | |
 | `category.technique` | ATT&CK technique ids, such as `T1059.001` (alias `mitre`) | `external_references` |
 | `category.tactic` | ATT&CK tactics, or a kill-chain phase | `kill_chain_phases` |
 | `text.alias` | Other names a thing is known by | `aliases` |
@@ -197,9 +199,14 @@ not replace a role: a link that the graph should follow, count or contradict is 
 
 ## Left for later
 
+- Not built yet: the `stix` column is stored on the seeded names but the STIX export still
+  writes properties only into `x_reactor`; the grid's column per name in use; a JSON object
+  drawn as a collapsible tree (it is written compactly); and a reference chip's label (it shows
+  the short reference, not the element's own label).
+
 - Shapes that need a parser of their own (a CIDR, a port range, a geographic coordinate to
   put on a map), once they are used.
-- What a sub-namespace can add to its shape: `code.sql`, `code.yara` as the language to
+- What a sub-namespace can add to its shape: `verbatim.sql`, `verbatim.yara` as the language to
   highlight, and the same for `number.latitude`. The names are allowed now; what they do is
   not decided.
 - Editing a property in the inspector with a control for its shape (a date picker for

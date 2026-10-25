@@ -798,7 +798,7 @@ the transcript in the Default and Analysis presets (`PanelKind::Graph`, `/panel 
   Markdown, with *Copy*, *Read* and *Edit*), **Evidence** (*Relations* for other kinds): what it
   is related to, grouped by what it says — supports and refutes first, then about, mentioned by,
   other roles — a click selects that element; **History**: every version and what it changed;
-  **Details**: its type, when it happened or held, properties, id. The actions stay pinned below.
+  **Details**: its type, when it happened or held, properties, id. A property is drawn as the namespace of its name says (ADR-0067): a time short with the full value on hover, a size in units, a flag as yes/no, an id shortened from the middle, a category as a chip; a reference, a URL or a path is followed by a click. A value that does not suit its name is shown as stored, struck through. A card shows the same as one line of text. The actions stay pinned below.
   A text is the title when it is one short line; a long or multi-line one has a title of its own
   (its first line) and is the Text tab. *Read* and *Edit* open a popup with the text large, an
   outline of its headings and the evidence at its side; saving writes a new version and the old

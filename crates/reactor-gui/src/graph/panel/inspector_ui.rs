@@ -19,15 +19,17 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Context, Entity, SharedString, Window, div, px};
+use gpui_kit::{AnyElement, App, Context, Entity, Pixels, SharedString, Window, div, px};
 
 use super::node_ui::icon;
 use super::{GraphPanel, GraphSetStatus, Selected};
 use crate::graph::inspector::{self, Group, Inspected, Stand};
 use crate::graph::look;
+use crate::graph::props::{Go, Prop};
 use crate::hints;
 use reactor_db::graph::Kind;
 use reactor_db::graph::edit;
+use reactor_db::graph::fields::Shape;
 
 /// The inspector's width to start with; it is dragged.
 pub(super) const DOCK_WIDTH: f32 = 420.;
@@ -389,7 +391,7 @@ impl GraphPanel {
             Pane::Text => self.text_pane(i, theme, cx),
             Pane::Relations => self.relations_pane(i, theme, cx),
             Pane::History => self.history_pane(i, theme, cx),
-            Pane::Details => self.details_pane(i, theme),
+            Pane::Details => self.details_pane(i, theme, cx),
         };
         v_flex()
             .flex_1()
@@ -633,16 +635,19 @@ impl GraphPanel {
     }
 
     /// The rest: when, what holds, its properties, and its id -- a label and its value a line
-    /// each, every value with a button that copies it, and one that copies them all.
-    fn details_pane(&self, i: &Inspected, theme: &Theme) -> AnyElement {
+    /// each, every value with a button that copies it, and one that copies them all. A
+    /// property is drawn as its name's namespace says (ADR-0067): a reference, a URL or a
+    /// path can be followed, a category is a chip, a size is in units.
+    fn details_pane(&self, i: &Inspected, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let small = theme.font_size * 0.85;
-        let mut rows: Vec<(String, String, bool)> = vec![("Type".into(), i.type_.clone(), true)];
-        rows.extend(i.facts.iter().map(|(l, v)| (l.clone(), v.clone(), false)));
-        rows.push(("Recorded".into(), short_time(&i.recorded_at), false));
-        rows.push(("Id".into(), i.id.clone(), true));
+        let mut head: Vec<(String, String, bool)> = vec![("Type".into(), i.type_.clone(), true)];
+        head.extend(i.facts.iter().map(|(l, v)| (l.clone(), v.clone(), false)));
+        let mut tail: Vec<(String, String, bool)> = Vec::new();
+        tail.push(("Recorded".into(), short_time(&i.recorded_at), false));
+        tail.push(("Id".into(), i.id.clone(), true));
         // The reference of this version, in the form that names the case (ADR-0066).
         let reference = reactor_db::reference::Reference::graph(&i.id).pinned(i.ver);
-        rows.push((
+        tail.push((
             "Reference".into(),
             match &self.backend {
                 Some(b) => reference.canonical(&b.case.authority()),
@@ -650,11 +655,45 @@ impl GraphPanel {
             },
             true,
         ));
-        let all: String = rows
+        let all: String = head
             .iter()
             .map(|(l, v, _)| format!("{l}: {v}"))
+            .chain(i.props.iter().map(|p| format!("{}: {}", p.label, p.copy())))
+            .chain(tail.iter().map(|(l, v, _)| format!("{l}: {v}")))
             .collect::<Vec<_>>()
             .join("\n");
+        let value_w = px((self.dock_value() - 32.).max(100.));
+        let plain_row = move |ix: usize, label: String, value: String, mono: bool, theme: &Theme| {
+            h_flex()
+                .gap_3()
+                .items_start()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(88.))
+                        .text_size(small)
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .w(value_w)
+                        .flex_none()
+                        .when(mono, |d| {
+                            d.font_family(theme.mono_font_family.clone())
+                                .text_size(small)
+                        })
+                        .child(SharedString::from(value.clone())),
+                )
+                .child(
+                    Clipboard::new(("graph-copy-detail", ix))
+                        .value(SharedString::from(value))
+                        .tooltip("Copy this value"),
+                )
+                .into_any_element()
+        };
+        let head_n = head.len();
+        let props_n = i.props.len();
         v_flex()
             .gap_2()
             .child(
@@ -672,38 +711,149 @@ impl GraphPanel {
                     ),
             )
             .children(
-                rows.into_iter()
+                head.into_iter()
+                    .enumerate()
+                    .map(|(ix, (label, value, mono))| plain_row(ix, label, value, mono, theme)),
+            )
+            .children(
+                i.props
+                    .iter()
+                    .enumerate()
+                    .map(|(n, p)| self.prop_row(head_n + n, p, value_w, theme, cx)),
+            )
+            .children(
+                tail.into_iter()
                     .enumerate()
                     .map(|(ix, (label, value, mono))| {
-                        h_flex()
-                            .gap_3()
-                            .items_start()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(88.))
-                                    .text_size(small)
-                                    .text_color(theme.muted_foreground)
-                                    .child(SharedString::from(label)),
-                            )
-                            .child(
-                                div()
-                                    .w(px((self.dock_value() - 32.).max(100.)))
-                                    .flex_none()
-                                    .when(mono, |d| {
-                                        d.font_family(theme.mono_font_family.clone())
-                                            .text_size(small)
-                                    })
-                                    .child(SharedString::from(value.clone())),
-                            )
-                            .child(
-                                Clipboard::new(("graph-copy-detail", ix))
-                                    .value(SharedString::from(value))
-                                    .tooltip("Copy this value"),
-                            )
+                        plain_row(head_n + props_n + ix, label, value, mono, theme)
                     }),
             )
             .into_any_element()
+    }
+
+    /// One property: its label (the name, whole, on hover), its parts drawn for the shape of
+    /// its name, and a button that copies the value as stored.
+    fn prop_row(
+        &self,
+        ix: usize,
+        p: &Prop,
+        value_w: Pixels,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let small = theme.font_size * 0.85;
+        let dark = theme.is_dark();
+        let mono = matches!(
+            p.shape,
+            Shape::Id | Shape::Uri | Shape::Verbatim | Shape::Number
+        );
+        let label = h_flex()
+            .id(("graph-prop-label", ix))
+            .flex_none()
+            .w(px(88.))
+            .gap_1()
+            .items_start()
+            .text_size(small)
+            .text_color(theme.muted_foreground)
+            .child(SharedString::from(p.label.clone()));
+        let label = hints::tip(label, SharedString::from(p.name.clone()));
+        let chips = p.shape == Shape::Category;
+        let parts = p.parts().into_iter().enumerate().map(|(n, part)| {
+            let base = div().id(("graph-prop-part", ix * 64 + n.min(63)));
+            let text = SharedString::from(part.text.clone());
+            if chips {
+                // A category classifies and clusters nothing: a chip, in the colour the case
+                // gave the same text as a tag, and neutral where it gave none.
+                let colour = if self.vocabulary.tag_colour(&part.text).is_some() {
+                    look::tag_colour(&self.vocabulary, &part.text, dark)
+                } else {
+                    theme.muted_foreground
+                };
+                return base
+                    .px_2()
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(colour.opacity(0.7))
+                    .bg(colour.opacity(0.14))
+                    .text_size(small)
+                    .child(text)
+                    .into_any_element();
+            }
+            let Some(go) = part.go.clone() else {
+                return base
+                    .when(mono, |d| {
+                        d.font_family(theme.mono_font_family.clone())
+                            .text_size(small)
+                    })
+                    .when(part.mismatch, |d| {
+                        d.text_color(theme.muted_foreground).line_through()
+                    })
+                    .child(text)
+                    .into_any_element();
+            };
+            base.cursor_pointer()
+                .text_color(theme.primary)
+                .font_family(theme.mono_font_family.clone())
+                .text_size(small)
+                .hover(|d| d.underline())
+                .child(text)
+                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.follow(&go, event.modifiers(), window, cx)
+                }))
+                .into_any_element()
+        });
+        let value = if chips {
+            h_flex().w(value_w).flex_none().flex_wrap().gap_1().children(parts)
+        } else {
+            v_flex().w(value_w).flex_none().gap_0p5().children(parts)
+        };
+        h_flex()
+            .gap_3()
+            .items_start()
+            .child(label)
+            .child(value)
+            .child(
+                Clipboard::new(("graph-copy-detail", ix))
+                    .value(SharedString::from(p.copy()))
+                    .tooltip("Copy this value"),
+            )
+            .into_any_element()
+    }
+
+    /// Follow a part of a property value: open a reference of the case, a page, or a file.
+    fn follow(
+        &mut self,
+        go: &Go,
+        modifiers: gpui_kit::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match go {
+            Go::Url(url) => cx.open_url(url),
+            Go::File(path) => {
+                if let Some(app) = self.app.upgrade() {
+                    app.update(cx, |app, cx| {
+                        app.open_reference(path, None, modifiers, window, cx)
+                    });
+                }
+            }
+            Go::Reference(raw) => match reactor_db::reference::parse(raw) {
+                Ok(reference) => {
+                    if let Some(app) = self.app.upgrade() {
+                        app.update(cx, |app, cx| {
+                            app.open_case_reference(&reference, modifiers, window, cx)
+                        });
+                    }
+                }
+                Err(e) => {
+                    self.error = Some(e.to_string());
+                    cx.notify();
+                }
+            },
+        }
     }
 
     /// Several elements at once: what they are, not each one in full.

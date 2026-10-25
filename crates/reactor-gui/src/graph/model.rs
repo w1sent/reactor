@@ -14,7 +14,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use reactor_db::graph::fields::Fields;
 use reactor_db::graph::{Edge, Element, Kind};
+
+use super::props::Prop;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -41,8 +44,8 @@ pub struct Node {
     pub text: String,
     /// What the element is in the graph: an event and an observation are both claims here.
     pub element: Kind,
-    /// Its properties, as written.
-    pub props: Vec<(String, String)>,
+    /// Its properties, with how each is drawn (ADR-0067).
+    pub props: Vec<Prop>,
     /// A hypothesis's standing: open, supported or rejected.
     pub hypothesis: Option<String>,
     /// When it happened or began to hold, as recorded.
@@ -150,7 +153,12 @@ type BundleKey = (usize, usize, String, bool);
 type Bundle = (Vec<String>, String, Vec<Option<String>>);
 
 /// Build what is drawn from a snapshot of the graph.
-pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Model {
+pub fn build(
+    elements: &[Element],
+    edges: &[Edge],
+    from_roles: &[String],
+    fields: &Fields,
+) -> Model {
     let by_id: HashMap<&str, &Element> = elements.iter().map(|e| (e.id.as_str(), e)).collect();
     let drawn = |id: &str| by_id.get(id).is_some_and(|e| e.kind != Kind::External);
     // What each element points at, sources and externals aside.
@@ -200,14 +208,13 @@ pub fn build(elements: &[Element], edges: &[Edge], from_roles: &[String]) -> Mod
         let mut hypothesis = None;
         let mut props = Vec::new();
         for (key, value) in &e.content.props {
-            let value = match value {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
             if key == "hypothesis_status" {
-                hypothesis = Some(value);
+                hypothesis = Some(match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                });
             } else {
-                props.push((key.clone(), value));
+                props.push(Prop::of(fields, key, value));
             }
         }
         let time = &e.content.time;
@@ -1343,13 +1350,61 @@ mod tests {
 
     fn model(case: &Case) -> Model {
         let (elements, edges) = query::snapshot(case.db(), false).unwrap();
-        build(&elements, &edges, &roles())
+        build(&elements, &edges, &roles(), &Fields::default())
     }
 
     fn case() -> (tempfile::TempDir, Case) {
         let dir = tempfile::tempdir().unwrap();
         let case = Case::create(dir.path(), None).unwrap();
         (dir, case)
+    }
+
+    #[test]
+    fn a_property_is_drawn_as_the_namespace_of_its_name_says() {
+        let (_d, case) = case();
+        let note = Put {
+            content: Content {
+                value: Some("dropper".into()),
+                props: serde_json::json!({
+                    "size_bytes": 184_320,
+                    "time.first_seen": "2026-03-12T09:14:33Z",
+                    "ref.see": ["graph:ev_1"],
+                    "category.severity": "high",
+                    "loose": "x"
+                })
+                .as_object()
+                .cloned()
+                .unwrap(),
+                ..Content::default()
+            },
+            ..Put::new(Kind::Annotation, "analysis.note")
+        };
+        graph::apply(case.db(), Batch::new(Author::analyst()).put(note)).unwrap();
+        let (elements, edges) = query::snapshot(case.db(), false).unwrap();
+        let fields = reactor_db::graph::fields::load(case.db()).unwrap();
+        let m = build(&elements, &edges, &roles(), &fields);
+        let drawn: Vec<(String, String, bool)> = m.nodes[0]
+            .props
+            .iter()
+            .map(|p| (p.label.clone(), p.text(), p.mismatch()))
+            .collect();
+        // The alias was folded when it was written; the rest is drawn by its namespace, a name
+        // with none as text.
+        for want in [
+            ("Size", "180 KiB"),
+            ("First seen", "2026-03-12 09:14"),
+            ("Severity", "high"),
+            ("Loose", "x"),
+        ] {
+            assert!(
+                drawn.iter().any(|(l, t, bad)| (l.as_str(), t.as_str()) == want && !bad),
+                "no {want:?} in {drawn:?}"
+            );
+        }
+        // A reference that parses is followable, and one that names nothing is still a
+        // reference to draw, as written.
+        let see = m.nodes[0].props.iter().find(|p| p.name == "ref.see").unwrap();
+        assert!(see.parts()[0].go.is_some());
     }
 
     fn label(m: &Model, i: usize) -> &str {

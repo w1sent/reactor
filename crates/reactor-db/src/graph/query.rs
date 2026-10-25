@@ -223,6 +223,9 @@ pub struct Filter {
     /// A substring of the value or of the properties.
     pub text: Option<String>,
     pub tag: Option<String>,
+    /// Properties it must have: `size>1MiB`, `time.first_seen<2026-03-01`, or a name (a
+    /// namespace such as `time.` takes every name under it) alone (ADR-0067).
+    pub props: Vec<String>,
     /// Soft-deleted elements are hidden unless asked for.
     pub include_deleted: bool,
     /// 0 means no limit.
@@ -233,6 +236,37 @@ pub struct Filter {
 
 /// Elements as they stand, newest first.
 pub fn find(db: &Db, f: &Filter) -> Result<Vec<Element>> {
+    if f.props.is_empty() {
+        return find_where(db, f);
+    }
+    // A property is compared by its shape, which SQL does not know: read every match of the
+    // rest of the filter, keep those whose properties hold, and then cut the page.
+    let by = f
+        .props
+        .iter()
+        .map(|p| super::fields::PropFilter::parse(p))
+        .collect::<Result<Vec<_>>>()?;
+    let fields = super::fields::load(db)?;
+    let all = find_where(
+        db,
+        &Filter {
+            limit: 0,
+            offset: 0,
+            ..f.clone()
+        },
+    )?;
+    let kept = all
+        .into_iter()
+        .filter(|e| by.iter().all(|p| p.matches(&fields, &e.content.props)))
+        .skip(f.offset);
+    Ok(if f.limit == 0 {
+        kept.collect()
+    } else {
+        kept.take(f.limit).collect()
+    })
+}
+
+fn find_where(db: &Db, f: &Filter) -> Result<Vec<Element>> {
     let like = |s: &str| {
         format!(
             "%{}%",

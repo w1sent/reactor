@@ -182,6 +182,7 @@ pub fn list(case: &Case, kind: Kind, params: &[(String, String)], page: Page) ->
                         type_prefix: param(params, "type").map(str::to_string),
                         text: param(params, "text").map(str::to_string),
                         tag: param(params, "tag").map(str::to_string),
+                        props: param(params, "prop").map(|p| vec![p.to_string()]).unwrap_or_default(),
                         include_deleted: flag(params, "include_deleted"),
                         limit: want,
                         offset: page.offset,

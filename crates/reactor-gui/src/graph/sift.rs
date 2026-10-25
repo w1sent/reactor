@@ -178,8 +178,12 @@ fn found_in(node: &Node, query: &str, scope: Scope) -> Option<Found> {
     if node.tags.iter().any(|t| has(t)) {
         return Some(Found::Meta("tag".into()));
     }
-    if let Some((key, _)) = node.props.iter().find(|(k, v)| has(k) || has(v)) {
-        return Some(Found::Meta(key.clone()));
+    if let Some(p) = node
+        .props
+        .iter()
+        .find(|p| has(&p.name) || has(&p.label) || has(&p.text()) || has(&p.copy()))
+    {
+        return Some(Found::Meta(p.name.clone()));
     }
     let known = [
         ("status", Some(node.status.as_str())),
@@ -259,7 +263,7 @@ mod tests {
             &["c2.beacon"],
             false,
         );
-        ip.props = vec![("asn".into(), "AS64500".into())];
+        ip.props = vec![crate::graph::props::Prop::plain("asn", "AS64500")];
         let mut gone = node("g", NodeKind::Entity, "host.name", "old-host", &[], false);
         gone.status = "soft-deleted".into();
         Model {

@@ -406,7 +406,7 @@ fn draft(node: &Node, size: Size, plain_picture: bool) -> Draft {
             known.push(("by".into(), by.into()));
             known.push(("lines".into(), node.links.to_string()));
         }
-        known.extend(node.props.iter().cloned());
+        known.extend(node.props.iter().map(|p| (p.label.clone(), p.text())));
         d.props = known;
     }
     // From L up a thing says how connected it is.
@@ -807,7 +807,7 @@ mod tests {
     fn each_size_says_more_and_the_smallest_says_the_name() {
         let node = Node {
             tags: vec!["phase.c2".into(), "stage2".into()],
-            props: vec![("size".into(), "184320".into())],
+            props: vec![crate::graph::props::Prop::plain("size", "184320")],
             ..entity("file.path", PATH)
         };
         let at = |size| card(&node, size, None, false, &m());

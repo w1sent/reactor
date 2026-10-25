@@ -154,7 +154,7 @@ pub fn load(db: &Db) -> Result<Vocabulary> {
     })
 }
 
-fn check_name(what: &str, name: &str) -> Result<String> {
+pub(super) fn check_name(what: &str, name: &str) -> Result<String> {
     let name = name.trim().to_lowercase();
     let part_ok = |p: &str| {
         !p.is_empty()
@@ -169,7 +169,7 @@ fn check_name(what: &str, name: &str) -> Result<String> {
     Ok(name)
 }
 
-fn check_colour(colour: Option<&str>) -> Result<Option<String>> {
+pub(super) fn check_colour(colour: Option<&str>) -> Result<Option<String>> {
     match colour.map(|c| c.trim().to_lowercase()) {
         None => Ok(None),
         Some(c) if COLOURS.contains(&c.as_str()) => Ok(Some(c)),
@@ -182,7 +182,7 @@ fn check_colour(colour: Option<&str>) -> Result<Option<String>> {
 
 /// An icon's name as stored: a Lucide icon's, lowercase with dashes. Whether there is such
 /// an icon is for whoever draws it to know; one that there is not is drawn as if unset.
-fn check_icon(icon: Option<&str>) -> Result<Option<String>> {
+pub(super) fn check_icon(icon: Option<&str>) -> Result<Option<String>> {
     match icon.map(|i| i.trim().to_lowercase().replace('_', "-")) {
         None => Ok(None),
         Some(i)

@@ -7,7 +7,9 @@
 //! without a window.
 
 use reactor_db::Db;
-use reactor_db::graph::{Kind, query};
+use reactor_db::graph::{Kind, fields, query};
+
+use super::props::Prop;
 
 /// Text longer than this, or with more than one line, is *text* (read in a reading view and
 /// edited in a popup); shorter is just the title.
@@ -59,7 +61,7 @@ pub struct Version {
     pub change: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Inspected {
     pub id: String,
     pub ver: u32,
@@ -81,8 +83,10 @@ pub struct Inspected {
     pub tags: Vec<String>,
     /// `agent · version 3 · 2026-10-05 12:04`.
     pub meta: String,
-    /// Labelled facts besides the text: when it happened, what holds, its properties.
+    /// Labelled facts besides the text: when it happened, what holds.
     pub facts: Vec<(String, String)>,
+    /// Its properties, each with how it is drawn and what a click on it does (ADR-0067).
+    pub props: Vec<Prop>,
     pub groups: Vec<Group>,
     pub history: Vec<Version>,
     pub recorded_at: String,
@@ -251,8 +255,8 @@ fn groups_of(db: &Db, id: &str) -> Vec<Group> {
     groups
 }
 
-/// The facts of an element besides its text: when, what holds, and its properties. What the
-/// header or the groups already say is left out.
+/// The facts of an element besides its text: when and what holds. What the header or the
+/// groups already say is left out.
 fn facts_of(e: &query::Element) -> Vec<(String, String)> {
     let mut facts: Vec<(String, String)> = Vec::new();
     let mut add = |label: &str, value: String| facts.push((label.to_string(), value));
@@ -279,19 +283,19 @@ fn facts_of(e: &query::Element) -> Vec<(String, String)> {
             ),
         );
     }
-    for (key, value) in &e.content.props {
-        if key == "hypothesis_status" {
-            continue;
-        }
-        add(
-            key,
-            match value {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            },
-        );
-    }
     facts
+}
+
+/// The properties of an element, in the shape their names give them. What the header already
+/// says (a hypothesis's standing) is left out.
+fn props_of(db: &Db, e: &query::Element) -> Vec<Prop> {
+    let fields = fields::load(db).unwrap_or_default();
+    e.content
+        .props
+        .iter()
+        .filter(|(key, _)| key.as_str() != "hypothesis_status")
+        .map(|(key, value)| Prop::of(&fields, key, value))
+        .collect()
 }
 
 /// Everything the inspector shows for `e`. `scale` is the confidence scale, weakest first.
@@ -351,6 +355,7 @@ pub fn inspect(db: &Db, e: &query::Element, scale: &[String]) -> Inspected {
         tags: e.content.tags.clone(),
         meta: format!("{} · version {} · {}", who(&e.author), e.ver, e.recorded_at),
         facts: facts_of(e),
+        props: props_of(db, e),
         groups: groups_of(db, &e.id),
         history,
         recorded_at: e.recorded_at.clone(),

@@ -12,7 +12,7 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::description_list::DescriptionList;
-use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -22,6 +22,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Context, Entity, Pixels, SharedString, Window, div, px};
 
 use super::node_ui::icon;
+use super::prop_draw;
 use super::{GraphPanel, GraphSetStatus, Selected};
 use crate::graph::inspector::{self, Group, Inspected, Stand};
 use crate::graph::look;
@@ -29,10 +30,20 @@ use crate::graph::props::{Go, Prop};
 use crate::hints;
 use reactor_db::graph::Kind;
 use reactor_db::graph::edit;
-use reactor_db::graph::fields::Shape;
+use reactor_db::graph::fields::{self, Shape};
 
 /// The inspector's width to start with; it is dragged.
 pub(super) const DOCK_WIDTH: f32 = 420.;
+
+/// A property being added or edited in *Details*, and its fields.
+pub(super) struct PropEdit {
+    /// The name being edited; `None` while one is being added.
+    pub name: Option<String>,
+    pub name_input: Entity<InputState>,
+    pub value_input: Entity<TextareaState>,
+    /// The property held an array: its lines stay items, whatever its namespace.
+    pub list: bool,
+}
 
 /// The reader and editor popup's state.
 pub(super) struct Reader {
@@ -662,11 +673,16 @@ impl GraphPanel {
             .chain(tail.iter().map(|(l, v, _)| format!("{l}: {v}")))
             .collect::<Vec<_>>()
             .join("\n");
-        let value_w = px((self.dock_value() - 32.).max(100.));
+        // A row has 8 pixels of room at each side, for its shade.
+        let value_w = px((self.dock_value() - 32. - 16.).max(100.));
         let plain_row = move |ix: usize, label: String, value: String, mono: bool, theme: &Theme| {
             h_flex()
                 .gap_3()
                 .items_start()
+                .px_2()
+                .py_1p5()
+                .rounded_md()
+                .when_some(prop_draw::stripe(theme, ix), |d, shade| d.bg(shade))
                 .child(
                     div()
                         .flex_none()
@@ -695,7 +711,7 @@ impl GraphPanel {
         let head_n = head.len();
         let props_n = i.props.len();
         v_flex()
-            .gap_2()
+            .gap_0p5()
             .child(
                 h_flex()
                     .justify_end()
@@ -721,12 +737,33 @@ impl GraphPanel {
                     .enumerate()
                     .map(|(n, p)| self.prop_row(head_n + n, p, value_w, theme, cx)),
             )
+            .child(self.prop_add(theme, cx))
             .children(
                 tail.into_iter()
                     .enumerate()
                     .map(|(ix, (label, value, mono))| {
                         plain_row(head_n + props_n + ix, label, value, mono, theme)
                     }),
+            )
+            .into_any_element()
+    }
+
+    /// The button that opens the fields for a new property, or the fields.
+    fn prop_add(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        if self.prop_edit.as_ref().is_some_and(|e| e.name.is_none()) {
+            return self.prop_form(theme, cx);
+        }
+        h_flex()
+            .child(
+                Button::new("graph-prop-add")
+                    .small()
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::Plus)
+                    .label("Property")
+                    .tooltip("Add a detail: a size, a time, a reference, a command…")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.start_prop_edit(None, window, cx)
+                    })),
             )
             .into_any_element()
     }
@@ -742,7 +779,27 @@ impl GraphPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let small = theme.font_size * 0.85;
-        let dark = theme.is_dark();
+        if self
+            .prop_edit
+            .as_ref()
+            .is_some_and(|e| e.name.as_deref() == Some(p.name.as_str()))
+        {
+            return h_flex()
+                .gap_3()
+                .items_start()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(88.))
+                        .text_size(small)
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(p.label.clone())),
+                )
+                .child(div().w(value_w).flex_none().child(self.prop_form(theme, cx)))
+                .into_any_element();
+        }
+        // The edit and remove buttons take room beside the copy button.
+        let value_w = value_w - px(52.);
         let mono = matches!(
             p.shape,
             Shape::Id | Shape::Uri | Shape::Verbatim | Shape::Number
@@ -762,25 +819,11 @@ impl GraphPanel {
             let base = div().id(("graph-prop-part", ix * 64 + n.min(63)));
             let text = SharedString::from(part.text.clone());
             if chips {
-                // A category classifies and clusters nothing: a chip, in the colour the case
-                // gave the same text as a tag, and neutral where it gave none.
-                let colour = if self.vocabulary.tag_colour(&part.text).is_some() {
-                    look::tag_colour(&self.vocabulary, &part.text, dark)
-                } else {
-                    theme.muted_foreground
-                };
-                return base
-                    .px_2()
-                    .h(px(22.))
-                    .flex()
-                    .items_center()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(colour.opacity(0.7))
-                    .bg(colour.opacity(0.14))
-                    .text_size(small)
-                    .child(text)
-                    .into_any_element();
+                let colour = prop_draw::category_colour(&self.vocabulary, &part.text, theme);
+                return prop_draw::chip(&part.text, colour, small, px(22.));
+            }
+            if p.shape == Shape::Verbatim {
+                return prop_draw::verbatim_block(&part.text, small, px(4.), theme);
             }
             let Some(go) = part.go.clone() else {
                 return base
@@ -810,15 +853,279 @@ impl GraphPanel {
         } else {
             v_flex().w(value_w).flex_none().gap_0p5().children(parts)
         };
+        let (edit_name, drop_name) = (p.name.clone(), p.name.clone());
         h_flex()
             .gap_3()
             .items_start()
+            .px_2()
+            .py_1p5()
+            .rounded_md()
+            .when_some(prop_draw::stripe(theme, ix), |d, shade| d.bg(shade))
             .child(label)
             .child(value)
             .child(
-                Clipboard::new(("graph-copy-detail", ix))
-                    .value(SharedString::from(p.copy()))
-                    .tooltip("Copy this value"),
+                h_flex()
+                    .flex_none()
+                    .child(
+                        Clipboard::new(("graph-copy-detail", ix))
+                            .value(SharedString::from(p.copy()))
+                            .tooltip("Copy this value"),
+                    )
+                    .child(
+                        Button::new(("graph-prop-edit", ix))
+                            .xsmall()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .tooltip("Edit this property")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_prop_edit(Some(edit_name.clone()), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("graph-prop-drop", ix))
+                            .xsmall()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::X)
+                            .tooltip("Remove this property (the earlier version is kept)")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_prop(&drop_name, cx)
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    // -- adding, editing and removing a property -------------------------------------------
+
+    /// Open the fields to add a property (`None`) or to edit one.
+    pub(super) fn start_prop_edit(
+        &mut self,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (text, list) = match &name {
+            Some(n) => self
+                .inspected
+                .as_ref()
+                .and_then(|i| i.props.iter().find(|p| &p.name == n))
+                .map(|p| (p.copy(), p.value.is_array()))
+                .unwrap_or_default(),
+            None => Default::default(),
+        };
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("namespace.name, e.g. size.payload")
+        });
+        let value_input = cx.new(|cx| {
+            let mut s = TextareaState::new(window, cx)
+                .auto_grow(1, 8)
+                .submit_on_enter(true)
+                .placeholder("value (Shift+Enter for another line)");
+            s.set_value(&text, window, cx);
+            s
+        });
+        cx.subscribe_in(&name_input, window, |this, _, event: &InputEvent, window, cx| {
+            match event {
+                InputEvent::PressEnter { .. } => {
+                    if let Some(e) = &this.prop_edit {
+                        e.value_input.update(cx, |s, cx| s.focus(window, cx));
+                    }
+                }
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            }
+        })
+        .detach();
+        cx.subscribe_in(&value_input, window, |this, _, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.save_prop(window, cx);
+            }
+        })
+        .detach();
+        let editing = name.is_some();
+        self.prop_edit = Some(PropEdit {
+            name,
+            name_input: name_input.clone(),
+            value_input: value_input.clone(),
+            list,
+        });
+        if editing {
+            value_input.update(cx, |s, cx| s.focus(window, cx));
+        } else {
+            name_input.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Write what is typed as a new version of the element.
+    pub(super) fn save_prop(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(pe), Some(id)) = (self.prop_edit.as_ref(), self.single()) else {
+            return;
+        };
+        let name = match &pe.name {
+            Some(n) => n.clone(),
+            None => pe.name_input.read(cx).value().trim().to_lowercase(),
+        };
+        let (text, list) = (pe.value_input.read(cx).value().to_string(), pe.list);
+        if name.is_empty() {
+            self.error = Some("a property needs a name, `<namespace>.<name>`".into());
+            cx.notify();
+            return;
+        }
+        let shape = self.fields.shape(self.fields.canonical(&name));
+        let value = match fields::value_from_text(shape, &text, list) {
+            Ok(v) => v,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if self
+            .edit(cx, |db, at| edit::set_prop(db, at, &id, &name, value))
+            .is_some()
+        {
+            self.prop_edit = None;
+            self.error = None;
+            cx.notify();
+        }
+    }
+
+    /// Take a property away, as a new version.
+    pub(super) fn remove_prop(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(id) = self.single() else {
+            return;
+        };
+        if self.edit(cx, |db, at| edit::remove_prop(db, at, &id, name)).is_some() {
+            self.prop_edit = None;
+            self.error = None;
+            cx.notify();
+        }
+    }
+
+    /// What the typed name would be drawn as, for the line under the field.
+    fn name_hint(&self, typed: &str) -> String {
+        let canon = self.fields.canonical(typed);
+        match self.fields.namespace_of(canon) {
+            Some(ns) if canon != typed => {
+                format!("stored as {canon}, drawn as {}", ns.shape.as_str())
+            }
+            Some(ns) => format!("drawn as {}", ns.shape.as_str()),
+            None => "no known namespace: drawn as text".into(),
+        }
+    }
+
+    /// The fields of a property being added or edited, with Save and Cancel. Adding also has
+    /// the name field, and under it the namespaces, or the known names that match what is typed.
+    fn prop_form(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(pe) = &self.prop_edit else {
+            return div().into_any_element();
+        };
+        let small = theme.font_size * 0.85;
+        let typed = pe.name_input.read(cx).value().trim().to_lowercase();
+        let hint = match &pe.name {
+            Some(n) => self.name_hint(n),
+            None if typed.is_empty() => "named <namespace>.<name>; the namespace says how it is drawn".into(),
+            None => self.name_hint(&typed),
+        };
+        let offers: Vec<(String, String)> = if pe.name.is_some() {
+            Vec::new()
+        } else if typed.is_empty() {
+            self.fields
+                .namespaces
+                .values()
+                .map(|n| (format!("{}.", n.prefix), n.definition.clone()))
+                .collect()
+        } else {
+            self.fields
+                .fields
+                .values()
+                .filter(|f| f.name.contains(&typed) && f.name != typed)
+                .take(6)
+                .map(|f| (f.name.clone(), f.definition.clone()))
+                .collect()
+        };
+        v_flex()
+            .gap_1p5()
+            .w_full()
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.muted)
+            .when(pe.name.is_none(), |d| d.child(Input::new(&pe.name_input).small()))
+            .when(pe.name.is_some(), |d| {
+                d.child(
+                    div()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_size(small)
+                        .child(SharedString::from(pe.name.clone().unwrap_or_default())),
+                )
+            })
+            .child(
+                div()
+                    .text_size(small)
+                    .text_color(theme.muted_foreground)
+                    .child(SharedString::from(hint)),
+            )
+            .children(offers.into_iter().enumerate().map(|(n, (name, definition))| {
+                let pick = name.clone();
+                h_flex()
+                    .id(("graph-prop-offer", n))
+                    .gap_2()
+                    .px_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_size(small)
+                    .hover(|d| d.bg(theme.secondary))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(theme.mono_font_family.clone())
+                            .child(SharedString::from(name)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(definition)),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(e) = &this.prop_edit {
+                            let v = pick.clone();
+                            e.name_input.update(cx, |s, cx| {
+                                s.set_value(&v, window, cx);
+                                s.focus(window, cx)
+                            });
+                        }
+                        cx.notify();
+                    }))
+            }))
+            .child(Textarea::new(&pe.value_input))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("graph-prop-save")
+                            .small()
+                            .primary()
+                            .label("Save")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_prop(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("graph-prop-cancel")
+                            .small()
+                            .ghost()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.prop_edit = None;
+                                this.error = None;
+                                cx.notify();
+                            })),
+                    ),
             )
             .into_any_element()
     }

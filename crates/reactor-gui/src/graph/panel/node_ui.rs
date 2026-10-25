@@ -15,8 +15,10 @@ use gpui_kit::{
     AnyElement, BoxShadow, Context, FontWeight, HighlightStyle, Hsla, MouseButton, SharedString,
     StyledText, Window, div, font, point, px, svg,
 };
+use reactor_db::graph::fields::Shape;
 use reactor_db::graph::layout::{self, NodeSize};
 
+use super::prop_draw;
 use super::{Drag, GraphPanel, Selected};
 use crate::graph::card::{self, Card, Face, Metrics, Size};
 use crate::graph::look::{self, Look};
@@ -638,19 +640,58 @@ impl GraphPanel {
                     .text_size(small)
                     .line_height(px(card::LINE * card::SMALL * f))
                     .font_family(mono.clone())
-                    .children(card.props.iter().map(|(key, value)| {
+                    .children(card.props.iter().enumerate().map(|(at, row)| {
+                        let parts = row.parts.iter();
+                        let value = match row.shape {
+                            // The same as the inspector draws: chips, a code block with line
+                            // numbers, or text (a link in the link colour, a value that does not
+                            // suit its name struck through). A card is dragged, so a click on a
+                            // link is the inspector's.
+                            Shape::Category => h_flex()
+                                .flex_wrap()
+                                .gap(px(0.2 * f))
+                                .children(parts.map(|p| {
+                                    let colour =
+                                        prop_draw::category_colour(&self.vocabulary, &p.text, &theme);
+                                    prop_draw::chip(&p.text, colour, small, px(card::CHIP_H * f))
+                                }))
+                                .into_any_element(),
+                            Shape::Verbatim => v_flex()
+                                .w_full()
+                                .gap(px(card::PART_GAP * f))
+                                .children(parts.map(|p| {
+                                    prop_draw::verbatim_block(&p.text, small, px(0.2 * f), &theme)
+                                }))
+                                .into_any_element(),
+                            _ => v_flex()
+                                .w_full()
+                                .gap(px(card::PART_GAP * f))
+                                .children(parts.map(|p| {
+                                    div()
+                                        .when(p.go.is_some(), |d| d.text_color(theme.primary))
+                                        .when(p.mismatch, |d| {
+                                            d.text_color(muted).line_through()
+                                        })
+                                        .child(marked(&p.text))
+                                }))
+                                .into_any_element(),
+                        };
                         h_flex()
                             .w_full()
                             .items_start()
+                            .px(px(card::ROW_PX * f))
+                            .py(px(card::ROW_PAD * f))
+                            .rounded(px(0.3 * f))
+                            .when_some(prop_draw::stripe(&theme, at), |d, shade| d.bg(shade))
                             .child(
                                 div()
                                     .w(px(card::KEY_W * card::SMALL * f))
                                     .flex_shrink_0()
                                     .truncate()
                                     .text_color(muted)
-                                    .child(marked(key)),
+                                    .child(marked(&row.label)),
                             )
-                            .child(div().min_w_0().flex_1().child(marked(value)))
+                            .child(div().min_w_0().flex_1().child(value))
                     })),
             );
         }

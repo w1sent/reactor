@@ -10,7 +10,10 @@
 //! height is one too: the panel lets a card grow if the text needs a line more, and nothing is
 //! ever cut off. The estimate is what lines end at and what the layout makes room for.
 
+use reactor_db::graph::fields::Shape;
+
 use super::model::{Node, NodeKind};
+use super::props::{self, Part, Prop};
 
 /// How much a node says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -115,9 +118,22 @@ pub const ROW: f32 = 1.5;
 /// The icon, and the room it takes with the space after it.
 pub const ICON: f32 = 1.1;
 pub const ICON_ROOM: f32 = 1.6;
-/// The column a property's name is written in.
-pub const KEY_W: f32 = 6.0;
+/// The column a property's name is written in, in characters: wide enough for a label such as
+/// *First seen*; a longer one is cut with an ellipsis.
+pub const KEY_W: f32 = 10.0;
 
+/// The room a property's row has above and below its text, and at its sides: the rows are
+/// shaded alternately, and the text must not touch the edge of its shade.
+pub const ROW_PAD: f32 = 0.3;
+pub const ROW_PX: f32 = 0.4;
+/// The least room, in characters, a property's value is given beside its label.
+pub const PROP_VALUE_MIN: f32 = 16.0;
+/// A chip of a `category` property: a line of small text and a little more.
+pub const CHIP_H: f32 = LINE * SMALL + 0.35;
+/// What a code block takes above and below its lines, border included.
+pub const BLOCK_PAD: f32 = 0.55;
+/// Between the parts of one property's value.
+pub const PART_GAP: f32 = 0.15;
 /// Twelve pixels: the font size the pixel measures below are meant at.
 const BASE: f32 = 12.0;
 const MIN_W: f32 = 120.0;
@@ -139,6 +155,72 @@ pub enum Face {
     Mono,
     /// Prose.
     Sans,
+}
+
+/// A property on a card, as the inspector draws it (ADR-0067): its label, and the parts of its
+/// value written for the shape of its name -- a code block, a chip, a line of text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropRow {
+    pub label: String,
+    pub shape: Shape,
+    pub parts: Vec<Part>,
+}
+
+impl PropRow {
+    /// What the card itself knows of a node (when, how connected): one line of text.
+    fn text(label: &str, text: &str) -> PropRow {
+        PropRow {
+            label: label.to_string(),
+            shape: Shape::Text,
+            parts: vec![Part {
+                text: text.to_string(),
+                go: None,
+                mismatch: false,
+            }],
+        }
+    }
+
+    /// A property of the node.
+    fn of(p: &Prop) -> PropRow {
+        PropRow {
+            label: p.label.clone(),
+            shape: p.shape,
+            parts: p.parts(),
+        }
+    }
+
+    /// How high it is, in font sizes, with `room` pixels for its value: a chip row wraps like
+    /// tags, a code block is its lines (each as many rows as it wraps to) and its padding, and
+    /// anything else is its parts one under another.
+    pub fn height(&self, room: f32, m: &Metrics) -> f32 {
+        let per = per_line(room, Face::Mono, SMALL, m);
+        let body = match self.shape {
+            Shape::Category => {
+                let texts: Vec<&str> = self.parts.iter().map(|p| p.text.as_str()).collect();
+                let rows = chip_rows(&texts, room, m);
+                rows as f32 * CHIP_H + (rows.saturating_sub(1)) as f32 * 0.2
+            }
+            Shape::Verbatim => self
+                .parts
+                .iter()
+                .map(|p| {
+                    let lines = props::lines(&p.text);
+                    // The gutter, its gap and the padding on the right: about this many characters.
+                    let digits = lines.len().to_string().len();
+                    let code = per.saturating_sub(digits + 3).max(4);
+                    let rows: usize = lines.iter().map(|l| wrap(l, code).len()).sum();
+                    rows as f32 * LINE * SMALL + BLOCK_PAD
+                })
+                .sum(),
+            _ => self
+                .parts
+                .iter()
+                .map(|p| wrap(&p.text, per).len() as f32 * LINE * SMALL)
+                .sum(),
+        };
+        let gaps = self.parts.len().saturating_sub(1) as f32 * PART_GAP;
+        (body + gaps).max(LINE * SMALL) + 2.0 * ROW_PAD
+    }
 }
 
 /// A paragraph on a card.
@@ -192,7 +274,7 @@ pub struct Card {
     /// How many lines of its text are not shown.
     pub more: usize,
     pub tags: Vec<String>,
-    pub props: Vec<(String, String)>,
+    pub props: Vec<PropRow>,
     /// A last row: what supports and refutes it, what it is about.
     pub foot: Option<String>,
     /// Whether it says that it is disputed.
@@ -362,7 +444,7 @@ struct Draft {
     /// Keep only the first lines of the first block.
     start_only: bool,
     tags: Vec<String>,
-    props: Vec<(String, String)>,
+    props: Vec<PropRow>,
     foot: Option<String>,
     disputed: bool,
     /// No header, so who wrote it goes at the end of the one row.
@@ -391,22 +473,22 @@ fn draft(node: &Node, size: Size, plain_picture: bool) -> Draft {
     if with_props {
         // Everything known of it, so that the largest size always says more than the one
         // before: when, how sure, how it stands, who recorded it, how connected it is.
-        let mut known: Vec<(String, String)> = Vec::new();
+        let mut known: Vec<PropRow> = Vec::new();
         if let Some(when) = &node.when {
-            known.push(("when".into(), when.clone()));
+            known.push(PropRow::text("when", when));
         }
         if let (Some(c), false) = (&node.confidence, plain_picture) {
-            known.push(("confidence".into(), c.clone()));
+            known.push(PropRow::text("confidence", c));
         }
         if node.status != "active" && !plain_picture {
-            known.push(("status".into(), node.status.clone()));
+            known.push(PropRow::text("status", &node.status));
         }
         if node.kind != NodeKind::Annotation {
             let by = if node.by_agent { "agent" } else { "person" };
-            known.push(("by".into(), by.into()));
-            known.push(("lines".into(), node.links.to_string()));
+            known.push(PropRow::text("by", by));
+            known.push(PropRow::text("lines", &node.links.to_string()));
         }
-        known.extend(node.props.iter().map(|p| (p.label.clone(), p.text())));
+        known.extend(node.props.iter().map(PropRow::of));
         d.props = known;
     }
     // From L up a thing says how connected it is.
@@ -542,6 +624,21 @@ fn head_width(head: &Head, m: &Metrics) -> f32 {
     w
 }
 
+/// How many rows of chips these texts take when they wrap at `inner` pixels.
+fn chip_rows(texts: &[&str], inner: f32, m: &Metrics) -> usize {
+    let f = m.font;
+    let (mut rows, mut x) = (1usize, 0.0f32);
+    for text in texts {
+        let w = (text.chars().count() as f32 * m.mono * SMALL + 1.2) * f;
+        if x > 0.0 && x + w > inner {
+            rows += 1;
+            x = 0.0;
+        }
+        x += w + 0.4 * f;
+    }
+    rows
+}
+
 /// How high the rows of tags are, wrapped into `inner` pixels.
 fn tag_rows(tags: &[String], inner: f32, m: &Metrics) -> usize {
     let f = m.font;
@@ -594,9 +691,8 @@ fn height(d: &Draft, w: f32, m: &Metrics) -> (f32, usize) {
         h += tag_rows(&d.tags, inner, m) as f32 * ROW + GAP;
     }
     if !d.props.is_empty() {
-        let per = per_line(inner - KEY_W * SMALL * f, Face::Mono, SMALL, m);
-        let lines: usize = d.props.iter().map(|(_, v)| wrap(v, per).len()).sum();
-        h += lines as f32 * LINE * SMALL + 2.0 * GAP;
+        let room = inner - KEY_W * SMALL * f - 2.0 * ROW_PX * f;
+        h += d.props.iter().map(|r| r.height(room, m)).sum::<f32>() + 2.0 * GAP;
     }
     if d.foot.is_some() {
         h += ROW;
@@ -632,6 +728,13 @@ fn natural(d: &Draft, m: &Metrics) -> f32 {
 pub fn card(node: &Node, size: Size, width: Option<f32>, plain: bool, m: &Metrics) -> Card {
     let d = draft(node, size, plain);
     let k = m.font / BASE;
+    // Properties need their label column and room for a value beside it, or a short value is
+    // broken letter by letter.
+    let props_floor = if d.props.is_empty() {
+        0.0
+    } else {
+        (2.0 * PAD_X + 2.0 * ROW_PX + KEY_W * SMALL + PROP_VALUE_MIN * m.mono * SMALL) * m.font
+    };
     let floor = d
         .head
         .as_ref()
@@ -640,7 +743,8 @@ pub fn card(node: &Node, size: Size, width: Option<f32>, plain: bool, m: &Metric
             MIN_W * k
         } else {
             3.0 * m.font
-        });
+        })
+        .max(props_floor);
     let nat = natural(&d, m);
     let w = match width {
         Some(w) => w.clamp(HAND_MIN * k, HAND_MAX * k),
@@ -823,12 +927,14 @@ mod tests {
             xl.h
         );
         assert!(mid.tags.is_empty() && l.tags.len() == 2 && l.props.is_empty());
-        assert!(
-            xl.props
-                .contains(&("size".to_string(), "184320".to_string()))
-        );
+        let says = |c: &Card, label: &str, text: &str| {
+            c.props
+                .iter()
+                .any(|r| r.label == label && r.parts.iter().any(|p| p.text == text))
+        };
+        assert!(says(&xl, "size", "184320"));
         // The largest says who recorded it and how connected it is, tags or not.
-        assert!(xl.props.contains(&("by".to_string(), "person".to_string())));
+        assert!(says(&xl, "by", "person"));
         let bare = entity("net.ipv4", "198.51.100.7");
         let linked = Node {
             links: 3,
@@ -1007,5 +1113,110 @@ mod tests {
         }
         assert_eq!(Size::parse("huge"), None);
         assert_eq!(Size::default(), Size::M);
+    }
+
+    /// A node with these properties, drawn as the vocabulary says.
+    fn with_props(props: &[(&str, serde_json::Value)]) -> Node {
+        use reactor_db::graph::fields::{FieldNamespace, Fields, Shape};
+        let mut fields = Fields::default();
+        for shape in Shape::ALL {
+            fields.namespaces.insert(
+                shape.as_str().into(),
+                FieldNamespace {
+                    prefix: shape.as_str().into(),
+                    shape,
+                    definition: String::new(),
+                    icon: None,
+                    colour: None,
+                },
+            );
+        }
+        Node {
+            props: props
+                .iter()
+                .map(|(k, v)| Prop::of(&fields, k, v))
+                .collect(),
+            ..entity("file.path", "/tmp/a")
+        }
+    }
+
+    #[test]
+    fn a_card_draws_the_parts_of_a_property_as_the_inspector_does() {
+        let node = with_props(&[
+            ("category.technique", serde_json::json!(["T1059.001", "T1105"])),
+            ("verbatim.command_line", serde_json::json!("rundll32.exe a.dll,Start\n  /beacon 198.51.100.7")),
+            ("size", serde_json::json!(184_320)),
+        ]);
+        let xl = card(&node, Size::Xl, None, false, &m());
+        let row = |label: &str| xl.props.iter().find(|r| r.label == label).unwrap();
+        assert_eq!(row("Technique").shape, Shape::Category);
+        assert_eq!(row("Technique").parts.len(), 2);
+        assert_eq!(row("Command line").shape, Shape::Verbatim);
+        assert_eq!(row("Size").parts[0].text, "180 KiB");
+        // Below the largest size a card says none of it.
+        assert!(card(&node, Size::L, None, false, &m()).props.is_empty());
+    }
+
+    #[test]
+    fn a_code_block_is_its_lines_and_a_chip_row_wraps_so_the_card_is_as_high_as_it_draws() {
+        let one = with_props(&[("verbatim.raw", serde_json::json!("a b"))]);
+        let three = with_props(&[("verbatim.raw", serde_json::json!("a\nb\nc"))]);
+        let blank = with_props(&[("verbatim.raw", serde_json::json!("a\n\nc"))]);
+        let h = |n: &Node| card(n, Size::Xl, None, false, &m()).h;
+        // Each line of a block is a row, a blank one too.
+        assert!(h(&three) > h(&one));
+        assert_eq!(h(&three), h(&blank));
+        let step = (h(&three) - h(&one)) / 2.0;
+        assert!((step - LINE * SMALL * m().font).abs() < 0.01, "{step}");
+
+        // Chips that do not fit one row take another.
+        let few = with_props(&[("category.technique", serde_json::json!(["T1059"]))]);
+        let many = with_props(&[(
+            "category.technique",
+            serde_json::json!((0..40).map(|n| format!("T1{n:03}.001")).collect::<Vec<_>>()),
+        )]);
+        assert!(h(&many) > h(&few) + CHIP_H * m().font);
+
+        // A property with several parts is as high as its parts and the gaps between them.
+        let row = |parts: usize| PropRow {
+            label: "x".into(),
+            shape: Shape::Text,
+            parts: (0..parts)
+                .map(|_| Part {
+                    text: "w".into(),
+                    go: None,
+                    mismatch: false,
+                })
+                .collect(),
+        };
+        let (a, b) = (row(1).height(200.0, &m()), row(3).height(200.0, &m()));
+        assert!((b - a - 2.0 * (LINE * SMALL + PART_GAP)).abs() < 1e-4, "{a} {b}");
+    }
+
+    #[test]
+    fn a_long_line_of_a_code_block_takes_more_rows_in_a_narrow_card() {
+        let long = "x".repeat(120);
+        let node = with_props(&[("verbatim.raw", serde_json::json!(long))]);
+        let narrow = card(&node, Size::Xl, Some(160.0), false, &m());
+        let wide = card(&node, Size::Xl, Some(800.0), false, &m());
+        assert!(narrow.h > wide.h);
+    }
+
+    #[test]
+    fn a_card_with_properties_is_wide_enough_for_a_label_and_a_value_beside_it() {
+        let short = Node {
+            props: vec![Prop::plain("by", "person")],
+            ..entity("host.name", "ws-042")
+        };
+        let xl = card(&short, Size::Xl, None, false, &m());
+        let least = (2.0 * PAD_X
+            + 2.0 * ROW_PX
+            + KEY_W * SMALL
+            + PROP_VALUE_MIN * m().mono * SMALL)
+            * m().font;
+        assert!(xl.w >= least, "{} < {least}", xl.w);
+        // A card with none says what it says in the width it needs.
+        let m_card = card(&short, Size::M, None, false, &m());
+        assert!(m_card.w < least);
     }
 }

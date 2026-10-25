@@ -254,6 +254,8 @@ pub struct GraphPanel {
     inspector_tab: usize,
     /// The reader and editor popup, while it is open.
     reader: Option<Reader>,
+    /// A property being added or edited in the inspector's *Details*.
+    prop_edit: Option<inspector_ui::PropEdit>,
     show_deleted: bool,
     error: Option<String>,
     /// Where the drawing area is in the window, as of the last paint: pointer events
@@ -337,6 +339,7 @@ pub struct GraphPanel {
 mod add_ui;
 mod inspector_ui;
 mod node_ui;
+mod prop_draw;
 mod tags_ui;
 mod tools_ui;
 use inspector_ui::Reader;
@@ -524,6 +527,7 @@ impl GraphPanel {
             inspector_tab: 0,
             dock_width: Rc::new(Cell::new(inspector_ui::DOCK_WIDTH)),
             reader: None,
+            prop_edit: None,
             show_deleted: false,
             error: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
@@ -948,6 +952,8 @@ impl GraphPanel {
 
     fn select(&mut self, what: Option<Selected>, cx: &mut Context<Self>) {
         self.selected = what.filter(|s| !matches!(s, Selected::Nodes(ids) if ids.is_empty()));
+        // A property being typed belongs to the element it was started on.
+        self.prop_edit = None;
         self.describe();
         cx.notify();
     }

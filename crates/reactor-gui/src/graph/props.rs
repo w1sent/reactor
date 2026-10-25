@@ -169,7 +169,7 @@ fn part(shape: Shape, v: &Value) -> Part {
             _ => None,
         }),
         Shape::Id => Part {
-            text: middle(&raw, 24),
+            text: middle(&raw, 20),
             go: None,
             mismatch: false,
         },
@@ -211,6 +211,20 @@ fn bytes_of(v: &Value) -> Option<u64> {
         Value::String(s) => fields::parse_size(s),
         _ => None,
     }
+}
+
+/// The lines of a text for a numbered block: every line kept, blank ones too, a Windows line
+/// end not counted, and one line for a text with none.
+pub fn lines(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+        .collect();
+    // A text that ends with a line end has no line after it.
+    if out.len() > 1 && out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    out
 }
 
 /// Milliseconds as `850 ms`, `4.2 s`, `3 min 5 s`, `2 h 10 min`.
@@ -372,7 +386,7 @@ mod tests {
         let digest = "3f2a91c0d4e7b81a5c6d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
         let short = drawn("id.imphash", json!(digest));
         assert!(
-            short.chars().count() <= 24
+            short.chars().count() <= 20
                 && short.starts_with("3f2a91c0")
                 && short.ends_with("b3c4d")
         );
@@ -433,6 +447,14 @@ mod tests {
         assert_eq!(file.parts()[0].go, Some(Go::File("/etc/hosts".into())));
         let other = Prop::of(&vocabulary(), "uri.share", &json!("smb://nas/share"));
         assert_eq!(other.parts()[0].go, None);
+    }
+
+    #[test]
+    fn a_numbered_block_keeps_every_line_and_the_blank_ones() {
+        assert_eq!(lines("a\n\nb"), ["a", "", "b"]);
+        assert_eq!(lines("a\r\nb\r\n"), ["a", "b"]);
+        assert_eq!(lines("one"), ["one"]);
+        assert_eq!(lines(""), [""]);
     }
 
     #[test]

@@ -388,8 +388,12 @@ fn shortcuts_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
             ),
         )
         .keywords(["shortcut", "key", "keyboard", "binding"]);
+        let chosen = &app.read(cx).ui.shortcuts;
         if let Some(problem) = app.read(cx).shortcut_problem(shortcut) {
             item = item.description(problem);
+        } else if crate::shortcuts::shadowed_in_terminal(shortcut, chosen) {
+            // A shell needs the key; the (i) of the page says so.
+            item = item.description("Shadowed in a terminal");
         }
         if shortcut.id.starts_with("panel.") {
             panels = panels.item(item);
@@ -403,7 +407,7 @@ fn shortcuts_page(app: &Entity<ReactorApp>, cx: &App) -> SettingPage {
             .group(panels)
             .group(commands),
         "shortcuts-info",
-        "Keys are written like ctrl-shift-k: modifiers (ctrl, alt, shift, cmd, fn, or secondary for Cmd on macOS and Ctrl elsewhere) joined to a key by dashes, and a sequence separated by spaces; Enter applies them. A shortcut needs ctrl, alt, cmd or fn, or a function key (f1 to f24), so it does not take a key from text fields. Empty means no shortcut. A panel's shortcut shows it, or closes it when it is already in view. Saved in ~/.reactor/gui.json.",
+        "Keys are written like ctrl-shift-k: modifiers (ctrl, alt, shift, cmd, fn, or secondary for Cmd on macOS and Ctrl elsewhere) joined to a key by dashes, and a sequence separated by spaces; Enter applies them. A shortcut needs ctrl, alt, cmd or fn, or a function key (f1 to f24), so it does not take a key from text fields. Empty means no shortcut. A panel's shortcut shows it, or closes it when it is already in view. While a terminal has the focus the shortcuts on Ctrl, Alt or a bare key are the terminal's, except the console's own two; those on Cmd (macOS) stay. Saved in ~/.reactor/gui.json.",
     )
 }
 
@@ -522,13 +526,157 @@ fn behaviour_page(app: &Entity<ReactorApp>) -> SettingPage {
             )
             .default_value(shared(standard.start_layout.clone())),
         ));
+    let terminal = terminal_group(app);
     info(
         SettingPage::new("Behaviour")
             .icon(IconName::LayoutDashboard)
-            .group(group.title("Behaviour")),
+            .group(group.title("Behaviour"))
+            .group(terminal),
         "behaviour-info",
-        "Only the transcript is cut to the tool output length; the session log keeps all of it. Every notification is also kept behind the bell in the title bar. Animations are off by default so the next key press never waits for a transition; the working indicators keep moving either way. Rendering: Light drops shadows and redraws the working indicators less often, which is what a machine without graphics acceleration (a VM, mostly) wants; Automatic turns it on when the renderer is a software one. Saved in ~/.reactor/gui.json for every session.",
+        "Only the transcript is cut to the tool output length; the session log keeps all of it. Every notification is also kept behind the bell in the title bar. Animations are off by default so the next key press never waits for a transition; the working indicators keep moving either way. Rendering: Light drops shadows and redraws the working indicators less often, which is what a machine without graphics acceleration (a VM, mostly) wants; Automatic turns it on when the renderer is a software one. The terminal: the font is the Console one on the Fonts page; scrollback is held in memory for each console that has run; a minimum contrast above 1 lifts text that the program coloured too near its background; a shell here replaces $SHELL in consoles opened afterwards. Saved in ~/.reactor/gui.json for every session.",
     )
+}
+
+/// The console: how much it remembers, how the cursor looks, and a few choices a terminal has.
+fn terminal_group(app: &Entity<ReactorApp>) -> SettingGroup {
+    use crate::settings::{BlinkPref, CursorPref, MIN_CONTRAST, SCROLLBACK, TerminalSettings};
+    let standard = TerminalSettings::default();
+    let cursors: Vec<(SharedString, SharedString)> = CursorPref::ALL
+        .iter()
+        .map(|c| (shared(c.key()), shared(c.label())))
+        .collect();
+    let blinks: Vec<(SharedString, SharedString)> = BlinkPref::ALL
+        .iter()
+        .map(|b| (shared(b.key()), shared(b.label())))
+        .collect();
+    let (s_get, s_set) = (app.clone(), app.clone());
+    let (c_get, c_set) = (app.clone(), app.clone());
+    let (b_get, b_set) = (app.clone(), app.clone());
+    let (a_get, a_set) = (app.clone(), app.clone());
+    let (m_get, m_set) = (app.clone(), app.clone());
+    let (o_get, o_set) = (app.clone(), app.clone());
+    let (h_get, h_set) = (app.clone(), app.clone());
+    let mut group = SettingGroup::new()
+        .title("Terminal")
+        .item(
+            SettingItem::new(
+                "Scrollback (rows)",
+                SettingField::<f64>::number_input(
+                    sized(*SCROLLBACK.start() as f64, *SCROLLBACK.end() as f64, 1000.0),
+                    move |cx| s_get.read(cx).ui.terminal.scrollback as f64,
+                    move |v, cx| {
+                        s_set.update(cx, |app, cx| {
+                            app.update_ui(
+                                |ui| ui.terminal.scrollback = v.round().max(0.0) as usize,
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .default_value(standard.scrollback as f64),
+            )
+            .keywords(["console", "history", "terminal"]),
+        )
+        .item(
+            SettingItem::new(
+                "Cursor",
+                SettingField::<SharedString>::dropdown(
+                    cursors,
+                    move |cx| shared(c_get.read(cx).ui.terminal.cursor.key()),
+                    move |v, cx| {
+                        c_set.update(cx, |app, cx| {
+                            app.update_ui(|ui| ui.terminal.cursor = CursorPref::from_key(&v), cx)
+                        });
+                    },
+                )
+                .default_value(shared(standard.cursor.key())),
+            )
+            .keywords(["console", "terminal", "caret"]),
+        )
+        .item(
+            SettingItem::new(
+                "Cursor blink",
+                SettingField::<SharedString>::dropdown(
+                    blinks,
+                    move |cx| shared(b_get.read(cx).ui.terminal.blink.key()),
+                    move |v, cx| {
+                        b_set.update(cx, |app, cx| {
+                            app.update_ui(|ui| ui.terminal.blink = BlinkPref::from_key(&v), cx)
+                        });
+                    },
+                )
+                .default_value(shared(standard.blink.key())),
+            )
+            .keywords(["console", "terminal", "caret"]),
+        )
+        .item(
+            SettingItem::new(
+                "Minimum text contrast",
+                SettingField::<f64>::number_input(
+                    sized(
+                        f64::from(*MIN_CONTRAST.start()),
+                        f64::from(*MIN_CONTRAST.end()),
+                        0.5,
+                    ),
+                    move |cx| f64::from(m_get.read(cx).ui.terminal.min_contrast),
+                    move |v, cx| {
+                        m_set.update(cx, |app, cx| {
+                            app.update_ui(|ui| ui.terminal.min_contrast = v as f32, cx)
+                        });
+                    },
+                )
+                .default_value(f64::from(standard.min_contrast)),
+            )
+            .keywords(["console", "terminal", "colour", "color"]),
+        )
+        .item(
+            SettingItem::new(
+                "Copy a selection as soon as it is made",
+                SettingField::<bool>::switch(
+                    move |cx| o_get.read(cx).ui.terminal.copy_on_select,
+                    move |v, cx| {
+                        o_set.update(cx, |app, cx| {
+                            app.update_ui(|ui| ui.terminal.copy_on_select = v, cx)
+                        });
+                    },
+                )
+                .default_value(standard.copy_on_select),
+            )
+            .keywords(["console", "terminal", "clipboard"]),
+        )
+        .item(
+            SettingItem::new(
+                "Shell for new consoles",
+                SettingField::<SharedString>::input(
+                    move |cx| shared(h_get.read(cx).ui.terminal.shell.clone()),
+                    move |v, cx| {
+                        h_set.update(cx, |app, cx| {
+                            app.update_ui(|ui| ui.terminal.shell = v.to_string(), cx)
+                        });
+                    },
+                )
+                .default_value(shared("")),
+            )
+            .keywords(["console", "terminal", "shell"]),
+        );
+    if cfg!(target_os = "macos") {
+        group = group.item(
+            SettingItem::new(
+                "Option acts as Alt",
+                SettingField::<bool>::switch(
+                    move |cx| a_get.read(cx).ui.terminal.option_as_alt,
+                    move |v, cx| {
+                        a_set.update(cx, |app, cx| {
+                            app.update_ui(|ui| ui.terminal.option_as_alt = v, cx)
+                        });
+                    },
+                )
+                .default_value(standard.option_as_alt),
+            )
+            .keywords(["console", "terminal", "meta", "escape"]),
+        );
+    }
+    group
 }
 
 // ---------------------------------------------------------------------------------------------

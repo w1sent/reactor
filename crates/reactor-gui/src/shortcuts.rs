@@ -28,6 +28,9 @@ pub struct Shortcut {
     pub label: &'static str,
     pub default: &'static str,
     command: Command,
+    /// Stays active while a terminal has the focus. Most do not: a shell needs `ctrl-p`,
+    /// `ctrl-w` and the rest (docs/adr/0054).
+    pub in_terminal: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +40,13 @@ enum Command {
     Palette,
     Settings,
     CloseTab,
+}
+
+impl Shortcut {
+    const fn in_terminal(mut self) -> Self {
+        self.in_terminal = true;
+        self
+    }
 }
 
 const fn panel(
@@ -50,6 +60,7 @@ const fn panel(
         label,
         default,
         command: Command::Panel(kind),
+        in_terminal: false,
     }
 }
 
@@ -76,7 +87,8 @@ pub const ALL: [Shortcut; 12] = [
         "secondary-shift-t",
         PanelKind::Transcript,
     ),
-    panel("panel.console", "Console", "ctrl-`", PanelKind::Console),
+    // The console's own two stay: they are how a terminal is reached from a terminal.
+    panel("panel.console", "Console", "ctrl-`", PanelKind::Console).in_terminal(),
     panel(
         "panel.graph",
         "Graph",
@@ -94,24 +106,28 @@ pub const ALL: [Shortcut; 12] = [
         label: "New Console",
         default: "ctrl-~",
         command: Command::NewConsole,
+        in_terminal: true,
     },
     Shortcut {
         id: "palette",
         label: "Command Palette",
         default: "secondary-p",
         command: Command::Palette,
+        in_terminal: false,
     },
     Shortcut {
         id: "settings",
         label: "Settings",
         default: "secondary-,",
         command: Command::Settings,
+        in_terminal: false,
     },
     Shortcut {
         id: "tab.close",
         label: "Close Tab",
         default: "secondary-w",
         command: Command::CloseTab,
+        in_terminal: false,
     },
 ];
 
@@ -228,6 +244,24 @@ pub fn clashes(shortcut: Shortcut, chosen: &BTreeMap<String, String>) -> Vec<Sho
         .collect()
 }
 
+/// Whether `shortcut`, on the keys it has, is still active while a terminal has the focus: the
+/// ones that are flagged, and anything on the platform key (Cmd on macOS), which no program in a
+/// terminal is sent.
+pub fn stays_in_terminal(shortcut: Shortcut, chosen: &BTreeMap<String, String>) -> bool {
+    shortcut.in_terminal
+        || pressed(shortcut.keys(chosen))
+            .and_then(|strokes| strokes.first().map(|(m, _)| m.platform))
+            .unwrap_or(false)
+}
+
+/// Whether the shortcut has keys that a focused terminal takes from it, for the settings page to say so.
+pub fn shadowed_in_terminal(shortcut: Shortcut, chosen: &BTreeMap<String, String>) -> bool {
+    pressed(shortcut.keys(chosen)).is_some() && !stays_in_terminal(shortcut, chosen)
+}
+
+/// The key context a shadowed shortcut is bound in: everywhere except a terminal.
+const OUTSIDE_TERMINAL: &str = "!Terminal";
+
 /// The bindings for `chosen`.
 pub fn bindings(chosen: &BTreeMap<String, String>) -> Vec<KeyBinding> {
     ALL.into_iter()
@@ -236,10 +270,16 @@ pub fn bindings(chosen: &BTreeMap<String, String>) -> Vec<KeyBinding> {
             if keys.is_empty() {
                 return None;
             }
+            let context = (!stays_in_terminal(shortcut, chosen)).then(|| {
+                std::rc::Rc::new(
+                    gpui_kit::KeyBindingContextPredicate::parse(OUTSIDE_TERMINAL)
+                        .expect("a valid key context"),
+                )
+            });
             KeyBinding::load(
                 &keys,
                 shortcut.action(),
-                None,
+                context,
                 false,
                 None,
                 &gpui_kit::DummyKeyboardMapper,
@@ -322,6 +362,71 @@ mod tests {
         normalize(&mut chosen);
         assert_eq!(chosen.len(), 1);
         assert_eq!(chosen.get("settings").map(String::as_str), Some("f2"));
+    }
+
+    /// What the keymap would run for `keys` with the focus in a terminal, or elsewhere.
+    fn action_for(
+        chosen: &BTreeMap<String, String>,
+        keys: &str,
+        in_terminal: bool,
+    ) -> Option<String> {
+        use gpui_kit::{KeyContext, Keymap};
+        let keymap = Keymap::new(bindings(chosen));
+        let stroke = vec![Keystroke::parse(keys).unwrap()];
+        let stack = if in_terminal {
+            vec![
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("Terminal").unwrap(),
+            ]
+        } else {
+            vec![KeyContext::parse("Workspace").unwrap()]
+        };
+        let (found, _) = keymap.bindings_for_input(&stroke, &stack);
+        found.first().map(|b| b.action().name().to_owned())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_terminal_keeps_the_keys_a_shell_needs() {
+        let none = BTreeMap::new();
+        // Ctrl-P is readline's previous line and Ctrl-W kills a word: only outside a terminal
+        // are they the palette and closing a tab.
+        assert!(action_for(&none, "ctrl-p", false).is_some());
+        assert_eq!(action_for(&none, "ctrl-p", true), None);
+        assert!(action_for(&none, "ctrl-w", false).is_some());
+        assert_eq!(action_for(&none, "ctrl-w", true), None);
+        assert_eq!(action_for(&none, "ctrl-1", true), None);
+        assert!(action_for(&none, "ctrl-1", false).is_some());
+        // The console's own two stay.
+        assert!(action_for(&none, "ctrl-`", true).is_some());
+        assert!(action_for(&none, "ctrl-~", true).is_some());
+        assert!(action_for(&none, "ctrl-`", false).is_some());
+    }
+
+    #[test]
+    fn what_stays_in_a_terminal_is_the_flagged_and_the_platform_key() {
+        let none = BTreeMap::new();
+        let console = Shortcut::find("panel.console").unwrap();
+        let palette = Shortcut::find("palette").unwrap();
+        assert!(stays_in_terminal(console, &none));
+        assert!(Shortcut::find("console.new").unwrap().in_terminal);
+        assert!(!shadowed_in_terminal(console, &none));
+        // On Cmd (macOS) nothing collides; on Ctrl the palette is shadowed.
+        assert_eq!(stays_in_terminal(palette, &none), cfg!(target_os = "macos"));
+        let mut chosen = BTreeMap::new();
+        chosen.insert("palette".to_string(), "cmd-k".to_string());
+        assert!(stays_in_terminal(palette, &chosen));
+        chosen.insert("palette".to_string(), "alt-k".to_string());
+        assert!(shadowed_in_terminal(palette, &chosen));
+        // No keys, nothing to shadow.
+        chosen.insert("palette".to_string(), String::new());
+        assert!(!shadowed_in_terminal(palette, &chosen));
+        let flagged: Vec<&str> = ALL.iter().filter(|s| s.in_terminal).map(|s| s.id).collect();
+        assert_eq!(
+            flagged,
+            ["panel.console", "console.new"],
+            "the allowlist is these two"
+        );
     }
 
     #[test]

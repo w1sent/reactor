@@ -19,6 +19,9 @@ supersedes the store choice of 0036, which is marked † for that reason.
 ADR **0052** rearranges the GUI's window. It amends where 0044, 0048 and 0049 put things,
 which are marked † for that; what they decided about behaviour stands.
 
+ADR **0068** replaces the console's line log with a terminal emulator on `alacritty_terminal`. It amends
+the shortcuts of 0054, which is marked † for that; its note says what changed.
+
 ADR **0053** makes the tool-output bound of 0041 a setting and a per-call choice, and
 marks 0041 † for that.
 
@@ -83,7 +86,7 @@ marked † for that; each says in a note what it changed.
 | [0051](0051-the-scenarios-are-compiled-in-and-seeded-by-setup.md) | The scenarios are compiled in and seeded by `reactor setup`, and their absence is said |
 | [0052](0052-the-window-is-a-rail-a-drawer-and-a-workspace.md) | The window is a rail, a drawer and a workspace, and a session's state sits in its own pane |
 | †&nbsp;[0053](0053-a-call-chooses-how-much-of-its-output-it-sees.md) | A call chooses how much of its output it sees, and the cut says how to read the rest |
-| [0054](0054-the-window-s-shortcuts-are-the-person-s-to-choose.md) | The window's shortcuts are the person's to choose, and a panel's shows it before it closes it |
+| †&nbsp;[0054](0054-the-window-s-shortcuts-are-the-person-s-to-choose.md) | The window's shortcuts are the person's to choose, and a panel's shows it before it closes it |
 | [0055](0055-large-tool-groups-are-loaded-on-demand.md) | Large tool groups are loaded on demand, through one tool that lists them |
 | [0056](0056-a-tool-says-what-it-does-and-the-rules-are-one-line-each.md) | A tool's description says what it does, and the rules of use are one line each in the prompt |
 | [0057](0057-a-turn-recovers-from-a-rejected-or-cut-off-request.md) | A turn recovers from a rejected or cut-off request, a bounded number of times, and says what it did |
@@ -97,3 +100,4 @@ marked † for that; each says in a note what it changed.
 | [0065](0065-a-scenario-is-general-starts-from-a-question-and-can-be-written-for-the-case.md) | A scenario is general, starts from a question, and can be written for the case |
 | [0066](0066-the-case-is-addressed-by-references.md) | The case is addressed by references: one grammar for what a person, the agent and an export point at |
 | [0067](0067-a-property-is-named-in-a-namespace-that-decides-how-it-is-drawn-and-read.md) | A property is named in a namespace that decides how it is drawn and read |
+| [0068](0068-the-console-is-a-terminal-on-alacritty-terminal.md) | The console is a terminal on `alacritty_terminal` |

@@ -219,83 +219,77 @@ serialized layout. **Ayu Dark theme by default** (§7), Lucide icons
   a bottom slot for **Services** (live rows, polled on a TTL-respecting timer).
   Every side panel shows a loading indicator while its refresh is in flight,
   never a bare "no data" before the first answer arrives.
-- **Bottom dock — the console** (`reactor-gui/src/console.rs` for the pty
-  and ANSI handling, `ConsolePanel` in `reactor-gui/src/panels.rs` for the
-  UI): a general command runner, not an install log. What the user types
-  runs through their shell (pipes and `&&` included); what the GUI sends
-  runs directly. Output streams into the same scrollback the command was
-  typed into — one continuous area, not a separate input box floating above
-  a separate output pane — because that is what makes a running program's
-  own prompt (an installer's `Proceed? [y/N]`, a REPL) read naturally: the
-  answer appears right where the question was asked, the way a real
-  terminal works. A finished command is left to speak for itself in its own
-  output; nothing appends a synthetic "done" line once it exits
-  successfully (only a nonzero exit or a kill leaves a marker, since those
-  are facts the output alone would not otherwise show).
+- **Bottom dock — the console** (`reactor-gui/src/terminal/` for the emulator,
+  the pty and the painting, `ConsolePanel` in `reactor-gui/src/panels.rs` for
+  the tab): a terminal, not a log ([ADR-0068](../../docs/adr/0068-the-console-is-a-terminal-on-alacritty-terminal.md)).
+  A new console runs the person's shell; the installs of the Tools panel and
+  `/console <cmd>` run a program in it. The grid, the cursor, the alternate
+  screen, the scrollback and the mouse are the program's, so `vim`, `htop`,
+  `less`, `tmux` and a REPL work, and an installer's `Proceed? [y/N]` is
+  answered by typing in the same pane.
 
-  **The prompt is the scrollback's own last row**, not a control sitting
-  below it: `ConsolePanel`'s `MessageScroller` renders `lines.len() + 1`
-  rows, and the extra one past the real output is the live `InputState`
-  (full cursor/editing/IME support, just relocated) — so it scrolls with
-  the log and reads as its own next line, the way a terminal's cursor does,
-  rather than a search box bolted under a results pane. Being the list's
-  last row is not on its own enough to read that way: `Input`'s defaults are
-  a bordered, backgrounded box with its own gold focus ring, which kept
-  painting a visible search-box outline around the prompt regardless of
-  where it sat. `.appearance(false).bordered(false).focus_bordered(false)`,
-  plus matching the surrounding rows' font, size and zero padding, is what
-  actually makes it read as bare terminal text with a cursor rather than a
-  control embedded in the log. The whole log is
-  selectable: every span is its own `SelectableText::new(...)` participant,
-  ordered by line then position in it (`gpui_base::selectable_text`) — never
-  several spans sharing one `TextSelectionHandle` via `with_handle`, which
-  looked plausible (the type exists for exactly "several elements form one
-  document") but isn't: a handle is one hitbox and one run slot in the
-  window's selection state, keyed by the handle's entity id, so every span
-  after the first silently overwrote the one before it each frame and only
-  whichever span painted last was ever actually selectable — the bug behind
-  "selection works most of the time." Each span owning its participant
-  (`document_order` alone stitches them into one draggable selection) fixed
-  it.
+  **Emulation.** The published `alacritty_terminal` (pinned exactly) parses the
+  pty's bytes into a grid on its own thread; `terminal/backend.rs` is the only
+  file that names its types. A custom element paints a copy of the visible rows
+  taken under the lock, so painting never holds up the parser. The 16 colours
+  are the theme's own tokens (`red`, `green`, … and their `_light` variants);
+  the 256-colour cube and grey ramp are computed, 24-bit colour is used as sent.
+  Output wakes the panel through a channel awaited on gpui's executor: the first
+  event at once, the rest coalesced for a few milliseconds, so a keystroke's
+  echo does not wait for a timer and `yes` does not starve input.
 
-  Each `ConsolePanel` owns its session, buffer and polling loop itself
-  rather than sharing state through `ReactorApp` — the toolbar's *New*
-  button (or installing another tool) opens another, independent console
-  panel via `ReactorApp::open_console`, so several commands can run at once
-  without one's output interleaving into another's. Reader threads and a
-  channel per console, drained on each panel's own timer at the same cadence
-  the agent-event pump uses — no second executor (§2's rule), just one per panel
-  instead of one shared by all.
+  **Sessions.** Each panel owns one session. A shell starts on the first layout
+  of the panel, with the size of its grid; a console made while the dock is
+  collapsed starts nothing until it is shown. A task program keeps its output
+  when it exits: the pane can still be scrolled, selected and copied, a strip
+  under the grid says `exited with code N` (nothing on success) and offers
+  *Rerun* (also in the toolbar, which clears the pane and starts the program
+  again). *New* opens another independent console; *Stop* sends Ctrl-C to the
+  foreground group, and pressed again soon after hangs the program up;
+  *Clear* clears the screen and the scrollback the way a terminal's reset
+  does; closing the tab hangs the session up. A pty, not
+  pipes, is why `sudo` prompts at all: `tools.toml` marks `pacman`, `apt`,
+  `dnf`, `zypper`, `apk` and `port` as needing root.
 
-  **A pty, and what it is not.** Commands run on a pty, not pipes, because
-  a program asks `isatty()` before deciding how to behave: on a pipe `sudo`
-  refuses to prompt at all, which took out every Linux distro manager —
-  `tools.toml` marks `pacman`, `apt`, `dnf`, `zypper`, `apk` and `port` as
-  needing root, against `brew`, `uv`, `pipx`, `pip`, `cargo`, `go` and `npm`
-  which do not. The cost lands on the way back: a program talking to a
-  terminal emits escape sequences, so `console::AnsiReader` keeps the two
-  that carry meaning for a log — colour (mapped onto the theme's own
-  `red`/`green`/`yellow`/… hues, not xterm's) and the line-rewriting a
-  progress bar does —
-  and consumes the rest rather than printing it. It is deliberately not a
-  screen: no cursor addressing, no scroll regions, no alternate screen, so a
-  program that paints a UI (`vim`, `htop`) will not render. That is §9's
-  v0.3, and it is a different component wearing the same name.
+  **Keys and mouse.** A key is encoded the way xterm sends it (application
+  cursor keys, modified arrows and function keys, Alt as Escape, Ctrl letters,
+  bracketed paste when the program asked for it); IME and dead keys go through
+  the platform's input handler. A program that turns the mouse on gets presses,
+  drags, motion and wheel in the encoding it chose; Shift always selects
+  instead. Without it the wheel scrolls the history, or, on the alternate
+  screen, sends arrow keys. Drag selects, double-click a word, triple-click a
+  line, Alt-drag a block; the selection is also the primary selection on
+  Linux. Copy and paste are `cmd-c`/`cmd-v` on macOS and
+  `ctrl-shift-c`/`ctrl-shift-v` elsewhere. Find (`ctrl-shift-f`, `cmd-f`)
+  highlights every match of a regular expression. Ctrl/Cmd-click opens an
+  `http(s)` link or an OSC 8 hyperlink. A program may set the clipboard (OSC 52)
+  and the tab's title (OSC 0/2); it may not read the clipboard.
 
-  `ConsoleBuffer` seals a line the GUI wrote itself (`push_line`, the `$
-  command` echo, an exit notice) so the next byte of the command's own
-  output starts a fresh line rather than extending it — `write` otherwise
-  always extends `lines.last_mut()` regardless of who finished it last, so
-  `whoami` followed by `user\n` rendered as one line, `whoamiuser`.
+  **The window's shortcuts in a terminal.** The terminal's key context is
+  `Terminal`. The shortcuts a shell needs are inactive there (`ctrl-p`, `ctrl-w`,
+  the rail's `ctrl-1`…`ctrl-4`, Escape); the console's own toggle and new, the
+  terminal's copy, paste and find, and everything on `cmd` on macOS stay
+  ([ADR-0054](../../docs/adr/0054-the-window-s-shortcuts-are-the-person-s-to-choose.md)).
+  The Shortcuts page marks the shadowed ones. Tab, Shift-Tab and Ctrl-C, which
+  the toolkit binds for the whole window, are released in the terminal too.
+
+  **Settings** (`ui` in `gui.json`): the console font and size (existing), the
+  scrollback length (default 10 000 rows), the cursor's shape and blink, Option
+  as Alt on macOS, a minimum contrast (default 3: text that the program
+  coloured too near its background is lifted), copy on select, and a shell to
+  use instead of `$SHELL`.
 
   - **Installing from the catalogue.** The Tools panel hides tools that are
     not installed — on a fresh machine that is most of the catalogue, and it
     buried the few the user has behind rows they cannot act on — behind a
     toggle that reveals them with an *install* action each. Install runs
-    `reactor install <id>` in the console rather than anywhere private, so
+    `reactor install <id>` in a console rather than anywhere private, so
     its plan, its questions and its failures are all in one visible place.
-    A finished command re-reads the catalogue and services, so a tool that
-    just appeared stops claiming it is missing.
+    A finished task, an exited shell, and a terminal that lost the focus after
+    printing something (at most once in a while) re-read the catalogue and the
+    services, so a tool that just appeared stops claiming it is missing. A shell
+    gives no "command finished" signal of its own; marks from the shell
+    (OSC 133) are left for later.
 - **Bottom**: status bar, under the dock. Left: statuses (manifest, scenario, identity) from
   `status_items`. Right: model picker · context %.
 - **Command palette**: `get_commands` + the prompt templates/skills it
@@ -1129,22 +1123,18 @@ worked" state looked identical):
 status bar, command palette, the session tree panel with branch switching, workdir
 chooser + session picker, Ayu Dark theme. Phase 5 moved it onto the in-process agent.
 
-**v0.2** — **shipped: a pty behind the console, with minimal escape
-handling** (`portable-pty`, plus `console::AnsiReader` for colour and the
-line-rewriting a progress bar does; everything else consumed, not printed),
-**the layout system** (§6.1), a merged input/output console with selectable
-text, and multiple independent console panels open at once. Still open: HTML export, session labels +
+**v0.2** — **shipped: the layout system** (§6.1), multiple independent console
+panels open at once, and a pty behind the console. Still open: HTML export, session labels +
 clone, steer gesture, "open session in new window" launcher, light theme,
 and persisting a hand-arranged layout
 across launches (`DockAreaState` serializes; nothing writes it yet).
 
-**v0.3** — **full terminal emulation**, if and only if the console is ever
-asked to host a program that draws a screen (`vim`, `htop`, a curses
-installer). That means a real vt100 grid — cursor addressing, scroll
-regions, alternate screen — behind a parser like `vte`, and a buffer that is
-a grid rather than a list of lines. Deliberately last: it is a different
-component wearing the same name, and nothing in the catalogue's install
-recipes needs it. Do not start it to fix `sudo`; v0.2 covers that.
+**v0.3** — **shipped: the console is a terminal emulator** on `alacritty_terminal`
+([ADR-0068](../../docs/adr/0068-the-console-is-a-terminal-on-alacritty-terminal.md)): an
+interactive shell or a task program in a real grid, with the alternate screen, the mouse,
+scrollback, selection and search. It replaces the line log (`portable-pty` and `AnsiReader`
+are gone from this crate). Left for later: shell-integration marks (OSC 133), Kitty's keyboard
+and graphics protocols, a cache of shaped rows, asking before closing a busy terminal.
 
 ## 10. Risks, and what is verified at build time
 

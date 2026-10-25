@@ -1,5 +1,11 @@
 # The window's shortcuts are the person's to choose, and a panel's shows it before it closes it
 
+> Amended 2026-10-25 by [ADR-0068](0068-the-console-is-a-terminal-on-alacritty-terminal.md). The
+> console is now a terminal, and a terminal needs the keys this ADR made window-wide: `ctrl-p` is
+> the shell's "previous line", `ctrl-w` kills a word, `Escape` is `vim`'s. A window-wide shortcut
+> therefore has a flag saying whether it stays active while a terminal has the focus, and the
+> others are shadowed there. See "A shortcut is shadowed in a terminal" below; the rest stands.
+
 The Panels menu was the only way to reach a panel besides the rail and the palette, and
 three keys (the palette, the settings, closing a tab) were fixed in the code. A Panels item
 toggled whether the panel was in the dock, not whether it could be seen. So Console, with
@@ -34,6 +40,17 @@ pressed, so `secondary-1` and `ctrl-1` are the same on Linux.
 **A window-wide shortcut needs Ctrl, Alt, Cmd or Fn, or must be a function key.** A bare
 key or `shift-k` would take that key from every text field: the bindings are window-wide,
 and gpui matches a binding before the input sees the key.
+
+**A shortcut is shadowed in a terminal, unless it is on the short list that is not.** The
+terminal has the key context `Terminal`. gpui matches a binding before the focused element sees
+the key, so a window-wide `ctrl-w` would never reach a shell. Each shortcut has a flag, *stays
+active in a terminal*, and the bindings of those without it are installed with the context
+`!Terminal`. Escape, which the composer binds, is the same. The ones that stay active are the
+console's own two (toggle, new), the terminal's copy, paste and find, and every shortcut on `cmd`
+on macOS, where `cmd` collides with nothing a terminal sends. Everything else, the rail's panels
+on `secondary-1` to `-4` among them, is shadowed on Linux and Windows, where `secondary` is Ctrl.
+The choices stay stored by stable id; the page marks a shortcut that is shadowed in a terminal,
+so it is not a surprise.
 
 **These bindings are installed apart from all others.** They are tagged, and a change takes
 out only the tagged ones and puts the new ones in. The keys of the components (inputs, the

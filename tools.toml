@@ -479,7 +479,7 @@ desc   = "multi-architecture disassembler from python; check patched bytes decod
 source = "https://github.com/capstone-engine/capstone"
 invoke = "python3 -c 'import capstone'"
 detect = { python_module = "capstone" }
-tags   = ["patching", "disassembler", "python"]
+tags   = ["static", "native", "patching", "disassembler", "python"]
 
 [tool.capstone.install]
 uv  = "uv pip install capstone"
@@ -504,7 +504,7 @@ source  = "https://sourceware.org/binutils/"
 invoke  = "objdump"
 detect  = { binary = "objdump" }
 version = ["objdump", "--version"]
-tags    = ["patching", "assembler", "disassembler"]
+tags    = ["static", "native", "patching", "assembler", "disassembler"]
 
 [tool.binutils.install]
 pacman = "pacman -S binutils"

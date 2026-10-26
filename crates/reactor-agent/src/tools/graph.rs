@@ -508,6 +508,23 @@ impl Tool for GraphWrite {
                     p.kind == Kind::Annotation && p.links.iter().all(|l| l.role == "source")
                 })
                 .count();
+            // What the graph reads like afterwards: claims that say too much at once, and
+            // things that so many claims point at that they pull the picture into a knot.
+            let wide = batch
+                .puts
+                .iter()
+                .filter(|p| {
+                    matches!(p.kind, Kind::Event | Kind::Observation)
+                        && p.links.iter().filter(|l| l.role != "source").count() > WIDE_CLAIM
+                })
+                .count();
+            let pointed_at: Vec<Target> = batch
+                .puts
+                .iter()
+                .flat_map(|p| p.links.iter())
+                .filter(|l| l.role != "source")
+                .map(|l| l.to.clone())
+                .collect();
             match graph::apply(db, batch) {
                 Ok(done) => {
                     let mut out: Vec<String> = Vec::new();
@@ -542,6 +559,9 @@ impl Tool for GraphWrite {
                             if unnamed.len() == 1 { "is" } else { "are" },
                         ));
                     }
+                    for notice in readability(db, wide, &pointed_at) {
+                        out.push(notice);
+                    }
                     if loose > 0 {
                         out.push(format!(
                             "{loose} annotation{} about nothing: it floats apart in the graph. Give an annotation `links: [{{role: \"about\", to: ...}}]` when you write it",
@@ -554,6 +574,58 @@ impl Tool for GraphWrite {
             }
         })
     }
+}
+
+/// More links than this make a claim several claims.
+const WIDE_CLAIM: usize = 4;
+/// A thing this many claims point at is a hub: the picture draws round it.
+const HUB: i64 = 10;
+
+/// What a write did to the graph's readability: a claim linking many things, and the things
+/// in this write that already have a great many links.
+fn readability(db: &reactor_db::Db, wide: usize, pointed_at: &[Target]) -> Vec<String> {
+    let mut out = Vec::new();
+    if wide > 0 {
+        out.push(format!(
+            "{wide} claim{} link{} more than {WIDE_CLAIM} things: one claim per thing reads better in the graph",
+            if wide == 1 { "" } else { "s" },
+            if wide == 1 { "s" } else { "" },
+        ));
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for t in pointed_at {
+        let id = match t {
+            Target::Id(id) => Some(id.clone()),
+            Target::Entity {
+                type_,
+                value,
+                scope,
+            } => query::entity_id(db, type_, value, scope.as_deref()).ok(),
+            _ => None,
+        };
+        let Some(id) = id.filter(|i| !seen.contains(i)) else {
+            continue;
+        };
+        seen.push(id.clone());
+        let links: i64 = db
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM edge_current WHERE to_id = ?1 AND role <> 'source'",
+                    [&id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap_or(0);
+        if links >= HUB
+            && let Ok(Some(e)) = query::get(db, &id)
+        {
+            out.push(format!(
+                "{} has {links} links: if it is what the whole case is about, cite it as the `source` instead of linking each claim to it",
+                line(&e)
+            ));
+        }
+    }
+    out
 }
 
 /// The property names of a batch that no known namespace speaks for, once aliases are

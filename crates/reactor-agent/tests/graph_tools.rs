@@ -910,3 +910,33 @@ async fn an_annotation_about_nothing_is_said_to_float_apart() {
         .await;
     assert!(!linked.contains("about nothing"), "{linked}");
 }
+
+#[tokio::test]
+async fn a_claim_about_many_things_and_a_hub_everything_points_at_are_pointed_out() {
+    let r = rig();
+    let things: Vec<Value> = (0..5)
+        .map(|i| json!({ "role": "object", "to": { "type": "code.import", "value": format!("f{i}") } }))
+        .collect();
+    let wide = r
+        .ok(
+            "graph_write",
+            json!({ "elements": [{ "kind": "observation", "type": "code.references", "value": "many",
+                "source": "session:s1#entry=0", "links": things }] }),
+        )
+        .await;
+    assert!(wide.contains("more than 4 things"), "{wide}");
+
+    let mut last = String::new();
+    for i in 0..11 {
+        last = r
+            .ok(
+                "graph_write",
+                json!({ "elements": [{ "kind": "observation", "type": "code.behavior",
+                    "value": format!("claim {i}"), "source": "session:s1#entry=0",
+                    "links": [{ "role": "subject", "to": { "type": "code.binary", "value": "crackme" } }] }] }),
+            )
+            .await;
+    }
+    assert!(last.contains("cite it as the `source`"), "{last}");
+    assert!(!wide.contains("cite it as the `source`"), "{wide}");
+}

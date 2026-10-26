@@ -2278,7 +2278,8 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
     let graph = with - without;
     eprintln!("the case graph costs {graph} tokens of every request (estimated)");
     // A ceiling, so that growing it is a decision and not an accident.
-    assert!(graph < 3_000, "{graph}");
+    // (3,200 since `ref`, `artifact_unregister` and the notes on linking.)
+    assert!(graph < 3_200, "{graph}");
 
     // By default the six wait for tool_search: the block stays, the definitions go.
     let waiting = rig(vec![ScriptedLlm::say("ok")], Sum::says("-"), 100_000);

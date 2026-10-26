@@ -499,6 +499,15 @@ impl Tool for GraphWrite {
                 return ToolOutput::err("graph_write needs `elements`");
             }
             let unnamed = unnamespaced(db, &batch);
+            // A note or judgement about nothing is drawn apart from everything else: say so
+            // while the model can still link it.
+            let loose = batch
+                .puts
+                .iter()
+                .filter(|p| {
+                    p.kind == Kind::Annotation && p.links.iter().all(|l| l.role == "source")
+                })
+                .count();
             match graph::apply(db, batch) {
                 Ok(done) => {
                     let mut out: Vec<String> = Vec::new();
@@ -531,6 +540,12 @@ impl Tool for GraphWrite {
                             unnamed.join(", "),
                             if unnamed.len() == 1 { "has" } else { "have" },
                             if unnamed.len() == 1 { "is" } else { "are" },
+                        ));
+                    }
+                    if loose > 0 {
+                        out.push(format!(
+                            "{loose} annotation{} about nothing: it floats apart in the graph. Give an annotation `links: [{{role: \"about\", to: ...}}]` when you write it",
+                            if loose == 1 { " is" } else { "s are" },
                         ));
                     }
                     ToolOutput::ok(out.join("\n"))

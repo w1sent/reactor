@@ -2263,8 +2263,18 @@ impl Render for GraphPanel {
 
         let empty = self.model.nodes.is_empty();
         let nodes_shown = shown.iter().filter(|s| **s).count();
+        // Nodes no line reaches sit apart from the rest (in rows, at the edge of the plane):
+        // say how many, so that a tall pile of them is not mistaken for the graph itself.
+        let unconnected = {
+            let mut touched = vec![false; self.model.nodes.len()];
+            for l in &self.model.lines {
+                touched[l.from] = true;
+                touched[l.to] = true;
+            }
+            touched.iter().filter(|t| !**t).count()
+        };
         let counts = format!(
-            "{}{} node{} · {} line{}{}",
+            "{}{} node{} · {} line{}{}{}",
             // "N of M" whenever something is left out: by the filter or by the level.
             if nodes_shown == self.model.nodes.len() {
                 String::new()
@@ -2275,8 +2285,15 @@ impl Render for GraphPanel {
             if self.model.nodes.len() == 1 { "" } else { "s" },
             self.model.lines.len(),
             if self.model.lines.len() == 1 { "" } else { "s" },
+            if unconnected > 0 && unconnected < self.model.nodes.len() {
+                format!(" · {unconnected} unconnected")
+            } else {
+                String::new()
+            },
+            // Text is drawn only from about 50%: say so, so the percentage is not read as
+            // something about the layout.
             if (self.zoom - 1.).abs() > 0.01 {
-                format!(" · {:.0}%", self.zoom * 100.)
+                format!(" · zoom {:.0}%", self.zoom * 100.)
             } else {
                 String::new()
             }

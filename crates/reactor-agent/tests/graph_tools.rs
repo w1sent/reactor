@@ -887,3 +887,26 @@ async fn a_file_read_from_outside_the_case_is_marked_as_such() {
     let out = r.ok("read", json!({ "path": "inside.txt" })).await;
     assert!(!out.contains("outside the case"), "{out}");
 }
+
+#[tokio::test]
+async fn an_annotation_about_nothing_is_said_to_float_apart() {
+    let r = rig();
+    let out = r
+        .ok(
+            "graph_write",
+            json!({ "elements": [{ "type": "note", "value": "phase done" }] }),
+        )
+        .await;
+    assert!(
+        out.contains("about nothing") && out.contains("floats apart"),
+        "{out}"
+    );
+    let linked = r
+        .ok(
+            "graph_write",
+            json!({ "elements": [{ "type": "note", "value": "of the binary",
+                "links": [{ "role": "about", "to": { "type": "code.binary", "value": "crackme" } }] }] }),
+        )
+        .await;
+    assert!(!linked.contains("about nothing"), "{linked}");
+}

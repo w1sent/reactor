@@ -47,7 +47,7 @@ The user decides what to pursue. Do not act on what the graph holds unless it be
 /// Added to [`CASE_GRAPH`] while the graph's tools are left for `tool_search`
 /// ([ADR-0055](../../../docs/adr/0055-large-tool-groups-are-loaded-on-demand.md)): the block
 /// names them, so the model has to be told they are not in its tool list yet.
-pub const GRAPH_DEFERRED: &str = "\n\nThe graph's tools are not in your tool list until you load them: call `tool_search` with `select:graph_write,graph_query,graph_pull,graph_revert,define_type,artifact_register`, or the ones you need.";
+pub const GRAPH_DEFERRED: &str = "\n\nThe graph's tools are not in your tool list until you load them: call `tool_search` with `select:graph_write,graph_query,graph_pull,graph_revert,define_type,artifact_register,artifact_unregister`, or the ones you need.";
 
 /// What the catalogue says right now (from `reactor registry`).
 #[derive(Debug, Clone, Default)]
@@ -72,6 +72,8 @@ pub struct Inputs<'a> {
     pub scenarios: &'a reactor_core::scenarios::Library,
     /// The case directory, which is the agent's working directory (ADR-0045).
     pub cwd: Option<&'a Path>,
+    /// This session's id in the case, which a citation of its entries spells out.
+    pub session: Option<&'a str>,
     /// The rules of the tools in the request, once each.
     pub rules: &'a [String],
     /// The tools left for `tool_search` (ADR-0055).
@@ -133,6 +135,11 @@ pub fn system_parts(i: &Inputs) -> Vec<(Part, String)> {
             let mut block = CASE_GRAPH.to_string();
             if i.deferred.iter().any(|n| n == "graph_write") {
                 block.push_str(GRAPH_DEFERRED);
+            }
+            if let Some(id) = i.session {
+                block.push_str(&format!(
+                    "\n\nThis session is `{id}`. Cite its entries as `session:{id}#entry=<n>`; each tool result ends with its own reference."
+                ));
             }
             block
         }),

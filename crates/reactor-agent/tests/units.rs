@@ -246,6 +246,7 @@ fn inputs<'a>(
             "/nonexistent",
         ))),
         cwd: None,
+        session: None,
         rules: &[],
         deferred: &[],
     }

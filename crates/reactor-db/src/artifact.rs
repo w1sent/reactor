@@ -237,6 +237,55 @@ pub fn register(
     get(case, &path_for_read)?.ok_or_else(|| Error::Sqlite("the registry lost a row".into()))
 }
 
+/// Drop a file's record from the registry. The file itself is not touched, and the event log
+/// keeps what was registered and that it was withdrawn. The path is taken as written, since
+/// the file may be gone; a file that others came out of is refused until they are withdrawn.
+pub fn unregister(
+    case: &Case,
+    path: &str,
+    author: &Author,
+    session: Option<&str>,
+) -> Result<Artifact> {
+    let stored = path
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches(&format!("{}/", case.root().display()))
+        .to_string();
+    let found =
+        get(case, &stored)?.ok_or_else(|| Error::Invalid(format!("{stored}: not registered")))?;
+    let (author, session) = (author.clone(), session.map(str::to_string));
+    let (id, sha) = (found.id.clone(), found.sha256.clone());
+    case.db().write(move |tx| {
+        let children: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT path FROM artifact WHERE parent_id = ?1")?;
+            let rows = stmt.query_map([&id], |r| r.get(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        if !children.is_empty() {
+            return Err(Error::Invalid(format!(
+                "{stored}: {} came out of it; unregister those first",
+                children.join(", ")
+            )));
+        }
+        let author_id = author_id(tx, &author)?;
+        tx.execute(
+            "INSERT INTO event(id, ts, session_id, author_id, type, payload)
+             VALUES (?1, ?2, ?3, ?4, 'artifact', json_object('path', ?5, 'sha256', ?6, 'unregistered', 1))",
+            params![
+                uuid::Uuid::now_v7().to_string(),
+                now_rfc3339(),
+                session,
+                author_id,
+                stored,
+                sha
+            ],
+        )?;
+        tx.execute("DELETE FROM artifact WHERE id = ?1", [&id])?;
+        Ok(())
+    })?;
+    Ok(found)
+}
+
 const SELECT: &str = "SELECT a.id, a.path, a.sha256, a.sha1, a.md5, a.size, a.mime, a.kind,
         (SELECT p.path FROM artifact p WHERE p.id = a.parent_id), a.registered_at
    FROM artifact a";

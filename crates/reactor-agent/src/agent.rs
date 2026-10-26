@@ -565,7 +565,9 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
             }
         }
         let deferred: Vec<String> = plan.deferred.iter().map(|t| t.name.clone()).collect();
+        let session = self.store.lock().unwrap().session().to_string();
         prompt::system_parts(&prompt::Inputs {
+            session: Some(&session),
             rules: &rules,
             deferred: &deferred,
             base: &self.cfg.base_prompt,
@@ -1923,6 +1925,17 @@ impl<L: Llm, S: Summarizer> Agent<L, S> {
                         content.push_str("\n\n");
                         content.push_str(&line);
                         self.emit(Event::Notice(line));
+                    }
+                    // What a graph source cites: this result's own place in the log.
+                    {
+                        let store = self.store.lock().unwrap();
+                        if SessionState::load(&store).memory.case_graph() {
+                            content.push_str(&format!(
+                                "\n\n[session:{}#entry={}]",
+                                store.session(),
+                                store.len()
+                            ));
+                        }
                     }
                     seen
                 }

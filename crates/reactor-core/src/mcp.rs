@@ -344,6 +344,7 @@ pub const RESERVED: &[&str] = &[
     "graph_query",
     "graph_pull",
     "artifact_register",
+    "artifact_unregister",
     "docs_search",
     "tool_search",
 ];

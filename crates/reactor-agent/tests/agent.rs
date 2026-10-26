@@ -147,10 +147,18 @@ fn results(rig: &Rig) -> Vec<String> {
         .all()
         .iter()
         .filter_map(|e| match &e.kind {
-            Kind::ToolResult { content, .. } => Some(content.clone()),
+            Kind::ToolResult { content, .. } => Some(bare(content).to_string()),
             _ => None,
         })
         .collect()
+}
+
+/// A tool result without the reference to its own entry that ends it.
+fn bare(content: &str) -> &str {
+    match content.rfind("\n\n[session:") {
+        Some(at) if content.ends_with(']') => &content[..at],
+        _ => content,
+    }
 }
 
 fn bash_call(id: &str, cmd: &str) -> Result<Reply> {
@@ -205,6 +213,7 @@ async fn a_turn_without_tools_records_the_exchange_and_streams_it() {
         "graph_revert",
         "define_type",
         "artifact_register",
+        "artifact_unregister",
     ] {
         assert!(search.description.contains(name), "{name} is not listed");
     }
@@ -267,7 +276,8 @@ async fn a_tool_round_trip_records_call_and_result_and_sends_the_result_back() {
         Msg::ToolResult {
             call_id: "c1".into(),
             name: "bash".into(),
-            content: "hello".into(),
+            // What the model reads ends with the reference a graph source cites.
+            content: "hello\n\n[session:s#entry=3]".into(),
             is_error: false
         }
     );
@@ -2264,7 +2274,7 @@ async fn the_graph_costs_a_known_amount_of_every_request_and_nothing_when_detach
 
     let ((with, block, n), (without, no_block, m)) = (cost(&on), cost(&off));
     assert!(block && !no_block);
-    assert_eq!((n, m), (16, 10), "six tools come and go with the switch");
+    assert_eq!((n, m), (17, 10), "seven tools come and go with the switch");
     let graph = with - without;
     eprintln!("the case graph costs {graph} tokens of every request (estimated)");
     // A ceiling, so that growing it is a decision and not an accident.

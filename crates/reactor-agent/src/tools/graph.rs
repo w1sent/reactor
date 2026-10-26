@@ -169,10 +169,37 @@ fn list(v: Option<&Value>) -> Vec<Value> {
     }
 }
 
+/// A `session:` source must name an entry of a session this case has: a citation that
+/// points nowhere (the size column of a listing taken for the id) is refused, with the
+/// sessions there are.
+fn session_exists(case: &Case, uri: &str) -> Result<(), String> {
+    let Ok(r) = reference::parse(uri) else {
+        return Ok(());
+    };
+    if r.case.is_some() || !matches!(r.target, reference::Target::Session { .. }) {
+        return Ok(());
+    }
+    if reference::lookup::exists(case, &r.target).map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+    let known = reactor_db::sessions::list(case.db())
+        .map(|l| {
+            l.iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    Err(format!(
+        "`{uri}` names no entry of this case; its sessions: {known}"
+    ))
+}
+
 /// `"uri"` or `{uri, locator?}`.
 fn source(v: &Value, case: &Case) -> Result<Link, String> {
     match v {
         Value::String(uri) => {
+            session_exists(case, uri)?;
             let (uri, place) = reference::split_source(&reference::localize(case, uri));
             Ok(match place {
                 Some(p) => Link::source(&uri).at(&p, None),
@@ -184,6 +211,7 @@ fn source(v: &Value, case: &Case) -> Result<Link, String> {
                 .get("uri")
                 .and_then(Value::as_str)
                 .ok_or("a source needs a `uri`")?;
+            session_exists(case, uri)?;
             let (uri, place) = reference::split_source(&reference::localize(case, uri));
             let link = Link::source(&uri);
             Ok(
@@ -1088,7 +1116,8 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
                             match state {
                                 artifact::State::Unchanged => "",
                                 artifact::State::Changed => "  CHANGED since it was registered",
-                                artifact::State::Missing => "  MISSING",
+                                artifact::State::Missing =>
+                                    "  MISSING (artifact_unregister withdraws the record)",
                             }
                         )
                     })
@@ -1195,6 +1224,47 @@ impl Tool for GraphPull {
 }
 
 // -- artifact_register ----------------------------------------------------------------------
+
+pub struct ArtifactUnregister;
+
+impl Tool for ArtifactUnregister {
+    fn group(&self) -> Option<&'static str> {
+        Some(super::GRAPH_GROUP)
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "artifact_unregister".into(),
+            description: "Withdraw a file's record from the case's registry, e.g. a file registered by mistake or since deleted. The file itself is left alone, and the log keeps that it was registered and withdrawn. Graph elements that cite it keep their references.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The registered path, as `graph_query` with `what: files` lists it." }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    fn available(&self, state: &SessionState) -> bool {
+        attached(state)
+    }
+
+    fn call<'a>(&'a self, args: Value, ctx: &'a ToolCtx) -> BoxFut<'a, ToolOutput> {
+        Box::pin(async move {
+            let s = match scope(ctx) {
+                Ok(s) => s,
+                Err(refusal) => return refusal,
+            };
+            let Some(path) = str_arg(&args, "path") else {
+                return ToolOutput::err("artifact_unregister needs a `path`");
+            };
+            match artifact::unregister(&s.case, path, &s.author, Some(&s.session)) {
+                Ok(a) => ToolOutput::ok(format!("{} is no longer registered", a.path)),
+                Err(e) => fail(e),
+            }
+        })
+    }
+}
 
 pub struct ArtifactRegister;
 

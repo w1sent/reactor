@@ -167,6 +167,7 @@ impl Tools {
             .with(graph::GraphQuery)
             .with(graph::GraphPull)
             .with(graph::ArtifactRegister)
+            .with(graph::ArtifactUnregister)
             .with(docs::DocsSearch)
             .with(search::ToolSearch)
     }

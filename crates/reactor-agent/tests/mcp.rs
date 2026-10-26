@@ -387,7 +387,11 @@ async fn the_model_is_given_the_active_definitions_and_may_call_one() {
         .collect();
     assert_eq!(
         results[0],
-        ("mcp__fx__echo".into(), "echo: ping".into(), false)
+        (
+            "mcp__fx__echo".into(),
+            "echo: ping\n\n[session:s#entry=3]".into(),
+            false
+        )
     );
     assert_eq!(results[1].0, "mcp__fx__env");
     assert!(!results[1].2, "an inactive tool still runs");

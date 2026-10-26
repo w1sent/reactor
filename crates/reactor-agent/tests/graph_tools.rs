@@ -720,3 +720,65 @@ async fn the_graph_switch_closes_the_graph_kinds_and_leaves_the_rest() {
         .await;
     assert!(!file.is_error, "{}", file.text);
 }
+
+#[tokio::test]
+async fn a_source_naming_no_session_entry_is_refused_with_the_sessions_there_are() {
+    let r = rig();
+    let out = r
+        .call(
+            "graph_write",
+            json!({ "elements": [{
+                "kind": "observation", "type": "code.behavior", "value": "x",
+                "source": "session:9B#entry=0"
+            }] }),
+        )
+        .await;
+    assert!(out.is_error, "{}", out.text);
+    assert!(
+        out.text.contains("names no entry") && out.text.contains("s1"),
+        "{}",
+        out.text
+    );
+    r.ok(
+        "graph_write",
+        json!({ "elements": [{
+            "kind": "observation", "type": "code.behavior", "value": "x",
+            "source": "session:s1#entry=0"
+        }] }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_registered_file_can_be_withdrawn_even_after_it_is_gone() {
+    let r = rig();
+    r.ok(
+        "artifact_register",
+        json!({ "path": "samples/dropper.bin" }),
+    )
+    .await;
+    std::fs::remove_file(r.ctx.cwd.join("samples/dropper.bin")).unwrap();
+    let files = r.ok("graph_query", json!({ "what": "files" })).await;
+    assert!(
+        files.contains("MISSING") && files.contains("artifact_unregister"),
+        "{files}"
+    );
+    r.ok(
+        "artifact_unregister",
+        json!({ "path": "samples/dropper.bin" }),
+    )
+    .await;
+    let files = r.ok("graph_query", json!({ "what": "files" })).await;
+    assert!(files.contains("no files registered"), "{files}");
+    let again = r
+        .call(
+            "artifact_unregister",
+            json!({ "path": "samples/dropper.bin" }),
+        )
+        .await;
+    assert!(
+        again.is_error && again.text.contains("not registered"),
+        "{}",
+        again.text
+    );
+}

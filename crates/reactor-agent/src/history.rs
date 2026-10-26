@@ -138,7 +138,7 @@ pub fn index_of(log: &Log, from: Option<EntryId>, to: Option<EntryId>) -> String
             None => String::new(),
         };
         lines.push(format!(
-            "#{} {} {}B{} {}",
+            "#{} {} size={}B{} {}",
             e.id,
             e.kind.label(),
             full_bytes(e),

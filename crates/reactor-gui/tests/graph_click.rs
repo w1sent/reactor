@@ -29,7 +29,11 @@ fn open(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, gpui_kit::Entity
         (window, panel)
     });
     cx.update_window(window, |_, window, cx| {
-        panel.update(cx, |p, cx| p.select_for_test(cx));
+        panel.update(cx, |p, cx| {
+            p.select_for_test(cx);
+            // As a double click on a node does.
+            p.open_inspector_for_test(cx);
+        });
         window.render_frame(cx);
     })
     .unwrap();
@@ -152,7 +156,11 @@ fn open_in_dock(
         (window, made.unwrap())
     });
     cx.update_window(window, |_, window, cx| {
-        panel.update(cx, |p, cx| p.select_for_test(cx));
+        panel.update(cx, |p, cx| {
+            p.select_for_test(cx);
+            // As a double click on a node does.
+            p.open_inspector_for_test(cx);
+        });
         window.render_frame(cx);
     })
     .unwrap();
@@ -212,6 +220,7 @@ async fn the_inspector_of_a_real_element_stays_until_its_x_is_clicked(cx: &mut T
         panel.update(cx, |p, cx| {
             p.set_backend(Some(Arc::new(backend)), cx);
             p.select_id_for_test(&id, cx);
+            p.open_inspector_for_test(cx);
         });
         window.render_frame(cx);
     })
@@ -230,4 +239,31 @@ async fn the_inspector_of_a_real_element_stays_until_its_x_is_clicked(cx: &mut T
     cx.update_window(window, |_, window, cx| window.click("graph-deselect", cx))
         .unwrap();
     assert!(!selected(cx, window, &panel), "its X closes it");
+}
+
+#[gpui_kit::test]
+async fn a_selection_alone_does_not_open_the_inspector_and_clearing_it_closes_it(
+    cx: &mut TestAppContext,
+) {
+    let (window, panel) = open(cx);
+    cx.update_window(window, |_, _, cx| {
+        panel.update(cx, |p, cx| p.close_inspector_for_test(cx));
+    })
+    .unwrap();
+    assert!(selected(cx, window, &panel), "still selected");
+    let open = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, _, cx| panel.read(cx).inspector_open_for_test())
+            .unwrap()
+    };
+    assert!(!open(cx), "a click selects; it does not open the inspector");
+    cx.update_window(window, |_, window, cx| {
+        panel.update(cx, |p, cx| p.open_inspector_for_test(cx));
+        window.render_frame(cx);
+        window.click("graph-deselect", cx);
+    })
+    .unwrap();
+    assert!(
+        !selected(cx, window, &panel) && !open(cx),
+        "the X closes it"
+    );
 }

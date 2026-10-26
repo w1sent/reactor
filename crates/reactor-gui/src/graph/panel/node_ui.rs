@@ -38,6 +38,8 @@ pub(super) struct NodeView<'a> {
     /// The text is big enough to read; else the card is a coloured block.
     pub readable: bool,
     pub selected: bool,
+    /// Next to what is selected: drawn in the selection's colour, a little less strongly.
+    pub near: bool,
     /// The only thing selected: it shows the grip its width is dragged by.
     pub alone: bool,
     pub drawn: sift::Drawn,
@@ -334,6 +336,8 @@ impl GraphPanel {
         };
         let edge = if v.selected {
             theme.primary
+        } else if v.near {
+            theme.primary.opacity(0.8)
         } else if disputed {
             theme.warning
         } else if concluded {
@@ -344,7 +348,11 @@ impl GraphPanel {
             theme.border
         };
         let radius = if claim { 1.3 * f } else { 0.6 * f };
-        let border = if v.selected || disputed { 2. } else { 1. };
+        let border = if v.selected || v.near || disputed {
+            2.
+        } else {
+            1.
+        };
 
         // What the search found is ringed in the brightest thing there is; what a layer
         // highlights, in the theme's blue.
@@ -422,6 +430,11 @@ impl GraphPanel {
                     // pressing another selects just it.
                     if !this.selected_nodes().contains(&id) {
                         this.select(Some(Selected::Nodes(vec![id.clone()])), cx);
+                    }
+                    // Only a double click opens the inspector; a click selects.
+                    if event.click_count >= 2 {
+                        this.inspecting = true;
+                        cx.notify();
                     }
                     let from = this.to_world(this.local(event.position));
                     let starts = this

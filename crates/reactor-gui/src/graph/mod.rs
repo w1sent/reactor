@@ -6,6 +6,7 @@ pub mod card;
 pub mod inspector;
 pub mod look;
 pub mod model;
+mod neighbourhood;
 pub mod panel;
 pub mod props;
 pub mod sift;

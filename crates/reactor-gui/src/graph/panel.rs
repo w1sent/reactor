@@ -248,6 +248,9 @@ pub struct GraphPanel {
     detail: Vec<Vec<(String, String)>>,
     /// The selected element as the inspector shows it, when the selection is exactly one.
     inspected: Option<Inspected>,
+    /// The inspector is open: a double click opens it, a single click only selects. Once open
+    /// it follows the selection, and goes with it when nothing is selected.
+    inspecting: bool,
     /// How wide the inspector was drawn, in pixels: what a value wraps in.
     dock_width: Rc<Cell<f32>>,
     /// Which tab of the inspector is open (an index into the tabs it has for this element).
@@ -529,6 +532,7 @@ impl GraphPanel {
             selected: None,
             detail: Vec::new(),
             inspected: None,
+            inspecting: false,
             inspector_tab: 0,
             dock_width: Rc::new(Cell::new(inspector_ui::DOCK_WIDTH)),
             reader: None,
@@ -598,6 +602,28 @@ impl GraphPanel {
     /// to it opens (ADR-0066).
     pub fn select_element(&mut self, id: &str, cx: &mut Context<Self>) {
         self.select(Some(Selected::Nodes(vec![id.to_string()])), cx);
+        // Asked for by name, not clicked on: show it.
+        self.inspecting = self.selected.is_some();
+    }
+
+    /// Close the inspector and leave the selection, as a click does.
+    #[doc(hidden)]
+    pub fn close_inspector_for_test(&mut self, cx: &mut Context<Self>) {
+        self.inspecting = false;
+        cx.notify();
+    }
+
+    /// Whether the inspector is open.
+    #[doc(hidden)]
+    pub fn inspector_open_for_test(&self) -> bool {
+        self.inspecting
+    }
+
+    /// Open the inspector on what is selected, as a double click does.
+    #[doc(hidden)]
+    pub fn open_inspector_for_test(&mut self, cx: &mut Context<Self>) {
+        self.inspecting = self.selected.is_some();
+        cx.notify();
     }
 
     /// Select one element by id, as a click on its node does.
@@ -947,6 +973,7 @@ impl GraphPanel {
             None => {
                 self.detail.clear();
                 self.inspected = None;
+                self.inspecting = false;
                 return;
             }
         };
@@ -966,6 +993,7 @@ impl GraphPanel {
         }
         if self.detail.is_empty() {
             self.selected = None;
+            self.inspecting = false;
         }
     }
 
@@ -974,6 +1002,7 @@ impl GraphPanel {
         // A property being typed belongs to the element it was started on.
         self.prop_edit = None;
         self.describe();
+        self.inspecting &= self.selected.is_some();
         cx.notify();
     }
 
@@ -1749,6 +1778,9 @@ impl Render for GraphPanel {
         // points to so an arrowhead is not hidden under the box.
         let mut strokes = Vec::with_capacity(self.model.lines.len());
         let mut labels = Vec::new();
+        // The neighbourhood of what is selected is drawn in its own colour, and nothing else is
+        // dimmed: the rest of the graph stays as it is, to be compared with.
+        let near = super::neighbourhood::Neighbourhood::of(&self.model, &selected_nodes);
         // The model's lines, and those that stand in for what the level does not draw.
         for (i, line) in self.model.lines.iter().chain(&disclosure.extra).enumerate() {
             // A line is drawn between two nodes that are shown.
@@ -1804,8 +1836,11 @@ impl Render for GraphPanel {
                 (LineKind::Annotation, "refutes") => theme.danger,
                 (LineKind::Annotation, _) => theme.muted_foreground,
             };
+            let near_line = near.line(line);
             let colour = if selected {
                 theme.primary
+            } else if near_line {
+                theme.primary.opacity(0.85)
             } else {
                 status_colour(&line.status, base)
             };
@@ -1817,6 +1852,7 @@ impl Render for GraphPanel {
             };
             let thick = match line.kind {
                 _ if selected || disputed => 2.5,
+                _ if near_line => 2.,
                 LineKind::Role => 1.,
                 _ => 1.5,
             };
@@ -1917,9 +1953,12 @@ impl Render for GraphPanel {
                 .when(is_relation, |d| {
                     d.on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
+                        cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
                             cx.stop_propagation();
                             this.select(Some(Selected::Line(claims.clone())), cx);
+                            if event.click_count >= 2 {
+                                this.inspecting = true;
+                            }
                         }),
                     )
                 });
@@ -2087,6 +2126,7 @@ impl Render for GraphPanel {
                     plain,
                     readable,
                     selected,
+                    near: near.node(i),
                     alone: readable && alone.as_deref() == Some(node.id.as_str()),
                     drawn: sifted.nodes[i],
                     hit: hits.get(node.id.as_str()).copied(),
@@ -2302,7 +2342,7 @@ impl Render for GraphPanel {
         let picked = self.selected_nodes();
         let is_node = picked.len() == 1;
         let several = picked.len() >= 2;
-        let detail = (self.selected.is_some() && !self.detail.is_empty()).then(|| {
+        let detail = (self.inspecting && self.selected.is_some() && !self.detail.is_empty()).then(|| {
             // Docked at the left, beside the graph rather than over it: what is selected, in
             // one structure whatever it is (`inspector_ui`), and what can be done with it.
             let (head, body) = match &self.inspected {

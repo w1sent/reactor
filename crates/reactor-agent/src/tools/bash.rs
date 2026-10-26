@@ -54,6 +54,22 @@ impl Bash {
     }
 }
 
+/// The shell's `PATH` with the directory of the running program at its end, so the
+/// `reactor` command that sits beside the app is there for the agent too (`reactor doctor`).
+fn path_with_our_binaries() -> std::ffi::OsString {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+        && !dirs.contains(&dir)
+    {
+        dirs.push(dir);
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
 struct Shell {
     child: Child,
     stdin: ChildStdin,
@@ -70,6 +86,7 @@ impl Shell {
             .env("GIT_PAGER", "cat")
             .env("PS1", "")
             .env("PS2", "")
+            .env("PATH", path_with_our_binaries())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

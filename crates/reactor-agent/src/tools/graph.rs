@@ -1121,20 +1121,27 @@ fn answer(s: &Scope, args: &Value) -> Result<String, String> {
                 found.iter().map(line).collect::<Vec<_>>().join("\n")
             })
         }
-        "types" => Ok(query::types_in_use(db)
-            .map_err(err)?
-            .iter()
-            .map(|t| {
-                format!(
-                    "{} {} ×{}{}",
-                    t.kind.as_str(),
-                    t.type_,
-                    t.count,
-                    if t.known { "" } else { "  (not a known type)" }
-                )
+        "types" => {
+            let types = query::types_in_use(db).map_err(err)?;
+            Ok(if types.is_empty() {
+                "no types in use: the graph holds nothing yet (`what: vocabulary` lists the known ones)"
+                    .into()
+            } else {
+                types
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "{} {} ×{}{}",
+                            t.kind.as_str(),
+                            t.type_,
+                            t.count,
+                            if t.known { "" } else { "  (not a known type)" }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
-            .collect::<Vec<_>>()
-            .join("\n")),
+        }
         "vocabulary" => vocab::describe(db, str_arg(args, "type")).map_err(err),
         "fields" => fields::describe(db, str_arg(args, "under")).map_err(err),
         "files" => {
@@ -1263,6 +1270,17 @@ impl Tool for GraphPull {
 
 // -- artifact_register ----------------------------------------------------------------------
 
+/// A registered file named as the registry has it, or as a reference (`artifact:<path>`).
+fn registered_path(given: &str) -> String {
+    match reference::parse(given.trim()) {
+        Ok(r) => match r.target {
+            reference::Target::Artifact { path, .. } => path,
+            _ => given.to_string(),
+        },
+        Err(_) => given.to_string(),
+    }
+}
+
 pub struct ArtifactUnregister;
 
 impl Tool for ArtifactUnregister {
@@ -1296,7 +1314,8 @@ impl Tool for ArtifactUnregister {
             let Some(path) = str_arg(&args, "path") else {
                 return ToolOutput::err("artifact_unregister needs a `path`");
             };
-            match artifact::unregister(&s.case, path, &s.author, Some(&s.session)) {
+            match artifact::unregister(&s.case, &registered_path(path), &s.author, Some(&s.session))
+            {
                 Ok(a) => ToolOutput::ok(format!("{} is no longer registered", a.path)),
                 Err(e) => fail(e),
             }
@@ -1319,7 +1338,7 @@ impl Tool for ArtifactRegister {
                 "properties": {
                     "path": { "type": "string", "description": "Inside the case; relative to its root." },
                     "kind": { "type": "string", "description": "sample, extracted_file, pcap, memdump, disasm, decomp, script, report, log, ..." },
-                    "parent": { "type": "string", "description": "The registered file this one came out of." }
+                    "parent": { "type": "string", "description": "The registered file this one came out of: its path, or `artifact:<path>`." }
                 },
                 "required": ["path"]
             }),
@@ -1345,7 +1364,9 @@ impl Tool for ArtifactRegister {
                 &s.case,
                 path,
                 str_arg(&args, "kind"),
-                str_arg(&args, "parent"),
+                str_arg(&args, "parent")
+                    .map(|p| registered_path(p))
+                    .as_deref(),
                 &s.author,
                 Some(&s.session),
             ) {

@@ -850,3 +850,40 @@ async fn an_id_on_a_new_element_and_an_unknown_ref_are_each_explained_and_all_ar
         out.text
     );
 }
+
+#[tokio::test]
+async fn a_parent_may_be_named_as_a_reference_and_an_empty_graph_says_so() {
+    let r = rig();
+    let types = r.ok("graph_query", json!({ "what": "types" })).await;
+    assert!(types.contains("holds nothing yet"), "{types}");
+    std::fs::write(r.ctx.cwd.join("samples/stage2.bin"), b"payload").unwrap();
+    r.ok(
+        "artifact_register",
+        json!({ "path": "samples/dropper.bin", "kind": "sample" }),
+    )
+    .await;
+    let out = r
+        .ok(
+            "artifact_register",
+            json!({ "path": "samples/stage2.bin", "parent": "artifact:samples/dropper.bin" }),
+        )
+        .await;
+    assert!(out.contains("came out of samples/dropper.bin"), "{out}");
+}
+
+#[tokio::test]
+async fn a_file_read_from_outside_the_case_is_marked_as_such() {
+    let r = rig();
+    let outside = r.dir.path().join("elsewhere.txt");
+    std::fs::write(&outside, "answer: 42").unwrap();
+    let out = r
+        .ok("read", json!({ "path": outside.to_str().unwrap() }))
+        .await;
+    assert!(
+        out.contains("answer: 42") && out.contains("outside the case"),
+        "{out}"
+    );
+    std::fs::write(r.ctx.cwd.join("inside.txt"), "fine").unwrap();
+    let out = r.ok("read", json!({ "path": "inside.txt" })).await;
+    assert!(!out.contains("outside the case"), "{out}");
+}

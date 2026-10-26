@@ -83,6 +83,15 @@ impl Tool for Read {
                     end + 1
                 ));
             }
+            // A file the case does not hold can still be read, but a finding built on it
+            // cannot cite it: say so while the model is deciding what to trust.
+            let outside = match (path.canonicalize(), ctx.cwd.canonicalize()) {
+                (Ok(p), Ok(root)) => !p.starts_with(root),
+                _ => false,
+            };
+            if outside && ctx.state().memory.case_graph() {
+                out.push_str("\n\n[outside the case: nothing in the case cites this file, and `artifact_register` refuses it]");
+            }
             ToolOutput::ok(out)
         })
     }

@@ -81,6 +81,9 @@ fn target(v: &Value, case: &Case) -> Result<Target, String> {
     match v {
         Value::String(id) if !id.trim().is_empty() => {
             let id = id.trim();
+            if let Some(label) = id.strip_prefix('@') {
+                return Ok(Target::Local(label.to_string()));
+            }
             if reference::looks_like(id) {
                 return from_reference(id, case);
             }
@@ -109,6 +112,12 @@ fn target(v: &Value, case: &Case) -> Result<Target, String> {
         }
         _ => Err("a target is an element id, or {type, value} for an entity".into()),
     }
+}
+
+fn local_only(label: &str) -> String {
+    format!(
+        "`@{label}` points at a `ref` of the same `graph_write` call; here, name the element by its id"
+    )
 }
 
 /// What a reference names, as the graph takes it: an element by id, an entity by its key,
@@ -412,7 +421,8 @@ impl Tool for GraphWrite {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "id": { "type": "string", "description": "Revise this element (a reference or id) instead of adding one; then only the fields below that you give change." },
+                                "id": { "type": "string", "description": "Only to revise an element that already exists (a reference or id); then only the fields below that you give change. Leave it out on a new element: ids are made for you." },
+                                "ref": { "type": "string", "description": "New elements: a name of your own for this element, so that elements after it in the same call can link to it with `to: \"@name\"`." },
                                 "kind": { "type": "string", "enum": ["entity", "event", "observation", "annotation"], "description": "entity: a thing that can show up in many places (an address, a host, a hash): the same type and value is always the same node. event: it happened. observation: it holds. annotation: a conclusion of yours or the user's. Not needed when `type` is an annotation type." },
                                 "type": { "type": "string", "description": "Dot-namespaced, e.g. net.ipv4, file.hash.sha256, host.name, auth.logon, net.connection (`graph_query` with `what: vocabulary` lists the known ones). For an annotation: hypothesis (a candidate explanation), judgement (an assessment of a claim, `about` it, with a confidence; `supports` or `refutes` a hypothesis), note (commentary, a question, a to-do), cluster (these belong together: `member` links), same_as (two entities are one: `about` both), search_negative (you looked and found nothing: `source` where, `about` what for)." },
                                 "value": { "type": "string", "description": "An entity's value, or a label for an event or observation. For an annotation, its text. Plain text; Markdown only for a long one (several paragraphs), because the graph shows it rendered." },
@@ -429,7 +439,7 @@ impl Tool for GraphWrite {
                                         "type": "object",
                                         "properties": {
                                             "role": { "type": "string", "description": "src/dst, actor/target, parent/child, subject/object, query/answer, ...; for an annotation about, supports, refutes or member." },
-                                            "to": { "description": "A reference (graph:<id>, graph:entity/<type>/<value>) or an element id, or {type, value} for an entity." }
+                                            "to": { "description": "A reference (graph:<id>, graph:entity/<type>/<value>) or an element id, or {type, value} for an entity (made if new), or \"@name\" for an earlier element of this call that has `ref: name`." }
                                         },
                                         "required": ["role", "to"]
                                     }
@@ -461,22 +471,29 @@ impl Tool for GraphWrite {
             let db = s.case.db();
             let mut batch = s.batch("graph");
             let mut revised: Vec<String> = Vec::new();
+            // Every element that cannot be read is reported, not just the first: the batch
+            // is all or nothing, so one slip costs the whole call.
+            let mut refused: Vec<String> = Vec::new();
             for (i, el) in list(args.get("elements")).iter().enumerate() {
                 let n = i + 1;
                 let Some(o) = el.as_object() else {
-                    return ToolOutput::err(format!("element {n}: not an object"));
+                    refused.push(format!("element {n}: not an object"));
+                    continue;
                 };
                 if let Some(id) = o.get("id").filter(|v| !v.is_null()) {
                     match revision(&s, id, o, &mut batch) {
                         Ok(id) => revised.push(id),
-                        Err(e) => return ToolOutput::err(format!("element {n}: {e}")),
+                        Err(e) => refused.push(format!("element {n}: {e}")),
                     }
                     continue;
                 }
                 match addition(o, &s.case) {
                     Ok(put) => batch.puts.push(put),
-                    Err(e) => return ToolOutput::err(format!("element {n}: {e}")),
+                    Err(e) => refused.push(format!("element {n}: {e}")),
                 }
+            }
+            if !refused.is_empty() {
+                return ToolOutput::err(format!("nothing was written.\n{}", refused.join("\n")));
             }
             if batch.puts.is_empty() && batch.changes.is_empty() {
                 return ToolOutput::err("graph_write needs `elements`");
@@ -549,6 +566,7 @@ fn element_id(case: &Case, v: &Value) -> Result<String, String> {
             scope,
         } => query::entity_id(db, &type_, &value, scope.as_deref()).map_err(|e| e.to_string()),
         Target::External { .. } => Err("name an element by its id or a graph reference".into()),
+        Target::Local(l) => Err(local_only(&l)),
     }
 }
 
@@ -559,7 +577,18 @@ fn revision(
     o: &Map<String, Value>,
     batch: &mut Batch,
 ) -> Result<String, String> {
+    if o.contains_key("ref") {
+        return Err("`ref` names a new element; one with an `id` is a revision".into());
+    }
     let id = element_id(&s.case, id)?;
+    if query::get(s.case.db(), &id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Err(format!(
+            "no element {id}: `id` revises an element that exists; leave it out to add a new one (a link to a new entity is {{type, value}}, to a new claim `@ref`)"
+        ));
+    }
     let change = Change {
         id: id.clone(),
         status: o.get("status").and_then(Value::as_str).map(str::to_string),
@@ -641,6 +670,14 @@ fn addition(o: &Map<String, Value>, case: &Case) -> Result<Put, String> {
             ..Put::new(kind, type_)
         }
     };
+    if let Some(label) = o.get("ref").filter(|v| !v.is_null()) {
+        let label = text_of(label);
+        let label = label.trim().trim_start_matches('@');
+        if label.is_empty() {
+            return Err("`ref` is a name for later links of this call to point at".into());
+        }
+        put.label = Some(label.to_string());
+    }
     let judgement = kind == Kind::Annotation && put.type_ == "analysis.judgement";
     for l in list(o.get("links")) {
         let role = l.get("role").and_then(Value::as_str).unwrap_or("");
@@ -965,6 +1002,7 @@ fn resolve_id(case: &Case, v: Option<&Value>) -> Result<String, String> {
             scope,
         })) => query::entity_id(db, &type_, &value, scope.as_deref()).map_err(|e| e.to_string()),
         Some(Ok(Target::External { .. })) => Err("name an external by its id".into()),
+        Some(Ok(Target::Local(l))) => Err(local_only(&l)),
         Some(Err(e)) => Err(e),
         None => Err("needs `id`".into()),
     }

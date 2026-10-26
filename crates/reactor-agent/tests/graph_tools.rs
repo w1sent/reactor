@@ -782,3 +782,71 @@ async fn a_registered_file_can_be_withdrawn_even_after_it_is_gone() {
         again.text
     );
 }
+
+#[tokio::test]
+async fn a_claim_and_what_is_said_of_it_go_in_one_call_through_a_ref() {
+    let r = rig();
+    let out = r
+        .ok(
+            "graph_write",
+            json!({ "elements": [
+                { "kind": "entity", "type": "code.binary", "value": "crackme", "ref": "bin" },
+                { "kind": "observation", "type": "code.behavior", "value": "prompts",
+                  "source": "session:s1#entry=0",
+                  "links": [{ "role": "subject", "to": "@bin" }], "ref": "obs" },
+                { "type": "note", "value": "seen once, to be re-run", "links": [{ "role": "about", "to": "@obs" }] }
+            ] }),
+        )
+        .await;
+    assert!(
+        out.contains("prompts") && out.contains("seen once"),
+        "{out}"
+    );
+    let rel = r
+        .ok(
+            "graph_query",
+            json!({ "what": "element", "id": "graph:entity/code.binary/crackme" }),
+        )
+        .await;
+    assert!(rel.contains("prompts"), "{rel}");
+}
+
+#[tokio::test]
+async fn an_id_on_a_new_element_and_an_unknown_ref_are_each_explained_and_all_are_reported() {
+    let r = rig();
+    let out = r
+        .call(
+            "graph_write",
+            json!({ "elements": [
+                { "id": "binary-crackme", "kind": "entity", "type": "code.binary", "value": "crackme" },
+                { "kind": "observation", "type": "code.behavior", "value": "x",
+                  "source": "session:s1#entry=0",
+                  "links": [{ "role": "subject", "to": "@nothing" }] },
+                { "kind": "observation", "value": "no type" }
+            ] }),
+        )
+        .await;
+    assert!(out.is_error);
+    assert!(out.text.contains("nothing was written"), "{}", out.text);
+    assert!(
+        out.text.contains("element 1") && out.text.contains("leave it out"),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("element 3"), "{}", out.text);
+
+    // The unknown label is only found when the batch is applied.
+    let out = r
+        .call(
+            "graph_write",
+            json!({ "elements": [{ "kind": "observation", "type": "code.behavior", "value": "x",
+                "source": "session:s1#entry=0",
+                "links": [{ "role": "subject", "to": "@nothing" }] }] }),
+        )
+        .await;
+    assert!(
+        out.is_error && out.text.contains("`@nothing`") && out.text.contains("ref: nothing"),
+        "{}",
+        out.text
+    );
+}

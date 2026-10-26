@@ -437,6 +437,7 @@ fn claim(
         scope: None,
         content,
         links,
+        label: None,
         author: None,
         recorded_at: None,
     })

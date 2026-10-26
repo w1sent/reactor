@@ -25,6 +25,8 @@ pub mod revert;
 pub mod views;
 pub mod vocab;
 
+use std::collections::HashMap;
+
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -171,6 +173,8 @@ pub enum Target {
     },
     /// An external by its URI: found, or made.
     External { uri: String },
+    /// An element written earlier in this same batch, by the label its `Put` gave it.
+    Local(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +246,8 @@ pub struct Put {
     pub scope: Option<String>,
     pub content: Content,
     pub links: Vec<Link>,
+    /// A name for later links in the same batch to point at ([`Target::Local`]).
+    pub label: Option<String>,
     /// Who wrote it and when, when that is not this batch's author and now: a restored
     /// element keeps what it had.
     pub author: Option<Author>,
@@ -257,6 +263,7 @@ impl Put {
             scope: None,
             content: Content::default(),
             links: Vec::new(),
+            label: None,
             author: None,
             recorded_at: None,
         }
@@ -354,6 +361,7 @@ pub fn apply(db: &Db, batch: Batch) -> Result<Applied> {
             authors: None,
             now: now_rfc3339(),
             own: None,
+            labels: HashMap::new(),
             applied: Applied::default(),
         };
         let mut claims = Vec::new();
@@ -369,6 +377,13 @@ pub fn apply(db: &Db, batch: Batch) -> Result<Applied> {
                 }
             };
             let (id, kind) = w.put(put)?;
+            if let Some(label) = &put.label
+                && w.labels.insert(label.clone(), id.clone()).is_some()
+            {
+                return Err(Error::Invalid(format!(
+                    "`ref: {label}` is on two elements of this batch"
+                )));
+            }
             for link in &put.links {
                 w.link(&id, link)?;
             }
@@ -411,6 +426,8 @@ struct Writer<'a> {
     now: String,
     /// While one `Put` is written: its own author and record time, if it has them.
     own: Option<(i64, String)>,
+    /// The ids of the labelled puts written so far.
+    labels: HashMap<String, String>,
     applied: Applied,
 }
 
@@ -663,10 +680,17 @@ impl Writer<'_> {
                     |r| r.get(0),
                 )?;
                 if !exists {
-                    return Err(Error::Invalid(format!("no element {id}")));
+                    return Err(Error::Invalid(format!(
+                        "no element {id}: a link takes the id of an element that exists; point at a new entity with {{type, value}}, or give the new element a `ref` and link `@ref` from a later element of the same call"
+                    )));
                 }
                 Ok(id.clone())
             }
+            Target::Local(label) => self.labels.get(label).cloned().ok_or_else(|| {
+                Error::Invalid(format!(
+                    "`@{label}`: no element with `ref: {label}` earlier in this call (a `ref` is linked from the elements after it)"
+                ))
+            }),
             Target::Entity {
                 type_,
                 value,
@@ -815,10 +839,12 @@ impl Writer<'_> {
                 |r| r.get(0),
             )
             .optional()?;
-        let kind = kind
-            .as_deref()
-            .and_then(Kind::parse)
-            .ok_or_else(|| Error::Invalid(format!("no element {}", change.id)))?;
+        let kind = kind.as_deref().and_then(Kind::parse).ok_or_else(|| {
+            Error::Invalid(format!(
+                "no element {}: `id` revises an element that exists; leave it out to add a new one",
+                change.id
+            ))
+        })?;
         let (ver, current) = query::current_content(self.tx, &change.id)?;
         let mut next = current.clone();
         if let Some(status) = &change.status {
